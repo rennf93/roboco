@@ -806,6 +806,13 @@ class AgentOrchestrator:
         # AGENT_NETWORK itself) so a future network-isolation change only
         # has to flip this constant here — sandboxes ride along.
         self._sandbox = SandboxProvisioner(network=AGENT_NETWORK)
+        # On-demand sandbox creds cache (agent slug -> last-provisioned info),
+        # consulted by ensure_sandbox / request_sandbox. Evicted at teardown
+        # and by the janitor sweep. Known ceiling: in-memory only — an
+        # orchestrator restart forgets it; the next request_sandbox call
+        # re-provisions (provision()'s pre-clear tears down any stale
+        # container) with fresh creds.
+        self._sandbox_info: dict[str, SandboxInfo] = {}
         # Gateway-health grace tracker: agent slug -> first time its gateway was
         # seen broken. Tolerates a transient probe miss before the reaper recovers
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
@@ -2082,18 +2089,19 @@ class AgentOrchestrator:
             git_context, project_slug, team, agent_id, task_id
         )
 
-        # Provision this spawn's sandbox DB/Redis (flag + per-project opt-in),
-        # before `docker run` so its connection info can be injected as env.
-        # Fail-loud on a provisioning failure (see _maybe_provision_sandbox).
-        sandbox_info = await self._maybe_provision_sandbox(
-            agent_id, project_slug, task_id
-        )
+        # Availability probe only (flag + per-project opt-in) — sandboxes are
+        # provisioned on demand via the request_sandbox do-verb
+        # (ensure_sandbox), never here, so a spawn never fails on sandbox
+        # infrastructure.
+        sandbox_services = await self._sandbox_available_services(project_slug)
 
         agent_settings_path = self._generate_agent_settings(
             agent_id, canonical_role, cwd_path, cell_workspace_path
         )
 
-        briefing_path = await self._write_agent_briefing(agent_id, task_id, cwd_path)
+        briefing_path = await self._write_agent_briefing(
+            agent_id, task_id, cwd_path, sandbox_services
+        )
 
         await self._ensure_agent_image(agent_id)
         mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
@@ -2111,7 +2119,7 @@ class AgentOrchestrator:
             provider_type=route.provider_type.value,
             provider_base_url=route.base_url,
             provider_auth_token=route.auth_token,
-            sandbox_info=sandbox_info,
+            sandbox_available_services=sandbox_services,
         )
         instance = AgentInstance(
             agent_id=agent_id,
@@ -2212,22 +2220,19 @@ class AgentOrchestrator:
                 f" (task={task_id}): {e}; will retry next tick"
             ) from e
 
-    async def _maybe_provision_sandbox(
-        self, agent_id: str, project_slug: str, task_id: str | None
-    ) -> SandboxInfo | None:
-        """Provision this spawn's sandbox DB/Redis, or None if not opted in.
+    async def _sandbox_available_services(self, project_slug: str) -> list[str]:
+        """Which sandbox services this project's spawn may request on-demand.
 
-        Off (flag or project) => None, byte-for-byte identical to today (the
+        Off (flag or project) => [], byte-for-byte identical to today (the
         legacy `_append_gate_env` prod-creds injection stays active). The
-        project lookup itself is best-effort (a DB hiccup here degrades to
-        "no sandbox" rather than blocking every spawn on a transient error —
-        `_ensure_worktree_before_spawn` already fails loud on a genuine DB
-        outage). Once a project has opted in, an actual provisioning failure
-        (container won't start / never becomes ready) IS fail-loud: an agent
-        whose gate can't run must never spawn.
+        project lookup is best-effort (a DB hiccup degrades to "no sandbox"
+        rather than blocking the spawn). Provisioning itself no longer
+        happens here — it is on-demand via the `request_sandbox` do-verb
+        (see `ensure_sandbox`), so a spawn never fails on sandbox
+        infrastructure.
         """
         if not settings.sandbox_db_enabled:
-            return None
+            return []
         from roboco.db.base import get_db_context
         from roboco.services.project import get_project_service
 
@@ -2236,31 +2241,28 @@ class AgentOrchestrator:
                 project = await get_project_service(db).get_by_slug(project_slug)
         except Exception as e:
             logger.warning(
-                "sandbox project lookup failed; skipping sandbox provisioning",
-                agent_id=agent_id,
+                "sandbox project lookup failed; no sandbox available this spawn",
                 project_slug=project_slug,
                 error=str(e),
             )
-            return None
-        services = list(project.sandbox_services or []) if project else []
-        if not services:
-            return None
-        try:
-            return await self._sandbox.provision(agent_id, services)
-        except Exception as e:
-            # str(TimeoutError()) == "" — include the type so a bare timeout
-            # (a cold image pull exceeding the run deadline) self-diagnoses.
-            err = f"{type(e).__name__}: {e}"
-            logger.error(
-                "sandbox provisioning failed; refusing spawn",
-                agent_id=agent_id,
-                task_id=task_id,
-                services=services,
-                error=err,
-            )
-            raise AgentReadinessError(
-                f"sandbox provisioning failed for {agent_id} (task={task_id}): {err}"
-            ) from e
+            return []
+        return list(project.sandbox_services or []) if project else []
+
+    async def ensure_sandbox(self, agent_slug: str, services: list[str]) -> SandboxInfo:
+        """Idempotent on-demand provision, called by the `request_sandbox` verb.
+
+        Cache hit whose service set already covers ``services`` returns the
+        same creds (a second call is a cheap no-op, no docker calls). A miss
+        (or a request for services beyond what's cached) provisions via
+        `SandboxProvisioner.provision` — its own pre-clear tears down any
+        stale same-named containers — and caches the result.
+        """
+        cached = self._sandbox_info.get(agent_slug)
+        if cached is not None and set(services) <= set(cached.services):
+            return cached
+        info = await self._sandbox.provision(agent_slug, services)
+        self._sandbox_info[agent_slug] = info
+        return info
 
     async def _launch_spawn(
         self,
@@ -2841,19 +2843,15 @@ class AgentOrchestrator:
         )
 
     @staticmethod
-    def _append_sandbox_env(cmd: list[str], config: AgentConfig) -> None:
-        """Inject sandbox engine env, in place of the prod-creds gate env.
+    def _append_sandbox_marker_env(cmd: list[str], services: list[str]) -> None:
+        """Cheap availability probe: names the request_sandbox-eligible services.
 
-        Called INSTEAD OF `_append_gate_env` whenever a sandbox was provisioned
-        for this spawn (`config.sandbox_info` set) — sandbox replaces, never
-        coexists with, the production gate-env injection. Emission is driven by
-        the engine registry via `SandboxInfo.emit_env`, so a new engine's
-        `ROBOCO_TEST_*` vars land here with no orchestrator change.
+        Replaces eager sandbox env injection now that provisioning is
+        on-demand (the `request_sandbox` do-verb) — never prod creds, purely
+        informational so the agent knows the verb will succeed. Called
+        INSTEAD OF `_append_gate_env` for an opted-in project (never both).
         """
-        info = config.sandbox_info
-        if info is None:
-            return
-        cmd.extend(info.emit_env())
+        cmd.extend(["-e", f"ROBOCO_SANDBOX_SERVICES_AVAILABLE={','.join(services)}"])
 
     @staticmethod
     def _default_spawn_prompt() -> str:
@@ -3003,9 +3001,10 @@ class AgentOrchestrator:
             return result.instance_id
 
         container_name = f"roboco-agent-{config.agent_id}"
-        # teardown_sandbox=False: this spawn's sandbox was provisioned moments
-        # ago in _build_agent_config — the stale-clear must not destroy it.
-        # Stale sandboxes from a prior crash are cleared by provision() itself.
+        # teardown_sandbox=False: nothing is provisioned before spawn anymore
+        # (sandboxes are on-demand via request_sandbox/ensure_sandbox), so this
+        # is now vestigial for THIS spawn — but it still protects a respawn
+        # racing a sandbox the agent just requested moments ago via the verb.
         await self._remove_container(container_name, teardown_sandbox=False)
 
         if not config.mcp_config_path:
@@ -3015,8 +3014,8 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
-        if config.sandbox_info is not None:
-            self._append_sandbox_env(cmd, config)
+        if config.sandbox_available_services:
+            self._append_sandbox_marker_env(cmd, config.sandbox_available_services)
         else:
             self._append_gate_env(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
@@ -3107,6 +3106,13 @@ class AgentOrchestrator:
         if teardown_sandbox and settings.sandbox_db_enabled:
             slug = container_name.removeprefix("roboco-agent-")
             await self._sandbox.teardown(slug)
+            # Evict the ensure_sandbox cache so a later request_sandbox call
+            # re-provisions instead of handing back creds for a torn-down
+            # container. getattr guards bare __new__() test doubles that
+            # never ran __init__.
+            cache = getattr(self, "_sandbox_info", None)
+            if cache is not None:
+                cache.pop(slug, None)
 
     async def _generate_mcp_config(
         self,
@@ -3877,6 +3883,7 @@ class AgentOrchestrator:
         agent_id: str,
         task_id: str | None,
         workspace_path: str,
+        sandbox_services: list[str] | None = None,
     ) -> Path | None:
         """Write a compact task briefing to be read by SessionStart hook.
 
@@ -3886,6 +3893,10 @@ class AgentOrchestrator:
         the task and include title, status, branch, and acceptance criteria.
         On fetch failure we still emit the role-level part (role, escalation
         target, terminal tools, workspace path) — strictly better than nothing.
+
+        `sandbox_services` (when non-empty) names the request_sandbox verb so
+        an opted-in project's agent knows it will succeed, rather than relying
+        on manifest presence alone to discover it.
         """
         role = get_agent_role(agent_id) or "agent"
         team = get_agent_team(agent_id) or "-"
@@ -3897,6 +3908,12 @@ class AgentOrchestrator:
             task = await self._fetch_task_for_briefing(agent_id, task_id)
             if task is not None:
                 task_block = self._format_task_briefing_block(task_id, task)
+        sandbox_line = (
+            f"- **Sandbox available:** `{', '.join(sandbox_services)}` — call "
+            "`request_sandbox()` to provision on demand\n"
+            if sandbox_services
+            else ""
+        )
 
         content = (
             f"# Session briefing — {agent_id}\n"
@@ -3908,6 +3925,7 @@ class AgentOrchestrator:
             f"- **Team:** {team}\n"
             f"- **Escalate to:** `{escalate_to}`\n"
             f"- **Workspace:** `{workspace_path}`\n"
+            f"{sandbox_line}"
             f"{task_block}"
             "\n## Terminal tools (how to exit cleanly)\n"
             "- `i_am_idle()` — no work remaining (every role)\n"
@@ -9881,6 +9899,13 @@ Start now: evidence(task_id="{task_id}")
             return
         with contextlib.suppress(Exception):
             await self._sandbox.janitor_sweep()
+        # Evict ensure_sandbox cache entries for agents the sweep just reaped
+        # (owner container gone). getattr guards bare __new__() test doubles.
+        cache = getattr(self, "_sandbox_info", None)
+        if cache:
+            live = getattr(self, "_instances", {})
+            for slug in set(cache) - set(live):
+                cache.pop(slug, None)
 
     def _assignee_has_active_instance(self, task: Any) -> bool:
         """True if the task's assignee currently holds a live (ACTIVE) container.

@@ -42,6 +42,11 @@ _TIMEOUT = 30
 # shared _TIMEOUT above is tuned for fast content-tool calls (note/dm/
 # evidence) and would give up first — client must outlast the server op.
 _COMMIT_TIMEOUT = 190
+# request_sandbox provisions inline; a not-yet-cached engine image pays a cold
+# pull (up to 300s, SandboxProvisioner._DOCKER_PULL_TIMEOUT_SECONDS) plus its
+# readiness probe (up to 60s). Sized for two engines cold — a call needing all
+# three uncached in one shot is vanishingly rare and would just retry.
+_SANDBOX_TIMEOUT = 720
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -694,6 +699,25 @@ def evidence(task_id: str) -> dict[str, Any]:
     return _post("/api/v1/do/evidence", {"task_id": task_id})
 
 
+def request_sandbox(services: list[str] | None = None) -> dict[str, Any]:
+    """Provision (or reuse) a throwaway sandbox DB/Redis/Mongo for YOUR active task.
+
+    On-demand — nothing is provisioned at spawn. Omit ``services`` to get the
+    project's whole opted-in set; requesting a service the project didn't opt
+    into is rejected with the allowed set named. Creds come back in
+    ``evidence``, one entry per service: ``{host, port, user, password,
+    database, env: {ROBOCO_TEST_*: value}}`` — export the ``env`` values
+    verbatim for gate tooling that reads them. Calling this again for the
+    same services is a cheap no-op (same creds); a project that never opted
+    into sandbox services will reject this.
+    """
+    return _post(
+        "/api/v1/do/request_sandbox",
+        {"services": services},
+        timeout=_SANDBOX_TIMEOUT,
+    )
+
+
 def draft_playbook(
     title: str,
     problem: str,
@@ -891,6 +915,7 @@ _TOOLS: dict[str, Any] = {
     "dm": dm,
     "notify": notify,
     "evidence": evidence,
+    "request_sandbox": request_sandbox,
     "progress": progress,
     "notify_list": notify_list,
     "notify_get": notify_get,

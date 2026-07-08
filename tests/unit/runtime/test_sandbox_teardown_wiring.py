@@ -118,3 +118,52 @@ async def test_sandbox_janitor_sweep_swallows_errors(
     sandbox.janitor_sweep.side_effect = RuntimeError("boom")
 
     await orch._sandbox_janitor_sweep()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# ensure_sandbox cache eviction (request_sandbox on-demand provisioning)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remove_container_evicts_ensure_sandbox_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    orch, _sandbox = _make_orchestrator()
+    orch._sandbox_info = {"dev-1": MagicMock(), "dev-2": MagicMock()}
+
+    await orch._remove_container("roboco-agent-dev-1")
+
+    assert "dev-1" not in orch._sandbox_info
+    assert "dev-2" in orch._sandbox_info
+
+
+@pytest.mark.asyncio
+async def test_remove_container_teardown_false_spares_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    orch, _sandbox = _make_orchestrator()
+    orch._sandbox_info = {"dev-1": MagicMock()}
+
+    await orch._remove_container("roboco-agent-dev-1", teardown_sandbox=False)
+
+    assert "dev-1" in orch._sandbox_info
+
+
+@pytest.mark.asyncio
+async def test_janitor_sweep_evicts_cache_for_reaped_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    orch, _sandbox = _make_orchestrator()
+    orch._sandbox_info = {"dev-1": MagicMock(), "dev-2": MagicMock()}
+    orch._instances = {"dev-2": MagicMock()}  # dev-1's agent instance is gone
+
+    await orch._sandbox_janitor_sweep()
+
+    assert "dev-1" not in orch._sandbox_info
+    assert "dev-2" in orch._sandbox_info
