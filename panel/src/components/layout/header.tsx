@@ -1,7 +1,7 @@
 "use client";
 
 import { useTheme } from "next-themes";
-import { Search, Sun, Moon, Monitor } from "lucide-react";
+import { Search, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NotificationBell } from "@/components/notifications/notification-bell";
+import { usePageRefresh } from "@/hooks/use-page-refresh";
 import { ConnectionStatus } from "./connection-status";
 import { MobileSidebar } from "./mobile-sidebar";
 import {
@@ -22,6 +23,7 @@ import {
 
 export function Header() {
   const { setTheme } = useTheme();
+  const { refresh, activeScope } = usePageRefresh();
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
@@ -49,6 +51,26 @@ export function Header() {
 
       {/* Actions */}
       <div className="flex items-center gap-3">
+        {/* Page-scoped refresh */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={!activeScope}
+                onClick={() => refresh()}
+                aria-label="Refresh current page"
+              >
+                <RefreshCw className="h-5 w-5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {activeScope ? `Refresh ${activeScope}` : "Refresh unavailable"}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
         {/* Connection Status */}
         <ConnectionStatus />
 
