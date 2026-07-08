@@ -32,7 +32,13 @@ export const observabilityKeys = {
   memberScorecard: (agentId: string, days: number) =>
     [...observabilityKeys.all, "scorecard", "member", agentId, days] as const,
   orgScorecard: (days: number, team?: string) =>
-    [...observabilityKeys.all, "scorecard", "org", team ?? "all", days] as const,
+    [
+      ...observabilityKeys.all,
+      "scorecard",
+      "org",
+      team ?? "all",
+      days,
+    ] as const,
   taskMetrics: (taskId: string) =>
     [...observabilityKeys.all, "task-metrics", taskId] as const,
 };

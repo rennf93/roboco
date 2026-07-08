@@ -1,7 +1,7 @@
 "use client";
 
 import { useTheme } from "next-themes";
-import { Search, Sun, Moon, Monitor } from "lucide-react";
+import { Search, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -19,9 +19,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { usePageRefresh } from "@/hooks";
 
 export function Header() {
   const { setTheme } = useTheme();
+  const { refresh, loading } = usePageRefresh();
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
@@ -51,6 +54,18 @@ export function Header() {
       <div className="flex items-center gap-3">
         {/* Connection Status */}
         <ConnectionStatus />
+
+        {/* Refresh current page data */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => void refresh()}
+          disabled={loading}
+          aria-label="Refresh page data"
+          title="Refresh page data"
+        >
+          <RefreshCw className={cn("h-5 w-5", loading && "animate-spin")} />
+        </Button>
 
         {/* Theme toggle */}
         <DropdownMenu>

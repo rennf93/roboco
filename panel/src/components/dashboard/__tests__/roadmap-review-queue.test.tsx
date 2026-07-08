@@ -80,7 +80,9 @@ describe("RoadmapReviewQueue", () => {
 
   it("renders the cycle goal and both item drafts", async () => {
     render(withQueryClient(<RoadmapReviewQueue />));
-    expect(await screen.findByText("Close onboarding friction")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Close onboarding friction"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Streamline signup")).toBeInTheDocument();
     expect(screen.getByText("Simplify pricing page")).toBeInTheDocument();
   });
@@ -124,7 +126,11 @@ describe("RoadmapReviewQueue", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reject" }));
 
     await waitFor(() =>
-      expect(rejectItem).toHaveBeenCalledWith("cycle-1", "item-1", "not a priority"),
+      expect(rejectItem).toHaveBeenCalledWith(
+        "cycle-1",
+        "item-1",
+        "not a priority",
+      ),
     );
   });
 
