@@ -5,7 +5,6 @@ import { formatDistanceToNow } from "date-fns";
 import {
   useAgentStatus,
   useStopAgent,
-  useSpawnAgent,
   useAgentDefinition,
 } from "@/hooks/use-agents";
 import { Button } from "@/components/ui/button";
@@ -33,6 +32,7 @@ import {
   AgentStatusCards,
   ResolveWaitDialog,
   AgentStreamViewer,
+  SpawnAgentDialog,
 } from "@/components/agents";
 
 // Role display labels
@@ -66,7 +66,6 @@ export default function AgentDetailPage() {
   const { data: agent, isLoading, error, refetch } = useAgentStatus(agentId);
   const { data: definition } = useAgentDefinition(agentId);
   const stopAgent = useStopAgent();
-  const spawnAgent = useSpawnAgent();
 
   // Get display values from definition or fallback
   const displayName = definition?.name || agentId;
@@ -88,15 +87,6 @@ export default function AgentDetailPage() {
     }
   };
 
-  const handleSpawn = async () => {
-    try {
-      await spawnAgent.mutateAsync({ agentId });
-      toast.success("Agent spawned successfully");
-    } catch {
-      toast.error("Failed to spawn agent");
-    }
-  };
-
   if (error) {
     return (
       <div className="space-y-6">
@@ -113,10 +103,16 @@ export default function AgentDetailPage() {
             <p className="text-muted-foreground mt-2">
               The agent may not be running or the ID is invalid.
             </p>
-            <Button className="mt-4" onClick={handleSpawn}>
-              <Play className="h-4 w-4 mr-2" />
-              Spawn Agent
-            </Button>
+            <SpawnAgentDialog
+              agentId={agentId}
+              agentName={displayName}
+              trigger={
+                <Button className="mt-4">
+                  <Play className="h-4 w-4 mr-2" />
+                  Spawn Agent
+                </Button>
+              }
+            />
           </CardContent>
         </Card>
       </div>
@@ -178,10 +174,16 @@ export default function AgentDetailPage() {
               </Button>
             </>
           ) : (
-            <Button onClick={handleSpawn}>
-              <Play className="h-4 w-4 mr-2" />
-              Spawn
-            </Button>
+            <SpawnAgentDialog
+              agentId={agentId}
+              agentName={displayName}
+              trigger={
+                <Button>
+                  <Play className="h-4 w-4 mr-2" />
+                  Spawn
+                </Button>
+              }
+            />
           )}
         </div>
       </div>
