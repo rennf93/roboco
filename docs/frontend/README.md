@@ -11,7 +11,12 @@ Documentation for the Frontend Cell team.
 
 - `/components/` - Component documentation
   - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` and `PageRefreshContext` for route-scoped refresh actions.
+- `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
+
+## Available docs
+
+- [`hooks.md`](./hooks.md) — `usePageRefresh` and `PageRefreshProvider` usage and API reference
 
 ## Contributing
 
