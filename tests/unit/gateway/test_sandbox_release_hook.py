@@ -139,7 +139,9 @@ def _ready_i_am_done_task(task_id: Any, agent_id: Any, **overrides: Any) -> Magi
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_success_releases_sandbox() -> None:
+async def test_i_am_done_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = _ready_i_am_done_task(task_id, agent_id)
@@ -165,28 +167,32 @@ async def test_i_am_done_success_releases_sandbox() -> None:
     journal_svc.has_struggle_for_task.return_value = False
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_am_done(agent_id, task_id, "done")
 
     assert env.error is None
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(agent_id)
+    release.assert_awaited_once_with(agent_id)
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_rejection_does_not_release_sandbox() -> None:
+async def test_i_am_done_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_am_done(agent_id, task_id, "done")
 
     assert env.error == "not_found"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +201,9 @@ async def test_i_am_done_rejection_does_not_release_sandbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unclaim_success_releases_sandbox() -> None:
+async def test_unclaim_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = MagicMock(id=task_id, status="claimed", assigned_to=agent_id)
@@ -209,28 +217,32 @@ async def test_unclaim_success_releases_sandbox() -> None:
     )
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.unclaim(agent_id, task_id)
 
     assert env.error is None
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(agent_id)
+    release.assert_awaited_once_with(agent_id)
 
 
 @pytest.mark.asyncio
-async def test_unclaim_rejection_does_not_release_sandbox() -> None:
+async def test_unclaim_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.unclaim(agent_id, task_id)
 
     assert env.error == "not_found"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -239,40 +251,48 @@ async def test_unclaim_rejection_does_not_release_sandbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_idle_success_releases_sandbox() -> None:
+async def test_i_am_idle_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_am_idle(agent_id)
 
     assert env.error is None
     assert env.status == "idle"
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(agent_id)
+    release.assert_awaited_once_with(agent_id)
 
 
 @pytest.mark.asyncio
-async def test_i_am_idle_with_unread_does_not_release_sandbox() -> None:
+async def test_i_am_idle_with_unread_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """idle_with_unread sends the agent back to work — not a real exit, so
     the container does not shut down and the sandbox must survive."""
     agent_id = uuid4()
     deps = _make_deps()
     deps.evidence_repo.list_unread_a2a.return_value = [{"from": "x", "task_id": "t1"}]
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_am_idle(agent_id)
 
     assert env.status == "idle_with_unread"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_i_am_idle_guard_rejection_does_not_release_sandbox() -> None:
+async def test_i_am_idle_guard_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     agent_id = uuid4()
     pending = MagicMock(id=uuid4(), status="pending")
     task_svc = AsyncMock()
@@ -280,12 +300,13 @@ async def test_i_am_idle_guard_rejection_does_not_release_sandbox() -> None:
     task_svc.list_in_progress_for_agent.return_value = []
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_am_idle(agent_id)
 
     assert env.error == "invalid_state"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +333,9 @@ def _qa_agent_mock(qa_id: Any) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_pass_review_success_releases_sandbox() -> None:
+async def test_pass_review_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     qa_id = uuid4()
     task_id = uuid4()
     t = _qa_owned_task(task_id, qa_id)
@@ -333,7 +356,8 @@ async def test_pass_review_success_releases_sandbox() -> None:
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     notes = (
         "Reviewed PR carefully. Branch convention correct. Commit prefix "
@@ -342,27 +366,32 @@ async def test_pass_review_success_releases_sandbox() -> None:
     env = await c.pass_review(qa_id, task_id, notes=notes)
 
     assert env.error is None
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(qa_id)
+    release.assert_awaited_once_with(qa_id)
 
 
 @pytest.mark.asyncio
-async def test_pass_review_rejection_does_not_release_sandbox() -> None:
+async def test_pass_review_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     qa_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.pass_review(qa_id, task_id, notes="x")
 
     assert env.error == "not_found"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fail_review_success_releases_sandbox() -> None:
+async def test_fail_review_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     qa_id = uuid4()
     task_id = uuid4()
     dev_id = uuid4()
@@ -381,7 +410,8 @@ async def test_fail_review_success_releases_sandbox() -> None:
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     issues = [
         "Missing unit test coverage for /healthz endpoint — add an assertion",
@@ -390,23 +420,26 @@ async def test_fail_review_success_releases_sandbox() -> None:
     env = await c.fail_review(qa_id, task_id, issues)
 
     assert env.error is None
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(qa_id)
+    release.assert_awaited_once_with(qa_id)
 
 
 @pytest.mark.asyncio
-async def test_fail_review_rejection_does_not_release_sandbox() -> None:
+async def test_fail_review_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     qa_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.fail_review(qa_id, task_id, ["some issue"])
 
     assert env.error == "not_found"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +465,9 @@ def _doc_agent_mock(doc_id: Any) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_i_documented_success_releases_sandbox() -> None:
+async def test_i_documented_success_releases_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     doc_id = uuid4()
     task_id = uuid4()
     t = _doc_owned_task(task_id, doc_id)
@@ -448,27 +483,31 @@ async def test_i_documented_success_releases_sandbox() -> None:
     journal_svc.has_reflect_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
     files = ["backend/guides/feature-x.md"]
     env = await c.i_documented(doc_id, task_id, notes=notes, files=files)
 
     assert env.error is None
-    c._teardown_sandbox_best_effort.assert_awaited_once_with(doc_id)
+    release.assert_awaited_once_with(doc_id)
 
 
 @pytest.mark.asyncio
-async def test_i_documented_rejection_does_not_release_sandbox() -> None:
+async def test_i_documented_rejection_does_not_release_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     doc_id = uuid4()
     task_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    c._teardown_sandbox_best_effort = AsyncMock()
+    release = AsyncMock()
+    monkeypatch.setattr(c, "_teardown_sandbox_best_effort", release)
 
     env = await c.i_documented(doc_id, task_id, notes="x" * 30, files=["docs.md"])
 
     assert env.error == "not_found"
-    c._teardown_sandbox_best_effort.assert_not_awaited()
+    release.assert_not_awaited()
