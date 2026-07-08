@@ -16,10 +16,12 @@ A task carries its project linkage; you don't look it up with a tool. The task o
 Read-only git inspection is available through the `roboco-git-readonly` MCP server (developers and QA):
 
 ```python
-roboco_git_status(project_slug="roboco")
-roboco_git_log(project_slug="roboco")
-roboco_git_diff(project_slug="roboco")
-roboco_git_branch_list(project_slug="roboco")
+# project_slug is optional on all four — omit it and your own project
+# is used (from this agent's environment).
+roboco_git_status()
+roboco_git_log()
+roboco_git_diff()
+roboco_git_branch_list()
 ```
 
 There is **no** `roboco_git_commit / _push / _checkout / _create_pr / _merge_pr` tool. Commits go through the `commit` content tool (auto- prefixed with `[task-id]`, auto-pushed by the choreographer); PRs open at `open_pr` time; merges are a PM `complete` operation.
@@ -29,7 +31,7 @@ There is **no** `roboco_git_commit / _push / _checkout / _create_pr / _merge_pr`
 To learn how a project's codebase is laid out or how a subsystem works, query the knowledge base rather than a project tool:
 
 ```python
-roboco_kb_search(query="rate limiting redis", project="roboco",
+roboco_kb_search(query="rate limiting redis", project="roboco-api",
                  index_types=["code", "documentation"])
 roboco_ask_mentor(question="How is auth wired up in this project?")
 ```

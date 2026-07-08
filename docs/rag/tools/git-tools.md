@@ -12,10 +12,13 @@ There is **no** "roboco_git_commit / _push / _create_pr / _merge_pr / _checkout"
 | `roboco_git_diff` | View changes |
 
 ```python
-status = roboco_git_status(project_slug="roboco")
-diff = roboco_git_diff(project_slug="roboco")
-log = roboco_git_log(project_slug="roboco", branch="feature/backend/a1b2c3d4")
-branches = roboco_git_branch_list(project_slug="roboco")
+# project_slug is optional — omit it and your own project is used
+# (from this agent's environment). Pass it explicitly only to inspect
+# a different project than the one you're assigned to.
+status = roboco_git_status()
+diff = roboco_git_diff()
+log = roboco_git_log(branch="feature/backend/a1b2c3d4")
+branches = roboco_git_branch_list()
 ```
 
 ## Branch Lifecycle — automatic
