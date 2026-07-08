@@ -275,18 +275,6 @@ class Settings(BaseSettings):
             "Off => legacy behavior (respawn until the strike breaker trips)."
         ),
     )
-    pr_gate_auto_submit_enabled: bool = Field(
-        default=True,
-        description=(
-            "When every child of an assembled parent is terminal, run the "
-            "submit_up/submit_root gate system-side as the owning PM instead "
-            "of spawning the PM for that turn — the submit's substance "
-            "(freshness rebase, integrity check, PR open) is deterministic "
-            "gate code. A gate rejection falls back to the classic PM "
-            "closure spawn; the PM keeps the judgment turns (merge, "
-            "revision). Off => every closure spawns the PM to submit."
-        ),
-    )
     gateway_health_enabled: bool = Field(
         default=True,
         description=(

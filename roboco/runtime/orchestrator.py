@@ -11604,15 +11604,16 @@ Start now: evidence(task_id="{task_id}")
     ) -> tuple[str, str, str, str] | None:
         """(role, route, verb, pm_uuid) when this parent is auto-submittable.
 
-        None when the flag is off, the parent is branchless coordination (a
-        MegaTask umbrella assembles no PR), the role has no submit verb, or
-        no PM identity can be resolved.
+        Unconditional — no kill-switch: the PM-turn cut IS the flow. None
+        when the parent is branchless coordination (a MegaTask umbrella
+        assembles no PR), the role has no submit verb, or no PM identity
+        can be resolved; the caller falls back to the classic PM spawn.
         """
         role = get_agent_role(pm_slug) or ""
         pair = self._AUTO_SUBMIT_VERB_BY_ROLE.get(role)
         pm_uuid = str(task.get("assigned_to") or AGENT_UUIDS.get(pm_slug) or "")
         if (
-            not settings.pr_gate_auto_submit_enabled
+            _is_coordination_task(task)
             or not task.get("branch_name")
             or not task.get("project_id")
             or pair is None
@@ -11621,24 +11622,45 @@ Start now: evidence(task_id="{task_id}")
             return None
         return (role, pair[0], pair[1], pm_uuid)
 
+    @staticmethod
+    def _auto_submit_rejection_reason(body: Any) -> str:
+        """Human-readable reason for a gate refusal, for the PM's prompt.
+
+        ``message`` already folds ``remediate`` in for tracing_gap envelopes
+        (see Envelope._missing_message); append remediate only when it adds
+        information ``message`` doesn't already carry.
+        """
+        if not isinstance(body, dict):
+            return f"unexpected gate response: {body!r}"
+        error = body.get("error") or "rejected"
+        message = body.get("message") or "no message"
+        remediate = body.get("remediate")
+        reason = f"{error}: {message}"
+        if remediate and remediate not in message:
+            reason = f"{reason} ({remediate})"
+        return reason
+
     async def _try_auto_submit(
         self, client: httpx.AsyncClient, task: dict[str, Any], pm_slug: str
-    ) -> bool:
+    ) -> tuple[bool, str | None]:
         """Submit an assembled, all-children-terminal parent to the PR gate
         WITHOUT spawning its PM — the turn's substance (freshness rebase,
         integrity check, PR open) is deterministic gate code, so the real
         submit verb is run through the internal API as the owning PM.
 
-        Returns True when the gate accepted (the reviewer dispatch takes it
-        from awaiting_pr_review); False on ANY refusal — flag off, a
-        branchless coordination parent (a MegaTask umbrella assembles no
-        PR), an unmapped role, a gate rejection (freshness/integrity — the
-        PM turn is then genuinely needed), or a transport error — and the
-        caller falls back to the classic PM closure spawn.
+        Returns ``(True, None)`` when the gate accepted (the reviewer
+        dispatch takes it from awaiting_pr_review). Returns ``(False,
+        reason)`` on ANY refusal — branchless / unmapped role (``reason``
+        is ``None``, nothing to report), a gate rejection
+        (freshness/integrity/AC-coverage/race — the PM turn is then
+        genuinely needed), or a transport error (``reason`` is a
+        human-readable string) — the caller falls back to the classic PM
+        closure spawn and threads ``reason`` into its prompt so the
+        respawned PM isn't rediscovering the refusal blind.
         """
         target = self._auto_submit_target(task, pm_slug)
         if target is None:
-            return False
+            return False, None
         role, role_path, verb, pm_uuid = target
         task_id = str(task.get("id"))
         notes = (
@@ -11655,20 +11677,22 @@ Start now: evidence(task_id="{task_id}")
             )
             body = resp.json()
         except Exception as e:
+            reason = f"auto-submit transport error: {e}"
             logger.warning(
                 "Auto-submit transport failure; falling back to PM closure spawn",
                 task_id=task_id,
                 error=str(e),
             )
-            return False
+            return False, reason
         if not isinstance(body, dict) or body.get("error"):
+            reason = self._auto_submit_rejection_reason(body)
             logger.info(
                 "Auto-submit rejected by the gate; PM closure spawn proceeds",
                 task_id=task_id,
                 error=(body or {}).get("error") if isinstance(body, dict) else body,
                 message=(body or {}).get("message") if isinstance(body, dict) else None,
             )
-            return False
+            return False, reason
         logger.info(
             "Assembled parent auto-submitted to the PR gate (PM turn skipped)",
             task_id=task_id,
@@ -11682,7 +11706,7 @@ Start now: evidence(task_id="{task_id}")
             details={"verb": verb, "auto": True},
         )
         self._mark_task_handled(task_id)
-        return True
+        return True, None
 
     async def _closure_handled_without_pm(
         self,
@@ -11690,7 +11714,7 @@ Start now: evidence(task_id="{task_id}")
         task: dict[str, Any],
         task_id: str,
         pm_id: str,
-    ) -> bool:
+    ) -> tuple[bool, str | None]:
         """Recover the parent's status, then try the submit turn cut.
 
         The parent auto-paused when its PM idled (by design) — resume it
@@ -11706,11 +11730,9 @@ Start now: evidence(task_id="{task_id}")
             await self._auto_resume_paused_parent(client, task_id)
         elif parent_status == "blocked":
             await self._auto_recover_blocked_parent(client, task_id)
-        return parent_status in (
-            "claimed",
-            "in_progress",
-            "paused",
-        ) and await self._try_auto_submit(client, task, pm_id)
+        if parent_status not in ("claimed", "in_progress", "paused"):
+            return False, None
+        return await self._try_auto_submit(client, task, pm_id)
 
     async def _maybe_spawn_pm_closure(
         self, client: httpx.AsyncClient, task: dict[str, Any]
@@ -11753,10 +11775,15 @@ Start now: evidence(task_id="{task_id}")
         # A parent that is `blocked` at closure (all descendants
         # terminal) is an errant/stale block — recover it symmetrically so
         # the chain can't wedge forever waiting for a PM to manually unblock.
-        if await self._closure_handled_without_pm(client, task, task_id, pm_id):
+        handled, auto_submit_reason = await self._closure_handled_without_pm(
+            client, task, task_id, pm_id
+        )
+        if handled:
             return
 
-        prompt = self._build_pm_closure_prompt(task, descendants)
+        prompt = self._build_pm_closure_prompt(
+            task, descendants, auto_submit_reason=auto_submit_reason
+        )
         await self.spawn_agent(
             agent_id=pm_id,
             task_id=task_id,
@@ -11822,12 +11849,33 @@ Start now: evidence(task_id="{task_id}")
         return []
 
     def _build_pm_closure_prompt(
-        self, task: dict[str, Any], subtasks: list[dict[str, Any]]
+        self,
+        task: dict[str, Any],
+        subtasks: list[dict[str, Any]],
+        *,
+        auto_submit_reason: str | None = None,
     ) -> str:
-        """Prompt for PM closing their own parent task (subtasks terminal)."""
+        """Prompt for PM closing their own parent task (subtasks terminal).
+
+        ``auto_submit_reason`` is set when the orchestrator already tried
+        ``_try_auto_submit`` on this PM's behalf and the gate refused it —
+        threading the refusal into the prompt so the respawned PM doesn't
+        re-run evidence-gathering from scratch to rediscover it blind.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         team = task.get("team", "unknown")
+        auto_submit_note = (
+            ""
+            if not auto_submit_reason
+            else (
+                "\nNOTE: The system already attempted to auto-submit this "
+                f"closure on your behalf and the gate refused it: "
+                f"{auto_submit_reason}\nResolve the underlying issue before "
+                "calling submit_up/submit_root yourself — a stale race "
+                "(subtask flipped since) may just need a retry.\n"
+            )
+        )
 
         subtask_summary = "\n".join(
             f"  - {st.get('title', 'Untitled')} ({st.get('status', 'unknown')})"
@@ -11865,7 +11913,7 @@ Start now: evidence(task_id="{task_id}")
 
         return f"""You are closing YOUR OWN parent task. All subtasks are
 terminal — promote the merged work one level up the hierarchy.
-
+{auto_submit_note}
 TASK: {task_id}
 TITLE: {title}
 TEAM: {team}

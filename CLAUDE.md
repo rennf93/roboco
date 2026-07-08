@@ -208,6 +208,8 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 
 **In-path PR-review gate** (`awaiting_pr_review`): each assembled PR is reviewed before the PM merges. The cell PM's `submit_up` opens the cell→root PR and the Main PM's `submit_root` opens the root→master PR; both enter `awaiting_pr_review`, where a reviewer `pr_pass`es it on to `awaiting_pm_review` or `pr_fail`s it back to `needs_revision` — the merge-level reject the PM otherwise lacks. Leaf dev tasks and branchless coordination roots skip the gate.
 
+**PM-turn elimination (auto-submit).** When every child of an assembled, PR-bearing parent goes terminal, the orchestrator's closure dispatcher (`_maybe_spawn_pm_closure` → `_closure_handled_without_pm` → `_try_auto_submit`) runs the real `submit_up`/`submit_root` gate system-side as the owning PM instead of spawning the PM for that turn — same verb, same guards (ownership, notes, journal:decision, subtasks-terminal, parent-AC coverage, branch), authorized via the internal API with the PM's own identity headers. This is unconditional — the turn cut IS the flow, no kill-switch. Success lands the task on `awaiting_pr_review` with an audited `task.auto_submitted` row and no PM spawn; ANY refusal (branchless/umbrella parent, a gate rejection — freshness, AC coverage, a subtask-terminal race — or a transport error) falls back to spawning the PM exactly as before — that fallback is the sole safety net — with the refusal reason threaded into the PM's closure prompt so it isn't rediscovering it blind.
+
 **States:**
 | State | Description |
 |-------|-------------|
@@ -239,7 +241,7 @@ All status transitions are validated through the enforcement layer. Key restrict
 | `awaiting_qa` → `awaiting_documentation` (pass) | QA only |
 | `awaiting_qa` → `needs_revision` (fail) | QA only |
 | `awaiting_documentation` → `awaiting_pm_review` | Documenter or Developer (parallel completion) |
-| `in_progress` → `awaiting_pr_review` (submit_up / submit_root) | PM roles (opens the assembled cell→root / root→master PR) |
+| `in_progress` → `awaiting_pr_review` (submit_up / submit_root) | PM roles (opens the assembled cell→root / root→master PR) — or the orchestrator running the same verb system-side as the owning PM once all children are terminal |
 | `awaiting_pr_review` → `awaiting_pm_review` (pr_pass) | PR reviewer only |
 | `awaiting_pr_review` → `needs_revision` (pr_fail) | PR reviewer only |
 | `awaiting_pm_review` → `completed` | PM roles only |
