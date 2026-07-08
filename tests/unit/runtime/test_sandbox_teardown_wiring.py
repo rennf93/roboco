@@ -167,3 +167,49 @@ async def test_janitor_sweep_evicts_cache_for_reaped_agents(
 
     assert "dev-1" not in orch._sandbox_info
     assert "dev-2" in orch._sandbox_info
+
+
+# ---------------------------------------------------------------------------
+# release_sandbox (end-of-engagement teardown, called by the Choreographer's
+# post-verb hook — i_am_done / unclaim / i_am_idle / pass_review / fail_review
+# / i_documented — instead of only at container removal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_release_sandbox_no_cache_entry_is_fast_noop() -> None:
+    """The overwhelmingly common case: no sandbox for this agent. Must not
+    take the per-agent lock or call docker — the cache dict check alone
+    decides, before any lock is even allocated."""
+    orch, sandbox = _make_orchestrator()
+    orch._sandbox_info = {}
+
+    await orch.release_sandbox("dev-1")
+
+    sandbox.teardown.assert_not_called()
+    assert not hasattr(orch, "_sandbox_locks")
+
+
+@pytest.mark.asyncio
+async def test_release_sandbox_tears_down_and_evicts_cache() -> None:
+    orch, sandbox = _make_orchestrator()
+    orch._sandbox_info = {"dev-1": MagicMock(), "dev-2": MagicMock()}
+
+    await orch.release_sandbox("dev-1")
+
+    sandbox.teardown.assert_awaited_once_with("dev-1")
+    assert "dev-1" not in orch._sandbox_info
+    assert "dev-2" in orch._sandbox_info
+
+
+@pytest.mark.asyncio
+async def test_release_sandbox_is_idempotent() -> None:
+    """A second release for the same slug (e.g. unclaim right after
+    i_am_idle) is a no-op — the first call already evicted the cache."""
+    orch, sandbox = _make_orchestrator()
+    orch._sandbox_info = {"dev-1": MagicMock()}
+
+    await orch.release_sandbox("dev-1")
+    await orch.release_sandbox("dev-1")
+
+    sandbox.teardown.assert_awaited_once_with("dev-1")

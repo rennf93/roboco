@@ -674,6 +674,31 @@ class Choreographer:
             logger.warning("audit.log_event failed", error=str(exc), verb=verb)
         return env
 
+    async def _teardown_sandbox_best_effort(self, agent_id: UUID) -> None:
+        """Release the caller's request_sandbox sidecar on successful exit.
+
+        Called from the six verbs whose success means the caller's
+        engagement with its work has ended (i_am_done, unclaim, i_am_idle,
+        pass_review/fail_review, i_documented) — no shared success-emit
+        path spans all six (they live across three mixin files, each
+        building its own ``Envelope.ok`` at its own site), so this is
+        called once at each verb's existing success point rather than
+        duplicated teardown logic. No orchestrator (e2e harness, startup)
+        is a silent no-op; any other failure is logged, never raised —
+        the container-removal teardown + janitor sweep remain the backstop.
+        """
+        orch = self.orchestrator
+        if orch is None:
+            return
+        from roboco.agents_config import _resolve_to_slug
+
+        try:
+            await orch.release_sandbox(_resolve_to_slug(str(agent_id)))
+        except Exception as exc:
+            logger.warning(
+                "sandbox_release_failed", agent_id=str(agent_id), error=str(exc)
+            )
+
     @classmethod
     def _free_text_soup(
         cls, checks: tuple[tuple[str, Any, int], ...]
@@ -2958,6 +2983,7 @@ class Choreographer:
         )
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -3544,6 +3570,7 @@ class Choreographer:
         # Deliberately no _touch — unclaim clears assigned_to, so there is
         # no claimant heartbeat to refresh. (Asymmetric with `resume` by
         # design: resume keeps the same claimant active and does heartbeat.)
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
@@ -4003,6 +4030,10 @@ class Choreographer:
             )
         else:
             next_msg = "container will shut down"
+        # The agent truly disengages here (container shuts down) — unlike
+        # the idle_with_unread early return above, which sends it right
+        # back to work, so no teardown fires there.
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status="idle",
             task_id=None,

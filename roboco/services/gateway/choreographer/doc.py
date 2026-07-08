@@ -543,6 +543,7 @@ class DocMixin(_Base):
                 f"Docs-complete transition committed but the PM handoff "
                 f"failed ({exc}). Re-issue the notification via dm."
             )
+        await self._teardown_sandbox_best_effort(doc_agent_id)
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

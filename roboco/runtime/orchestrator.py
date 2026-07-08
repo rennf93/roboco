@@ -2298,6 +2298,35 @@ class AgentOrchestrator:
             self._sandbox_info[agent_slug] = info
             return info
 
+    async def release_sandbox(self, agent_slug: str) -> None:
+        """Best-effort teardown at the end of the caller's task engagement.
+
+        Called by the Choreographer's post-verb hook (i_am_done, unclaim,
+        i_am_idle, pass_review/fail_review, i_documented) so a
+        `request_sandbox`-provisioned sidecar doesn't outlive the work
+        that asked for it, instead of only dying with the agent container.
+        Idempotent and never raises (`SandboxProvisioner.teardown`'s own
+        contract) — the container-removal teardown + janitor sweep remain
+        the backstop.
+
+        The overwhelmingly common call has no sandbox at all, so the cache
+        dict is checked BEFORE taking the per-agent lock or touching
+        docker — the fast path is a single dict lookup, no lock, no
+        subprocess.
+        """
+        if agent_slug not in self._sandbox_info:
+            return
+        locks = getattr(self, "_sandbox_locks", None)
+        if locks is None:
+            locks = {}
+            self._sandbox_locks = locks
+        lock = locks.setdefault(agent_slug, asyncio.Lock())
+        async with lock:
+            if agent_slug not in self._sandbox_info:
+                return
+            await self._sandbox.teardown(agent_slug)
+            self._sandbox_info.pop(agent_slug, None)
+
     async def _launch_spawn(
         self,
         task_id: str | None,
