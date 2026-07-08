@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { releaseApi } from "@/lib/api";
 import type { ReleaseExecuteResult } from "@/lib/api/release";
@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { CheckCircle2, XCircle, Rocket, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import { usePageRefresh } from "@/hooks";
 
 const _MIN_REJECT_CHARS = 10;
 
@@ -55,6 +56,16 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     queryFn: () => releaseApi.getProposal(),
     refetchInterval: 30000,
   });
+
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   const approveMutation = useMutation({
     mutationFn: () => releaseApi.approve(),
@@ -137,11 +148,6 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             {error instanceof Error ? `: ${error.message}` : ""}.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            Retry
-          </Button>
-        </CardContent>
       </Card>
     );
   }

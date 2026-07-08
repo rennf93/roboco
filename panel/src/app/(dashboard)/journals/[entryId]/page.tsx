@@ -1,7 +1,8 @@
 "use client";
 
-import { use } from "react";
+import { use, useEffect } from "react";
 import { useJournalEntry } from "@/hooks/use-journals";
+import { usePageRefresh } from "@/hooks";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +12,6 @@ import { EntryTypeBadge } from "@/components/journals/entry-type-badge";
 import {
   ArrowLeft,
   AlertTriangle,
-  RefreshCw,
   Clock,
   Tag,
   Link2,
@@ -38,6 +38,16 @@ function formatFullDate(timestamp: string): string {
 export default function JournalEntryPage({ params }: JournalEntryPageProps) {
   const { entryId } = use(params);
   const { data: entry, isLoading, error, refetch } = useJournalEntry(entryId);
+
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   // Loading state
   if (isLoading) {
@@ -77,10 +87,6 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                   "The journal entry you're looking for doesn't exist or has been deleted."}
               </p>
               <div className="flex justify-center gap-4">
-                <Button variant="outline" onClick={() => refetch()}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Retry
-                </Button>
                 <Link href="/journals" prefetch={false}>
                   <Button>View All Journals</Button>
                 </Link>

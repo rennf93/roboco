@@ -5,7 +5,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { ThemeProvider } from "next-themes";
 import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
-import { PageRefreshProvider } from "@/components/page-refresh-provider";
+import { PageRefreshProvider } from "@/components/providers";
 import { useAgentRosterSync } from "@/hooks/use-agents";
 
 // Keeps the agent display-name resolver (agent-utils) in sync with the live
