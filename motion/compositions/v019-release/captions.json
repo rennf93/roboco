@@ -1,0 +1,18 @@
+{
+  "composition_id": "v019-release",
+  "version": "0.19.0",
+  "platforms": {
+    "x": {
+      "caption": "RoboCo v0.19.0 is live. Pluggable sandboxes, a native video engine, the Ponytail build-laziness doctrine, and a closed cloud-auth spoof. See the full notes: roboco.tech #RoboCo #AIEngineering",
+      "char_count": 191,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "RoboCo v0.19.0 is here. We shipped pluggable sandboxes for postgres, redis, and mongo; a native video engine with CEO-approved posting to X and TikTok; Ponytail, the build-laziness doctrine now guiding the whole fleet; and a fix for the agent-token 401 class that closed a cloud-auth header-spoof path. Read the full release notes at roboco.tech.\n\n#RoboCo #AIEngineering #ReleaseNotes #v019 #OpenSource #AGPL",
+      "char_count": 408,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}

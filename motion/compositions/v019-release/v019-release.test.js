@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 
 // HTML-structure smoke test for the v019-release composition. Mirrors the
 // release-announcement test contract: dimensions, props.js wiring, theme
-// link, timed clips, and the offline-render constraint (no CDN scripts).
+// link, timed clips, the offline-render constraint (no CDN scripts), plus
+// the design-bar "no em dash in on-screen copy" rule and verifiable captions.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = here;
@@ -50,5 +51,34 @@ describe("v019-release composition", () => {
     // No CDN scripts — the render is offline. Fonts load via @font-face from
     // ../../public/fonts/, never from a CDN.
     expect(html).not.toMatch(/<script[^>]+src="https?:\/\//);
+  });
+
+  it("has no em dashes in on-screen copy", () => {
+    const propsSrc = read("props.js");
+    const vertical = read("vertical.html");
+    const square = read("square.html");
+
+    // Design-bar rule: no em dash in product copy.
+    expect(propsSrc).not.toContain("—");
+    expect(vertical).not.toContain("—");
+    expect(square).not.toContain("—");
+  });
+
+  it("ships captions.json with X and TikTok captions within platform limits", () => {
+    const captionsPath = join(dir, "captions.json");
+    expect(existsSync(captionsPath)).toBe(true);
+
+    const captions = JSON.parse(readFileSync(captionsPath, "utf8"));
+    expect(captions.composition_id).toBe("v019-release");
+    expect(captions.version).toBe("0.19.0");
+
+    for (const platform of ["x", "tiktok"]) {
+      expect(captions.platforms[platform]).toBeDefined();
+      const entry = captions.platforms[platform];
+      expect(typeof entry.caption).toBe("string");
+      expect(entry.caption.length).toBe(entry.char_count);
+      expect(entry.char_count).toBeLessThanOrEqual(entry.limit);
+      expect(entry.within_limit).toBe(true);
+    }
   });
 });
