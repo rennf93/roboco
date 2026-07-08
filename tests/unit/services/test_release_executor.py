@@ -190,17 +190,17 @@ async def test_commit_push_failure_returns_structured_commit_failed() -> None:
 
 @pytest.mark.asyncio
 async def test_publish_failure_returns_structured_publish_failed() -> None:
-    """#88: a RuntimeError from ``gh release create`` (auth/quota/network) becomes
+    """#88: a RuntimeError from the GitHub release POST (auth/quota/network) becomes
     a structured ``publish_failed`` result. The commit is already pushed and CI
-    is green, so the release is half-landed — the CEO can retry ``gh release
+    is green, so the release is half-landed — the CEO can retry the publish
     create`` for the same version (the executor is idempotent on the commit
     side). No 500."""
-    ops = _FakeOps(publish_raises="gh release create failed: forbidden")
+    ops = _FakeOps(publish_raises="release publish failed: HTTP 403: forbidden")
     result = await ReleaseExecutor(ops).execute(_report())
     assert result.status == "publish_failed"
     assert result.commit_sha == "deadbeef"
     assert result.release_url is None
-    assert "gh release create failed" in result.detail
+    assert "release publish failed" in result.detail
     assert ops.calls.count("publish") == _ONE
 
 

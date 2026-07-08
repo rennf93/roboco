@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release manager publish no longer depends on a `gh` binary that was never installed.** `ReleaseExecutor.publish_release` shelled out to `gh release create`, but no image ships the gh CLI — with `ROBOCO_RELEASE_MANAGER_ENABLED` armed, every publish would have died on a missing binary after the release commit was already pushed (verified against the live 0.19.0 orchestrator container). The publish is now a GitHub REST `POST /repos/{owner}/{repo}/releases` authenticated with the project's decrypted token — the same auth + httpx pattern as PR creation — with the same fail-closed semantics (non-201 → structured `publish_failed`, CEO retries; the 300s deadline is now the HTTP client timeout).
+
 ### Changed
 
 - **Leaner agent/orchestrator images (~1.65GB less, cache-stable deploys).** Playwright + its Chromium and system libs are gone from `agent-dev-fe`/`agent-qa-fe` (~770MB each — verified unused repo-wide: panel tests are vitest, the e2e harness is scripted Python; browser-based FE QA is a designed follow-up, and the re-add is two lines scoped to `chromium-headless-shell` in the QA image only). The `agent-grok` image drops a redundant `chown -R` that duplicated the entire 149MB CLI tree into a second layer. The runner-stage `/app` COPY in `agent-base` and `orchestrator` is split `.venv`-first/source-last, so a source-only deploy re-layers ~13MB instead of ~380MB per image, and `agent-base`'s single 813MB apt+node+claude-code RUN is split so a CLI version bump no longer re-downloads the OS/node layer. Hygiene: gitignored `docs/internal/` no longer leaks into the orchestrator image from a working-tree build, and the `uv` helper image is pinned (`0.11`) instead of `:latest`. All four rebuilt images pass runtime probes (claude/git/jq/node/uv/pnpm/grok binaries, `import roboco`, docs/alembic/agents trees present); cache-stability proven by rebuild log (`.venv` layer CACHED across a source-only change).
