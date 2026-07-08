@@ -20,13 +20,59 @@ const DIMENSIONS = {
   square: { width: 1080, height: 1080 },
 };
 
+// Caps the DECOMPRESSED size (a gzip bomb inflates a tiny upload into a huge
+// tar stream); MAX_UPLOAD_BYTES in server.js only bounds the compressed
+// bytes on the wire.
+const MAX_EXTRACTED_BYTES = Number(
+  process.env.MAX_EXTRACTED_BYTES ?? 512 * 1024 * 1024,
+);
+
+/** Thrown when the tar stream's cumulative entry size crosses
+ * MAX_EXTRACTED_BYTES — server.js maps this to a 413. */
+export class ExtractedSizeExceededError extends Error {
+  constructor(maxBytes) {
+    super(`extracted archive exceeds ${maxBytes} byte cap`);
+    this.name = "ExtractedSizeExceededError";
+    this.statusCode = 413;
+  }
+}
+
 async function extractTar(tarBuffer, destDir) {
   await new Promise((resolve, reject) => {
-    const extractor = tar.extract({ cwd: destDir });
+    let extractedBytes = 0;
+    // ponytail: header-declared entry.size, summed per entry via onentry —
+    // not a byte-exact streaming cap, but tar headers carry the true
+    // (post-gunzip) size, so this catches a bomb before most of it lands.
+    const extractor = tar.extract({
+      cwd: destDir,
+      onentry: (entry) => {
+        extractedBytes += entry.size;
+        if (extractedBytes > MAX_EXTRACTED_BYTES) {
+          extractor.destroy(new ExtractedSizeExceededError(MAX_EXTRACTED_BYTES));
+        }
+      },
+    });
     extractor.on("finish", resolve);
     extractor.on("error", reject);
     Readable.from(tarBuffer).pipe(extractor);
   });
+}
+
+// Deliberately under the orchestrator's 600s client-side HTTP timeout, so
+// this fires first and the caller gets a clean error instead of an abandoned
+// connection while Chrome is still wedged server-side.
+const RENDER_TIMEOUT_SECONDS = Number(
+  process.env.RENDER_TIMEOUT_SECONDS ?? 570,
+);
+
+/** Thrown when a render exceeds RENDER_TIMEOUT_SECONDS — server.js maps
+ * this to a 500 and then hard-exits the process (see server.js for why). */
+export class RenderTimeoutError extends Error {
+  constructor(seconds) {
+    super(`render exceeded ${seconds}s timeout`);
+    this.name = "RenderTimeoutError";
+    this.statusCode = 500;
+  }
 }
 
 /** Thrown when the requested orientation's HTML file isn't present in the
@@ -115,17 +161,31 @@ export async function renderComposition({
       height,
       fps: FPS,
     });
+    let timer;
     try {
-      await executeRenderJob(job, (progress) => {
-        console.log(
-          `hyperframes-renderer: ${compositionId}/${orientation} ${Math.round(
-            progress.percent * 100,
-          )}%`,
+      const timeout = new Promise((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new RenderTimeoutError(RENDER_TIMEOUT_SECONDS)),
+          RENDER_TIMEOUT_SECONDS * 1000,
         );
       });
+      await Promise.race([
+        executeRenderJob(job, (progress) => {
+          console.log(
+            `hyperframes-renderer: ${compositionId}/${orientation} ${Math.round(
+              progress.percent * 100,
+            )}%`,
+          );
+        }),
+        timeout,
+      ]);
     } catch (err) {
       await rm(outDir, { recursive: true, force: true }).catch(() => {});
       throw err;
+    } finally {
+      // Clear on both success AND timeout-throw so a completed render never
+      // leaves a dangling timer that fires the watchdog's exit path late.
+      clearTimeout(timer);
     }
 
     return {

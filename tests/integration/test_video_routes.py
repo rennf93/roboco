@@ -460,9 +460,10 @@ async def test_reject_cancels_and_records_reason(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     task = await _seed_draft(db_session)
-    resp = await ceo_client.post(
-        f"/api/video/posts/{task.id}/reject", json={"reason": "Not our voice"}
-    )
+    with _LOCKED[0], _LOCKED[1]:
+        resp = await ceo_client.post(
+            f"/api/video/posts/{task.id}/reject", json={"reason": "Not our voice"}
+        )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()["reject_reason"] == "Not our voice"
     refreshed = await db_session.get(TaskTable, task.id)

@@ -1304,6 +1304,18 @@ class Settings(BaseSettings):
             "legitimate verbs are unaffected."
         ),
     )
+    flow_verb_slow_timeout_seconds: int = Field(
+        default=900,
+        ge=1,
+        description=(
+            "Server-side timeout for the slow flow verbs (i_am_done, "
+            "submit_up, submit_root, open_pr) — a git push plus a "
+            "per-command-budgeted quality gate, or a multi-step PR-create "
+            "chain, routinely exceeds flow_verb_timeout_seconds. "
+            "FlowVerbTimeoutMiddleware picks this budget for those verbs by "
+            "request path instead of the default."
+        ),
+    )
     git_commit_timeout_seconds: int = Field(
         default=180,
         ge=30,

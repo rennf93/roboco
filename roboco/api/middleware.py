@@ -30,6 +30,7 @@ from roboco.exceptions import (
     RobocoError,
     ValidationError,
 )
+from roboco.foundation.policy.flow_timeouts import SLOW_VERBS as _SLOW_VERBS
 from roboco.services.base import (
     ConflictError as ServiceConflictError,
 )
@@ -504,6 +505,13 @@ class FlowVerbTimeoutMiddleware:
 
     Reads (``evidence``) and journal writes (``note``) don't touch the task
     row, so they are unaffected; only task-row writes route through ``claim``.
+
+    ``_SLOW_VERBS`` (from ``roboco.foundation.policy.flow_timeouts`` — git
+    push + quality gate, a multi-step PR-create chain, workspace clone, or
+    planning writes) get the longer ``flow_verb_slow_timeout_seconds`` budget
+    instead of the default — routine calls to those verbs otherwise exceed
+    120s. The same set drives the agent-side MCP client's timeout
+    (``roboco/mcp/flow_server.py``) so the two walls can't drift apart.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -513,7 +521,12 @@ class FlowVerbTimeoutMiddleware:
         if scope["type"] != "http" or not scope["path"].startswith("/api/v1/flow/"):
             await self.app(scope, receive, send)
             return
-        timeout = settings.flow_verb_timeout_seconds
+        verb = scope["path"].rstrip("/").rsplit("/", 1)[-1]
+        timeout = (
+            settings.flow_verb_slow_timeout_seconds
+            if verb in _SLOW_VERBS
+            else settings.flow_verb_timeout_seconds
+        )
         started = False
 
         async def send_wrapper(message: Any) -> None:

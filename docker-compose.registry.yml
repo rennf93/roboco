@@ -126,11 +126,16 @@ services:
     image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-video-renderer:${ROBOCO_VERSION:-latest}
     container_name: roboco-video-renderer
     restart: unless-stopped
+    # Isolated sidecar network: headless Chrome here executes
+    # agent-authored composition HTML/JS. Only the orchestrator (also
+    # homed on `render`) can reach it; it can reach nothing else.
     networks:
-      - default
+      - render
     # Chrome headless rendering can crash under Docker's default 64MB
     # /dev/shm ("Chrome crashed"); give it real shared memory.
     shm_size: "1gb"
+    mem_limit: "2g"
+    cpus: 2
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -221,10 +226,12 @@ services:
     container_name: roboco-orchestrator
     restart: unless-stopped
     # Multi-homed: the agent mesh (default) for spawned agents / panel /
-    # ollama, plus the data network for postgres/redis.
+    # ollama, the data network for postgres/redis, plus render to reach the
+    # isolated video-renderer sidecar.
     networks:
       - default
       - data
+      - render
     ports:
       - "8000:8000"
     environment:
@@ -373,3 +380,9 @@ networks:
   # ports keep working.
   data:
     name: roboco_data
+  # Sidecar isolation: video-renderer executes agent-authored composition
+  # HTML/JS in headless Chrome. It lives ONLY here, reachable only by the
+  # orchestrator (multi-homed onto this network too); it can reach nothing
+  # else on roboco_default or roboco_data.
+  render:
+    name: roboco_render

@@ -10,7 +10,12 @@ import express from "express";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { createReadStream } from "node:fs";
-import { renderComposition, UnknownCompositionError } from "./render.js";
+import {
+  renderComposition,
+  ExtractedSizeExceededError,
+  RenderTimeoutError,
+  UnknownCompositionError,
+} from "./render.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -123,8 +128,22 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
     });
     stream.pipe(res);
   } catch (err) {
-    if (err instanceof UnknownCompositionError) {
+    if (
+      err instanceof UnknownCompositionError ||
+      err instanceof ExtractedSizeExceededError
+    ) {
       res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+    if (err instanceof RenderTimeoutError) {
+      console.error("video-renderer: render timed out", err.message);
+      res.status(500).json({ error: err.message });
+      // ponytail: Promise.race in render.js abandons the wait but can't
+      // cancel a wedged headless-Chrome render tree — hard-exiting this
+      // process is the only reliable kill. Docker's restart policy brings
+      // up a clean container; wait for the response to flush first so the
+      // caller still gets the 500 instead of a dropped connection.
+      res.on("finish", () => process.exit(1));
       return;
     }
     const message = err instanceof Error ? err.message : String(err);

@@ -212,9 +212,11 @@ def test_flow_verb_holds_lock_when_timeout_disarmed(
     _patch_hang_in_set_plan(monkeypatch)
 
     # Prime the per-agent flow_server reload with a no-op verb (i_am_idle
-    # touches no task). The reload resets module globals (_TIMEOUT=30), so a
-    # pre-call patch would be clobbered; after this call the module is
-    # pinned to this agent and the patch below survives.
+    # touches no task). The reload resets module globals (the env-derived
+    # _TIMEOUT), so a pre-call patch would be clobbered; after this call the
+    # module is pinned to this agent and the patch below survives.
+    # i_will_plan is a default-budget verb (not in SLOW_VERBS), so the
+    # client selects _TIMEOUT for it.
     main_pm.flow("i_am_idle")
     monkeypatch.setattr(flow_server, "_TIMEOUT", _MCP_CLIENT_TIMEOUT_SECONDS)
 

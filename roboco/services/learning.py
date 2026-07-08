@@ -323,6 +323,11 @@ class LearningPropagationService:
         # One bulk INSERT — replaces N sequential _create_notification calls
         # each opening their own session/transaction (pool pressure).
         # id set explicitly so delivery can address each row by UUID.
+        # This bypasses NotificationService's dedup guards (_duplicate_unacked_exists
+        # + the delivery-side coalesce) entirely — safe only because KNOWLEDGE_SHARE
+        # is exempt from both (ACK_REQUIRED_BY_TYPE[KNOWLEDGE_SHARE]=False: one-shot,
+        # not ack-required). Reclassifying KNOWLEDGE_SHARE as ack-required must
+        # revisit this path or dedup silently stops applying to it.
         notification_ids = [uuid4() for _ in agents]
         rows = [
             {

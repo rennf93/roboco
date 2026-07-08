@@ -3150,6 +3150,14 @@ class AgentOrchestrator:
             "ROBOCO_ORCHESTRATOR_URL": api_url,
             "ROBOCO_AGENT_ID": agent_uuid,
             "ROBOCO_AGENT_ROLE": agent_role,
+            # Mirrors the server-side FlowVerbTimeoutMiddleware budgets so the
+            # roboco-flow MCP client's per-verb timeout (flow_server.py, which
+            # can't read Settings directly) stays coherent with operator
+            # tuning of either setting.
+            "ROBOCO_FLOW_VERB_TIMEOUT_SECONDS": str(settings.flow_verb_timeout_seconds),
+            "ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS": str(
+                settings.flow_verb_slow_timeout_seconds
+            ),
             # Every MCP server is launched as `uv run python -m
             # roboco.mcp.<server>` by Claude Code, with cwd = the agent's
             # WORKSPACE (not /app). Without this, `uv run` resolves a
@@ -7800,6 +7808,32 @@ Start by:
                 attempts=attempts,
                 terminal=terminal,
                 error=str(exc),
+            )
+            if terminal:
+                await self._notify_video_render_failure(task, str(exc))
+
+    async def _notify_video_render_failure(self, task: Any, last_error: str) -> None:
+        """Send one CEO alert that a video render exhausted its retries.
+
+        Best-effort, mirroring ``_notify_strategy_engine_failure`` — a
+        notification-send failure must never raise out of the render loop.
+        """
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="ceo",
+                body=(
+                    f"[video engine] render terminally failed for task "
+                    f"{task.title!r} ({_MAX_VIDEO_RENDER_ATTEMPTS} attempts "
+                    f"exhausted): {last_error}"
+                ),
+                task_id=task.id,
+            )
+        except Exception:
+            logger.exception(
+                "video-render failure-notify dropped", task_id=str(task.id)
             )
 
     async def _render_both_cuts(

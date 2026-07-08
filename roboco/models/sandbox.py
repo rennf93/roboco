@@ -169,7 +169,7 @@ class _RedisEngine(SandboxEngine):
 
 class _MongoEngine(SandboxEngine):
     name = "mongo"
-    image = "mongo:8-alpine"
+    image = "mongo:8"
     container_port = 27017
     ready_deadline = 60.0
     tmpfs = ("/data/db",)
@@ -181,8 +181,6 @@ class _MongoEngine(SandboxEngine):
             "MONGO_INITDB_ROOT_USERNAME=sandbox",
             "-e",
             f"MONGO_INITDB_ROOT_PASSWORD={password}",
-            "-e",
-            "MONGO_INITDB_DATABASE=sandbox",
         ]
 
     def run_command(self, _password: str) -> list[str]:

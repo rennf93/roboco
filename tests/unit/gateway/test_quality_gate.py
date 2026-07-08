@@ -5,9 +5,10 @@ i_am_done, blocking a red submit before it reaches QA. Full tests stay on CI.
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
     import pathlib
@@ -126,6 +127,40 @@ async def test_run_one_reaps_killed_timeout_process(
     assert rc == _TIMEOUT_EXIT_CODE
     fake_proc.kill.assert_called_once()
     fake_proc.wait.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_one_kills_child_on_outer_cancellation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An outer cancellation (e.g. FlowVerbTimeoutMiddleware's own
+    asyncio.timeout firing around the whole i_am_done submit) throws
+    CancelledError into the wait_for, bypassing the TimeoutError handler
+    above. Without a dedicated handler the child is orphaned and keeps
+    running past the cancelled request; _run_one must kill + reap it and
+    re-raise.
+    """
+    real_create_subprocess_shell = asyncio.create_subprocess_shell
+    spawned: dict[str, asyncio.subprocess.Process] = {}
+
+    async def _capturing_create(*args: Any, **kwargs: Any) -> Any:
+        proc = await real_create_subprocess_shell(*args, **kwargs)
+        spawned["proc"] = proc
+        return proc
+
+    with patch.object(asyncio, "create_subprocess_shell", _capturing_create):
+        task = asyncio.ensure_future(quality_gate._run_one(tmp_path, "sleep 30"))
+        while "proc" not in spawned:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)  # let the shell actually exec sleep
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    proc = spawned["proc"]
+    assert proc.returncode is not None, "child was not reaped after cancellation"
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)
 
 
 # --- GitService command selection -------------------------------------------
