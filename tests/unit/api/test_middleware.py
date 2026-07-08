@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from http import HTTPStatus
-from typing import Any
+from typing import Annotated, Any
 
 # UUID annotates a Pydantic model field below, so it must stay a runtime import
 # (Pydantic resolves the annotation when building the model) despite `from
 # __future__ import annotations` making it look type-checking-only to ruff.
 from uuid import UUID  # noqa: TC003
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, field_validator
 from roboco.api.middleware import (
+    DbCommitMiddleware,
     _uuid_field_remediation,
     get_status_code,
     setup_middleware,
@@ -469,3 +471,156 @@ def test_flow_verb_timeout_slow_verb_uses_slow_budget(monkeypatch: Any) -> None:
     response = client.post("/api/v1/flow/developer/i_am_done")
     assert response.status_code == HTTPStatus.OK
     assert response.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# DbCommitMiddleware — commits the request's DB session before the response
+# reaches the client. Reproduces the race: FastAPI sends the response before
+# a Depends(get_db)-with-yield dependency's post-yield commit runs.
+# ---------------------------------------------------------------------------
+
+
+class _OrderedSession:
+    """get_db-style fake session for ordering assertions.
+
+    Exposes ``in_transaction()`` / ``commit()`` / ``rollback()`` like the real
+    ``AsyncSession`` the middleware drives, recording call order in a shared
+    list so a test can assert the commit happens before the wire send.
+    """
+
+    def __init__(self, order: list[str], fail_commit: bool = False) -> None:
+        self._order = order
+        self._fail_commit = fail_commit
+        self._txn = True
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit")
+        if self._fail_commit:
+            raise RuntimeError("commit failed")
+        self._txn = False
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+
+async def _fake_get_db(request: Request) -> Any:
+    """Module-level get_db-style dependency: stash the session on
+    request.state, yield, commit post-yield as the fallback — the exact
+    shape ``roboco.db.base.get_db`` uses and ``DbCommitMiddleware`` targets.
+
+    Reads its order-list/fail-flag from ``request.app.state`` rather than a
+    closure: ``Annotated[Any, Depends(...)]`` is stringified by this file's
+    ``from __future__ import annotations``, and ``typing.get_type_hints``
+    only resolves names from the function's module globals — a local
+    closure name would raise, silently downgrading the parameter to a plain
+    query param instead of a dependency.
+    """
+    order: list[str] = request.app.state.db_commit_order
+    session = _OrderedSession(order, fail_commit=request.app.state.db_commit_fail)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_db_commit_app(order: list[str], fail_commit: bool = False) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+    app.state.db_commit_fail = fail_commit
+
+    @app.post("/write")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db)]) -> Any:
+        order.append("route_body")
+        return {"ok": True}
+
+    setup_middleware(app)
+    return app
+
+
+def _instrumented_transport(app: FastAPI, order: list[str]) -> httpx.ASGITransport:
+    """Wraps ``app`` so 'wire_response_start' marks the instant bytes would
+    leave the server — the outermost observation point, past every
+    middleware including DbCommitMiddleware. ``raise_app_exceptions=False``
+    lets the failing-commit test inspect the resulting 5xx response instead
+    of the exception ServerErrorMiddleware always re-raises after sending it."""
+
+    async def outer(scope: Any, receive: Any, send: Any) -> None:
+        async def capture(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                order.append("wire_response_start")
+            await send(message)
+
+        await app(scope, receive, capture)
+
+    return httpx.ASGITransport(app=outer, raise_app_exceptions=False)
+
+
+async def test_db_commit_middleware_commits_before_response_reaches_client() -> None:
+    """The client only sees the response after the session commits — proving
+    the middleware, not get_db's post-yield fallback (which FastAPI's own
+    routing runs AFTER the response is already on the wire), commits in time."""
+    order: list[str] = []
+    app = _make_db_commit_app(order)
+    transport = _instrumented_transport(app, order)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/write")
+    assert response.status_code == HTTPStatus.OK
+    assert "commit" in order
+    assert "wire_response_start" in order
+    assert order.index("commit") < order.index("wire_response_start"), order
+
+
+async def test_db_commit_middleware_failing_commit_returns_5xx_not_200() -> None:
+    """A commit that fails after the route succeeded must not report 200 —
+    the response hasn't reached the wire yet, so it comes back as a 5xx."""
+    order: list[str] = []
+    app = _make_db_commit_app(order, fail_commit=True)
+    transport = _instrumented_transport(app, order)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/write")
+    assert response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+    assert "commit" in order
+
+
+async def test_db_commit_middleware_skips_non_http_scope() -> None:
+    """Websocket (and any non-http) scope passes straight through untouched —
+    no send wrapping, no state lookup."""
+    calls: list[dict[str, Any]] = []
+
+    async def inner_app(scope: Any, _receive: Any, _send: Any) -> None:
+        calls.append(scope)
+
+    middleware = DbCommitMiddleware(inner_app)
+    scope = {"type": "websocket"}
+
+    async def receive() -> dict[str, Any]:
+        return {}
+
+    async def send(_message: Any) -> None:
+        raise AssertionError("send should not be called for a websocket scope")
+
+    await middleware(scope, receive, send)
+    assert calls == [scope]
+
+
+def test_db_commit_middleware_passes_through_session_less_request() -> None:
+    """A request whose route never installs a get_db-style dependency (no
+    request.state.db_session stashed) reaches the client unmodified."""
+    app = FastAPI()
+
+    @app.get("/plain")
+    async def _plain() -> Any:
+        return {"ok": True}
+
+    setup_middleware(app)
+    client = TestClient(app)
+    response = client.get("/plain")
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"ok": True}

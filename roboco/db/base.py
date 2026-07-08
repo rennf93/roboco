@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 import structlog
 from alembic import command
 from alembic.config import Config
+from fastapi import Depends, Request
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -82,6 +84,13 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         @router.get("/items")
         async def get_items(db: AsyncSession = Depends(get_db)):
             ...
+
+    Also called directly (no ``Depends``, outside HTTP request scope) by
+    ``websocket.py`` and a couple of read-only helpers — keep this signature
+    free of any required/HTTP-only parameter. For a request-scoped route that
+    wants its commit to land BEFORE the response reaches the client, depend
+    on ``get_db_committed`` instead (``roboco.api.deps.DbSession`` — the one
+    place every route already goes through — already does).
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -96,6 +105,34 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
             # lock. Roll back on cancellation too so the lock releases.
             await session.rollback()
             raise
+
+
+async def get_db_committed(
+    request: Request, db: Annotated[AsyncSession, Depends(get_db)]
+) -> AsyncGenerator[AsyncSession]:
+    """FastAPI-only wrapper around ``get_db``: stashes the live session on
+    ``request.state.db_session`` so ``DbCommitMiddleware``
+    (``roboco/api/middleware.py``) can commit it BEFORE the response reaches
+    the client.
+
+    FastAPI resolves ``Depends(get_db)`` on the request-scoped exit stack, and
+    its routing sends the response to the client BEFORE that stack unwinds —
+    so ``get_db``'s post-yield ``commit()`` used to land after a 200 already
+    went out.
+
+    This is a separate function rather than a ``request`` parameter added to
+    ``get_db`` itself: FastAPI only special-cases a dependency parameter
+    typed exactly ``Request`` (``lenient_issubclass`` in
+    ``fastapi/dependencies/utils.py``) — a ``Request | None`` union is NOT
+    special-cased and instead gets validated as a Pydantic response field,
+    which crashes route registration outright (``Request`` isn't a valid
+    Pydantic field type). ``get_db`` is also called directly with no request
+    in scope, so its signature has to stay request-free; this wrapper is the
+    request-scoped variant, resolved once per request (FastAPI dependency
+    caching) so ``db`` here is the exact same session ``get_db`` yields.
+    """
+    request.state.db_session = db
+    yield db
 
 
 @asynccontextmanager

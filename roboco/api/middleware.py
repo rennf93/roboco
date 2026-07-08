@@ -478,10 +478,16 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_exception_handler(Exception, generic_exception_handler)
 
     # Middleware (added in reverse order due to LIFO): the LAST add_middleware
-    # call is the OUTERMOST. FlowVerbTimeoutMiddleware is added FIRST so it is
-    # the INNERMOST — closest to the routes — meaning correlation + logging
-    # still wrap the 504 it returns, AND its asyncio.timeout cancels the route
-    # coroutine + its get_db dependency directly (same task, reliable cancel).
+    # call is the OUTERMOST. DbCommitMiddleware is added FIRST so it is the
+    # INNERMOST of all four — closest to the routes, right next to CORS —
+    # and, critically, INSIDE FlowVerbTimeoutMiddleware: a hanging commit on a
+    # flow-verb request stays bounded by Flow's asyncio.timeout, and Flow's
+    # own synthesized 504 (sent via its own upstream `send`, never re-entering
+    # `self.app`) never reaches DbCommitMiddleware at all. FlowVerbTimeoutMiddleware
+    # is added next so correlation + logging still wrap the 504 it returns,
+    # AND its asyncio.timeout cancels the route coroutine + its get_db
+    # dependency directly (same task, reliable cancel).
+    app.add_middleware(DbCommitMiddleware)
     app.add_middleware(FlowVerbTimeoutMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
@@ -577,3 +583,62 @@ class FlowVerbTimeoutMiddleware:
                 # Client may have already disconnected (the original trigger);
                 # the lock is released regardless. Nothing to do.
                 pass
+
+
+class DbCommitMiddleware:
+    """Commits the request's DB session before the response reaches the client.
+
+    FastAPI resolves ``Depends(get_db)`` on the request-scoped ``AsyncExitStack``
+    and sends the response (``fastapi/routing.py``'s ``request_response``,
+    ``await response(scope, receive, send)``) BEFORE that stack unwinds and
+    runs ``get_db``'s post-yield ``await session.commit()``. So every write
+    endpoint that relies on it returns 200 while its commit is still pending —
+    a follow-up request (or a fresh connection) can read pre-commit state —
+    and a commit that later FAILS leaves the client told "ok" with nothing
+    persisted.
+
+    ``get_db_committed`` (``roboco/db/base.py`` — the ``roboco.api.deps.DbSession``
+    target every route depends on) stashes the live session on
+    ``request.state.db_session`` before yielding. This middleware wraps
+    ``send``: on the FIRST ``http.response.start`` it commits that session
+    BEFORE forwarding the event, so the client only ever sees the response
+    after the commit lands. A commit failure rolls back and re-raises — the
+    response hasn't started, so the surrounding exception-handling machinery
+    (FastAPI's handlers / Starlette's ``ServerErrorMiddleware``) turns it into
+    a clean 500 instead of the silent post-200 loss. ``session.in_transaction()``
+    makes the check idempotent and skips the exception path for free: an
+    exception rolls back (and closes) the session inside ``get_db`` before
+    its error response is built, so by the time THAT response's
+    ``http.response.start`` reaches here there is no open transaction left
+    to commit.
+
+    Added INSIDE (closer to the routes than) ``FlowVerbTimeoutMiddleware`` —
+    see ``setup_middleware`` — so a hanging commit on a flow-verb request
+    stays bounded by Flow's ``asyncio.timeout``, and Flow's own synthesized
+    504 (sent via its own upstream ``send``, never re-entering ``self.app``)
+    never reaches this middleware. A request cancelled by that timeout never
+    produces ``http.response.start`` either, so this middleware is inert on
+    that path — ``get_db``'s own rollback (the #326 CancelledError path) is
+    unaffected.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                session = scope.get("state", {}).get("db_session")
+                if session is not None and session.in_transaction():
+                    try:
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        raise
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
