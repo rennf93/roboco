@@ -48,7 +48,7 @@ describe("v019-release composition", () => {
     // At least one timed clip element.
     expect(html).toMatch(/class="[^"]*clip[^"]*"/);
 
-    // No CDN scripts — the render is offline. Fonts load via @font-face from
+    // No CDN scripts - the render is offline. Fonts load via @font-face from
     // ../../public/fonts/, never from a CDN.
     expect(html).not.toMatch(/<script[^>]+src="https?:\/\//);
   });
@@ -80,5 +80,10 @@ describe("v019-release composition", () => {
       expect(entry.char_count).toBeLessThanOrEqual(entry.limit);
       expect(entry.within_limit).toBe(true);
     }
+  });
+
+  it("does not commit an npm package-lock.json in the pnpm-managed motion package", () => {
+    const lockfilePath = join(dir, "..", "..", "package-lock.json");
+    expect(existsSync(lockfilePath)).toBe(false);
   });
 });

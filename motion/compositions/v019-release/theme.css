@@ -54,7 +54,7 @@ html, body {
   background: var(--color-ink);
 }
 
-/* Scan line — the one continuous ambient motion. */
+/* Scan line - the one continuous ambient motion. */
 .scan {
   position: absolute;
   left: 84px;
