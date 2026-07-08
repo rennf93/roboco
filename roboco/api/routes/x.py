@@ -5,7 +5,7 @@ credentials. CEO-only throughout. Nothing here posts except an explicit
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.x import (
@@ -15,6 +15,7 @@ from roboco.api.schemas.x import (
     XMentionRefModel,
     XPostApproveRequest,
     XPostExecuteResponse,
+    XPostHistoryResponse,
     XPostRejectRequest,
     XPostResponse,
 )
@@ -67,6 +68,38 @@ async def list_x_posts(
     _require_ceo(agent)
     tasks = await get_x_post_service(db).list_open_posts()
     return [_to_response(t) for t in tasks]
+
+
+def _to_history_response(task: "TaskTable") -> XPostHistoryResponse:
+    body = markers.get_x_draft_body(task) or task.description or ""
+    mention = markers.get_x_mention_ref(task)
+    feature = markers.get_x_feature_ref(task)
+    return XPostHistoryResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=_status_value(task),
+        body=body,
+        char_count=len(body),
+        release_version=markers.get_x_release_version(task),
+        mention=XMentionRefModel(**mention) if mention else None,
+        feature=XFeatureRefModel(**feature) if feature else None,
+        tweet_id=markers.get_x_posted_tweet_id(task),
+        reject_reason=markers.get_x_reject_reason(task),
+        acted_at=task.updated_at or task.created_at,
+    )
+
+
+@router.get("/posts/history", response_model=list[XPostHistoryResponse])
+async def list_x_post_history(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[XPostHistoryResponse]:
+    """Posted or rejected X drafts, newest-acted-first, bounded by `limit`."""
+    _require_ceo(agent)
+    tasks = await get_x_post_service(db).list_post_history(limit=limit)
+    return [_to_history_response(t) for t in tasks]
 
 
 @router.post("/posts/{task_id}/approve", response_model=XPostExecuteResponse)

@@ -374,7 +374,8 @@ function RequestVideoDialog({
 // CEO queue for held video_post drafts (rendered clips from release/
 // spotlight/on-demand triggers). Hidden while loading; shows an empty-state
 // card (with the on-demand request action) when there are no drafts yet —
-// mirrors XPostQueue.
+// mirrors XPostQueue. Posted/rejected drafts move to the unified history on
+// /social (SocialHistorySection).
 export function VideoPostQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<VideoPost | null>(null);
