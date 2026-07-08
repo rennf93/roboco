@@ -500,12 +500,66 @@ async def test_approve_unknown_task_returns_none(db_session: AsyncSession) -> No
 @pytest.mark.asyncio
 async def test_reject_records_reason_and_cancels(db_session: AsyncSession) -> None:
     task = await _seed_video_post(db_session)
-    updated = await _svc(
-        db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
-    ).reject(_id(task), "Doesn't match the release")
+    with _LOCKED[0], _LOCKED[1]:
+        updated = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
     assert updated is not None
     assert updated.status == TS.CANCELLED
     assert markers.get_video_reject_reason(updated) == "Doesn't match the release"
+
+
+@pytest.mark.asyncio
+async def test_reject_takes_the_same_lock_approve_holds(
+    db_session: AsyncSession,
+) -> None:
+    """A reject under the real acquire/release path still lands (mirrors the
+    approve happy-path locking) — proves the mutex round-trip, not just the
+    mutation."""
+    task = await _seed_video_post(db_session)
+    with _LOCKED[0], _LOCKED[1]:
+        updated = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+    _LOCKED[0].new.assert_awaited()
+    _LOCKED[1].new.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reject_concurrent_lock_held_refuses(db_session: AsyncSession) -> None:
+    """A reject arriving while a concurrent approve holds the lock must not
+    cancel a draft that may be mid-post — same refusal as approve's own
+    already-in-progress case."""
+    task = await _seed_video_post(db_session)
+    with patch.object(HeartbeatMutex, "acquire", AsyncMock(return_value=None)):
+        result = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
+    assert result is None
+    await db_session.refresh(task)
+    assert task.status == TS.PENDING  # never cancelled while the lock was held
+
+
+@pytest.mark.asyncio
+async def test_reject_redis_unavailable_refuses(db_session: AsyncSession) -> None:
+    """Reject fails CLOSED when Redis is unreachable, mirroring approve: an
+    approve that took the lock while Redis was up stays authoritative through
+    the heartbeat grace window after Redis drops, so an unlocked reject could
+    CANCEL a draft that approve is mid-posting. The CEO retries once Redis is
+    back."""
+    task = await _seed_video_post(db_session)
+    broken = MagicMock()
+    broken.set = AsyncMock(side_effect=ConnectionError("redis down"))
+    broken.aclose = AsyncMock()
+    with patch("roboco.services.heartbeat_mutex.redis.from_url", return_value=broken):
+        result = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
+    assert result is None
+    await db_session.refresh(task)
+    assert task.status == TS.PENDING  # never cancelled without the mutex
 
 
 @pytest.mark.asyncio
@@ -515,7 +569,8 @@ async def test_list_held_video_posts_excludes_terminal(
     open_task = await _seed_video_post(db_session)
     rejected_task = await _seed_video_post(db_session)
     svc = _svc(db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster())
-    await svc.reject(_id(rejected_task), "not relevant")
+    with _LOCKED[0], _LOCKED[1]:
+        await svc.reject(_id(rejected_task), "not relevant")
     held = await svc.list_held_video_posts()
     ids = {t.id for t in held}
     assert open_task.id in ids

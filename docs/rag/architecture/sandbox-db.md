@@ -12,7 +12,7 @@ The service set is a **pluggable engine registry**, not a hardcoded postgres+red
 
 - `_PostgresEngine` — `postgres:16-alpine`, tmpfs `/var/lib/postgresql/data`, `pg_isready` probe (60s), env `ROBOCO_TEST_DB_*` (incl. `ROBOCO_TEST_DB_ADMIN_DB`).
 - `_RedisEngine` — `redis:8-alpine`, no tmpfs, `redis-cli -a … ping` probe (15s), env `ROBOCO_TEST_REDIS_*`.
-- `_MongoEngine` — `mongo:8-alpine`, tmpfs `/data/db`, `mongosh` ping against auth db `admin` (60s), env `ROBOCO_TEST_MONGO_*` (incl. `ROBOCO_TEST_MONGO_AUTH_DB=admin`).
+- `_MongoEngine` — `mongo:8` (MongoDB ships no Alpine variant), tmpfs `/data/db`, `mongosh` ping against auth db `admin` (60s), env `ROBOCO_TEST_MONGO_*` (incl. `ROBOCO_TEST_MONGO_AUTH_DB=admin`).
 
 `SANDBOX_ENGINES: dict[str, SandboxEngine]` registers them by name; `VALID_SANDBOX_SERVICES = frozenset(SANDBOX_ENGINES)` is the single source of truth the provisioner, the orchestrator's env injection, and `projects.sandbox_services` validation all consult. **Adding an engine is one class + one registry line** — no branch edited in the provisioner or the env emitter, which both iterate the registry.
 

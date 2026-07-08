@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
 from typing import Any
 
@@ -18,6 +19,7 @@ from roboco.api.middleware import (
     get_status_code,
     setup_middleware,
 )
+from roboco.config import settings
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -417,3 +419,53 @@ def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
     assert logged_body["title"] == "visible-title"  # non-secret preserved
     assert logged_body["git_token"] == "***REDACTED***"  # secret redacted
     assert "ghp_secret_xyz" not in str(logged_body)
+
+
+# ---------------------------------------------------------------------------
+# FlowVerbTimeoutMiddleware — per-verb budget selection
+# ---------------------------------------------------------------------------
+
+
+def _make_flow_app() -> FastAPI:
+    """Two /api/v1/flow/* routes that each sleep past the fast budget but
+    under the slow one, so the picked timeout is observable by outcome."""
+    app = FastAPI()
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _normal_verb() -> Any:
+        await asyncio.sleep(0.3)
+        return {"status": "ok"}
+
+    @app.post("/api/v1/flow/developer/i_am_done")
+    async def _slow_verb() -> Any:
+        await asyncio.sleep(0.3)
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_flow_verb_timeout_normal_verb_uses_default_budget(
+    monkeypatch: Any,
+) -> None:
+    """A verb outside _SLOW_VERBS keeps the short default budget — a 0.3s
+    handler exceeds a 0.05s budget and comes back as a 504."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "flow_verb_slow_timeout_seconds", 5)
+
+    client = TestClient(_make_flow_app())
+    response = client.post("/api/v1/flow/developer/give_me_work")
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+
+
+def test_flow_verb_timeout_slow_verb_uses_slow_budget(monkeypatch: Any) -> None:
+    """A _SLOW_VERBS verb gets the longer budget — the same 0.3s handler that
+    times out on the default budget completes fine under the slow one."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "flow_verb_slow_timeout_seconds", 5)
+
+    client = TestClient(_make_flow_app())
+    response = client.post("/api/v1/flow/developer/i_am_done")
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"status": "ok"}

@@ -128,7 +128,7 @@ async def test_provision_mongo_engine() -> None:
     assert mongo.user == "sandbox"
     assert mongo.database == "admin"
     run_call = next(c for c in runner.calls if c[0] == "run")
-    assert "mongo:8-alpine" in run_call
+    assert "mongo:8" in run_call
     # MONGO_INITDB_ROOT_PASSWORD env is baked into the run.
     assert any(a.startswith("MONGO_INITDB_ROOT_PASSWORD=") for a in run_call)
     # /data/db tmpfs mount for the engine.

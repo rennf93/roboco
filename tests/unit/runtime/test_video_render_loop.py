@@ -431,7 +431,15 @@ async def test_render_video_task_terminal_after_max_attempts(
     workspace = _fake_workspace()
     orch = _orch()
     p1, p2 = _render_patches(renderer, workspace)
-    with p1, p2:
+    notify_svc = AsyncMock()
+    with (
+        p1,
+        p2,
+        patch(
+            "roboco.services.notification.NotificationService",
+            return_value=notify_svc,
+        ),
+    ):
         await orch._render_video_task(db_session, task)  # tips to terminal
         calls_at_terminal = len(renderer.calls)
         await orch._render_video_task(db_session, task)  # now a no-op
@@ -443,3 +451,47 @@ async def test_render_video_task_terminal_after_max_attempts(
     assert len(renderer.calls) == calls_at_terminal  # not retried after terminal
     posts = await get_task_service(db_session).list_open_video_posts()
     assert posts == []
+    # Exactly one CEO alert — the second (no-op) call must not re-notify.
+    notify_svc.send_ack_notification.assert_awaited_once()
+    notify_kwargs = notify_svc.send_ack_notification.await_args.kwargs
+    assert notify_kwargs["to_agent"] == "ceo"
+    assert task.title in notify_kwargs["body"]
+    assert "render blew up" in notify_kwargs["body"]
+    assert notify_kwargs["task_id"] == task.id
+
+
+@pytest.mark.asyncio
+async def test_render_video_task_notify_failure_does_not_raise(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken notification path (e.g. the second DB connection is down)
+    must not surface out of the render loop — best-effort, like the
+    strategy-engine failure notifier."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    task = await _make_completed_video_task(
+        db_session, occasion="notify-fails", composition_id="Intro"
+    )
+    seeded = markers.get_video_draft(task) or {}
+    markers.set_video_draft(
+        task, {**seeded, "render_attempts": _MAX_VIDEO_RENDER_ATTEMPTS - 1}
+    )
+    await db_session.flush()
+
+    renderer = _FakeRenderer(fail=True)
+    workspace = _fake_workspace()
+    orch = _orch()
+    p1, p2 = _render_patches(renderer, workspace)
+    with (
+        p1,
+        p2,
+        patch(
+            "roboco.services.notification.NotificationService",
+            side_effect=RuntimeError("notification DB unreachable"),
+        ),
+    ):
+        await orch._render_video_task(db_session, task)  # must not raise
+
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["render_status"] == "failed"

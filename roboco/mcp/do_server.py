@@ -35,6 +35,13 @@ AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
 _TIMEOUT = 30
+# commit() stages + `git commit`s in-process (no push — push is the flow
+# verb open_pr, already covered by flow_server's per-verb timeout), bounded
+# server-side by git_commit_timeout_seconds (default 180s: a large changeset,
+# e.g. the panel's hundreds of files, can legitimately take that long). The
+# shared _TIMEOUT above is tuned for fast content-tool calls (note/dm/
+# evidence) and would give up first — client must outlast the server op.
+_COMMIT_TIMEOUT = 190
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -247,7 +254,9 @@ def _build_headers() -> dict[str, str]:
     return headers
 
 
-def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+def _post(
+    path: str, body: dict[str, Any], *, timeout: float = _TIMEOUT
+) -> dict[str, Any]:
     """POST a request to the orchestrator and return the JSON envelope.
 
     Mirrors flow_server._post: surfaces the orchestrator's envelope on
@@ -260,8 +269,11 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     REPLACED with circuit_open. Dogfooding surfaced the gap: do-server had
     no breaker and `note(scope='decision')` looped 8 times returning
     incomplete_input.
+
+    ``timeout`` overrides the default for a slow tool (e.g. commit's
+    _COMMIT_TIMEOUT) — must always outlast that tool's server-side budget.
     """
-    with httpx.Client(timeout=_TIMEOUT) as client:
+    with httpx.Client(timeout=timeout) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
             headers=_build_headers(),
@@ -434,7 +446,11 @@ def _record_and_check_circuit(
 
 def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
     """Make a git commit. [task-id] prefix auto-applied. Validates message."""
-    return _post("/api/v1/do/commit", {"message": message, "files": files})
+    return _post(
+        "/api/v1/do/commit",
+        {"message": message, "files": files},
+        timeout=_COMMIT_TIMEOUT,
+    )
 
 
 def note(

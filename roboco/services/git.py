@@ -25,6 +25,8 @@ from uuid import UUID
 import httpx
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     # `api.schemas.git` would trigger `api/__init__.py` (which historically
@@ -95,6 +97,26 @@ def _default_git_timeout() -> int:
 
 def _commit_git_timeout() -> int:
     return settings.git_commit_timeout_seconds
+
+
+async def _await_shielded[T](coro: Coroutine[Any, Any, T]) -> T:
+    """Run a session write shielded from cancellation, waiting it out.
+
+    A bare ``asyncio.shield(coro)`` detaches the write on cancellation but
+    lets the CancelledError propagate immediately — the still-running write
+    then races ``get_db``'s rollback on the SAME AsyncSession and asyncpg
+    raises ``InterfaceError: another operation is in progress`` (a 500
+    instead of the middleware's clean 504). On cancellation, await the
+    in-flight write to completion BEFORE re-raising, so the session is quiet
+    by the time the rollback runs. Mirrors
+    ``VideoPostService._commit_shielded``.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 def _completed_branchful_children(children: list[Any]) -> list[Any]:
@@ -3546,7 +3568,13 @@ class GitService(BaseService):
             if found:
                 pr_number = int(found["number"])
                 pr_url = str(found["html_url"])
-                await self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+                # Shielded + waited-out: the PR already exists on GitHub, so
+                # a cancellation here must not skip recording it locally —
+                # and shield alone would leave the detached write racing
+                # get_db's rollback on the same session (see _await_shielded).
+                await _await_shielded(
+                    self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+                )
                 return {
                     "pr_number": pr_number,
                     "pr_url": pr_url,
@@ -3563,7 +3591,15 @@ class GitService(BaseService):
         pr_data = resp.json()
         pr_number = int(pr_data["number"])
         pr_url = str(pr_data["html_url"])
-        await self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+        # _post_pr already created the PR on GitHub — shield the local record
+        # so a cancellation landing between the POST and this commit can't
+        # leave it unrecorded (self-heals on retry via _find_existing_pr, but
+        # only after this window closes). Waited-out, not bare shield: the
+        # detached write must finish before get_db's rollback touches the
+        # same session (see _await_shielded).
+        await _await_shielded(
+            self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
+        )
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
     async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:

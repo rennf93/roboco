@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from roboco.config import settings
 from roboco.models.runtime import OrchestratorAgentConfig, SpawnGitContext
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -102,3 +103,19 @@ class TestMcpConfigPinsBakedVenv:
                 f"a drifted workspace-clone lock can't trigger a resync stall; "
                 f"got args={spec['args']}"
             )
+
+    @pytest.mark.asyncio
+    async def test_mcp_env_mirrors_flow_verb_timeout_settings(self) -> None:
+        """flow_server.py (a subprocess, can't read Settings) mirrors the two
+        server-side flow-verb timeout budgets via env so its client timeout
+        stays coherent with operator tuning of either setting."""
+        orch = AgentOrchestrator.__new__(AgentOrchestrator)
+        config_path = await orch._generate_mcp_config("be-dev-1")
+        config = json.loads(Path(config_path).read_text())
+        env = config["mcpServers"]["roboco-flow"]["env"]
+        assert env["ROBOCO_FLOW_VERB_TIMEOUT_SECONDS"] == str(
+            settings.flow_verb_timeout_seconds
+        )
+        assert env["ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS"] == str(
+            settings.flow_verb_slow_timeout_seconds
+        )
