@@ -88,7 +88,10 @@ export const videoApi = {
     brief: string;
     platforms: string[];
   }): Promise<VideoRequestResult> => {
-    const { data } = await api.post<VideoRequestResult>("/video/request", body);
+    const { data } = await api.post<VideoRequestResult>(
+      "/video/request",
+      body,
+    );
     return data;
   },
   getCredentialsStatus: async (): Promise<TikTokCredentialsStatus> => {

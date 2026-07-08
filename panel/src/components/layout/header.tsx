@@ -61,8 +61,8 @@ export function Header() {
           size="icon"
           onClick={() => void refresh()}
           disabled={loading}
-          aria-label="Refresh page data"
-          title="Refresh page data"
+          aria-label="Refresh only the current page"
+          title="Refresh only the current page"
         >
           <RefreshCw className={cn("h-5 w-5", loading && "animate-spin")} />
         </Button>
