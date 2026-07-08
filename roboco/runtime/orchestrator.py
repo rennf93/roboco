@@ -799,6 +799,9 @@ class AgentOrchestrator:
     # -> store section. Declared here (not in __init__, to keep its statement
     # count under the gate) and lazily allocated on first use.
     _sandbox_locks: dict[str, asyncio.Lock]
+    # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
+    # allocated by _record_expected_stop, same statement-budget rationale.
+    _expected_stops: dict[str, tuple[str, float]]
 
     def __init__(
         self,
@@ -828,11 +831,6 @@ class AgentOrchestrator:
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
         self._gateway_broken_since: dict[str, datetime] = {}
         self._waiting_records: dict[str, WaitingRecord] = {}
-        # Diagnostics only, in-memory: agent_id -> (reason, monotonic ts) for
-        # the most recent orchestrator-initiated stop/kill, so the exit
-        # monitor can tell an attributed stop from a truly unexplained one
-        # (see _record_expected_stop / _consume_expected_stop).
-        self._expected_stops: dict[str, tuple[str, float]] = {}
         # #71: a resumed agent's WaitingRecord is torn down only once liveness is
         # confirmed (not on a bare launch) — a container that launches then dies
         # immediately would otherwise strand its task until the reaper's TTL.
