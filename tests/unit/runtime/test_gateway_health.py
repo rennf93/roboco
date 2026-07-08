@@ -121,7 +121,9 @@ async def test_broken_past_grace_is_killed(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(orch, "_remove_container", remove)
     monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=False))
     assert await orch._maybe_recover_broken_gateway(_task()) is True
-    remove.assert_awaited_once_with("roboco-agent-be-dev-1")
+    remove.assert_awaited_once_with(
+        "roboco-agent-be-dev-1", stop_reason="gateway_health_recovery"
+    )
     assert "be-dev-1" not in orch._instances  # evicted
 
 

@@ -1040,7 +1040,7 @@ class TestSpawnIntakeShutdownNoOrphan:
         _wire_spawn_mocks(monkeypatch, orch, run_calls)
         removed: list[str] = []
 
-        async def _remove(name: str) -> None:
+        async def _remove(name: str, **_kw: Any) -> None:
             removed.append(name)
 
         async def _run(cmd: list[str]) -> str:
@@ -1097,7 +1097,7 @@ class TestSpawnIntakeShutdownNoOrphan:
         # _wire_spawn_mocks' _remove_container is a no-op; override to record.
         removed: list[str] = []
 
-        async def _remove(name: str) -> None:
+        async def _remove(name: str, **_kw: Any) -> None:
             removed.append(name)
 
         monkeypatch.setattr(orch, "_remove_container", _remove)
