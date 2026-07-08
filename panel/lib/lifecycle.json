@@ -90,6 +90,17 @@
         "cell_pm",
         "main_pm"
       ],
+      "composes": [],
+      "description": "Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact \u2014 for a replacement child whose delegate omitted covers_parent_criteria. No status change; the verb body owns ownership + criterion validation.",
+      "name": "declare_coverage",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
+        "main_pm"
+      ],
       "composes": [
         "create_subtask"
       ],
@@ -371,7 +382,7 @@
         "developer"
       ],
       "composes": [],
-      "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again.",
+      "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.",
       "name": "sync_branch",
       "pre_side_effects": [],
       "side_effects": []

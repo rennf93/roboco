@@ -570,8 +570,9 @@ def _check_verb_circuit(verb: str, task_id: str | None) -> dict[str, Any] | None
         remediate=(
             f"verb {verb!r} has been rejected {count} times in "
             f"{_VERB_ATTEMPT_WINDOW_S}s. Stop retrying. Call "
-            "i_am_blocked(reason='unable to satisfy gate after N attempts') "
-            "or i_am_idle() to release the claim. The PM will pick it up."
+            "i_am_blocked(reason='unable to satisfy gate after N attempts'), "
+            "unclaim() to release the claim back to the pool, or i_am_idle() "
+            "if you hold no claim. The PM will pick it up."
         ),
     )
     return env.as_dict()
@@ -618,8 +619,9 @@ def _check_verb_absolute_circuit(
         remediate=(
             f"verb {verb!r} has been rejected {count} times this session "
             f"(absolute cap {cap}, regardless of pacing). Stop retrying. Call "
-            "i_am_blocked(reason='unable to satisfy gate after N attempts') "
-            "or i_am_idle() to release the claim. The PM will pick it up."
+            "i_am_blocked(reason='unable to satisfy gate after N attempts'), "
+            "unclaim() to release the claim back to the pool, or i_am_idle() "
+            "if you hold no claim. The PM will pick it up."
         ),
     )
     return env.as_dict()

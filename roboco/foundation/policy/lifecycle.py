@@ -1236,7 +1236,9 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " while you worked. Fetches origin, rebases head onto base, and"
             " force-pushes (with-lease). No DB state change. On conflicts the"
             " rebase is aborted and the conflicted files are returned — resolve"
-            " by hand, commit, then sync_branch again."
+            " by hand, commit, then sync_branch again. Pass stash=True to"
+            " auto-stash uncommitted changes instead of refusing"
+            " DIRTY_WORKSPACE; they are restored after the rebase."
         ),
         composes=(),  # git-only verb — no DB transition; the handler runs the git op
         extra_preconditions=(
@@ -1288,6 +1290,22 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         next_hint=lambda _t: (
             "reassigned; the new developer will be respawned to continue"
+        ),
+    ),
+    "declare_coverage": IntentSpec(
+        name="declare_coverage",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Stamp parent acceptance criteria onto an existing child's"
+            " parent_ac_refs after the fact — for a replacement child whose"
+            " delegate omitted covers_parent_criteria. No status change; the"
+            " verb body owns ownership + criterion validation."
+        ),
+        composes=(),  # special — no transition, just an AC-ref write + audit
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: (
+            "coverage declared; check evidence.remaining_uncovered_parent_acs"
         ),
     ),
     "resume": IntentSpec(
@@ -1604,6 +1622,12 @@ def _invalid_source_remediate(
     — i_documented. A documenter on a revision pass whose docs already exist
     must re-affirm them, not bail; the generic hint fed the live 26-respawn
     fe-doc loop (2026-07-02).
+
+    awaiting_qa bail special case: a dev whose task moved on to QA while it
+    was still trying to call i_am_blocked isn't stuck — its part is DONE. The
+    generic "find a task in [...]" hint reads as a dead end (a live 5h+ wedge
+    incident: the dev kept retrying i_am_blocked against a task QA already
+    owned). Tell it the truth and point at the real exit.
     """
     if status is Status.AWAITING_DOCUMENTATION and action == "block":
         return (
@@ -1612,6 +1636,12 @@ def _invalid_source_remediate(
             "revision pass), call i_documented(files=[...], "
             "notes='verified existing docs are complete and accurate') "
             "to re-affirm them — do NOT retry i_am_blocked/unclaim."
+        )
+    if status is Status.AWAITING_QA and action == "block":
+        return (
+            "your part is done — this task already moved to QA review; you "
+            "are not blocked on it anymore. Call i_am_idle() to pick up new "
+            "work. Do NOT retry i_am_blocked/unclaim against a task QA owns."
         )
     return (
         f"call give_me_work() to find a task in"

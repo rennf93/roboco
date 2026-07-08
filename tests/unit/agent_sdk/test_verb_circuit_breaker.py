@@ -236,6 +236,7 @@ def test_check_returns_envelope_at_or_above_limit() -> None:
     assert "i_am_done" in result["message"]
     assert result["remediate"] is not None
     assert "i_am_blocked" in result["remediate"]
+    assert "unclaim" in result["remediate"]
 
 
 def test_check_returns_none_for_unlimited_retry_verbs() -> None:
@@ -511,6 +512,7 @@ def test_slow_drip_never_trips_window_but_trips_absolute_cap() -> None:
     assert result["error"] == "circuit_open"
     assert "absolute cap" in result["message"]
     assert "i_am_blocked" in result["remediate"]
+    assert "unclaim" in result["remediate"]
 
 
 def test_absolute_check_returns_none_below_cap() -> None:

@@ -159,7 +159,7 @@ async def sync_branch(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.sync_branch(x_agent_id, body.task_id)
+    env = await choreographer.sync_branch(x_agent_id, body.task_id, stash=body.stash)
     return envelope_to_response(env, request)
 
 

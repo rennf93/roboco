@@ -1087,3 +1087,236 @@ async def test_cell_pm_complete_survives_parent_advance_failure() -> None:
     assert body.get("error") is None, body
     assert body.get("warning") is not None
     assert "advance" in body["warning"].lower()
+
+
+# ---------------------------------------------------------------------------
+# declare_coverage
+# ---------------------------------------------------------------------------
+
+
+def _declare_coverage_deps(
+    *,
+    parent_id: Any,
+    child_id: Any,
+    parent_kwargs: dict[str, Any],
+    child_kwargs: dict[str, Any],
+    agent_kwargs: dict[str, Any],
+) -> tuple[AsyncMock, MagicMock, MagicMock]:
+    """Wire a task_svc AsyncMock whose .get resolves parent_id/child_id, plus
+    the parent + child MagicMocks (declare_coverage loads both by id)."""
+    parent = MagicMock(id=parent_id, **parent_kwargs)
+    child = MagicMock(id=child_id, parent_task_id=parent_id, **child_kwargs)
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else child
+    task_svc.agent_for.return_value = MagicMock(**agent_kwargs)
+    return task_svc, parent, child
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_task_not_found() -> None:
+    task_svc = AsyncMock()
+    task_svc.get.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(uuid4(), uuid4(), ["id-a"])
+    assert env.error == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_no_parent_returns_invalid_state() -> None:
+    pm_id = uuid4()
+    child_id = uuid4()
+    child = MagicMock(id=child_id, parent_task_id=None, team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = child
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error == "invalid_state"
+    task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_non_pm_rejected() -> None:
+    pm_id = uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, _child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={"assigned_to": pm_id},
+        child_kwargs={"team": "backend"},
+        agent_kwargs={"role": "developer", "team": "backend"},
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error == "not_authorized"
+    task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_rejects_pm_off_team_without_parent_ownership() -> None:
+    pm_id, other_pm_id = uuid4(), uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, _child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={"assigned_to": other_pm_id},
+        child_kwargs={"team": "frontend"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_allows_pm_on_child_team_without_ownership() -> None:
+    """The minimum authorization bar: a PM on the child's own team may
+    declare coverage even without owning the parent coordination task."""
+    pm_id, other_pm_id = uuid4(), uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={
+            "assigned_to": other_pm_id,
+            "acceptance_criteria": ["crit a"],
+            "acceptance_criteria_ids": ["id-a"],
+        },
+        child_kwargs={"team": "backend", "status": "completed"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = child
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_unknown_criterion_rejected_lists_parent_acs() -> None:
+    pm_id = uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, _child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={
+            "assigned_to": pm_id,
+            "acceptance_criteria": ["crit a", "crit b"],
+            "acceptance_criteria_ids": ["id-a", "id-b"],
+        },
+        child_kwargs={"team": "backend"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    task_svc.unknown_ac_refs = MagicMock(return_value=["bogus"])
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["bogus"])
+    assert env.error == "invalid_state"
+    assert env.remediate is not None
+    assert "crit a" in env.remediate and "crit b" in env.remediate
+    task_svc.add_parent_ac_refs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_happy_path_stamps_refs_and_returns_remaining() -> None:
+    pm_id = uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={
+            "assigned_to": pm_id,
+            "acceptance_criteria": ["crit a", "crit b"],
+            "acceptance_criteria_ids": ["id-a", "id-b"],
+        },
+        child_kwargs={"team": "backend", "status": "completed"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = child
+    task_svc.uncovered_parent_acceptance_criteria.return_value = ["crit b"]
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+    task_svc.add_parent_ac_refs.assert_awaited_once_with(
+        child_id, ["id-a"], declared_by=pm_id
+    )
+    assert env.evidence == {"remaining_uncovered_parent_acs": ["crit b"]}
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_idempotent_redeclare() -> None:
+    pm_id = uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={
+            "assigned_to": pm_id,
+            "acceptance_criteria": ["crit a"],
+            "acceptance_criteria_ids": ["id-a"],
+        },
+        child_kwargs={"team": "backend", "status": "completed"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = child
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    first = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    count_after_first = task_svc.add_parent_ac_refs.await_count
+    second = await c.declare_coverage(pm_id, child_id, ["id-a"])
+
+    assert first.error is None, first.as_dict()
+    assert second.error is None, second.as_dict()
+    assert task_svc.add_parent_ac_refs.await_count == count_after_first + 1
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_then_submit_up_gate_passes() -> None:
+    """declare_coverage followed by the roll-up gate — the production
+    deadlock's end-to-end fix: once uncovered_parent_acceptance_criteria
+    empties, _parent_acs_covered_envelope no longer blocks submit_up."""
+    pm_id = uuid4()
+    parent_id, child_id = uuid4(), uuid4()
+    task_svc, _parent, child = _declare_coverage_deps(
+        parent_id=parent_id,
+        child_id=child_id,
+        parent_kwargs={
+            "assigned_to": pm_id,
+            "acceptance_criteria": ["crit a"],
+            "acceptance_criteria_ids": ["id-a"],
+        },
+        child_kwargs={"team": "backend", "status": "completed"},
+        agent_kwargs={"role": "cell_pm", "team": "backend"},
+    )
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = child
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, child_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+    assert env.evidence == {"remaining_uncovered_parent_acs": []}
+
+    gate_env = await c._parent_acs_covered_envelope(
+        pm_id, parent_id, context_phrase="bubbling up"
+    )
+    assert gate_env is None

@@ -269,8 +269,12 @@ def _git_ownership_scope(args: list[str]) -> str:
     Returns "none" (skip repair — zero syscalls), "git" (repair `.git/`
     only, worktree-aware via `_resolve_clone_root`), or "full" (repair the
     whole workspace — unchanged behavior, and the safe default for
-    checkout/reset/rebase/pull or any verb this classifier doesn't
-    recognize, so an unclassified op is never under-repaired).
+    checkout/reset/rebase/pull/stash or any verb this classifier doesn't
+    recognize, so an unclassified op is never under-repaired). `stash`
+    (rebase_onto_base's `stash=True` path, #337 scoping) writes both the
+    working tree (push/pop) and `.git/` (the stash ref + objects) — it is
+    deliberately left unclassified so it falls to the safe "full" default
+    rather than a `.git/`-only repair that would strand agent-owned files.
     """
     if not args:
         return "full"
@@ -3986,6 +3990,7 @@ class GitService(BaseService):
         head_branch: str,
         base_branch: str,
         git_token: str,
+        stash: bool = False,
     ) -> dict[str, Any]:
         """Rebase ``head_branch`` onto the latest ``base_branch`` from origin.
 
@@ -4003,6 +4008,8 @@ class GitService(BaseService):
             can now merge cleanly.
           - ``{"status": "conflicts", "files": [...]}`` — the rebase hit
             conflicts and was aborted; a developer must resolve by hand.
+        Any of the above may carry ``"stash_pop_conflict": True`` when
+        ``stash`` popped into a conflict (see below).
 
         Never touches the base branch and only ever force-pushes
         ``head_branch`` (with ``--force-with-lease``). The caller must ensure
@@ -4010,16 +4017,17 @@ class GitService(BaseService):
         rebase-merge into master.
 
         Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
-        ``git reset --hard`` below can't discard uncommitted agent edits.
+        ``git reset --hard`` below can't discard uncommitted agent edits —
+        UNLESS ``stash=True``, in which case the dirty worktree (tracked +
+        untracked, ``-u``) is stashed first and popped back after the rebase
+        instead of refusing outright (the dev-facing dead end this closes:
+        DIRTY_WORKSPACE had no in-gate remedy other than a raw ``git`` the
+        agent is denied). A pop conflict is never auto-resolved — the stash
+        is left in place (never dropped) and the result gets
+        ``stash_pop_conflict: True`` so the caller returns an actionable
+        envelope; the agent's uncommitted work is never lost.
         """
-        status_result = await self._run_git(
-            workspace, ["status", "--porcelain"], check=False
-        )
-        if status_result.stdout.strip():
-            raise ValidationError(
-                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
-                "Stage and commit (or stash) your changes before rebasing."
-            )
+        stashed = await self._stash_if_dirty(workspace, stash=stash)
 
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
         await self._run_git(workspace, ["checkout", head_branch])
@@ -4028,27 +4036,72 @@ class GitService(BaseService):
             workspace, ["rebase", f"origin/{base_branch}"], check=False
         )
         if rebase.returncode != 0:
-            conflict = await self._run_git(
-                workspace,
-                ["diff", "--name-only", "--diff-filter=U"],
-                check=False,
-            )
-            files = [f for f in conflict.stdout.splitlines() if f.strip()]
-            await self._run_git(workspace, ["rebase", "--abort"], check=False)
-            return {"status": "conflicts", "files": files}
+            return await self._abort_rebase_conflict(workspace, stashed=stashed)
         count = await self._run_git(
             workspace,
             ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
         )
         unique = int(count.stdout.strip() or "0")
         if unique == 0:
-            return {"status": "superseded"}
-        await self._run_git(
-            workspace,
-            ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
-            token=git_token,
+            result: dict[str, Any] = {"status": "superseded"}
+        else:
+            await self._run_git(
+                workspace,
+                ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
+                token=git_token,
+            )
+            result = {"status": "rebased", "unique_commits": unique}
+        if stashed:
+            await self._pop_stash_into(workspace, result)
+        return result
+
+    async def _stash_if_dirty(self, workspace: Path, *, stash: bool) -> bool:
+        """Clean-tree gate for :meth:`rebase_onto_base`.
+
+        Refuses a dirty worktree (``DIRTY_WORKSPACE``) unless ``stash`` is
+        set, in which case it auto-stashes (tracked + untracked) and returns
+        ``True`` so the caller knows to pop it back later.
+        """
+        status_result = await self._run_git(
+            workspace, ["status", "--porcelain"], check=False
         )
-        return {"status": "rebased", "unique_commits": unique}
+        if not status_result.stdout.strip():
+            return False
+        if not stash:
+            raise ValidationError(
+                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
+                "Stage and commit (or stash) your changes before rebasing."
+            )
+        await self._run_git(
+            workspace, ["stash", "push", "-u", "-m", "sync_branch autostash"]
+        )
+        return True
+
+    async def _abort_rebase_conflict(
+        self, workspace: Path, *, stashed: bool
+    ) -> dict[str, Any]:
+        """Collect conflicted files and abort a failed rebase.
+
+        The stash (if one was taken) is left untouched here — popping it onto
+        an aborted, still-conflicted rebase would just stack a second conflict
+        on top of the first. ``stash_preserved`` is only added when a stash
+        was actually taken, so the non-stash result shape is unchanged.
+        """
+        conflict = await self._run_git(
+            workspace, ["diff", "--name-only", "--diff-filter=U"], check=False
+        )
+        files = [f for f in conflict.stdout.splitlines() if f.strip()]
+        await self._run_git(workspace, ["rebase", "--abort"], check=False)
+        result: dict[str, Any] = {"status": "conflicts", "files": files}
+        if stashed:
+            result["stash_preserved"] = True
+        return result
+
+    async def _pop_stash_into(self, workspace: Path, result: dict[str, Any]) -> None:
+        """Pop the autostash, flagging (never auto-resolving) a pop conflict."""
+        pop = await self._run_git(workspace, ["stash", "pop"], check=False)
+        if pop.returncode != 0:
+            result["stash_pop_conflict"] = True
 
     async def rebase_pr_for_task(
         self,
@@ -4111,6 +4164,7 @@ class GitService(BaseService):
         *,
         base_branch: str,
         actor_agent_id: UUID | None = None,
+        stash: bool = False,
     ) -> dict[str, Any]:
         """Rebase a task's branch onto ``base_branch`` through the gate.
 
@@ -4123,6 +4177,9 @@ class GitService(BaseService):
         ``/rebase`` HTTP route. Mirrors ``rebase_pr_for_task``'s workspace/token
         resolution and delegates to :meth:`rebase_onto_base`, returning the same
         classification dict (``rebased`` / ``superseded`` / ``conflicts``).
+
+        ``stash`` forwards to :meth:`rebase_onto_base` — auto-stash a dirty
+        worktree instead of refusing DIRTY_WORKSPACE.
 
         The caller MUST ensure ``base_branch`` is not a protected branch —
         agents never rebase into master/main; the choreographer guards this.
@@ -4145,6 +4202,7 @@ class GitService(BaseService):
             head_branch=task.branch_name,
             base_branch=base_branch,
             git_token=git_token,
+            stash=stash,
         )
 
     async def unmerged_child_commits(

@@ -60,6 +60,14 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 **Fix (PMs, for a cell/root integration branch — NOT a dev leaf):** `escalate_up(task_id, reason='branch behind base — needs rebase')` — bringing an integration branch current is a platform action. A dev's own leaf branch is the dev's to `sync_branch`.
 
+## DIRTY_WORKSPACE on sync_branch
+
+**Error:** `sync_branch failed: DIRTY_WORKSPACE: Cannot rebase with uncommitted changes.`
+
+**Cause:** `sync_branch` refuses to rebase over uncommitted edits by default (a `git reset --hard` mid-rebase would discard them).
+
+**Fix:** Either `commit(message=...)` (omit `files` to stage everything) then `sync_branch(task_id)` again, OR call `sync_branch(task_id, stash=True)` to auto-stash (tracked + untracked), rebase, and restore your changes in one call. If the stash pop conflicts, the envelope's `next` tells you so — your stash is preserved (never dropped); resolve by hand and `commit(...)`. Still stuck after that? `unclaim(task_id)` releases the claim back to the pool rather than looping.
+
 ## src refspec does not match any (during open_pr)
 
 **Error:** `src refspec '<branch>' does not match any`
@@ -72,7 +80,7 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 **Cause:** Your branch is behind its remote, so the push can't fast-forward.
 
-**Fix (devs):** Call `sync_branch(task_id)` to rebase onto your base through the gate, then retry the push-bearing verb (`open_pr` / `i_am_done`). **PMs** escalate: `escalate_up(...)`. There is no agent-layer pull — `sync_branch` is the dev's rebase path.
+**Fix (devs):** Call `sync_branch(task_id)` to rebase onto your base through the gate, then retry the push-bearing verb (`open_pr` / `i_am_done`). If `sync_branch` itself refuses with DIRTY_WORKSPACE, see that section below (`commit(...)` then retry, or `sync_branch(task_id, stash=True)`). **PMs** escalate: `escalate_up(...)`. There is no agent-layer pull — `sync_branch` is the dev's rebase path. Still stuck after trying both? `unclaim(task_id)` releases the claim back to the pool rather than looping on `i_am_done`.
 
 ## NO_PR on pass / fail
 

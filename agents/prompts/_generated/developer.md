@@ -14,7 +14,7 @@
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `open_pr` | `open_pr(task_id: UUID)` |
 | `resume` | `resume(task_id: UUID)` |
-| `sync_branch` | `sync_branch(task_id: UUID)` |
+| `sync_branch` | `sync_branch(task_id: UUID, stash: bool = False)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
