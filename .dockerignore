@@ -46,6 +46,11 @@ data/
 logs/
 *.log
 
+# Gitignored working notes — leak into the orchestrator's COPY docs layer from
+# a CEO working tree that has them checked out locally, causing env-dependent
+# cache keys (docs/rag/ + docs/map/ are NOT ignored — the agent-facing corpus).
+docs/internal/
+
 # VCS and editor cruft
 .idea
 .vscode

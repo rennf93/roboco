@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -71,8 +71,17 @@ RUN npm install -g pnpm
 
 WORKDIR /app
 
-# Copy the already-built venv + app tree from builder
-COPY --from=builder /app /app
+# Copy the already-built venv + app tree from builder.
+# .venv first (invalidated only by pyproject.toml/uv.lock changes via the
+# builder's own dep-then-project split), source dirs last so an app-code-only
+# change doesn't bust the much larger .venv layer's cache.
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/pyproject.toml /app/uv.lock /app/README.md /app/
+COPY --from=builder /app/roboco /app/roboco
+COPY --from=builder /app/agents /app/agents
+COPY --from=builder /app/docs /app/docs
+COPY --from=builder /app/alembic.ini /app/
+COPY --from=builder /app/alembic /app/alembic
 
 # uv is needed at runtime: WorkspaceService runs `uv sync` to pre-install
 # Python cell deps, and CI commands shell out to `uv run`. The builder stage
