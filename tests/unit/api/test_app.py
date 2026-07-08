@@ -8,7 +8,8 @@ extraction, optimal-service).
 
 from __future__ import annotations
 
-from contextlib import ExitStack, asynccontextmanager
+import asyncio
+from contextlib import ExitStack, asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -140,6 +141,48 @@ async def test_lifespan_startup_and_shutdown_happy_path() -> None:
             assert app.state.optimal is not None
         # After yield, shutdown ran.
         transcription_mock.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_never_awaits_the_rag_reconcile() -> None:
+    """The reconcile (incl. the journal backfill) runs as a background task —
+    a slow pass must not delay the API bind (the 2026-07-09 outage: a
+    200-entry backfill behind a busy Ollama held startup for 30+ minutes)."""
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _slow_reconcile(_app: object) -> None:
+        entered.set()
+        await release.wait()
+
+    transcription_mock = MagicMock()
+    transcription_mock.start = AsyncMock()
+    transcription_mock.stop = AsyncMock()
+
+    with (
+        patch("roboco.api.app.init_db", new=AsyncMock()),
+        patch("roboco.api.app.close_db", new=AsyncMock()),
+        patch("roboco.api.app.TranscriptionService", return_value=transcription_mock),
+        patch("roboco.api.app.ExtractionService"),
+        patch("roboco.api.app.ExtractionPipeline"),
+        patch(
+            "roboco.api.app.get_optimal_service",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch("roboco.api.app.close_optimal_service", new=AsyncMock()),
+        patch("roboco.api.app._reconcile_rag_indexes", new=_slow_reconcile),
+    ):
+        app = create_app()
+        async with lifespan(app):
+            # Startup completed while the reconcile is still blocked — it was
+            # scheduled, not awaited.
+            task = app.state.rag_reconcile_task
+            assert not task.done()
+            await asyncio.wait_for(entered.wait(), timeout=2)
+        # Shutdown requested cancellation; let the loop deliver it.
+        with suppress(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
 
 
 @pytest.mark.asyncio

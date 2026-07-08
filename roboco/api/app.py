@@ -5,6 +5,7 @@ Creates and configures the FastAPI application with all routes,
 middleware, and event handlers.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -145,6 +146,46 @@ async def _reconcile_rag_indexes(app: FastAPI) -> None:
     await _reconcile_unindexed_playbooks(app)
     await _reclaim_rag_index_failures(app)
     await _backfill_unindexed_journals(app)
+    logger.info("RAG index reconcile finished")
+
+
+def _log_reconcile_outcome(task: asyncio.Task[None]) -> None:
+    """Surface a background-reconcile crash; each pass already swallows its
+    own errors, so anything landing here is an unexpected bug, not a retry."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Background RAG reconcile crashed", error=repr(exc))
+
+
+def _schedule_rag_reconcile(app: FastAPI) -> asyncio.Task[None]:
+    """Schedule the reconcile without awaiting it (see lifespan comment)."""
+    task = asyncio.create_task(_reconcile_rag_indexes(app))
+    task.add_done_callback(_log_reconcile_outcome)
+    app.state.rag_reconcile_task = task
+    return task
+
+
+def _cancel_rag_reconcile(app: FastAPI) -> None:
+    """Stop a still-running background reconcile at shutdown."""
+    task = getattr(app.state, "rag_reconcile_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _apply_flag_overrides() -> None:
+    """Overlay panel-persisted feature-flag overrides onto the live config so
+    the rest of startup (and the dispatch loops) read the panel's choices;
+    unset flags keep their env/config default. Best-effort — a failure here
+    must not block startup, the env defaults still apply."""
+    try:
+        async with get_session_factory()() as flags_db:
+            applied_flags = await apply_persisted_feature_flags(flags_db)
+        if applied_flags:
+            logger.info("Applied persisted feature-flag overrides", flags=applied_flags)
+    except Exception as e:
+        logger.warning("Feature-flag overlay failed; using env defaults", error=str(e))
 
 
 @asynccontextmanager
@@ -181,17 +222,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # No-op unless ROBOCO_CLOUD_AUTH_ENABLED (see ensure_seed_user_startup).
     await ensure_seed_user_startup()
 
-    # Overlay panel-persisted feature-flag overrides onto the live config so the
-    # rest of startup (and the dispatch loops) read the panel's choices; unset
-    # flags keep their env/config default. Best-effort — a failure here must not
-    # block startup, the env defaults still apply.
-    try:
-        async with get_session_factory()() as _flags_db:
-            applied_flags = await apply_persisted_feature_flags(_flags_db)
-        if applied_flags:
-            logger.info("Applied persisted feature-flag overrides", flags=applied_flags)
-    except Exception as e:
-        logger.warning("Feature-flag overlay failed; using env defaults", error=str(e))
+    await _apply_flag_overrides()
 
     # Initialize Phase 2 services
     _AppServices.transcription = TranscriptionService()
@@ -230,11 +261,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         except Exception as e:
             logger.warning("LearningPropagationService init failed", error=str(e))
 
-    # Reconcile RAG index state: re-index APPROVED playbooks left unindexed by
-    # a failed post-commit embed, and reclaim dead-lettered fire-and-forget
-    # index writes (embedder 429 after retries). Best-effort: a failure here
-    # never blocks startup — the rows stay and the next startup retries them.
-    await _reconcile_rag_indexes(app)
+    # Reconcile RAG index state in the BACKGROUND: re-index APPROVED playbooks
+    # left unindexed by a failed post-commit embed, reclaim dead-lettered
+    # index writes, and backfill zero-chunk journals/learnings. Never awaited
+    # here — uvicorn binds the socket only after this lifespan completes, and
+    # a 200-entry backfill behind a busy Ollama held the API down for 30+
+    # minutes when this was a blocking await (2026-07-09 deploy).
+    _schedule_rag_reconcile(app)
 
     logger.info("All services initialized, API ready")
 
@@ -242,6 +275,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Shutdown
     logger.info("Shutting down RoboCo API")
+
+    _cancel_rag_reconcile(app)
 
     if _AppServices.transcription:
         await _AppServices.transcription.stop()
