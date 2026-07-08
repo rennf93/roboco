@@ -67,7 +67,7 @@ from roboco.services.extraction import ExtractionPipeline, ExtractionService
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.playbook import PlaybookService
-from roboco.services.rag_index_failures import reclaim_due
+from roboco.services.rag_index_failures import backfill_unindexed_journals, reclaim_due
 from roboco.services.settings import apply_persisted_feature_flags
 from roboco.services.transcription import TranscriptionService
 
@@ -125,10 +125,26 @@ async def _reclaim_rag_index_failures(app: FastAPI) -> None:
         logger.warning("RAG index dead-letter reclaim failed; continuing", error=str(e))
 
 
+async def _backfill_unindexed_journals(app: FastAPI) -> None:
+    """Re-index journal/learning entries silently zero-chunked before the
+    per-index chunk-floor fix (see ``backfill_unindexed_journals``'s
+    docstring). Best-effort: a failure here never blocks startup — the rows
+    stay and the next startup retries them. Skipped when RAG is disabled.
+    """
+    if app.state.optimal is None:
+        return
+    try:
+        await backfill_unindexed_journals(app.state.optimal)
+    except Exception as e:
+        logger.warning("Journal/learning RAG backfill failed; continuing", error=str(e))
+
+
 async def _reconcile_rag_indexes(app: FastAPI) -> None:
-    """Run both RAG index reconcile passes (playbooks + dead-letter reclaim)."""
+    """Run all RAG index reconcile passes: playbooks, dead-letter reclaim,
+    and the journals/learnings zero-chunk backfill."""
     await _reconcile_unindexed_playbooks(app)
     await _reclaim_rag_index_failures(app)
+    await _backfill_unindexed_journals(app)
 
 
 @asynccontextmanager

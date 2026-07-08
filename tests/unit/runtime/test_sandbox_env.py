@@ -188,4 +188,8 @@ async def test_spawn_container_stale_clear_spares_fresh_sandbox(
     )
     await orch._spawn_container(_config(info))
 
-    remove.assert_awaited_once_with("roboco-agent-dev-1", teardown_sandbox=False)
+    remove.assert_awaited_once_with(
+        "roboco-agent-dev-1",
+        teardown_sandbox=False,
+        stop_reason="pre_spawn_stale_clear",
+    )

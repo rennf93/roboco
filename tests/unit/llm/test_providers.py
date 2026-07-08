@@ -62,6 +62,7 @@ class _FakeHost:
 
     def __init__(self) -> None:
         self.removed: list[str] = []
+        self.remove_stop_reasons: list[str | None] = []
         self.spawn_args: tuple[object, ...] | None = None
         self.mount_config: OrchestratorAgentConfig | None = None
         self.data_dirs_ensured: list[str] = []
@@ -75,8 +76,11 @@ class _FakeHost:
         self.spawn_args = (config, initial_prompt, agent_settings_path)
         return "container-id-abc123"
 
-    async def _remove_container(self, container_name: str) -> None:
+    async def _remove_container(
+        self, container_name: str, *, stop_reason: str | None = None
+    ) -> None:
         self.removed.append(container_name)
+        self.remove_stop_reasons.append(stop_reason)
 
     def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         self.data_dirs_ensured.append(agent_id)
@@ -227,6 +231,7 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     # The image is the final docker-run argument.
     assert cmd[-1] == "roboco-agent-grok:test"
     assert host.removed == ["roboco-agent-be-dev-1"]
+    assert host.remove_stop_reasons == ["pre_spawn_stale_clear"]
     assert result == SpawnResult(
         instance_id="roboco-agent-be-dev-1",
         extra={"container_id": "cid", "model": "grok-build"},

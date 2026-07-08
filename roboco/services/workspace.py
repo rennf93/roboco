@@ -13,9 +13,9 @@ parallel development without conflicts:
                 └── [git repo files]
 
 Example:
-    /data/workspaces/roboco/backend/be-dev-1/
-    /data/workspaces/roboco/backend/be-dev-2/
-    /data/workspaces/roboco/frontend/fe-dev-1/
+    /data/workspaces/roboco-api/backend/be-dev-1/
+    /data/workspaces/roboco-api/backend/be-dev-2/
+    /data/workspaces/roboco-api/frontend/fe-dev-1/
 """
 
 import asyncio

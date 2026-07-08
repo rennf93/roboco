@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from pydantic import ValidationError
-from roboco.config import Settings
+from roboco.config import Settings, resolve_uvicorn_loop_factory
 
 
 def test_internal_api_url_uses_api_url_when_set() -> None:
@@ -126,3 +128,42 @@ def test_local_llm_base_url_public_rejected() -> None:
 def test_local_llm_base_url_missing_host_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings(local_llm_base_url="http://")
+
+
+# ---------------------------------------------------------------------------
+# uvicorn_loop — default asyncio, uvloop opt-in (CI segfault fix)
+# ---------------------------------------------------------------------------
+
+
+def test_uvicorn_loop_defaults_to_asyncio() -> None:
+    assert Settings().uvicorn_loop == "asyncio"
+
+
+def test_uvicorn_loop_honors_constructor_override() -> None:
+    assert Settings(uvicorn_loop="uvloop").uvicorn_loop == "uvloop"
+
+
+def test_uvicorn_loop_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_UVICORN_LOOP", "uvloop")
+    assert Settings().uvicorn_loop == "uvloop"
+
+
+def test_uvicorn_loop_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        Settings(uvicorn_loop="unknown")  # type: ignore[arg-type]
+
+
+def test_resolve_uvicorn_loop_factory_asyncio_is_none() -> None:
+    """The default: no override, so asyncio.run() picks its own stock loop."""
+    assert resolve_uvicorn_loop_factory("asyncio") is None
+
+
+def test_resolve_uvicorn_loop_factory_uvloop_returns_new_event_loop() -> None:
+    factory = resolve_uvicorn_loop_factory("uvloop")
+    assert factory is not None
+    loop = factory()
+    try:
+        uvloop = importlib.import_module("uvloop")
+        assert isinstance(loop, uvloop.Loop)
+    finally:
+        loop.close()
