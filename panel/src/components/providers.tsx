@@ -5,6 +5,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { ThemeProvider } from "next-themes";
 import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
+import { PageRefreshProvider } from "@/components/page-refresh-provider";
 import { useAgentRosterSync } from "@/hooks/use-agents";
 
 // Keeps the agent display-name resolver (agent-utils) in sync with the live
@@ -36,20 +37,22 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <ThemeProvider
-      attribute="class"
-      defaultTheme="system"
-      enableSystem
-      disableTransitionOnChange
-    >
-      <QueryClientProvider client={queryClient}>
-        <AgentRosterSync />
-        {children}
-        <Toaster position="top-right" />
-        {process.env.NODE_ENV === "development" && (
-          <ReactQueryDevtools initialIsOpen={false} />
-        )}
-      </QueryClientProvider>
-    </ThemeProvider>
+    <PageRefreshProvider>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem
+        disableTransitionOnChange
+      >
+        <QueryClientProvider client={queryClient}>
+          <AgentRosterSync />
+          {children}
+          <Toaster position="top-right" />
+          {process.env.NODE_ENV === "development" && (
+            <ReactQueryDevtools initialIsOpen={false} />
+          )}
+        </QueryClientProvider>
+      </ThemeProvider>
+    </PageRefreshProvider>
   );
 }
