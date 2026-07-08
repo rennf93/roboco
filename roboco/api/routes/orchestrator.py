@@ -371,7 +371,9 @@ async def stop_agent(agent_id: str, graceful: bool = True) -> None:
     """Stop an agent."""
     agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
-    await orchestrator.stop_agent(agent_id, graceful=graceful)
+    await orchestrator.stop_agent(
+        agent_id, graceful=graceful, stop_reason="stop_agent_api"
+    )
 
 
 @router.post(
