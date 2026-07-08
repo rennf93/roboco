@@ -23,7 +23,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `open_pr` | `open_pr(task_id: UUID)` |
 | `resume` | `resume(task_id: UUID)` |
-| `sync_branch` | `sync_branch(task_id: UUID)` |
+| `sync_branch` | `sync_branch(task_id: UUID, stash: bool = False)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
@@ -113,6 +113,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | Verb | Body schema |
 |------|-------------|
 | `complete` | `complete(task_id: UUID, notes: str)` |
+| `declare_coverage` | `declare_coverage(task_id: UUID, criteria: list[str])` |
 | `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: Complexity, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
 | `escalate_up` | `escalate_up(task_id: UUID, reason: str)` |
 | `give_me_work` | `give_me_work()` |
@@ -149,6 +150,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | Verb | Body schema |
 |------|-------------|
 | `complete` | `complete(task_id: UUID, notes: str)` |
+| `declare_coverage` | `declare_coverage(task_id: UUID, criteria: list[str])` |
 | `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: Complexity, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
 | `escalate_to_ceo` | `escalate_to_ceo(task_id: UUID, reason: str)` |
 | `escalate_up` | `escalate_up(task_id: UUID, reason: str)` |

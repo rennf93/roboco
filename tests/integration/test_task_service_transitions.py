@@ -354,6 +354,44 @@ async def test_unclaim_for_agent_returns_none_when_paused(
     assert await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"]) is None
 
 
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_releases_from_verifying(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A dev mid self-verification (before awaiting_qa) must have a legal
+    exit — the 2026-07 5h+ wedge incident found unclaim silently rejected
+    from verifying with no other legal move but block/i_am_blocked, both of
+    which require in_progress."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.VERIFYING
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+    out = await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"])
+    assert out is not None
+    assert out.status == TaskStatus.PENDING
+    assert out.assigned_to is None
+    assert out.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_releases_from_needs_revision(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A dev sent back for revision must also have unclaim as a legal exit —
+    same incident, same silent rejection for needs_revision."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.NEEDS_REVISION
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+    out = await svc.unclaim_for_agent(task.id, agent_id=task_setup["agent_id"])
+    assert out is not None
+    assert out.status == TaskStatus.PENDING
+    assert out.assigned_to is None
+    assert out.active_claimant_id is None
+
+
 # ---------------------------------------------------------------------------
 # resume_for_agent
 # ---------------------------------------------------------------------------
@@ -1484,6 +1522,128 @@ async def test_cancel_returns_task_with_cancellation_note_appended(
     out = await svc.cancel(task.id, cancellation_note="duplicate")
     assert out is not None
     assert "duplicate" in (out.dev_notes or "")
+
+
+@pytest.mark.asyncio
+async def test_cancel_warns_and_surfaces_orphaned_parent_ac_refs(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Origin fix: a cancelled child's parent_ac_refs with no surviving-sibling
+    coverage surface as orphaned_parent_acs — the signal a PM re-declares via
+    declare_coverage on the replacement child."""
+    svc = task_setup["svc"]
+    parent = await svc.create(
+        _req(task_setup, acceptance_criteria=["crit a", "crit b"])
+    )
+    ac_id = parent.acceptance_criteria_ids[0]
+    child = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=[ac_id])
+    )
+    await db_session.flush()
+    out = await svc.cancel(child.id, agent_role="cell_pm")
+    assert out is not None
+    assert out.orphaned_parent_acs == ["crit a"]
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(
+                    AuditLogTable.event_type == "task.cancelled_ac_orphaned"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert any(r.target_id == child.id for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_cancel_reports_no_orphaned_acs_when_sibling_still_covers(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A sibling still claiming the same criterion means nothing is orphaned."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, acceptance_criteria=["crit a"]))
+    ac_id = parent.acceptance_criteria_ids[0]
+    child_a = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=[ac_id])
+    )
+    child_b = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=[ac_id])
+    )
+    await db_session.flush()
+    out = await svc.cancel(child_a.id, agent_role="cell_pm")
+    assert out is not None
+    assert out.orphaned_parent_acs == []
+    _ = child_b
+
+
+# ---------------------------------------------------------------------------
+# add_parent_ac_refs / declare_coverage primitive
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_parent_ac_refs_lets_uncovered_gate_pass_after_replacement(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """End-to-end proof of the production fix: a replacement child delegated
+    without covers_parent_criteria leaves the roll-up gate
+    (uncovered_parent_acceptance_criteria) blocked until the PM calls
+    add_parent_ac_refs (declare_coverage's primitive) on it."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, acceptance_criteria=["crit a"]))
+    ac_text = parent.acceptance_criteria[0]
+    original = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=[ac_text])
+    )
+    await svc.cancel(original.id, agent_role="cell_pm")
+    # Replacement delegated WITHOUT covers_parent_criteria — the live bug.
+    replacement = await svc.create(_req(task_setup, parent_task_id=parent.id))
+    replacement.status = TaskStatus.COMPLETED
+    await db_session.flush()
+
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == [ac_text]
+
+    updated = await svc.add_parent_ac_refs(
+        replacement.id, [ac_text], declared_by=task_setup["agent_id"]
+    )
+    assert updated is not None
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(
+                    AuditLogTable.event_type == "task.coverage_declared"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert any(r.target_id == replacement.id for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_add_parent_ac_refs_is_idempotent(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, acceptance_criteria=["crit a"]))
+    ac_id = parent.acceptance_criteria_ids[0]
+    child = await svc.create(_req(task_setup, parent_task_id=parent.id))
+
+    first = await svc.add_parent_ac_refs(child.id, [ac_id])
+    second = await svc.add_parent_ac_refs(child.id, [ac_id])
+
+    assert first is not None and second is not None
+    assert second.parent_ac_refs == [ac_id]
+
+
+@pytest.mark.asyncio
+async def test_add_parent_ac_refs_returns_none_for_missing_task(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    assert await svc.add_parent_ac_refs(uuid4(), ["id-a"]) is None
 
 
 # ---------------------------------------------------------------------------

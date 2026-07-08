@@ -465,6 +465,23 @@ class _SecretaryRunSpec:
 # spawn taskless, so they are NOT flagged (#11).
 _TASKLESS_SPAWN_SUSPECT_ROLES = frozenset({"developer", "qa", "documenter"})
 
+# Statuses where `_auto_block_task` forcing "blocked" is meaningless — the
+# task already moved past the caller's control to a reviewer/terminal state.
+# Forcing it back to "blocked" from here would yank it out from under
+# whoever now owns it instead of skipping a no-op.
+_AUTO_BLOCK_SKIP_STATUSES = frozenset(
+    {
+        "awaiting_qa",
+        "awaiting_documentation",
+        "awaiting_pr_review",
+        "awaiting_pm_review",
+        "awaiting_ceo_approval",
+        "completed",
+        "cancelled",
+        "blocked",
+    }
+)
+
 
 def is_unattributed_delivery_spawn(role: str, task_id: str | None) -> bool:
     """True when a delivery-role spawn carries no ``task_id`` (#11).
@@ -9291,7 +9308,36 @@ Start by:
     async def _auto_block_task(
         self, client: httpx.AsyncClient, task_id: str, reason: str
     ) -> None:
-        """Auto-block a task that cannot proceed due to missing prerequisites."""
+        """Auto-block a task that cannot proceed due to missing prerequisites.
+
+        Re-checks live status first: every caller's view of the task can be
+        stale by the time this runs (a spawn-readiness check that raced a
+        reassignment, a dead container whose task was already picked up and
+        submitted for QA). Blocking is meaningless once the task moved past
+        the caller's control — it skips with an info log instead of yanking
+        a task out from under whoever now owns it.
+        """
+        try:
+            resp = await client.get(f"{self._api_url}/tasks/{task_id}")
+            if (
+                resp.is_success
+                and resp.json().get("status") in _AUTO_BLOCK_SKIP_STATUSES
+            ):
+                logger.info(
+                    "Skipped auto-block: task already past dev control",
+                    task_id=task_id,
+                    status=resp.json().get("status"),
+                    reason=reason,
+                )
+                return
+        except Exception as e:
+            # A pre-check failure must not swallow the block attempt itself —
+            # fall through and try the PATCH as before.
+            logger.debug(
+                "Auto-block status pre-check failed, proceeding anyway",
+                task_id=task_id,
+                error=str(e) or repr(e),
+            )
         try:
             await client.patch(
                 f"{self._api_url}/tasks/{task_id}",
@@ -9306,10 +9352,13 @@ Start by:
                 reason=reason,
             )
         except Exception as e:
+            # str(e) is empty for some exception types (e.g. a bare
+            # asyncio.TimeoutError) — repr always names the class, so the
+            # fallback guarantees the log line is never blank.
             logger.error(
                 "Failed to auto-block task",
                 task_id=task_id,
-                error=str(e),
+                error=str(e) or repr(e),
             )
 
     async def _auto_resume_paused_parent(

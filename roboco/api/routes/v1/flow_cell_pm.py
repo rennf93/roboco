@@ -10,6 +10,7 @@ from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_cell_pm
 from roboco.api.schemas.v1.flow import (
     CompleteRequest,
+    DeclareCoverageRequest,
     DelegateRequest,
     EscalateUpRequest,
     GiveMeWorkRequest,
@@ -235,6 +236,20 @@ async def resume(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.resume(x_agent_id, body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/declare_coverage")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def declare_coverage(
+    request: Request,
+    body: DeclareCoverageRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.declare_coverage(x_agent_id, body.task_id, body.criteria)
     return envelope_to_response(env, request)
 
 
