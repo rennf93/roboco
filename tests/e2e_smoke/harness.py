@@ -369,8 +369,18 @@ def build_e2e_stack(
     mp.setattr(settings, "github_api_base_url", f"{base_url}/_github")
 
     app = _build_app(gh)
+    # loop=settings.uvicorn_loop ("asyncio" by default): uvicorn auto-selects
+    # uvloop when installed, and this in-thread server has crashed CI with a
+    # uvloop/asyncpg segfault (uvloop 0.22 + asyncpg 0.31 + Python 3.13) —
+    # mirror the production default instead of picking up uvloop implicitly.
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            loop=settings.uvicorn_loop,
+        )
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()

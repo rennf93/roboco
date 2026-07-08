@@ -41,18 +41,30 @@ def build_doc_source(*, kind: str, id_: str | None) -> str | None:
 
 _MIN_CHUNK_LENGTH = 200
 
+# Per-index-type override of _MIN_CHUNK_LENGTH. Journal/learning entries are
+# short by design (templated notes, distilled Problem->Approach->Gotcha
+# lessons) — the global 200-char floor discarded every one of them as
+# "garbage" (raw_count=1 every time), so org-memory/journal retrieval never
+# had anything to find. Every other index keeps the default.
+_MIN_CHUNK_LENGTH_BY_TYPE: dict[IndexType, int] = {
+    IndexType.JOURNALS: 40,
+    IndexType.LEARNINGS: 80,
+}
 
-def _filter_quality_chunks(raw_chunks: list[Any]) -> list[Any]:
+
+def _filter_quality_chunks(
+    raw_chunks: list[Any], min_chunk_length: int = _MIN_CHUNK_LENGTH
+) -> list[Any]:
     """Drop tiny chunks and chunks that are mostly markdown formatting."""
     kept: list[Any] = []
     for chunk in raw_chunks:
         text = chunk.text.strip()
-        if len(text) < _MIN_CHUNK_LENGTH:
+        if len(text) < min_chunk_length:
             continue
         non_formatting = (
             text.replace("```", "").replace("---", "").replace("#", "").strip()
         )
-        if len(non_formatting) < _MIN_CHUNK_LENGTH // 2:
+        if len(non_formatting) < min_chunk_length // 2:
             continue
         kept.append(chunk)
     return kept
@@ -70,6 +82,7 @@ class IndexConfig:
     embedding_model: str = "qwen3-embedding:0.6b"
     llm_model: str = "glm-5.2:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
+    min_chunk_length: int = _MIN_CHUNK_LENGTH
 
     @classmethod
     def from_settings(cls, index_type: IndexType) -> "IndexConfig":
@@ -90,6 +103,9 @@ class IndexConfig:
             embedding_model=settings.default_embedding_model,
             llm_model=settings.local_llm_model,
             llm_base_url=settings.local_llm_base_url,
+            min_chunk_length=_MIN_CHUNK_LENGTH_BY_TYPE.get(
+                index_type, _MIN_CHUNK_LENGTH
+            ),
         )
 
 
@@ -435,7 +451,7 @@ class BaseIndexPlugin(ABC):
         embedder = self._require_embedder
 
         raw_chunks: list[Chunk] = chunker.chunk_document(doc)
-        chunks = _filter_quality_chunks(raw_chunks)
+        chunks = _filter_quality_chunks(raw_chunks, self.config.min_chunk_length)
         if not chunks:
             logger.warning(
                 "All chunks filtered as garbage",

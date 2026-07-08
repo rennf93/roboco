@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,26 @@ class SandboxInfo:
         for name, conn in self.services.items():
             env.extend(SANDBOX_ENGINES[name].emit_env(conn))
         return env
+
+    def as_payload(self) -> dict[str, dict[str, Any]]:
+        """Per-service creds dict for the ``request_sandbox`` verb's evidence.
+
+        Same variable names as ``emit_env`` (docs/env parity) but keyed for
+        direct agent consumption (JSON) rather than ``docker run -e`` args.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for name, conn in self.services.items():
+            args = SANDBOX_ENGINES[name].emit_env(conn)
+            env = dict(pair.split("=", 1) for pair in args[1::2])
+            out[name] = {
+                "host": conn.host,
+                "port": conn.port,
+                "user": conn.user,
+                "password": conn.password,
+                "database": conn.database,
+                "env": env,
+            }
+        return out
 
 
 class SandboxEngine(ABC):

@@ -662,7 +662,46 @@ class _CancelableCommitSession:
         self._txn = False
 
     async def invalidate(self) -> None:
-        self._order.append("invalidate")
+        # Mirrors real SQLAlchemy Session.invalidate(): a no-op past the
+        # first call (no open transaction left to touch) — both
+        # _commit_shielded and get_db's own cancel handler call this for the
+        # same cancelled request, and only the first should count.
+        if self._txn:
+            self._order.append("invalidate")
+        self._txn = False
+
+
+class _SlowButFinishingCommitSession:
+    """get_db-style fake session whose ``commit()`` outlives the server-side
+    timeout but finishes well within the shield's grace period — proving a
+    cancelled-mid-commit request still lets the commit land instead of
+    severing it on the spot."""
+
+    def __init__(self, order: list[str], delay: float) -> None:
+        self._order = order
+        self._delay = delay
+        self._txn = True
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit_start")
+        await asyncio.sleep(self._delay)
+        self._order.append("commit_end")
+        self._txn = False
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+    async def invalidate(self) -> None:
+        # Mirrors real SQLAlchemy Session.invalidate(): a no-op once the
+        # transaction is already gone (a successful commit clears it) — the
+        # cancel-completes-successfully test relies on this, exactly like the
+        # double-invalidate case above.
+        if self._txn:
+            self._order.append("invalidate")
         self._txn = False
 
 
@@ -701,8 +740,9 @@ def _make_cancel_during_commit_app(order: list[str]) -> FastAPI:
 
 def test_cancellation_mid_commit_invalidates_not_rollback(monkeypatch: Any) -> None:
     """A flow-verb request that blows its server-side timeout WHILE
-    DbCommitMiddleware's commit is in flight must: propagate CancelledError
-    cleanly to a 504 (not hang, not a raw 500), discard the session via
+    DbCommitMiddleware's commit is in flight, and the commit is STILL stuck
+    past the shield's grace period, must: propagate CancelledError cleanly
+    to a 504 (not hang, not a raw 500), discard the session via
     ``invalidate()`` — NOT ``rollback()`` (SQLAlchemy's own docs: rolling
     back a cancelled/timed-out operation risks issuing another command over
     a connection whose wire-protocol state is now undefined, which is what
@@ -710,6 +750,7 @@ def test_cancellation_mid_commit_invalidates_not_rollback(monkeypatch: Any) -> N
     and never resume/complete the cancelled commit.
     """
     monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "db_commit_cancel_grace_seconds", 0.05)
     order: list[str] = []
     app = _make_cancel_during_commit_app(order)
 
@@ -719,3 +760,58 @@ def test_cancellation_mid_commit_invalidates_not_rollback(monkeypatch: Any) -> N
     assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
     assert response.json()["error"] == "gateway_timeout"
     assert order == ["route_body", "commit_start", "invalidate"], order
+
+
+async def _fake_get_db_slow_commit(request: Request) -> Any:
+    """Module-level for the same reason as ``_fake_get_db_cancel_safe`` above —
+    a local closure isn't resolvable as a FastAPI dependency under this file's
+    ``from __future__ import annotations``."""
+    order: list[str] = request.app.state.db_commit_order
+    delay: float = request.app.state.db_commit_delay
+    session = _SlowButFinishingCommitSession(order, delay)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except asyncio.CancelledError:
+        await _discard_on_cancel(cast("AsyncSession", session))
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_slow_commit_app(order: list[str], delay: float) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+    app.state.db_commit_delay = delay
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db_slow_commit)]) -> Any:
+        order.append("route_body")
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_cancellation_mid_commit_lets_commit_finish_within_grace(
+    monkeypatch: Any,
+) -> None:
+    """A commit already in flight when the server-side timeout fires, but
+    that finishes on its own well within the shield's grace period, must be
+    allowed to land — never severed on the spot. No rollback, no invalidate
+    (nothing to undo — the data is durably committed), and the timeout's own
+    CancelledError still propagates to the client as a clean 504 (the
+    client's retry is idempotent-safe regardless)."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "db_commit_cancel_grace_seconds", 2.0)
+    order: list[str] = []
+    app = _make_slow_commit_app(order, delay=0.15)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/flow/developer/give_me_work")
+
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+    assert order == ["route_body", "commit_start", "commit_end"], order

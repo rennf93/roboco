@@ -9,6 +9,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from typing import Any, cast
 
 import structlog
@@ -619,22 +620,30 @@ class DbCommitMiddleware:
     see ``setup_middleware`` — so a hanging commit on a flow-verb request
     stays bounded by Flow's ``asyncio.timeout``. That timeout is scoped to
     the WHOLE ``self.app(...)`` call including this middleware, so its
-    deadline can fire while ``await session.commit()`` below is itself
-    in flight (not just while a route handler hangs before responding) —
-    ``started`` in the outer middleware is still ``False`` at that point
-    (its own wrapped ``send`` hasn't been called yet), so it sends its 504
-    normally once this ``await`` raises ``CancelledError``. That
-    ``CancelledError`` is a ``BaseException`` the ``except Exception`` below
-    does not catch, so it propagates up through FastAPI's dependency
-    ``AsyncExitStack`` (still open here — ``response(scope, receive, send)``
-    is called from inside it, see ``get_db_committed``'s docstring) straight
-    into ``get_db``'s own ``except asyncio.CancelledError``, which invalidates
-    the session rather than rolling it back: a rollback would issue another
-    command over a connection whose wire-protocol state this cancellation may
-    have already left mid-flight, corrupting it further (SQLAlchemy's own
-    docs prescribe ``invalidate()``, not ``rollback()``, for this exact
-    external-cancellation case). Skipping that step is what let a later,
-    unrelated request's pool checkout crash on the poisoned connection.
+    deadline can fire while the commit below is itself in flight (not just
+    while a route handler hangs before responding) — ``started`` in the
+    outer middleware is still ``False`` at that point (its own wrapped
+    ``send`` hasn't been called yet), so it sends its 504 normally once the
+    ``CancelledError`` below propagates.
+
+    The commit itself (``_commit_shielded``) runs cancellation-safe: a bare
+    ``await session.commit()`` cancelled mid-wire abandons the asyncpg
+    connection in an undefined protocol state, and the pool's own recovery —
+    ``invalidate()`` forcing the driver's ``terminate()`` — is itself
+    implicated in a uvloop/asyncpg segfault class observed on CI (uvloop
+    0.22 + asyncpg 0.31 + Python 3.13; see ``ROBOCO_UVICORN_LOOP``). So the
+    commit runs as its own task, shielded from this request's cancellation,
+    and gets a short grace (``settings.db_commit_cancel_grace_seconds``) to
+    finish naturally instead of being severed on the spot. Only a commit
+    that actually fails, or one still stuck past the grace, gets invalidated
+    — and re-raising the original ``CancelledError`` afterward still
+    propagates up through FastAPI's dependency ``AsyncExitStack`` (still
+    open here — ``response(scope, receive, send)`` is called from inside it,
+    see ``get_db_committed``'s docstring) into ``get_db``'s own
+    ``except asyncio.CancelledError``, which invalidates the session again —
+    a safe no-op (SQLAlchemy's ``Session.invalidate()`` only touches the
+    connection once; a session with no open transaction left skips it) that
+    keeps the two layers independent rather than coupled.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -649,11 +658,45 @@ class DbCommitMiddleware:
             if message["type"] == "http.response.start":
                 session = scope.get("state", {}).get("db_session")
                 if session is not None and session.in_transaction():
-                    try:
-                        await session.commit()
-                    except Exception:
-                        await session.rollback()
-                        raise
+                    await _commit_shielded(session)
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+async def _commit_shielded(session: Any) -> None:
+    """Commit ``session`` without abandoning it mid-wire on cancellation.
+
+    Runs the commit as an independent task and shields the wait on it from
+    this request's own cancellation (a plain ``await session.commit()``
+    would otherwise hand the request task's cancel straight to the commit
+    task, since awaiting a Task makes it the awaiter's ``_fut_waiter``).
+    On cancel, the commit keeps running in the background for up to
+    ``settings.db_commit_cancel_grace_seconds``:
+
+    - finishes successfully -> nothing to undo, just re-raise the cancel
+      (the client's retry is idempotent-safe; data is already durable).
+    - finishes with an error, or is still stuck past the grace -> the
+      connection is in a state worth discarding; invalidate() then re-raise.
+
+    A non-cancellation commit failure (shield propagates it unchanged)
+    takes the plain rollback path, unchanged from before.
+    """
+    commit_task = asyncio.ensure_future(session.commit())
+    try:
+        await asyncio.shield(commit_task)
+    except asyncio.CancelledError:
+        done, _pending = await asyncio.wait(
+            {commit_task}, timeout=settings.db_commit_cancel_grace_seconds
+        )
+        if commit_task not in done:
+            commit_task.cancel()
+            with suppress(BaseException):
+                await commit_task
+        if not commit_task.cancelled() and commit_task.exception() is None:
+            raise  # committed despite the cancel — nothing to undo
+        await session.invalidate()
+        raise
+    except Exception:
+        await session.rollback()
+        raise

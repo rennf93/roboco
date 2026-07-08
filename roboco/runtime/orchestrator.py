@@ -121,6 +121,11 @@ _DOCKER_EXEC_TIMEOUT_SECONDS = 30.0
 # legitimate slow write under load commits rather than being dropped (the
 # exact data-loss tail the durable tracker exists to prevent).
 _SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 5.0
+# Attribution breadcrumbs for orchestrator-initiated container stops (see
+# _record_expected_stop). A breadcrumb older than this is treated as unrelated
+# to whatever exit the monitor is now looking at, rather than mis-attributed.
+_EXPECTED_STOP_FRESH_SECONDS = 120.0
+_EXPECTED_STOP_MAX_ENTRIES = 200
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -790,6 +795,14 @@ class AgentOrchestrator:
     - Cost-efficient on-demand spawning
     """
 
+    # Per-agent-slug lock serializing ensure_sandbox's check-cache -> provision
+    # -> store section. Declared here (not in __init__, to keep its statement
+    # count under the gate) and lazily allocated on first use.
+    _sandbox_locks: dict[str, asyncio.Lock]
+    # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
+    # allocated by _record_expected_stop, same statement-budget rationale.
+    _expected_stops: dict[str, tuple[str, float]]
+
     def __init__(
         self,
         mcp_config_dir: Path | None = None,
@@ -806,6 +819,13 @@ class AgentOrchestrator:
         # AGENT_NETWORK itself) so a future network-isolation change only
         # has to flip this constant here — sandboxes ride along.
         self._sandbox = SandboxProvisioner(network=AGENT_NETWORK)
+        # On-demand sandbox creds cache (agent slug -> last-provisioned info),
+        # consulted by ensure_sandbox / request_sandbox. Evicted at teardown
+        # and by the janitor sweep. Known ceiling: in-memory only — an
+        # orchestrator restart forgets it; the next request_sandbox call
+        # re-provisions (provision()'s pre-clear tears down any stale
+        # container) with fresh creds.
+        self._sandbox_info: dict[str, SandboxInfo] = {}
         # Gateway-health grace tracker: agent slug -> first time its gateway was
         # seen broken. Tolerates a transient probe miss before the reaper recovers
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
@@ -1159,7 +1179,9 @@ class AgentOrchestrator:
                 # the next start instead of waiting for the reaper's TTL. A
                 # provider-parked agent is skipped inside stop_agent so its
                 # claim survives for the probe-resume loop across the restart.
-                await self.stop_agent(agent_id, release_claim=True)
+                await self.stop_agent(
+                    agent_id, release_claim=True, stop_reason="orchestrator_shutdown"
+                )
             except Exception:
                 logger.exception(
                     "stop_agent raised during shutdown; continuing to drain",
@@ -2082,18 +2104,19 @@ class AgentOrchestrator:
             git_context, project_slug, team, agent_id, task_id
         )
 
-        # Provision this spawn's sandbox DB/Redis (flag + per-project opt-in),
-        # before `docker run` so its connection info can be injected as env.
-        # Fail-loud on a provisioning failure (see _maybe_provision_sandbox).
-        sandbox_info = await self._maybe_provision_sandbox(
-            agent_id, project_slug, task_id
-        )
+        # Availability probe only (flag + per-project opt-in) — sandboxes are
+        # provisioned on demand via the request_sandbox do-verb
+        # (ensure_sandbox), never here, so a spawn never fails on sandbox
+        # infrastructure.
+        sandbox_services = await self._sandbox_available_services(project_slug)
 
         agent_settings_path = self._generate_agent_settings(
             agent_id, canonical_role, cwd_path, cell_workspace_path
         )
 
-        briefing_path = await self._write_agent_briefing(agent_id, task_id, cwd_path)
+        briefing_path = await self._write_agent_briefing(
+            agent_id, task_id, cwd_path, sandbox_services
+        )
 
         await self._ensure_agent_image(agent_id)
         mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
@@ -2111,7 +2134,7 @@ class AgentOrchestrator:
             provider_type=route.provider_type.value,
             provider_base_url=route.base_url,
             provider_auth_token=route.auth_token,
-            sandbox_info=sandbox_info,
+            sandbox_available_services=sandbox_services,
         )
         instance = AgentInstance(
             agent_id=agent_id,
@@ -2212,22 +2235,19 @@ class AgentOrchestrator:
                 f" (task={task_id}): {e}; will retry next tick"
             ) from e
 
-    async def _maybe_provision_sandbox(
-        self, agent_id: str, project_slug: str, task_id: str | None
-    ) -> SandboxInfo | None:
-        """Provision this spawn's sandbox DB/Redis, or None if not opted in.
+    async def _sandbox_available_services(self, project_slug: str) -> list[str]:
+        """Which sandbox services this project's spawn may request on-demand.
 
-        Off (flag or project) => None, byte-for-byte identical to today (the
+        Off (flag or project) => [], byte-for-byte identical to today (the
         legacy `_append_gate_env` prod-creds injection stays active). The
-        project lookup itself is best-effort (a DB hiccup here degrades to
-        "no sandbox" rather than blocking every spawn on a transient error —
-        `_ensure_worktree_before_spawn` already fails loud on a genuine DB
-        outage). Once a project has opted in, an actual provisioning failure
-        (container won't start / never becomes ready) IS fail-loud: an agent
-        whose gate can't run must never spawn.
+        project lookup is best-effort (a DB hiccup degrades to "no sandbox"
+        rather than blocking the spawn). Provisioning itself no longer
+        happens here — it is on-demand via the `request_sandbox` do-verb
+        (see `ensure_sandbox`), so a spawn never fails on sandbox
+        infrastructure.
         """
         if not settings.sandbox_db_enabled:
-            return None
+            return []
         from roboco.db.base import get_db_context
         from roboco.services.project import get_project_service
 
@@ -2236,31 +2256,86 @@ class AgentOrchestrator:
                 project = await get_project_service(db).get_by_slug(project_slug)
         except Exception as e:
             logger.warning(
-                "sandbox project lookup failed; skipping sandbox provisioning",
-                agent_id=agent_id,
+                "sandbox project lookup failed; no sandbox available this spawn",
                 project_slug=project_slug,
                 error=str(e),
             )
-            return None
-        services = list(project.sandbox_services or []) if project else []
-        if not services:
-            return None
-        try:
-            return await self._sandbox.provision(agent_id, services)
-        except Exception as e:
-            # str(TimeoutError()) == "" — include the type so a bare timeout
-            # (a cold image pull exceeding the run deadline) self-diagnoses.
-            err = f"{type(e).__name__}: {e}"
-            logger.error(
-                "sandbox provisioning failed; refusing spawn",
-                agent_id=agent_id,
-                task_id=task_id,
-                services=services,
-                error=err,
-            )
-            raise AgentReadinessError(
-                f"sandbox provisioning failed for {agent_id} (task={task_id}): {err}"
-            ) from e
+            return []
+        return list(project.sandbox_services or []) if project else []
+
+    async def ensure_sandbox(
+        self, agent_slug: str, requested: list[str], opted: list[str]
+    ) -> SandboxInfo:
+        """Idempotent on-demand provision, called by the `request_sandbox` verb.
+
+        DEVIATION (full-set provisioning): always provisions ``requested |
+        opted`` — effectively the project's whole opted-in set, since
+        ``opted`` is already a superset of ``requested`` by the verb's own
+        guard — rather than only what this particular call named. That makes
+        any later subset/superset request within the same opted set a
+        guaranteed cache hit; it can never fall through to `provision()`,
+        whose pre-clear `teardown()` would otherwise kill a live, mid-use
+        container out from under the agent and rotate its creds. The union
+        (rather than trusting the caller to always pass the full set) is
+        belt-and-suspenders — bounded by the project's own opt-in either way.
+
+        A cache hit is verified live (`SandboxProvisioner.is_live`) before
+        being trusted: a container OOM-killed or removed out-of-band evicts
+        the stale entry and falls through to a fresh full-set provision
+        (new creds — that's the recovery).
+
+        The whole check-cache -> provision -> store section runs under a
+        per-agent-slug lock so two concurrent calls for the same agent can't
+        race provision()/teardown() on the same containers.
+        """
+        full = sorted(set(requested) | set(opted))
+        # Lazily-allocated (no __init__ statement) to keep AgentOrchestrator's
+        # constructor under the statement-count gate; getattr guards bare
+        # __new__() test doubles that never ran __init__ — same convention
+        # as _sandbox_info's own test-double guards elsewhere in this class.
+        locks = getattr(self, "_sandbox_locks", None)
+        if locks is None:
+            locks = {}
+            self._sandbox_locks = locks
+        lock = locks.setdefault(agent_slug, asyncio.Lock())
+        async with lock:
+            cached = self._sandbox_info.get(agent_slug)
+            if cached is not None and set(full) <= set(cached.services):
+                if await self._sandbox.is_live(agent_slug, sorted(cached.services)):
+                    return cached
+                self._sandbox_info.pop(agent_slug, None)
+            info = await self._sandbox.provision(agent_slug, full)
+            self._sandbox_info[agent_slug] = info
+            return info
+
+    async def release_sandbox(self, agent_slug: str) -> None:
+        """Best-effort teardown at the end of the caller's task engagement.
+
+        Called by the Choreographer's post-verb hook (i_am_done, unclaim,
+        i_am_idle, pass_review/fail_review, i_documented) so a
+        `request_sandbox`-provisioned sidecar doesn't outlive the work
+        that asked for it, instead of only dying with the agent container.
+        Idempotent and never raises (`SandboxProvisioner.teardown`'s own
+        contract) — the container-removal teardown + janitor sweep remain
+        the backstop.
+
+        The overwhelmingly common call has no sandbox at all, so the cache
+        dict is checked BEFORE taking the per-agent lock or touching
+        docker — the fast path is a single dict lookup, no lock, no
+        subprocess.
+        """
+        if agent_slug not in self._sandbox_info:
+            return
+        locks = getattr(self, "_sandbox_locks", None)
+        if locks is None:
+            locks = {}
+            self._sandbox_locks = locks
+        lock = locks.setdefault(agent_slug, asyncio.Lock())
+        async with lock:
+            if agent_slug not in self._sandbox_info:
+                return
+            await self._sandbox.teardown(agent_slug)
+            self._sandbox_info.pop(agent_slug, None)
 
     async def _launch_spawn(
         self,
@@ -2841,19 +2916,15 @@ class AgentOrchestrator:
         )
 
     @staticmethod
-    def _append_sandbox_env(cmd: list[str], config: AgentConfig) -> None:
-        """Inject sandbox engine env, in place of the prod-creds gate env.
+    def _append_sandbox_marker_env(cmd: list[str], services: list[str]) -> None:
+        """Cheap availability probe: names the request_sandbox-eligible services.
 
-        Called INSTEAD OF `_append_gate_env` whenever a sandbox was provisioned
-        for this spawn (`config.sandbox_info` set) — sandbox replaces, never
-        coexists with, the production gate-env injection. Emission is driven by
-        the engine registry via `SandboxInfo.emit_env`, so a new engine's
-        `ROBOCO_TEST_*` vars land here with no orchestrator change.
+        Replaces eager sandbox env injection now that provisioning is
+        on-demand (the `request_sandbox` do-verb) — never prod creds, purely
+        informational so the agent knows the verb will succeed. Called
+        INSTEAD OF `_append_gate_env` for an opted-in project (never both).
         """
-        info = config.sandbox_info
-        if info is None:
-            return
-        cmd.extend(info.emit_env())
+        cmd.extend(["-e", f"ROBOCO_SANDBOX_SERVICES_AVAILABLE={','.join(services)}"])
 
     @staticmethod
     def _default_spawn_prompt() -> str:
@@ -3003,10 +3074,13 @@ class AgentOrchestrator:
             return result.instance_id
 
         container_name = f"roboco-agent-{config.agent_id}"
-        # teardown_sandbox=False: this spawn's sandbox was provisioned moments
-        # ago in _build_agent_config — the stale-clear must not destroy it.
-        # Stale sandboxes from a prior crash are cleared by provision() itself.
-        await self._remove_container(container_name, teardown_sandbox=False)
+        # teardown_sandbox=False: nothing is provisioned before spawn anymore
+        # (sandboxes are on-demand via request_sandbox/ensure_sandbox), so this
+        # is now vestigial for THIS spawn — but it still protects a respawn
+        # racing a sandbox the agent just requested moments ago via the verb.
+        await self._remove_container(
+            container_name, teardown_sandbox=False, stop_reason="pre_spawn_stale_clear"
+        )
 
         if not config.mcp_config_path:
             raise RuntimeError("MCP config path not set")
@@ -3015,8 +3089,8 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
-        if config.sandbox_info is not None:
-            self._append_sandbox_env(cmd, config)
+        if config.sandbox_available_services:
+            self._append_sandbox_marker_env(cmd, config.sandbox_available_services)
         else:
             self._append_gate_env(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
@@ -3033,8 +3107,85 @@ class AgentOrchestrator:
 
         return stdout.decode().strip()
 
+    def _record_expected_stop(self, agent_id: str, reason: str) -> None:
+        """Breadcrumb an orchestrator-initiated stop/kill for ``agent_id``.
+
+        Diagnostics only (in-memory, no DB): lets the exit monitor tell an
+        attributed stop from a genuinely unexplained one instead of logging
+        every death as "unexpectedly". Bounded: past a size threshold, stale
+        entries are dropped opportunistically rather than growing forever.
+        ``getattr`` defaults the registry so a ``__new__``-constructed test
+        instance (no ``__init__``) doesn't need to know about it either.
+        """
+        stops: dict[str, tuple[str, float]] | None = getattr(
+            self, "_expected_stops", None
+        )
+        if stops is None:
+            stops = self._expected_stops = {}
+        if len(stops) > _EXPECTED_STOP_MAX_ENTRIES:
+            cutoff = time.monotonic() - _EXPECTED_STOP_FRESH_SECONDS
+            stops = self._expected_stops = {
+                k: v for k, v in stops.items() if v[1] >= cutoff
+            }
+        stops[agent_id] = (reason, time.monotonic())
+
+    def _consume_expected_stop(self, agent_id: str) -> str:
+        """Pop and return the breadcrumb reason for ``agent_id``, else "none_recorded".
+
+        A breadcrumb older than ``_EXPECTED_STOP_FRESH_SECONDS`` is treated as
+        stale (not fresh enough to attribute to *this* exit) and reported the
+        same as no breadcrumb at all. Defensive on a missing registry, like
+        ``_record_expected_stop``.
+        """
+        stops: dict[str, tuple[str, float]] | None = getattr(
+            self, "_expected_stops", None
+        )
+        entry = stops.pop(agent_id, None) if stops else None
+        if entry is None:
+            return "none_recorded"
+        reason, recorded_at = entry
+        if time.monotonic() - recorded_at > _EXPECTED_STOP_FRESH_SECONDS:
+            return "none_recorded"
+        return reason
+
+    @staticmethod
+    async def _inspect_exit_diagnostics(container_name: str) -> dict[str, Any]:
+        """Best-effort extra `docker inspect` fields for a dead container's log line.
+
+        Cheap (one more inspect the monitor already does one of) and never
+        raises — any failure/timeout yields {} so the caller's log line still
+        emits with whatever fields it already had.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "inspect",
+                "-f",
+                "{{.State.OOMKilled}}|{{.State.StartedAt}}|{{.State.FinishedAt}}|"
+                "{{.State.Error}}",
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+            oom, started, finished, error = stdout.decode().strip().split("|")
+        except Exception:
+            return {}
+        return {
+            "oom_killed": oom == "true",
+            "started_at": started or None,
+            "finished_at": finished or None,
+            "state_error": error or None,
+        }
+
     async def _remove_container(
-        self, container_name: str, *, teardown_sandbox: bool = True
+        self,
+        container_name: str,
+        *,
+        teardown_sandbox: bool = True,
+        stop_reason: str | None = None,
     ) -> None:
         """Remove a container if it exists, dumping its logs to disk first.
 
@@ -3045,7 +3196,17 @@ class AgentOrchestrator:
 
         ``teardown_sandbox=False`` is passed only by the pre-spawn stale-clear,
         whose spawn has already provisioned the sandbox it is about to use.
+
+        ``stop_reason``, when given, breadcrumbs this removal so the exit
+        monitor can attribute the death instead of flagging it unexplained.
+        ``None`` (the default) skips it — used by callers (``stop_agent``)
+        that already recorded their own breadcrumb earlier, before their
+        docker stop/kill, so this call doesn't clobber it with "unknown".
         """
+        if stop_reason is not None:
+            self._record_expected_stop(
+                container_name.removeprefix("roboco-agent-"), stop_reason
+            )
         # Check the container actually exists before trying to dump logs;
         # _remove_container is routinely called pre-spawn to clear stale
         # containers, and on first spawn there's nothing to dump.
@@ -3107,6 +3268,13 @@ class AgentOrchestrator:
         if teardown_sandbox and settings.sandbox_db_enabled:
             slug = container_name.removeprefix("roboco-agent-")
             await self._sandbox.teardown(slug)
+            # Evict the ensure_sandbox cache so a later request_sandbox call
+            # re-provisions instead of handing back creds for a torn-down
+            # container. getattr guards bare __new__() test doubles that
+            # never ran __init__.
+            cache = getattr(self, "_sandbox_info", None)
+            if cache is not None:
+                cache.pop(slug, None)
 
     async def _generate_mcp_config(
         self,
@@ -3877,6 +4045,7 @@ class AgentOrchestrator:
         agent_id: str,
         task_id: str | None,
         workspace_path: str,
+        sandbox_services: list[str] | None = None,
     ) -> Path | None:
         """Write a compact task briefing to be read by SessionStart hook.
 
@@ -3886,6 +4055,10 @@ class AgentOrchestrator:
         the task and include title, status, branch, and acceptance criteria.
         On fetch failure we still emit the role-level part (role, escalation
         target, terminal tools, workspace path) — strictly better than nothing.
+
+        `sandbox_services` (when non-empty) names the request_sandbox verb so
+        an opted-in project's agent knows it will succeed, rather than relying
+        on manifest presence alone to discover it.
         """
         role = get_agent_role(agent_id) or "agent"
         team = get_agent_team(agent_id) or "-"
@@ -3897,6 +4070,12 @@ class AgentOrchestrator:
             task = await self._fetch_task_for_briefing(agent_id, task_id)
             if task is not None:
                 task_block = self._format_task_briefing_block(task_id, task)
+        sandbox_line = (
+            f"- **Sandbox available:** `{', '.join(sandbox_services)}` — call "
+            "`request_sandbox()` to provision on demand\n"
+            if sandbox_services
+            else ""
+        )
 
         content = (
             f"# Session briefing — {agent_id}\n"
@@ -3908,6 +4087,7 @@ class AgentOrchestrator:
             f"- **Team:** {team}\n"
             f"- **Escalate to:** `{escalate_to}`\n"
             f"- **Workspace:** `{workspace_path}`\n"
+            f"{sandbox_line}"
             f"{task_block}"
             "\n## Terminal tools (how to exit cleanly)\n"
             "- `i_am_idle()` — no work remaining (every role)\n"
@@ -4217,7 +4397,11 @@ class AgentOrchestrator:
         async with self._intake_spawn_lock:
             # Single live session: reap any prior intake container before spawning.
             if INTAKE_AGENT_ID in self._instances:
-                await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
+                await self.stop_agent(
+                    INTAKE_AGENT_ID,
+                    graceful=False,
+                    stop_reason="intake_respawn_guard",
+                )
 
             from roboco.models.base import ModelProvider
 
@@ -4251,7 +4435,9 @@ class AgentOrchestrator:
             else:
                 await self._ensure_agent_image(INTAKE_AGENT_ID)
             container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
-            await self._remove_container(container_name)
+            await self._remove_container(
+                container_name, stop_reason="pre_spawn_stale_clear"
+            )
 
             cmd = self._build_intake_run_cmd(
                 _IntakeRunSpec(
@@ -4277,7 +4463,9 @@ class AgentOrchestrator:
             # now would land a live container nothing tears down (the orphan). The
             # stop() drain awaits this coroutine, so the abort surfaces cleanly.
             if not self._running:
-                await self._remove_container(container_name)
+                await self._remove_container(
+                    container_name, stop_reason="spawn_aborted_shutdown"
+                )
                 raise _SpawnAbortedDuringShutdown(INTAKE_AGENT_ID)
 
             config = AgentConfig(
@@ -4336,7 +4524,9 @@ class AgentOrchestrator:
         from roboco.services.prompter_live import get_live_registry
 
         get_live_registry().close(session_id)
-        await self.stop_agent(INTAKE_AGENT_ID, graceful=True)
+        await self.stop_agent(
+            INTAKE_AGENT_ID, graceful=True, stop_reason="intake_session_reaped"
+        )
         logger.info("Intake session reaped", session_id=session_id)
 
     # ------------------------------------------------------------------ #
@@ -4417,7 +4607,11 @@ class AgentOrchestrator:
             from roboco.models.base import ModelProvider
 
             if SECRETARY_AGENT_ID in self._instances:
-                await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
+                await self.stop_agent(
+                    SECRETARY_AGENT_ID,
+                    graceful=False,
+                    stop_reason="secretary_respawn_guard",
+                )
 
             prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
             route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
@@ -4440,7 +4634,9 @@ class AgentOrchestrator:
             else:
                 await self._ensure_agent_image(SECRETARY_AGENT_ID)
             container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
-            await self._remove_container(container_name)
+            await self._remove_container(
+                container_name, stop_reason="pre_spawn_stale_clear"
+            )
 
             agent_uuid = str(AGENTS[SECRETARY_AGENT_ID].uuid)
             cmd = self._build_secretary_run_cmd(
@@ -4471,7 +4667,9 @@ class AgentOrchestrator:
             # just-started container and abort WITHOUT registering, so it isn't
             # orphaned by a stop() that has already iterated _instances.
             if not self._running:
-                await self._remove_container(container_name)
+                await self._remove_container(
+                    container_name, stop_reason="spawn_aborted_shutdown"
+                )
                 raise _SpawnAbortedDuringShutdown(SECRETARY_AGENT_ID)
 
             config = AgentConfig(
@@ -4517,7 +4715,9 @@ class AgentOrchestrator:
         from roboco.services.prompter_live import get_live_registry
 
         get_live_registry().close(session_id)
-        await self.stop_agent(SECRETARY_AGENT_ID, graceful=True)
+        await self.stop_agent(
+            SECRETARY_AGENT_ID, graceful=True, stop_reason="secretary_session_reaped"
+        )
         logger.info("Secretary session reaped", session_id=session_id)
 
     async def _reap_idle_interactive_sessions(self) -> None:
@@ -4900,6 +5100,7 @@ class AgentOrchestrator:
         graceful: bool = True,
         exit_reason: str = "stopped",
         release_claim: bool = False,
+        stop_reason: str = "stop_agent",
     ) -> None:
         """Stop an agent container.
 
@@ -4919,6 +5120,12 @@ class AgentOrchestrator:
         loop. A provider-parked agent (``rate_limit_lifted`` WaitingRecord) is
         always skipped even when a caller opts in — its claim must survive so
         probe-success revives the same agent on the same task.
+
+        ``stop_reason`` breadcrumbs the container as an expected stop (see
+        ``_record_expected_stop``) BEFORE the docker stop/kill is issued —
+        ``_check_health`` polls without holding ``self._lock``, so it can
+        observe the container already gone while this call is still mid-flight;
+        recording early (not just at ``_remove_container``) closes that race.
         """
         # Finalize the spawn-session row before the container is removed so we
         # can still query the SDK's /usage/status endpoint.  This must happen
@@ -4942,6 +5149,7 @@ class AgentOrchestrator:
             instance = self._instances[agent_id]
 
             if instance.container_id:
+                self._record_expected_stop(agent_id, stop_reason)
                 instance.state = AgentState.STOPPING
                 container_name = f"roboco-agent-{agent_id}"
 
@@ -5077,7 +5285,7 @@ class AgentOrchestrator:
         await self._persist_waiting_record(record)
 
         # Stop the agent
-        await self.stop_agent(agent_id)
+        await self.stop_agent(agent_id, stop_reason=f"waiting_long_{waiting_for}")
 
         # Update state
         if agent_id in self._instances:
@@ -5486,7 +5694,9 @@ class AgentOrchestrator:
             if cost <= cap:
                 continue
             try:
-                await self._remove_container(f"roboco-agent-{agent_id}")
+                await self._remove_container(
+                    f"roboco-agent-{agent_id}", stop_reason="grok_cost_cap"
+                )
             except Exception as exc:
                 logger.error(
                     "grok cost-cap kill failed; will retry next tick",
@@ -6986,7 +7196,12 @@ Start by:
                     # for cost overruns and will not continue its task, so hand
                     # the claim back to the pool now instead of waiting for the
                     # reaper's TTL.
-                    await self.stop_agent(agent_id, graceful=True, release_claim=True)
+                    await self.stop_agent(
+                        agent_id,
+                        graceful=True,
+                        release_claim=True,
+                        stop_reason="budget_sweep",
+                    )
                 except Exception as e:
                     logger.warning(
                         "Failed to stop budget-exceeded agent",
@@ -7186,12 +7401,7 @@ Start by:
                 exit_code=exit_code,
             )
         else:
-            logger.warning(
-                "Agent container stopped unexpectedly",
-                agent_id=agent_id,
-                container_id=cid,
-                exit_code=exit_code,
-            )
+            await self._log_stopped_container(agent_id, cid, exit_code)
         # The agent self-exited (a graceful i_am_idle shutdown, or a crash), so
         # stop_agent() — which normally finalizes — was never called. Finalize
         # here to capture token usage from the transcript; otherwise the
@@ -7205,6 +7415,32 @@ Start by:
             instance.error_count = 0
             return
         await self._crash_retry_or_escalate(agent_id, instance)
+
+    async def _log_stopped_container(
+        self, agent_id: str, container_id: str | None, exit_code: int | None
+    ) -> None:
+        """Log a non-graceful exit, attributed via the expected-stop breadcrumb.
+
+        A fresh breadcrumb (recorded by an orchestrator-initiated stop/kill
+        path — see ``_record_expected_stop``) means this death is explained:
+        log it at info as "(expected)" so the warning line stays meaningful
+        for genuinely unattributed SIGTERMs/crashes. Inspect diagnostics are
+        best-effort and never block the log line.
+        """
+        reason = self._consume_expected_stop(agent_id)
+        diagnostics = await self._inspect_exit_diagnostics(f"roboco-agent-{agent_id}")
+        expected = reason != "none_recorded"
+        log = logger.info if expected else logger.warning
+        log(
+            "Agent container stopped (expected)"
+            if expected
+            else "Agent container stopped unexpectedly",
+            agent_id=agent_id,
+            container_id=container_id,
+            exit_code=exit_code,
+            expected_stop_reason=reason,
+            **diagnostics,
+        )
 
     async def _crash_retry_or_escalate(self, agent_id: str, instance: Any) -> None:
         """A crashed (non-graceful) agent: auto-restart up to a cap, then escalate.
@@ -9881,6 +10117,13 @@ Start now: evidence(task_id="{task_id}")
             return
         with contextlib.suppress(Exception):
             await self._sandbox.janitor_sweep()
+        # Evict ensure_sandbox cache entries for agents the sweep just reaped
+        # (owner container gone). getattr guards bare __new__() test doubles.
+        cache = getattr(self, "_sandbox_info", None)
+        if cache:
+            live = getattr(self, "_instances", {})
+            for slug in set(cache) - set(live):
+                cache.pop(slug, None)
 
     def _assignee_has_active_instance(self, task: Any) -> bool:
         """True if the task's assignee currently holds a live (ACTIVE) container.
@@ -10060,7 +10303,11 @@ Start now: evidence(task_id="{task_id}")
                 "will re-spawn it with a freshly signed token",
                 slug=slug,
             )
-            await self._remove_container(f"roboco-agent-{slug}", teardown_sandbox=False)
+            await self._remove_container(
+                f"roboco-agent-{slug}",
+                teardown_sandbox=False,
+                stop_reason="stale_token_heal",
+            )
             killed += 1
         if killed:
             logger.info("Healed stale agent tokens at startup", count=killed)
@@ -10207,7 +10454,9 @@ Start now: evidence(task_id="{task_id}")
         if slug is None:
             return False
         try:
-            await self._remove_container(f"roboco-agent-{slug}")
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="reaper_wedged_grok"
+            )
         except Exception as exc:
             logger.error(
                 "wedged-grok kill failed; will retry next tick",
@@ -10271,7 +10520,9 @@ Start now: evidence(task_id="{task_id}")
         if slug is None:
             return False
         try:
-            await self._remove_container(f"roboco-agent-{slug}")
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="reaper_stuck_claude"
+            )
         except Exception as exc:
             logger.error(
                 "stuck-claude kill failed; will retry next tick",
@@ -10309,7 +10560,9 @@ Start now: evidence(task_id="{task_id}")
         if not await self._gateway_broken_past_grace(slug):
             return False
         try:
-            await self._remove_container(f"roboco-agent-{slug}")
+            await self._remove_container(
+                f"roboco-agent-{slug}", stop_reason="gateway_health_recovery"
+            )
         except Exception as exc:
             logger.error(
                 "broken-gateway kill failed; will retry next tick",

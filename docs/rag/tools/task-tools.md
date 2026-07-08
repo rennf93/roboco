@@ -147,3 +147,7 @@ progress(task_id, message="API skeleton landed", plan_step="2")
 ```
 
 Your plan's steps are the progress checklist; the percentage is derived from completed steps — you do not set it.
+
+## Sandbox DB/Redis/Mongo (Developer + QA)
+
+`request_sandbox(services=None)` — a **content tool** on `roboco-do`, not a flow verb — provisions a throwaway sandbox Postgres/Redis/Mongo on demand, for a project that opted in (`projects.sandbox_services`). Only `developer` and `qa` carry it. Omit `services` for the project's whole opted-in set; requesting one outside it is rejected naming the allowed set. Creds come back in the envelope's `evidence`, one entry per service, including ready-to-`export` `ROBOCO_TEST_*` values for gate tooling. Calling it again is a cheap no-op (same creds). See `docs/rag/architecture/sandbox-db.md`.

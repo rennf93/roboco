@@ -15,7 +15,7 @@
 roboco_kb_search(
     query="rate limiting redis",
     top_k=5,
-    project="roboco",
+    project="roboco-api",
     index_types=["code", "docs"]
 )
 ```
@@ -71,14 +71,14 @@ roboco_docs_read(path="backend/api/endpoints.md")
 # Index code (PM, Developer)
 roboco_kb_index_code(
     sources=["src/**/*.py"],
-    project="roboco"
+    project="roboco-api"
 )
 
 # Index docs (PM, Documenter) - for bulk/explicit indexing
 # Note: roboco_docs_write() auto-indexes when writing
 roboco_kb_index_docs(
     sources=["docs/**/*.md"],
-    project="roboco"
+    project="roboco-api"
 )
 ```
 
