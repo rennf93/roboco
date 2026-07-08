@@ -1,11 +1,4 @@
-import {
-  describe,
-  it,
-  expect,
-  vi,
-  beforeEach,
-  afterEach,
-} from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 describe("proxy", () => {
@@ -23,9 +16,7 @@ describe("proxy", () => {
     }) as unknown as typeof fetch;
     const { proxy } = await import("../proxy");
 
-    const res = await proxy(
-      new NextRequest("http://localhost:3000/overview"),
-    );
+    const res = await proxy(new NextRequest("http://localhost:3000/overview"));
     expect(res.status).toBe(200);
   });
 
@@ -36,9 +27,7 @@ describe("proxy", () => {
     }) as unknown as typeof fetch;
     const { proxy } = await import("../proxy");
 
-    const res = await proxy(
-      new NextRequest("http://localhost:3000/overview"),
-    );
+    const res = await proxy(new NextRequest("http://localhost:3000/overview"));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/login");
   });
@@ -61,20 +50,17 @@ describe("proxy", () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
     const { proxy } = await import("../proxy");
 
-    const res = await proxy(
-      new NextRequest("http://localhost:3000/overview"),
-    );
+    const res = await proxy(new NextRequest("http://localhost:3000/overview"));
     expect(res.status).toBe(200);
   });
 
   it("fails open when the status probe returns a non-ok response", async () => {
-    global.fetch = vi.fn().mockResolvedValue({ ok: false }) as unknown as
-      typeof fetch;
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: false }) as unknown as typeof fetch;
     const { proxy } = await import("../proxy");
 
-    const res = await proxy(
-      new NextRequest("http://localhost:3000/overview"),
-    );
+    const res = await proxy(new NextRequest("http://localhost:3000/overview"));
     expect(res.status).toBe(200);
   });
 });
