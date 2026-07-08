@@ -1,6 +1,6 @@
 """Schemas for the X (Twitter) engine's CEO surface."""
 
-from __future__ import annotations
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,23 @@ class XPostRejectRequest(BaseModel):
     """The CEO's reason for declining a draft."""
 
     reason: str = Field(min_length=4)
+
+
+class XPostHistoryResponse(BaseModel):
+    """One acted-on X draft (posted or rejected) — the CEO's history view."""
+
+    task_id: str
+    source: str  # "x_post" | "x_reply" | "x_feature"
+    title: str
+    status: str  # "completed" | "cancelled"
+    body: str
+    char_count: int
+    release_version: str | None = None
+    mention: XMentionRefModel | None = None
+    feature: XFeatureRefModel | None = None
+    tweet_id: str | None = None
+    reject_reason: str | None = None
+    acted_at: datetime
 
 
 class XCredentialsStatus(BaseModel):

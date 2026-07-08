@@ -1497,6 +1497,37 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_x_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on X drafts (posted or rejected, both sources) — the panel
+        history basis. Newest-acted-first (updated_at, bumped by the
+        approve/reject status write) so the most recent decision reads
+        first; bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected) — the panel
+        history basis, mirroring list_x_post_history. Newest-acted-first,
+        bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def list_open_roadmap_cycles(self) -> list[TaskTable]:
         """Non-terminal board-roadmap exploration tasks — the one-open-cycle
         dedup + panel-queue basis. Includes a cycle before AND after the
