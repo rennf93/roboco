@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1.flow_main_pm import router
-from roboco.api.schemas.v1.flow import IWillPlanRequest
+from roboco.api.schemas.v1.flow import IWillPlanRequest, SubTaskCreate
 
 _AGENT_ID = "00000000-0000-0000-0004-000000000001"
 _HEADERS = {"X-Agent-ID": _AGENT_ID, "X-Agent-Role": "main_pm"}
@@ -111,7 +111,9 @@ def test_i_will_plan_schema_accepts_rich_plan() -> None:
         task_id=uuid4(),
         plan="Route to backend",
         approach=_GOOD_APPROACH,
-        sub_tasks=[{"title": "Backend slice", "description": _GOOD_SUBTASK_DESC}],
+        sub_tasks=[
+            SubTaskCreate(title="Backend slice", description=_GOOD_SUBTASK_DESC)
+        ],
         risks=[],
         open_questions=[],
     )

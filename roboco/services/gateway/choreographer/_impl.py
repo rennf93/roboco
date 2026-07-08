@@ -77,13 +77,26 @@ _PM_APPROACH_MIN_LEN = 150
 # description that actually says what the step does.
 _PM_SUBTASK_DESC_MIN_LEN = 60
 
+# Per-sub_task ceilings — mirror IWillPlanRequest.SubTaskCreate so direct
+# service-layer callers (MCP, fixtures) can't bypass the Pydantic boundary
+# with a 5000-char description (the bloat defect: descriptions dominated by
+# over-long sub-task prose).
+_PM_SUBTASK_TITLE_MAX_LEN = 200
+_PM_SUBTASK_DESC_MAX_LEN = 600
+
+# Over-decomposition cap (the 2026-07-07 task-quality defect): a plan with
+# more than this many sub_tasks should be split into sibling coordination
+# tasks, not one giant plan.
+_PM_SUBTASKS_MAX = 7
+
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
-    """Return a hint if any PM sub_task is title-only / thin.
+    """Return a hint if any PM sub_task is title-only / thin / over-long.
 
     Each sub_task is a delegate target AND a progress-checklist item, so
-    a title with no real description is not a plan. Returns None when
-    every sub_task carries a title and a substantive description.
+    a title with no real description is not a plan. Also caps title +
+    description length so a sub_task can't bloat the plan. Returns None
+    when every sub_task carries a title and a substantive description.
     """
     for i, st in enumerate(sub_tasks):
         if not isinstance(st, dict):
@@ -92,11 +105,23 @@ def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
         desc = str(st.get("description") or "").strip()
         if not title:
             return f"sub_task #{i + 1} has no title."
+        if len(title) > _PM_SUBTASK_TITLE_MAX_LEN:
+            return (
+                f"sub_task #{i + 1} ('{title[:40]}') title is too long "
+                f"({len(title)} chars) — keep titles <= "
+                f"{_PM_SUBTASK_TITLE_MAX_LEN} chars."
+            )
         if len(desc) < _PM_SUBTASK_DESC_MIN_LEN:
             return (
                 f"sub_task #{i + 1} ('{title[:40]}') description is too thin "
                 f"({len(desc)} chars) — need >= {_PM_SUBTASK_DESC_MIN_LEN} "
                 "characters describing what the step actually does."
+            )
+        if len(desc) > _PM_SUBTASK_DESC_MAX_LEN:
+            return (
+                f"sub_task #{i + 1} ('{title[:40]}') description is too long "
+                f"({len(desc)} chars) — keep descriptions <= "
+                f"{_PM_SUBTASK_DESC_MAX_LEN} chars; split if larger."
             )
     return None
 
@@ -540,6 +565,24 @@ class Choreographer:
         elif thin := _thin_subtask_hint(sub_tasks):
             missing.append("sub_tasks")
             field_hints["sub_tasks"] = thin
+        elif len(sub_tasks) > _PM_SUBTASKS_MAX:
+            # Over-decomposition cap (the 2026-07-07 task-quality defect):
+            # a plan with >7 sub_tasks is one giant plan that should be split
+            # into sibling coordination tasks. Per-item title/description
+            # bounds are in _thin_subtask_hint above. We deliberately do NOT
+            # ban sub_tasks on code tasks (PMs legitimately plan code-typed
+            # parents into dev subtasks — the 2026-05-08 rule,
+            # test_cell_pm_can_plan_code_typed_parent_via_i_will_plan) nor
+            # require >=2 on roots (a single-cell root → one cell task is a
+            # legitimate pass-through, test_pm_can_plan_non_code_parent) —
+            # both judgment calls the gate can't make without false positives.
+            missing.append("sub_tasks")
+            field_hints["sub_tasks"] = (
+                f"too many sub_tasks ({len(sub_tasks)}) — decompose into "
+                f"at most {_PM_SUBTASKS_MAX}. If the work is genuinely "
+                "larger, split it into sibling coordination tasks instead "
+                "of one giant plan."
+            )
         if not missing:
             return None
         return await self._emit_rejection(
@@ -549,8 +592,11 @@ class Choreographer:
                 remediate=(
                     "re-issue i_will_plan(task_id, plan, approach, "
                     "sub_tasks=[{'title': '...', 'description': '...'}, ...]) "
-                    f"with approach >= {_PM_APPROACH_MIN_LEN} chars and every "
-                    f"sub_task description >= {_PM_SUBTASK_DESC_MIN_LEN} chars."
+                    f"with approach >= {_PM_APPROACH_MIN_LEN} and <= 800 "
+                    f"chars, every sub_task description >= "
+                    f"{_PM_SUBTASK_DESC_MIN_LEN} and <= "
+                    f"{_PM_SUBTASK_DESC_MAX_LEN} chars, and at most "
+                    f"{_PM_SUBTASKS_MAX} sub_tasks."
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=task, role=role_str),

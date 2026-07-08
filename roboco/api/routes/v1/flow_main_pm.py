@@ -71,10 +71,14 @@ async def i_will_plan(
         body.plan,
         rich_plan={
             "approach": body.approach,
-            "sub_tasks": body.sub_tasks,
+            # Typed models -> dicts: _build_panel_shaped_plan filters
+            # isinstance(st, dict), so a SubTaskCreate instance would be
+            # dropped. Dump to the dict shape every downstream reader
+            # (_plan_subtasks, _normalize_sub_task, the gate) already uses.
+            "sub_tasks": [s.model_dump() for s in body.sub_tasks],
             "technical_considerations": body.technical_considerations,
-            "risks": body.risks,
-            "open_questions": body.open_questions,
+            "risks": [r.model_dump() for r in body.risks],
+            "open_questions": [q.model_dump() for q in body.open_questions],
         },
     )
     return envelope_to_response(env, request)
