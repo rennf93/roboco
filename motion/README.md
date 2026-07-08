@@ -35,3 +35,37 @@ This composition is the library's reference point — match its restraint, don't
 - **Motion** — entrances are CSS keyframe animations with a restrained easing (`cubic-bezier(0.22, 1, 0.36, 1)` — smooth settle, no overshoot, approximating Remotion's `spring({damping:17, mass:0.7, stiffness:140})` without the bounce), staggered across elements via `animation-delay` rather than all firing on frame 0. Keep one continuous ambient motion (here: the scanning accent line) so the frame is never fully static once entrances land. Every animation should earn its place — hierarchy, or a beat of pacing, not motion for its own sake.
 - **Layout** — anchor content asymmetrically (this clip sits in the lower two-thirds, left-aligned); avoid a perfectly centered card, which reads as a generic template rather than a designed frame.
 - **AI tells to avoid** — no default AI-purple gradient wash, no centered-everything, no emoji as design elements, no one-font-one-size, no em dash in on-screen copy (voiceover script, highlight bullets, kicker text) or filler verbs ("Elevate", "Seamless", "Unleash", "Next-Gen").
+
+## Release-specific example: `v019-release` (v0.19.0)
+
+`compositions/v019-release/` is the first concrete release-announcement clip built on the reference above. It ships the same two orientations — `vertical.html` (1080×1920) and `square.html` (1080×1080) — sharing `theme.css`, `props.js`, and the offline-render constraints. The on-screen copy highlights the v0.19.0 shipped features:
+
+- Pluggable sandbox registry: postgres, redis, mongo
+- Native video engine with CEO-approved posting
+- Ponytail build-laziness doctrine fleet-wide
+- Agent-token 401 class fixed; cloud-auth spoof closed
+
+### Preview / test this composition
+
+```bash
+npx hyperframes preview compositions/v019-release/vertical.html
+npx hyperframes preview compositions/v019-release/square.html
+pnpm test   # runs vitest on all *.test.js under motion/
+```
+
+### `captions.json`
+
+This composition introduces a tracked `captions.json` file next to the HTML. It holds the X and TikTok captions that the render pipeline can propose alongside the MP4, and it self-verifies character counts against each platform's limit:
+
+```json
+{
+  "composition_id": "v019-release",
+  "version": "0.19.0",
+  "platforms": {
+    "x":      { "caption": "...", "char_count": 191, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "...", "char_count": 408, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+The smoke test (`v019-release.test.js`) asserts this schema, checks the counts, and adds two QA-hardened regressions: no em dashes in on-screen copy and no committed `package-lock.json` in the pnpm-managed `motion/` package. Future release compositions should copy this file set and update the captions/values for the new version.
