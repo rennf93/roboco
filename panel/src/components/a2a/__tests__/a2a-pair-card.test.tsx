@@ -3,7 +3,9 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { A2APairCard } from "../a2a-pair-card";
 
-function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary {
+function buildPair(
+  overrides: Partial<AdminPairSummary> = {},
+): AdminPairSummary {
   return {
     agent_a: "be-dev-1",
     role_a: "developer",
@@ -21,9 +23,7 @@ function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary 
 
 describe("A2APairCard", () => {
   it("renders both display names, message count, and relative time", () => {
-    render(
-      <A2APairCard pair={buildPair()} pulsedAt={null} onOpen={vi.fn()} />,
-    );
+    render(<A2APairCard pair={buildPair()} pulsedAt={null} onOpen={vi.fn()} />);
     expect(screen.getByText(/Backend Dev 1/)).toBeInTheDocument();
     expect(screen.getByText(/Backend QA/)).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();

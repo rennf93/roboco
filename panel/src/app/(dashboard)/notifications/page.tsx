@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   useNotifications,
@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
+import { usePageRefresh } from "@/hooks";
 import {
   Bell,
   Check,
@@ -23,7 +24,6 @@ import {
   Info,
   ListTodo,
   ArrowUpCircle,
-  RefreshCw,
   Mail,
   MailOpen,
   BookOpen,
@@ -167,6 +167,16 @@ function NotificationsPageContent() {
         : undefined,
   );
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
+
   const markRead = useMarkNotificationRead();
   const acknowledge = useAcknowledgeNotification();
   const markAllRead = useMarkAllNotificationsRead();
@@ -218,10 +228,6 @@ function NotificationsPageContent() {
             <CheckCheck className="h-4 w-4 mr-2" />
             Mark All Read
           </Button>
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -271,7 +277,7 @@ function NotificationsPageContent() {
         <OfflineState
           title="Cannot Load Notifications"
           description="Start the RoboCo orchestrator to view and manage notifications."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <Tabs value={activeTab} onValueChange={handleTabChange}>

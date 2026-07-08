@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TaskStatus, Team, TaskType, type Task } from "@/types";
+import { PageRefreshProvider } from "@/components/providers";
 
 // Capture the board's onDragEnd so the test can synthesize a drop without
 // driving the real dnd-kit pointer sensor (painful in jsdom).
@@ -116,6 +117,10 @@ function drop(activeId: string, overId: TaskStatus) {
   dragRef.onDragEnd?.({ active: { id: activeId }, over: { id: overId } });
 }
 
+function renderWithRefresh(ui: React.ReactNode) {
+  return render(<PageRefreshProvider>{ui}</PageRefreshProvider>);
+}
+
 describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
   beforeEach(() => {
     mutateAsync.mockClear();
@@ -130,7 +135,7 @@ describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
     tasksRef.current = [
       buildTask({ id: "t1", status: TaskStatus.IN_PROGRESS, pr_number: null }),
     ];
-    render(<KanbanBoard title="Board" columns={COLUMNS} />);
+    renderWithRefresh(<KanbanBoard title="Board" columns={COLUMNS} />);
 
     // Drag a PR-less task straight to Done — completing with no open PR skips
     // the in-band gate. The board must NOT fire the override silently; it must
@@ -159,7 +164,7 @@ describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
     tasksRef.current = [
       buildTask({ id: "t1", status: TaskStatus.IN_PROGRESS, pr_number: null }),
     ];
-    render(<KanbanBoard title="Board" columns={COLUMNS} />);
+    renderWithRefresh(<KanbanBoard title="Board" columns={COLUMNS} />);
 
     drop("t1", TaskStatus.COMPLETED);
     await screen.findByText(/no open pr/i);
@@ -177,7 +182,7 @@ describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
     tasksRef.current = [
       buildTask({ id: "t1", status: TaskStatus.PENDING, pr_number: null }),
     ];
-    render(<KanbanBoard title="Board" columns={COLUMNS} />);
+    renderWithRefresh(<KanbanBoard title="Board" columns={COLUMNS} />);
 
     drop("t1", TaskStatus.CLAIMED);
 

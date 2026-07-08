@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useCallback } from "react";
+import { Suspense, useMemo, useCallback, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useProjects } from "@/hooks/use-projects";
 import { Team } from "@/types";
@@ -10,9 +10,8 @@ import {
   ProjectFilters,
   ProjectTable,
 } from "@/components/projects";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw } from "lucide-react";
+import { usePageRefresh } from "@/hooks";
 
 function ProjectsPageContent() {
   const router = useRouter();
@@ -75,6 +74,16 @@ function ProjectsPageContent() {
     active_only: !showInactive,
   });
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
+
   // Filter projects client-side for search and multi-select cell filter
   const filteredProjects = useMemo(() => {
     if (!projects) return [];
@@ -119,10 +128,6 @@ function ProjectsPageContent() {
         </div>
         <div className="flex items-center gap-2">
           <CreateProjectDialog />
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -143,7 +148,7 @@ function ProjectsPageContent() {
         <OfflineState
           title="Cannot Load Projects"
           description="Start the RoboCo orchestrator to manage projects. Projects track git repositories for agent work."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <ProjectTable projects={filteredProjects} isLoading={isLoading} />

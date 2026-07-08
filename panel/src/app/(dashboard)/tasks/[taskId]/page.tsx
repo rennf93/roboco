@@ -2,8 +2,7 @@
 
 import { use, useState } from "react";
 import axios from "axios";
-import { useTask, useTaskLifecycle, useUpdateTask } from "@/hooks/use-tasks";
-import { useProject } from "@/hooks/use-projects";
+import { useTaskDetail, useTaskLifecycle, useUpdateTask } from "@/hooks";
 import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
 import {
@@ -24,7 +23,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, ArrowLeft, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -36,8 +35,8 @@ interface TaskDetailPageProps {
 export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const { taskId } = use(params);
   const router = useRouter();
-  const { data: task, isLoading, error, refetch } = useTask(taskId);
-  const { data: project } = useProject(task?.project_id ?? "");
+  const { task, project, isLoading, error, refetch } = useTaskDetail(taskId);
+
   const lifecycle = useTaskLifecycle();
   const updateTask = useUpdateTask();
   const createBranch = useCreateBranch();
@@ -431,10 +430,6 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
                   "The task you're looking for doesn't exist or has been deleted."}
               </p>
               <div className="flex justify-center gap-4">
-                <Button variant="outline" onClick={() => refetch()}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  Retry
-                </Button>
                 <Link href="/tasks" prefetch={false}>
                   <Button>View All Tasks</Button>
                 </Link>

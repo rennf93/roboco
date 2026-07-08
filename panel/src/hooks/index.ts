@@ -1,5 +1,7 @@
 export * from "./use-tasks";
 export * from "./use-page-refresh";
+export * from "./use-task-detail";
+export * from "./use-git-browser";
 export * from "./use-rate-limit-websocket";
 export * from "./use-rate-limit-sync";
 export * from "./use-agents";

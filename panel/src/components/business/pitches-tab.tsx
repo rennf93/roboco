@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, RefreshCw, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { OfflineState } from "@/components/ui/offline-state";
 import { RequiredNotesDialog } from "@/components/ui/required-notes-dialog";
 import { getErrorMessage } from "@/lib/api/client";
 import { pitchesApi, type Pitch } from "@/lib/api/pitches";
+import { usePageRefresh } from "@/hooks";
 
 // ---------------------------------------------------------------------------
 // Skeleton placeholder shaped like a PitchCard
@@ -180,6 +181,16 @@ export function PitchesTab() {
     refetchInterval: 30000,
   });
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
+
   const approveMutation = useMutation({
     mutationFn: ({ id, notes }: { id: string; notes: string }) =>
       pitchesApi.approve(id, notes),
@@ -207,14 +218,6 @@ export function PitchesTab() {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>Pitches</CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refetch()}
-            disabled={isLoading}
-          >
-            <RefreshCw className="mr-1 h-4 w-4" /> Refresh
-          </Button>
         </div>
       </CardHeader>
       <CardContent>
@@ -227,7 +230,7 @@ export function PitchesTab() {
           <OfflineState
             title="Failed to load pitches"
             description="Could not reach the orchestrator API. Check the backend is running."
-            onRetry={() => void refetch()}
+            onRetry={() => void refresh()}
           />
         ) : pitches.length === 0 ? (
           <p className="text-sm text-muted-foreground">

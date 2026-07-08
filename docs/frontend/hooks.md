@@ -59,6 +59,12 @@ export function RefreshButton() {
 }
 ```
 
+### Navbar refresh button
+
+The canonical consumer is `panel/src/components/layout/header.tsx`. The refresh button is rendered between the connection-status badge and the theme toggle. Its accessible label and tooltip read **"Refresh only the current page"**, and it is disabled with a spinning icon while the registered refresh cycle is running.
+
+Dashboard pages no longer include their own inline "Refresh" buttons. Instead, each page registers its refetch callbacks with `usePageRefresh` and lets the shared header button drive the refresh. See [`components/page-refresh-provider.md`](../components/page-refresh-provider.md) for the full list of wired pages and the registration pattern.
+
 ### API reference
 
 #### `PageRefreshProvider`
@@ -97,4 +103,5 @@ Returns a `PageRefreshState` object:
 
 ### Migration notes
 
-`panel/src/components/providers.tsx` was renamed to `panel/src/components/app-providers.tsx` so that `@/components/providers` could be used as a barrel export for `PageRefreshProvider`. Update any direct import of the root providers component from `@/components/providers` to `@/components/app-providers`.
+- `panel/src/components/providers.tsx` was renamed to `panel/src/components/app-providers.tsx` so that `@/components/providers` could be used as a barrel export for `PageRefreshProvider`. Update any direct import of the root providers component from `@/components/providers` to `@/components/app-providers`.
+- The earlier scope-keyed provider files (`panel/src/components/page-refresh-provider.tsx` and `panel/src/store/page-refresh-context.ts`) were deleted. The current implementation lives in `panel/src/components/providers/page-refresh-provider.tsx` and is consumed through `usePageRefresh` from `@/hooks`.

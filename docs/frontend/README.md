@@ -10,7 +10,7 @@ Documentation for the Frontend Cell team.
 ## Contents
 
 - `/components/` - Component documentation
-  - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` and `PageRefreshContext` for route-scoped refresh actions.
+  - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` callback registry that lets the navbar refresh button re-fetch only the current page.
 - `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
 

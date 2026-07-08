@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -22,10 +22,11 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KanbanCard } from "./kanban-card";
 import { RequiredNotesDialog } from "@/components/tasks/task-detail/task-action-dialogs";
 import { skippedPreconditions } from "./bypass-preconditions";
+import { usePageRefresh } from "@/hooks";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -96,6 +97,16 @@ export function KanbanBoard({
   const lifecycle = useTaskLifecycle();
   const updateTask = useUpdateTask();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
   const [pendingNotesAction, setPendingNotesAction] =
     useState<PendingNotesAction | null>(null);
   const [pendingOverride, setPendingOverride] =
@@ -358,10 +369,6 @@ export function KanbanBoard({
               </SelectContent>
             </Select>
           )}
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 

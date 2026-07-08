@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import {
   useAuditorDashboard,
   useAuditorFlags,
@@ -10,8 +11,9 @@ import { QualityMetricsPanel } from "./quality-metrics-panel";
 import { FlaggedItemsPanel } from "./flagged-items-panel";
 import { ReportsPanel } from "./reports-panel";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, FileText } from "lucide-react";
+import { FileText } from "lucide-react";
 import { toast } from "sonner";
+import { usePageRefresh } from "@/hooks";
 
 export function AuditorDashboard() {
   const {
@@ -23,9 +25,15 @@ export function AuditorDashboard() {
   const { data: reports, isLoading: loadingReports } = useAuditorReports();
   const createReport = useCreateAuditorReport();
 
-  const handleRefresh = () => {
-    refetch();
-  };
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   const handleGenerateReport = () => {
     createReport.mutate(
@@ -55,10 +63,6 @@ export function AuditorDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
           <Button
             onClick={handleGenerateReport}
             disabled={createReport.isPending}
