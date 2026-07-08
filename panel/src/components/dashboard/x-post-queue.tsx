@@ -125,7 +125,8 @@ function XPostRow({
 }
 
 // CEO queue for held X drafts (release posts + mention replies). Hidden when
-// empty (mirrors the release-proposal + playbook-review queues).
+// empty (mirrors the release-proposal + playbook-review queues). Posted/
+// rejected drafts move to the unified history on /social (SocialHistorySection).
 export function XPostQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<XPost | null>(null);
@@ -197,13 +198,12 @@ export function XPostQueue({ className }: { className?: string }) {
       <Card className={className}>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Rocket className="h-5 w-5" />
-            X Post Queue
+            <Rocket className="h-5 w-5" />X Post Queue
           </CardTitle>
           <CardDescription>
             Drafted release announcements, feature spotlights, and mention
-            replies (if enabled) land here for you to edit, approve, or
-            reject. Nothing posts on its own.
+            replies (if enabled) land here for you to edit, approve, or reject.
+            Nothing posts on its own.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -222,8 +222,7 @@ export function XPostQueue({ className }: { className?: string }) {
       <Card className={className}>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Rocket className="h-5 w-5" />
-            X Post Queue
+            <Rocket className="h-5 w-5" />X Post Queue
             <Badge variant="secondary">{posts.length}</Badge>
           </CardTitle>
           <CardDescription>
