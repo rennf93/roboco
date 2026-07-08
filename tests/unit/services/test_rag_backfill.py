@@ -9,12 +9,22 @@ logic can't be verified with a mocked session. ``optimal`` itself is mocked
 (index_journal_entry / record_learning) since the embedder is out of scope.
 
 Run with: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof pytest ...
+
+``db_session`` rolls back at the end of each test, so nothing THIS file seeds
+leaks between its own tests. But the DB itself is session-scoped for the
+whole pytest run, and other test files commit real journal/learning rows
+against it (e.g. via gateway note-writing tests) — a full-suite / CI run can
+start this file's tests with a non-empty ``journal_entries`` table. Every
+assertion below is therefore scoped to the specific rows a test creates
+(by entry_id or by a uniquified content string), never to a global
+processed/remaining count — except the cap test, which measures the
+pre-existing "stray" candidate count first and sizes the cap around it.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -26,13 +36,23 @@ from roboco.services import rag_index_failures as rif
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+if TYPE_CHECKING:
+    from roboco.models.optimal import IndexJournalEntryParams
+    from roboco.services.optimal_brain.indexes.learnings import RecordLearningParams
+
 # Journals floor is 40, learnings floor is 80 (see optimal_brain/indexes/base.py).
 _LONG_CONTENT = "x" * 90  # clears both floors
 _MID_CONTENT = "y" * 50  # clears JOURNALS (40) but not LEARNINGS (80)
 _SHORT_CONTENT = "short"  # clears neither floor
 
-_TEST_CAP = 2  # small cap so the "respects cap" test doesn't seed 200+ rows
-_TWO_ATTEMPTS = 2  # one failing + one succeeding row per "tolerates failure" test
+_TEST_CAP = 2  # how many of THIS test's own rows the cap test expects to fit
+
+
+def _unique_content(base: str) -> str:
+    """A floor-clearing content string that can't collide with another
+    test's stray committed row, so hash/content-keyed presence checks stay
+    deterministic under DB pollution."""
+    return f"{base}-{uuid4().hex[:8]}"
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
@@ -154,7 +174,8 @@ async def test_backfill_journals_selects_only_zero_chunk_entries(
     db_session: AsyncSession, _journal: UUID
 ) -> None:
     """An entry with an existing chunks_journals row is left alone; one with
-    none is re-ingested."""
+    none is re-ingested. Scoped to these two entry_ids since a polluted DB
+    may carry other zero-chunk stray rows the pass also processes."""
     missing_id = await _seed_entry(db_session, _journal, _LONG_CONTENT)
     present_id = await _seed_entry(db_session, _journal, _LONG_CONTENT)
     await _insert_chunk(
@@ -162,13 +183,13 @@ async def test_backfill_journals_selects_only_zero_chunk_entries(
     )
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_journals(optimal)
+    await rif._backfill_journals(optimal)
 
-    assert processed == 1
-    assert remaining == 0
-    optimal.index_journal_entry.assert_awaited_once()
-    awaited_params = optimal.index_journal_entry.await_args.args[0]
-    assert awaited_params.entry_id == missing_id
+    called_ids = {
+        c.args[0].entry_id for c in optimal.index_journal_entry.await_args_list
+    }
+    assert missing_id in called_ids
+    assert present_id not in called_ids
 
 
 @pytest.mark.asyncio
@@ -177,13 +198,15 @@ async def test_backfill_journals_excludes_private_entries(
 ) -> None:
     """A private entry is never a candidate — it's deliberately excluded
     from the shared JOURNALS corpus, not a pending backlog item."""
-    await _seed_entry(db_session, _journal, _LONG_CONTENT, is_private=True)
+    private_id = await _seed_entry(db_session, _journal, _LONG_CONTENT, is_private=True)
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_journals(optimal)
+    await rif._backfill_journals(optimal)
 
-    assert (processed, remaining) == (0, 0)
-    optimal.index_journal_entry.assert_not_awaited()
+    called_ids = {
+        c.args[0].entry_id for c in optimal.index_journal_entry.await_args_list
+    }
+    assert private_id not in called_ids
 
 
 @pytest.mark.asyncio
@@ -192,47 +215,74 @@ async def test_backfill_journals_excludes_sub_floor_entries(
 ) -> None:
     """Content still under the JOURNALS floor would zero-chunk again — the
     SELECT excludes it so it is never retried forever."""
-    await _seed_entry(db_session, _journal, _SHORT_CONTENT)
+    short_id = await _seed_entry(db_session, _journal, _SHORT_CONTENT)
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_journals(optimal)
+    await rif._backfill_journals(optimal)
 
-    assert (processed, remaining) == (0, 0)
-    optimal.index_journal_entry.assert_not_awaited()
+    called_ids = {
+        c.args[0].entry_id for c in optimal.index_journal_entry.await_args_list
+    }
+    assert short_id not in called_ids
 
 
 @pytest.mark.asyncio
 async def test_backfill_journals_respects_cap(
     db_session: AsyncSession, _journal: UUID, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The per-boot cap bounds how many rows a single pass fetches."""
-    monkeypatch.setattr(rif, "_BACKFILL_CAP", _TEST_CAP)
-    for _ in range(_TEST_CAP + 1):
-        await _seed_entry(db_session, _journal, _LONG_CONTENT)
+    """The per-boot cap bounds how many rows a single pass fetches.
 
+    A polluted DB's stray zero-chunk rows sort first (earliest created_at)
+    and spend part of the cap before this test's own rows do. So: measure
+    the stray count with an unbounded pass first (mocked — nothing is
+    actually written to chunks_journals), then size the cap to exactly
+    `strays + _TEST_CAP` and seed one row more than that budget covers.
+    Only _TEST_CAP of this test's own rows can then fit.
+    """
+    monkeypatch.setattr(rif, "_BACKFILL_CAP", 1_000_000)
+    strays, _ = await rif._backfill_journals(_optimal())
+
+    own_ids = [
+        await _seed_entry(db_session, _journal, _LONG_CONTENT)
+        for _ in range(_TEST_CAP + 1)
+    ]
+
+    monkeypatch.setattr(rif, "_BACKFILL_CAP", strays + _TEST_CAP)
     optimal = _optimal()
     processed, _remaining = await rif._backfill_journals(optimal)
 
-    assert processed == _TEST_CAP
-    assert optimal.index_journal_entry.await_count == _TEST_CAP
+    assert processed == strays + _TEST_CAP
+    called_ids = {
+        c.args[0].entry_id for c in optimal.index_journal_entry.await_args_list
+    }
+    assert len(called_ids & set(own_ids)) == _TEST_CAP
 
 
 @pytest.mark.asyncio
 async def test_backfill_journals_tolerates_failing_row(
     db_session: AsyncSession, _journal: UUID
 ) -> None:
-    """One row's re-index failure never aborts the rest of the pass."""
-    await _seed_entry(db_session, _journal, _LONG_CONTENT)
-    await _seed_entry(db_session, _journal, _LONG_CONTENT)
+    """One row's re-index failure never aborts the rest of the pass — the
+    fake ingest rejects THIS test's own fail_id specifically (by entry_id),
+    so the proof holds regardless of how many stray rows are also in play."""
+    fail_id = await _seed_entry(db_session, _journal, _LONG_CONTENT)
+    ok_id = await _seed_entry(db_session, _journal, _LONG_CONTENT)
+    succeeded: set[UUID] = set()
 
-    optimal = _optimal(
-        index_journal_entry=AsyncMock(side_effect=[RuntimeError("ollama down"), None])
-    )
-    processed, remaining = await rif._backfill_journals(optimal)
+    async def _index(params: IndexJournalEntryParams) -> None:
+        if params.entry_id == fail_id:
+            raise RuntimeError("ollama down")
+        succeeded.add(params.entry_id)
 
-    assert processed == 1
-    assert remaining == 1
-    assert optimal.index_journal_entry.await_count == _TWO_ATTEMPTS
+    optimal = _optimal(index_journal_entry=AsyncMock(side_effect=_index))
+    await rif._backfill_journals(optimal)
+
+    called_ids = {
+        c.args[0].entry_id for c in optimal.index_journal_entry.await_args_list
+    }
+    assert fail_id in called_ids
+    assert ok_id in succeeded
+    assert fail_id not in succeeded
 
 
 @pytest.mark.asyncio
@@ -260,22 +310,23 @@ async def test_backfill_learnings_selects_only_missing_from_chunks_learnings(
 ) -> None:
     """A LEARNING entry already present in chunks_journals (lower floor) can
     still be missing from chunks_learnings (higher floor) — the two passes
-    check presence independently."""
+    check presence independently. Content is uniquified so this test's own
+    row can't be shadowed by a stray row of identical content."""
+    content = _unique_content(_LONG_CONTENT)
     entry_id = await _seed_entry(
-        db_session, _journal, _LONG_CONTENT, entry_type=JournalEntryType.LEARNING
+        db_session, _journal, content, entry_type=JournalEntryType.LEARNING
     )
     # Already indexed into JOURNALS — irrelevant to the LEARNINGS check.
     await _insert_chunk(db_session, "chunks_journals", f"roboco://journals/{entry_id}")
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_learnings(optimal)
+    await rif._backfill_learnings(optimal)
 
-    assert processed == 1
-    assert remaining == 0
-    optimal.record_learning.assert_awaited_once()
-    recorded = optimal.record_learning.await_args.args[0]
-    assert recorded.content == _LONG_CONTENT
-    assert recorded.shareable is True
+    calls_by_content = {
+        c.args[0].content: c.args[0] for c in optimal.record_learning.await_args_list
+    }
+    assert content in calls_by_content
+    assert calls_by_content[content].shareable is True
 
 
 @pytest.mark.asyncio
@@ -284,18 +335,19 @@ async def test_backfill_learnings_skips_already_present(
 ) -> None:
     """A learning whose hashed source already has a chunks_learnings row is
     left alone."""
+    content = _unique_content(_LONG_CONTENT)
     await _seed_entry(
-        db_session, _journal, _LONG_CONTENT, entry_type=JournalEntryType.LEARNING
+        db_session, _journal, content, entry_type=JournalEntryType.LEARNING
     )
-    await _insert_chunk(
-        db_session, "chunks_learnings", rif._learning_source(_LONG_CONTENT)
-    )
+    await _insert_chunk(db_session, "chunks_learnings", rif._learning_source(content))
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_learnings(optimal)
+    await rif._backfill_learnings(optimal)
 
-    assert (processed, remaining) == (0, 0)
-    optimal.record_learning.assert_not_awaited()
+    called_contents = {
+        c.args[0].content for c in optimal.record_learning.await_args_list
+    }
+    assert content not in called_contents
 
 
 @pytest.mark.asyncio
@@ -304,16 +356,19 @@ async def test_backfill_learnings_excludes_sub_floor_entries(
 ) -> None:
     """Content between the JOURNALS floor and the (higher) LEARNINGS floor
     would zero-chunk again in LEARNINGS — excluded so it's never retried
-    forever."""
+    forever. The length-based SQL filter excludes it structurally, so this
+    holds regardless of any other candidate rows in play."""
     await _seed_entry(
         db_session, _journal, _MID_CONTENT, entry_type=JournalEntryType.LEARNING
     )
 
     optimal = _optimal()
-    processed, remaining = await rif._backfill_learnings(optimal)
+    await rif._backfill_learnings(optimal)
 
-    assert (processed, remaining) == (0, 0)
-    optimal.record_learning.assert_not_awaited()
+    called_contents = {
+        c.args[0].content for c in optimal.record_learning.await_args_list
+    }
+    assert _MID_CONTENT not in called_contents
 
 
 @pytest.mark.asyncio
@@ -322,45 +377,56 @@ async def test_backfill_learnings_shareable_reflects_privacy(
 ) -> None:
     """A private learning is still recorded, just non-shareable — mirrors
     the live _schedule_rag_index path."""
+    content = _unique_content(_LONG_CONTENT)
     await _seed_entry(
         db_session,
         _journal,
-        _LONG_CONTENT,
+        content,
         entry_type=JournalEntryType.LEARNING,
         is_private=True,
     )
 
     optimal = _optimal()
-    processed, _remaining = await rif._backfill_learnings(optimal)
+    await rif._backfill_learnings(optimal)
 
-    assert processed == 1
-    recorded = optimal.record_learning.await_args.args[0]
-    assert recorded.shareable is False
+    calls_by_content = {
+        c.args[0].content: c.args[0] for c in optimal.record_learning.await_args_list
+    }
+    assert content in calls_by_content
+    assert calls_by_content[content].shareable is False
 
 
 @pytest.mark.asyncio
 async def test_backfill_learnings_tolerates_failing_row(
     db_session: AsyncSession, _journal: UUID
 ) -> None:
-    """One row's re-index failure never aborts the rest of the pass."""
+    """One row's re-index failure never aborts the rest of the pass — the
+    fake ingest rejects THIS test's own fail_content specifically (by
+    content), so the proof holds regardless of stray rows also in play."""
+    fail_content = _unique_content(f"{_LONG_CONTENT}-fail")
+    ok_content = _unique_content(f"{_LONG_CONTENT}-ok")
     await _seed_entry(
-        db_session, _journal, _LONG_CONTENT, entry_type=JournalEntryType.LEARNING
+        db_session, _journal, fail_content, entry_type=JournalEntryType.LEARNING
     )
     await _seed_entry(
-        db_session,
-        _journal,
-        _LONG_CONTENT + "z",
-        entry_type=JournalEntryType.LEARNING,
+        db_session, _journal, ok_content, entry_type=JournalEntryType.LEARNING
     )
+    succeeded: set[str] = set()
 
-    optimal = _optimal(
-        record_learning=AsyncMock(side_effect=[RuntimeError("ollama down"), None])
-    )
-    processed, remaining = await rif._backfill_learnings(optimal)
+    async def _record(params: RecordLearningParams) -> None:
+        if params.content == fail_content:
+            raise RuntimeError("ollama down")
+        succeeded.add(params.content)
 
-    assert processed == 1
-    assert remaining == 1
-    assert optimal.record_learning.await_count == _TWO_ATTEMPTS
+    optimal = _optimal(record_learning=AsyncMock(side_effect=_record))
+    await rif._backfill_learnings(optimal)
+
+    called_contents = {
+        c.args[0].content for c in optimal.record_learning.await_args_list
+    }
+    assert fail_content in called_contents
+    assert ok_content in succeeded
+    assert fail_content not in succeeded
 
 
 @pytest.mark.asyncio
