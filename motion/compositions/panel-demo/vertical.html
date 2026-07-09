@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-composition-id="panel-demo" data-composition-duration="12" data-fps="30">
+  <head>
+    <meta charset="utf-8" />
+    <title>Panel Demo — vertical (1080×1920)</title>
+    <link rel="stylesheet" href="../../kit/kit.css" />
+    <script src="props.js"></script>
+    <script src="../../kit/kit.js"></script>
+    <style>
+      /* Orientation-specific placement only — component look lives in
+         kit.css. Timing is identical between orientations (set inline on
+         the elements below); only these positions change with the stage. */
+      .pk-intake { --pk-intake-top: 24px; }
+      .pk-column { --pk-column-top: 200px; }
+      .pk-toast { --pk-toast-bottom: 160px; }
+      .pk-outro { --pk-outro-bottom: 56px; }
+    </style>
+  </head>
+  <body>
+    <div id="stage" data-composition-id="panel-demo" data-width="1080" data-height="1920" data-start="0" data-duration="12" data-fps="30">
+      <div class="pk-frame clip" data-start="0" data-duration="12" data-track-index="1">
+        <aside class="pk-frame__sidebar">
+          <div class="pk-frame__logo"></div>
+          <div class="pk-frame__navitem"></div>
+          <div class="pk-frame__navitem pk-frame__navitem--active"></div>
+          <div class="pk-frame__navitem"></div>
+          <div class="pk-frame__navitem"></div>
+          <div class="pk-frame__navitem"></div>
+        </aside>
+
+        <header class="pk-frame__topbar">
+          <div class="pk-frame__search">Search tasks, agents...</div>
+          <div class="pk-frame__status clip" data-start="0" data-duration="12" data-track-index="0">
+            <span class="pk-frame__statusdot"></span>
+            <span>Live</span>
+          </div>
+        </header>
+
+        <div class="pk-frame__content">
+          <!-- Intake: a task title typing out character-by-character. -->
+          <div class="pk-intake clip" data-start="0.2" data-duration="11.8" data-track-index="2" style="animation-delay: 0.2s;">
+            <div class="pk-intake__label">New task</div>
+            <div class="pk-intake__field"><span id="typeTitle">Ship the panel-demo kit</span><span class="pk-caret"></span></div>
+          </div>
+
+          <!-- Kanban column hosting the task card. -->
+          <div class="pk-column">
+            <div class="pk-column__header">Tasks</div>
+            <div class="pk-card clip" data-start="3.6" data-duration="8.4" data-track-index="3" style="animation-delay: 3.6s;">
+              <div class="pk-card__title" id="cardTitle">Ship the panel-demo kit</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--purple" id="cardTeam">Frontend</span>
+                <span class="pk-chip pk-chip--blue" id="cardPriority">P1 - High</span>
+                <span class="pk-card__assignee" id="cardAssignee">@fe-dev-1</span>
+              </div>
+              <div class="pk-card__status">
+                <span
+                  class="pk-pill pk-pill--progress pk-pill--swap-out clip"
+                  data-start="3.6"
+                  data-duration="3.8"
+                  data-track-index="4"
+                  style="--pk-pill-enter-delay: 3.6s; --pk-pill-exit-delay: 7s;"
+                >in progress</span>
+                <span
+                  class="pk-pill pk-pill--completed pk-pill--swap-in clip"
+                  data-start="7.4"
+                  data-duration="4.6"
+                  data-track-index="5"
+                  style="--pk-pill-enter-delay: 7.4s;"
+                >completed</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cursor glide to the card, then a click pulse on the pill. -->
+          <div
+            class="pk-cursor clip"
+            data-start="6"
+            data-duration="6"
+            data-track-index="6"
+            style="--pk-cursor-delay: 6s; --pk-cursor-x0: 620px; --pk-cursor-y0: 160px; --pk-cursor-x1: 152px; --pk-cursor-y1: 380px;"
+          >
+            <div class="pk-cursor__glyph"></div>
+            <div class="pk-cursor__ring" style="--pk-click-delay: 7.2s;"></div>
+          </div>
+
+          <!-- Toast: the completion notification. -->
+          <div class="pk-toast clip" data-start="8.6" data-duration="3.4" data-track-index="7" style="animation-delay: 8.6s;">
+            <div class="pk-toast__icon"></div>
+            <div class="pk-toast__body">
+              <div class="pk-toast__title" id="toastTitle">Task completed</div>
+              <div class="pk-toast__text" id="toastBody">fe-dev-1 merged the panel-demo kit PR.</div>
+            </div>
+          </div>
+
+          <!-- Outro headline moment. -->
+          <div class="pk-outro clip" data-start="10.2" data-duration="1.8" data-track-index="8" style="animation-delay: 10.2s;">roboco.tech</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Register the composition timeline metadata. Motion is driven by CSS
+      // keyframes (no GSAP — the render is offline, no CDN), but HyperFrames
+      // requires the registry entry to consider the composition valid.
+      window.__timelines = window.__timelines || {};
+      window.__timelines["panel-demo"] = {
+        id: "panel-demo",
+        duration: 12,
+        fps: 30,
+        animations: []
+      };
+
+      // Read sidecar-supplied props (props.js is overwritten at render time)
+      // and populate the DOM. Defensive: a missing prop leaves the
+      // placeholder text intact rather than throwing.
+      (function () {
+        var props = (window.__PROPS__ && typeof window.__PROPS__ === "object") ? window.__PROPS__ : {};
+
+        function setText(id, value) {
+          if (typeof value !== "string" || !value) return;
+          var el = document.getElementById(id);
+          if (el) el.textContent = value;
+        }
+
+        setText("cardTitle", props.taskTitle);
+        setText("cardTeam", props.teamLabel);
+        setText("cardPriority", props.priorityLabel);
+        setText("toastTitle", props.toastTitle);
+        setText("toastBody", props.toastBody);
+
+        if (typeof props.agentName === "string" && props.agentName) {
+          var assignee = document.getElementById("cardAssignee");
+          if (assignee) assignee.textContent = "@" + props.agentName;
+        }
+
+        // The intake field types out the same task title. Populate it from
+        // the prop (falling back to the placeholder already in the markup)
+        // before splitting it into per-character spans for the reveal.
+        var typeEl = document.getElementById("typeTitle");
+        if (typeEl) {
+          if (typeof props.taskTitle === "string" && props.taskTitle) {
+            typeEl.textContent = props.taskTitle;
+          }
+          window.PanelKit.typeText(typeEl, { delay: 0.6 });
+        }
+      })();
+    </script>
+  </body>
+</html>
