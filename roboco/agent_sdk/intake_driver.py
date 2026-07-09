@@ -576,6 +576,13 @@ def build_intake_options(
             "mcp__intake__propose_batch",
             "mcp__intake__search_past_tasks",
         ],
+        # `Task` is a default-permitted Claude Code built-in — omitting it from
+        # allowed_tools does NOT remove it (an allowlist auto-approves; it does
+        # not restrict), and permission_mode="dontAsk" never gates a
+        # pre-permitted built-in, so can_use_tool below never fires for it. The
+        # ONLY claude-code-level block that removes the subagent tool is an
+        # explicit disallow → the fleet-wide subagent ban reaches intake here.
+        disallowed_tools=["Task"],
         model=model,
         include_partial_messages=True,  # live token streaming
         permission_mode="dontAsk",
