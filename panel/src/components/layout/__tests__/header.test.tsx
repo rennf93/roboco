@@ -97,6 +97,16 @@ describe("Header — navbar refresh button", () => {
     );
   });
 
+  it("disables the refresh button when no page has registered a refresh callback", () => {
+    render(withPageRefresh(<Header />));
+
+    const refreshButton = screen.getByRole("button", {
+      name: /refresh only the current page/i,
+    });
+
+    expect(refreshButton).toBeDisabled();
+  });
+
   it("shows a spinner while the registered refresh callback is running and disables the button", async () => {
     let resolveRefresh: (() => void) | undefined;
     const deferred = new Promise<void>((resolve) => {

@@ -32,11 +32,11 @@ interface PageRefreshState {
 }
 ```
 
-- `disabled` — whether refresh actions are currently disabled (controlled by the provider prop).
+- `disabled` — whether there are no refresh callbacks currently registered (the registry is empty). When true, clicking refresh is a no-op.
 - `loading` — whether a refresh cycle is currently running.
 - `register(callback)` — add a callback to invoke on the next refresh.
 - `unregister(callback)` — remove a previously registered callback.
-- `refresh()` — invoke every registered callback concurrently and update `loading` until they settle.
+- `refresh()` — invoke every registered callback concurrently and update `loading` until they settle. Does nothing if the registry is empty.
 
 ### `RefreshCallback`
 
@@ -51,12 +51,12 @@ May be sync or async; `refresh` always returns a `Promise` and awaits async call
 ```ts
 interface PageRefreshProviderProps {
   children: React.ReactNode;
-  disabled?: boolean;
 }
 ```
 
 - `children` — React tree that can consume the context.
-- `disabled` — when `true`, `refresh()` is ignored and `disabled` is exposed as `true`.
+
+The provider does not expose a `disabled` prop; instead, `disabled` is derived from whether any refresh callbacks are currently registered (the registry size).
 
 ## How to consume
 
@@ -98,13 +98,13 @@ export default function ProductsPage() {
 `panel/src/components/layout/header.tsx` consumes the same context:
 
 ```tsx
-const { refresh, loading } = usePageRefresh();
+const { refresh, loading, disabled } = usePageRefresh();
 
 <Button
   variant="ghost"
   size="icon"
   onClick={() => void refresh()}
-  disabled={loading}
+  disabled={disabled || loading}
   aria-label="Refresh only the current page"
   title="Refresh only the current page"
 >
@@ -112,7 +112,11 @@ const { refresh, loading } = usePageRefresh();
 </Button>
 ```
 
-The button sits between the connection-status badge and the theme toggle. It is disabled and shows a spinner while any registered refresh callback is still running. Concurrent clicks are coalesced: a second click while a cycle is in progress does nothing.
+The button sits between the connection-status badge and the theme toggle. It is disabled when:
+- No page has registered a refresh callback (the registry is empty)
+- A refresh cycle is currently running
+
+When disabled, the button is grayed out and clicking has no effect. While loading, the icon shows a spinner. Concurrent clicks are coalesced: a second click while a cycle is in progress does nothing.
 
 ## Pages wired to the navbar refresh
 
@@ -162,13 +166,14 @@ pnpm test page-refresh
 Covered behaviors:
 
 - `usePageRefresh` throws when called outside a `PageRefreshProvider`.
-- Registering callbacks makes `refresh()` invoke them.
+- The hook returns `disabled: true` when nothing is registered, and `disabled: false` once a callback is registered.
+- Registering callbacks makes `refresh()` invoke them and sets `disabled: false`.
+- Unregistering callbacks prevents the callback from being called and returns `disabled: true` when the registry is empty.
 - `refresh()` returns a promise and awaits async callbacks.
-- Unregistering prevents the callback from being called.
-- `refresh()` is a no-op when `disabled` is `true`.
+- `refresh()` is a no-op when the registry is empty (disabled).
 - The navbar button renders between the connection-status badge and the theme toggle.
 - The navbar button exposes an accessible page-scoped label.
-- The navbar button is disabled and shows a spinner while a refresh callback is running.
+- The navbar button is disabled when no callbacks are registered and shows a spinner while a refresh callback is running.
 - Concurrent clicks do not start a second refresh cycle.
 
 ## Related work
