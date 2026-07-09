@@ -700,6 +700,25 @@ class PrompterService:
                 "MegaTask confirm result-sidecar write failed (redis): %s", exc
             )
 
+    async def _release_confirm_guard(self, session_id: str) -> None:
+        """Delete the confirm guard so a retry can re-attempt the build.
+
+        Called when the build raises before a result sidecar is written — the
+        transaction rolls back (nothing was created), so the 1h guard would
+        otherwise wedge the session into a permanent 500 ('already in progress')
+        for every retry. Best-effort: a failed delete only reinstates the old
+        wedge-until-TTL behaviour, never a double-build (the sidecar guards that).
+        """
+        guard_key = f"{_MEGATASK_CONFIRM_KEY_PREFIX}{session_id}"
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                await conn.delete(guard_key)
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            self.log.warning("MegaTask confirm guard release failed (redis): %s", exc)
+
     async def confirm_live_batch(
         self,
         title: str,
@@ -729,9 +748,6 @@ class PrompterService:
         Returns ``{umbrella_task_id, root_subtask_ids, waves, warnings}`` for the
         panel's wave/DAG review.
         """
-        from roboco.seeds.initial_data import AGENT_UUIDS
-        from roboco.services.task import get_task_service
-
         if not drafts:
             raise ValidationError(
                 message="A MegaTask needs at least one task draft.", field="drafts"
@@ -745,6 +761,38 @@ class PrompterService:
         prior = await self._acquire_confirm_guard(session_id)
         if prior is not None:
             return prior
+
+        try:
+            return await self._build_confirm_batch(
+                title,
+                drafts,
+                agent_id,
+                route=route,
+                session_id=session_id,
+            )
+        except Exception:
+            # The build failed before a result sidecar was written — the txn
+            # rolls back (nothing created), so release the guard or the 1h key
+            # wedges every retry into a 500 ('already in progress').
+            await self._release_confirm_guard(session_id)
+            raise
+
+    async def _build_confirm_batch(
+        self,
+        title: str,
+        drafts: list[dict[str, Any]],
+        agent_id: UUID,
+        *,
+        route: Literal["board", "main_pm"],
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Build the umbrella + sequenced root-subtasks (post-guard-acquire).
+
+        Split from :meth:`confirm_live_batch` so the guard-release-on-failure
+        wrapper stays a thin try/except and this keeps its own complexity budget.
+        """
+        from roboco.seeds.initial_data import AGENT_UUIDS
+        from roboco.services.task import get_task_service
 
         batch_id = uuid4()
         # 1. Sequence the drafts into conflict-free waves (same plan the panel
