@@ -1,15 +1,24 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { useProducts } from "@/hooks/use-products";
 import { OfflineState } from "@/components/ui/offline-state";
 import { CreateProductDialog, ProductTable } from "@/components/products";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw } from "lucide-react";
+import { usePageRefresh } from "@/hooks";
 
 function ProductsPageContent() {
   const { data: products, isLoading, error, refetch } = useProducts();
+
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   // Check if it's a connection error (backend not running)
   const isOffline =
@@ -30,10 +39,6 @@ function ProductsPageContent() {
         </div>
         <div className="flex items-center gap-2">
           <CreateProductDialog />
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -42,7 +47,7 @@ function ProductsPageContent() {
         <OfflineState
           title="Cannot Load Products"
           description="Start the RoboCo orchestrator to manage products. Products map cells to the projects they work on."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <ProductTable products={products} isLoading={isLoading} />

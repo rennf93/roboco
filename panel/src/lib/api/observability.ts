@@ -168,10 +168,7 @@ export const observabilityApi = {
   },
 
   /** Org / team rollup — GET /dashboard/metrics/org?team&days */
-  getOrgScorecard: async (
-    days = 30,
-    team?: string,
-  ): Promise<OrgScorecard> => {
+  getOrgScorecard: async (days = 30, team?: string): Promise<OrgScorecard> => {
     if (isMockMode()) return emptyOrg(team ?? null);
     const { data } = await api.get<OrgScorecard>("/dashboard/metrics/org", {
       params: { days, ...(team ? { team } : {}) },

@@ -119,14 +119,50 @@ describe("A2AReplyComposer", () => {
     );
   });
 
-  it("states the pairwise seam honestly in the helper text", () => {
+  it("states the interjection semantics honestly in the helper text", () => {
     renderComposer();
-    // Guard the honesty note: the reply is a DIRECT CEO->participant message,
-    // not an injection into the watched transcript.
+    // Guard the honesty note: the message posts into THIS conversation,
+    // visible to both participants — not a re-homed CEO<->target DM.
     expect(
-      screen.getByText(
-        /direct A2A message from you to the selected participant/i,
-      ),
+      screen.getByText(/posts into this conversation/i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/visible to both participants/i),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("A2AReplyComposer when one participant is the CEO", () => {
+  beforeEach(() => {
+    mutate.mockReset();
+  });
+
+  function renderCeoComposer(lastSender: string | null = "be-dev-1") {
+    return render(
+      <A2AReplyComposer
+        conversationId="conv-ceo"
+        agentA="ceo"
+        agentB="be-dev-1"
+        lastSender={lastSender}
+      />,
+    );
+  }
+
+  it("never offers the CEO itself as a recipient", () => {
+    const { container } = renderCeoComposer();
+    expect(container.querySelector('[data-value="ceo"]')).toBeNull();
+    expect(container.querySelector('[data-value="be-dev-1"]')).not.toBeNull();
+  });
+
+  it("always sends to the other participant, even when they spoke last as agent_a", () => {
+    renderCeoComposer("ceo");
+    fireEvent.change(screen.getByPlaceholderText(/chime in/i), {
+      target: { value: "Following up" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ to_agent: "be-dev-1" }),
+      expect.anything(),
+    );
   });
 });

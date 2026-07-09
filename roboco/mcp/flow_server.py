@@ -646,7 +646,7 @@ def resume(task_id: str) -> dict[str, Any]:
     return _post(_role_path("resume"), {"task_id": task_id})
 
 
-def sync_branch(task_id: str) -> dict[str, Any]:
+def sync_branch(task_id: str, stash: bool = False) -> dict[str, Any]:
     """Re-sync your branch onto its base through the gate.
 
     Rebases the task's branch onto its resolved parent/base branch (fetch +
@@ -657,8 +657,16 @@ def sync_branch(task_id: str) -> dict[str, Any]:
     i_am_done as normal. On ``conflicts`` status the envelope's ``next`` tells
     you the rebase aborted and your branch is unchanged — resolve the conflict
     in your working tree first (the gate does not force a conflicted rebase).
+
+    Args:
+        task_id: UUID of the task whose branch you're re-syncing.
+        stash: If your workspace has uncommitted changes, pass True to
+            auto-stash them (tracked + untracked), rebase, then restore them
+            — instead of refusing DIRTY_WORKSPACE. A conflicted restore
+            leaves the stash in place (never dropped); the envelope's
+            ``next`` tells you to resolve it by hand.
     """
-    return _post(_role_path("sync_branch"), {"task_id": task_id})
+    return _post(_role_path("sync_branch"), {"task_id": task_id, "stash": stash})
 
 
 def i_am_idle() -> dict[str, Any]:
@@ -772,6 +780,29 @@ def unblock(task_id: str, reason: str, restore: bool = True) -> dict[str, Any]:
     return _post(
         _role_path("unblock"),
         {"task_id": task_id, "reason": reason, "restore": restore},
+    )
+
+
+def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
+    """PM: stamp parent acceptance criteria onto an existing child (task_id).
+
+    Use when a completed subtask already implements a parent AC but was
+    delegated without `covers_parent_criteria` (e.g. it's a replacement for a
+    cancelled sibling) — the roll-up gate (submit_up/submit_root) keeps
+    demanding coverage otherwise. `criteria` are the parent's acceptance
+    criteria, by id or exact text (copy them straight out of the gate's
+    rejection listing). Returns evidence.remaining_uncovered_parent_acs so you
+    know if submit_up will now pass.
+
+    Root-owned mode: pass YOUR OWN root/coordination task_id (not a child)
+    to declare criteria only you can satisfy — PR ops in your own branch
+    namespace, closing a contributor PR, a root-level merge. These are
+    satisfied by your own machinery at submit/supersede time; never push
+    them into a cell's acceptance_criteria, a cell cannot act on them.
+    """
+    return _post(
+        _role_path("declare_coverage"),
+        {"task_id": task_id, "criteria": criteria},
     )
 
 
@@ -986,6 +1017,7 @@ _TOOLS: dict[str, Any] = {
     "delegate": delegate,
     "submit_up": submit_up,
     "submit_root": submit_root,
+    "declare_coverage": declare_coverage,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
 }

@@ -68,7 +68,9 @@ describe("XPostQueue", () => {
     render(withQueryClient(<XPostQueue />));
     expect(await screen.findByText("Release post")).toBeInTheDocument();
     expect(await screen.findByText("Mention reply")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("RoboCo v0.17.0 just shipped!")).toBeInTheDocument();
+    expect(
+      screen.getByDisplayValue("RoboCo v0.17.0 just shipped!"),
+    ).toBeInTheDocument();
   });
 
   it("renders a feature-spotlight draft with its own label and badge", async () => {
@@ -103,13 +105,20 @@ describe("XPostQueue", () => {
 
     fireEvent.click(approveButtons[0]);
     await waitFor(() =>
-      expect(approve).toHaveBeenCalledWith("x-1", "RoboCo v0.17.0 just shipped!"),
+      expect(approve).toHaveBeenCalledWith(
+        "x-1",
+        "RoboCo v0.17.0 just shipped!",
+      ),
     );
 
     await waitFor(() => expect(approveButtons[0]).toBeDisabled());
     expect(approveButtons[1]).not.toBeDisabled();
 
-    resolveApproveRef.current?.({ status: "posted", tweet_id: "1", detail: "ok" });
+    resolveApproveRef.current?.({
+      status: "posted",
+      tweet_id: "1",
+      detail: "ok",
+    });
     await waitFor(() => expect(approveButtons[0]).not.toBeDisabled());
   });
 

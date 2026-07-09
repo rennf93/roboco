@@ -28,15 +28,22 @@ export type {
   XPost,
   XMentionRef,
   XPostExecuteResult,
+  XPostHistoryEntry,
   XCredentialsStatus,
 } from "./x";
 export { roadmapApi } from "./roadmap";
-export type { RoadmapCycle, RoadmapItem, RoadmapItemActionResult } from "./roadmap";
+export type {
+  RoadmapCycle,
+  RoadmapItem,
+  RoadmapItemActionResult,
+} from "./roadmap";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,
   VideoPost,
+  VideoPipelineItem,
   VideoPostExecuteResult,
+  VideoPostHistoryEntry,
   VideoRequestResult,
   TikTokCredentialsStatus,
 } from "./video";

@@ -8,17 +8,21 @@ and drop/close.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import Request
 from roboco.db.base import (
     _db_has_alembic_version,
     _db_has_tables,
     _DbHolder,
+    _InitState,
     close_db,
     drop_db,
     get_db,
+    get_db_committed,
     get_db_context,
     get_engine,
     get_session_factory,
@@ -37,9 +41,11 @@ def _reset_holder() -> Generator[None]:
     """Snapshot/restore the singleton so tests don't poison the live engine."""
     saved_engine = _DbHolder.engine
     saved_factory = _DbHolder.session_factory
+    _InitState.completed_url = None
     yield
     _DbHolder.engine = saved_engine
     _DbHolder.session_factory = saved_factory
+    _InitState.completed_url = None
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +112,23 @@ async def test_get_db_yields_session_and_commits_on_success() -> None:
 
     fake_session.commit.assert_awaited_once()
     fake_session.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_db_committed_stashes_session_on_request_state() -> None:
+    """DbCommitMiddleware (api/middleware.py) reads request.state.db_session
+    to commit it before the response reaches the client — get_db_committed
+    (the roboco.api.deps.DbSession target) must stash the session there
+    before yielding it back unchanged."""
+    fake_session = MagicMock()
+    request = Request({"type": "http"})
+
+    gen = get_db_committed(request, fake_session)
+    yielded = await gen.__anext__()
+    assert yielded is fake_session
+    assert request.state.db_session is fake_session
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
 
 
 @pytest.mark.asyncio
@@ -433,6 +456,94 @@ async def test_init_db_fresh_db_runs_migrations() -> None:
     rm.assert_awaited_once()  # full chain from base -> schema + seeds
     fake_conn.run_sync.assert_not_awaited()  # no bare create_all on the fresh path
     fake_engine.dispose.assert_awaited_once()
+
+
+def _fake_engine_for_init() -> tuple[MagicMock, MagicMock]:
+    fake_conn = MagicMock()
+    fake_conn.execute = AsyncMock()
+    fake_conn.run_sync = AsyncMock()
+
+    class _ConnCm:
+        async def __aenter__(self) -> object:
+            return fake_conn
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    fake_engine = MagicMock()
+    fake_engine.begin = MagicMock(return_value=_ConnCm())
+    fake_engine.connect = MagicMock(return_value=_ConnCm())
+    fake_engine.dispose = AsyncMock()
+    return fake_engine, fake_conn
+
+
+@pytest.mark.asyncio
+async def test_init_db_second_call_same_db_is_noop() -> None:
+    """Bootstrap and the API lifespan both call init_db in one process; the
+    second call must not re-enter the alembic machinery (2026-07-08 NAS hang)."""
+    fake_engine, _ = _fake_engine_for_init()
+    with (
+        patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
+        patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
+    ):
+        await init_db()
+        await init_db()
+
+    rm.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_init_db_reruns_for_a_different_database_url() -> None:
+    """The latch is URL-keyed: a process initializing a different DB runs fully."""
+    _InitState.completed_url = "postgresql+asyncpg://other-host/other-db"
+    fake_engine, _ = _fake_engine_for_init()
+    with (
+        patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
+        patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
+    ):
+        await init_db()
+
+    rm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_drop_db_resets_the_init_latch() -> None:
+    """drop_db clears the latch so a rebuild in the same process runs fully."""
+    fake_engine, _ = _fake_engine_for_init()
+    with (
+        patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch("roboco.db.base._db_has_tables", new=AsyncMock(return_value=True)),
+        patch("roboco.db.base.run_migrations", new=AsyncMock()) as rm,
+    ):
+        await init_db()
+        await drop_db()
+        await init_db()
+
+    expected_full_runs = 2
+    assert rm.await_count == expected_full_runs
+
+
+@pytest.mark.asyncio
+async def test_run_migrations_times_out_loudly_on_wedged_worker() -> None:
+    """A wedged alembic worker thread fails startup with a clear error instead
+    of hanging the API bind forever (the 2026-07-08 boot-hang shape)."""
+    fake_engine, _ = _fake_engine_for_init()
+    fake_command = MagicMock()
+    fake_command.upgrade = MagicMock(side_effect=lambda *_a, **_k: time.sleep(0.5))
+    with (
+        patch("roboco.db.base.get_engine", return_value=fake_engine),
+        patch(
+            "roboco.db.base._db_has_alembic_version",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("roboco.db.base.command", fake_command),
+        patch("roboco.db.base._ALEMBIC_TIMEOUT_SECONDS", 0.05),
+        pytest.raises(RuntimeError, match="alembic migration runner exceeded"),
+    ):
+        await run_migrations()
 
 
 # ---------------------------------------------------------------------------

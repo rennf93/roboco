@@ -270,7 +270,7 @@ def test_i_am_done_notes_defaults_to_empty(flow_module: types.ModuleType) -> Non
 
 
 def test_sync_branch_posts_to_dev_path(flow_module: types.ModuleType) -> None:
-    """sync_branch forwards task_id to /api/v1/flow/developer/sync_branch."""
+    """sync_branch forwards task_id + stash to /api/v1/flow/developer/sync_branch."""
     fake_client = _make_fake_client({"status": "ok"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -279,7 +279,18 @@ def test_sync_branch_posts_to_dev_path(flow_module: types.ModuleType) -> None:
     assert result == {"status": "ok"}
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/flow/developer/sync_branch" in args[0]
-    assert kwargs["json"] == {"task_id": "task-abc"}
+    assert kwargs["json"] == {"task_id": "task-abc", "stash": False}
+
+
+def test_sync_branch_forwards_stash_true(flow_module: types.ModuleType) -> None:
+    """sync_branch(stash=True) forwards the flag through the body."""
+    fake_client = _make_fake_client({"status": "ok"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.sync_branch("task-abc", stash=True)
+
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-abc", "stash": True}
 
 
 def test_i_am_blocked_sends_reason(flow_module: types.ModuleType) -> None:

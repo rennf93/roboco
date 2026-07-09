@@ -44,6 +44,8 @@ SLUG = "roboco-video-route-test"
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 UX_DEV_1_UUID = _foundation.AGENTS["ux-dev-1"].uuid
 UX_DEV_2_UUID = _foundation.AGENTS["ux-dev-2"].uuid
+HISTORY_LIMIT = 2
+RETRY_ATTEMPTS = 2
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -162,6 +164,55 @@ async def _seed_draft(
             "tiktok_caption": "Check out this clip on TikTok",
             "render_status": "rendered",
         },
+    )
+    await session.flush()
+    return task
+
+
+async def _seed_authoring_task(
+    session: AsyncSession,
+    *,
+    status: TaskStatus = TaskStatus.IN_PROGRESS,
+    draft_extra: dict[str, object] | None = None,
+    pr_number: int | None = None,
+) -> TaskTable:
+    """A ``source=video`` UX/UI authoring task — the pipeline route's basis.
+    Mirrors ``_seed_draft`` but for the pre-render authoring stage."""
+    system = await _seed_agent(session, AgentRole.SYSTEM, "system")
+    ux_dev = await _seed_agent(session, AgentRole.DEVELOPER, "ux-dev")
+    project = ProjectTable(
+        id=uuid4(),
+        name="RoboCo",
+        slug=f"roboco-{uuid4().hex[:6]}",
+        git_url="https://example.com/roboco.git",
+        assigned_cell=Team.UX_UI,
+        created_by=system.id,
+    )
+    session.add(project)
+    await session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="Video: launch teaser",
+        description="A short teaser for the launch",
+        acceptance_criteria=["dev builds the composition"],
+        status=status,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.LOW,
+        project_id=project.id,
+        created_by=system.id,
+        assigned_to=ux_dev.id,
+        team=Team.UX_UI,
+        source=VIDEO_SOURCE,
+        confirmed_by_human=True,
+        pr_number=pr_number,
+    )
+    session.add(task)
+    await session.flush()
+    markers.set_video_draft(
+        task,
+        {"occasion": "launch teaser", "script": "script", **(draft_extra or {})},
     )
     await session.flush()
     return task
@@ -304,6 +355,139 @@ async def test_list_posts_returns_open_draft(
 
 
 @pytest.mark.asyncio
+async def test_list_posts_includes_source_task_id(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """source_task_id round-trips from the marker to the response — the
+    panel's basis for a future draft->authoring-task deep link."""
+    source_task_id = uuid4()
+    task = await _seed_draft(db_session)
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(task, {**draft, "source_task_id": str(source_task_id)})
+    await db_session.flush()
+    resp = await ceo_client.get("/api/video/posts")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body[0]["source_task_id"] == str(source_task_id)
+
+
+@pytest.mark.asyncio
+async def test_history_includes_source_task_id(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    source_task_id = uuid4()
+    task = await _seed_draft(db_session)
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(task, {**draft, "source_task_id": str(source_task_id)})
+    await db_session.flush()
+    with _LOCKED[0], _LOCKED[1]:
+        await ceo_client.post(
+            f"/api/video/posts/{task.id}/reject", json={"reason": "off-brand"}
+        )
+    resp = await ceo_client.get("/api/video/posts/history")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["source_task_id"] == str(source_task_id)
+
+
+# --- pipeline strip (task 1, 2026-07-09) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pipeline_lists_non_terminal_authoring_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    resp = await ceo_client.get("/api/video/pipeline")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["status"] == "in_progress"
+    assert row["occasion"] == "launch teaser"
+    assert row["render_status"] is None
+    assert row["render_attempts"] == 0
+    assert row["max_attempts"] == markers.MAX_VIDEO_RENDER_ATTEMPTS
+    assert row["render_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_completed_unrendered_with_attempts(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A COMPLETED authoring task the render loop hasn't finished with
+    (render_status unset) stays visible with its retry count."""
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={"composition_id": "Intro", "render_attempts": RETRY_ATTEMPTS},
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["render_attempts"] == RETRY_ATTEMPTS
+    assert row["render_status"] is None
+    assert row["composition_id"] == "Intro"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_failed_render_with_error(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={
+            "composition_id": "Intro",
+            "render_status": "failed",
+            "render_attempts": markers.MAX_VIDEO_RENDER_ATTEMPTS,
+            "render_error": "sidecar timeout",
+        },
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["render_status"] == "failed"
+    assert row["render_attempts"] == markers.MAX_VIDEO_RENDER_ATTEMPTS
+    assert row["render_error"] == "sidecar timeout"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_excludes_rendered_completed_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A rendered task already materialized its video_post draft — it must
+    not double-appear in the pipeline strip."""
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={"composition_id": "Intro", "render_status": "rendered"},
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_pipeline_excludes_cancelled_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.CANCELLED)
+    resp = await ceo_client.get("/api/video/pipeline")
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_pipeline_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/video/pipeline")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_media_returns_the_rendered_cut(
     db_session: AsyncSession,
     ceo_client: AsyncClient,
@@ -436,6 +620,99 @@ async def test_approve_with_credentials_posts_via_the_real_poster_wiring(
             api_key="", api_secret="", access_token="", access_token_secret=""
         )
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_history_returns_posted_and_rejected_newest_first(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    rejected = await _seed_draft(db_session, platforms=["x"])
+    with _LOCKED[0], _LOCKED[1]:
+        await ceo_client.post(
+            f"/api/video/posts/{rejected.id}/reject",
+            json={"reason": "wrong occasion"},
+        )
+    posted = await _seed_draft(db_session, platforms=["x"])
+    creds_svc = get_x_credentials_service(db_session)
+    await creds_svc.set_credentials(
+        api_key="ak", api_secret="as", access_token="at", access_token_secret="ats"
+    )
+    try:
+        with (
+            _LOCKED[0],
+            _LOCKED[1],
+            patch.object(
+                LiveXVideoPoster,
+                "post_video",
+                AsyncMock(
+                    return_value=XVideoPostResult(
+                        posted=True, video_id="xid42", detail="posted"
+                    )
+                ),
+            ),
+        ):
+            await ceo_client.post(f"/api/video/posts/{posted.id}/approve", json={})
+
+        resp = await ceo_client.get("/api/video/posts/history")
+        assert resp.status_code == HTTPStatus.OK
+        body = resp.json()
+        ids = [row["task_id"] for row in body]
+        assert str(posted.id) in ids
+        assert str(rejected.id) in ids
+        assert ids.index(str(posted.id)) < ids.index(str(rejected.id))
+        posted_row = next(row for row in body if row["task_id"] == str(posted.id))
+        assert posted_row["status"] == "completed"
+        assert posted_row["posted"] == {"x": "xid42"}
+        rejected_row = next(row for row in body if row["task_id"] == str(rejected.id))
+        assert rejected_row["status"] == "cancelled"
+        assert rejected_row["reject_reason"] == "wrong occasion"
+    finally:
+        await creds_svc.set_credentials(
+            api_key="", api_secret="", access_token="", access_token_secret=""
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_history_excludes_open_drafts(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """Every approve/reject route in this file commits durably (the route
+    always calls db.commit()), so other tests' posted/rejected rows persist
+    in this shared-DB test session — history is never provably empty. Assert
+    identity instead: THIS still-open draft must not appear."""
+    open_task = await _seed_draft(db_session)
+    resp = await ceo_client.get("/api/video/posts/history")
+    assert resp.status_code == HTTPStatus.OK
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(open_task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_history_respects_limit(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    for _ in range(3):
+        t = await _seed_draft(db_session)
+        with _LOCKED[0], _LOCKED[1]:
+            await ceo_client.post(
+                f"/api/video/posts/{t.id}/reject", json={"reason": "not relevant"}
+            )
+    resp = await ceo_client.get(
+        "/api/video/posts/history", params={"limit": HISTORY_LIMIT}
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert len(resp.json()) == HISTORY_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_history_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/video/posts/history")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

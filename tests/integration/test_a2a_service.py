@@ -732,6 +732,127 @@ async def test_get_conversation_admin_returns_none_for_unknown(
 
 
 # ---------------------------------------------------------------------------
+# interject_as_ceo — the CEO's one-directional interjection into a watched
+# agent<->agent conversation (not a re-homed CEO<->target DM).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_lands_in_viewed_conversation_with_prefix(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+
+    msg = await svc.interject_as_ceo(UUID(conv.id), "be-qa", "ship it")
+
+    assert msg.conversation_id == conv.id
+    assert msg.from_agent == "ceo"
+    assert msg.content == "@be-qa: ship it"
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_bumps_target_unread_when_target_is_agent_b(
+    a2a_setup: dict,
+) -> None:
+    """Canonical order makes "be-qa" agent_b — its counter, not agent_a's,
+    must move; the other participant gets no ping."""
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    assert conv.agent_a == "be-dev-1"
+    assert conv.agent_b == "be-qa"
+
+    await svc.interject_as_ceo(UUID(conv.id), "be-qa", "ship it")
+
+    row = await db.get(A2AConversationTable, UUID(conv.id))
+    assert row is not None
+    assert row.unread_by_b == 1
+    assert row.unread_by_a == 0
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_bumps_target_unread_when_target_is_agent_a(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+
+    await svc.interject_as_ceo(UUID(conv.id), "be-dev-1", "ship it")
+
+    row = await db.get(A2AConversationTable, UUID(conv.id))
+    assert row is not None
+    assert row.unread_by_a == 1
+    assert row.unread_by_b == 0
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_bumps_message_count_and_last_message_at(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.send_chat_message(UUID(conv.id), "be-dev-1", "hello")
+
+    await svc.interject_as_ceo(UUID(conv.id), "be-qa", "ship it")
+
+    row = await db.get(A2AConversationTable, UUID(conv.id))
+    assert row is not None
+    _EXPECTED_MESSAGE_COUNT = 2
+    assert row.message_count == _EXPECTED_MESSAGE_COUNT
+    assert row.last_message_at is not None
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_rejects_non_participant_target(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+
+    with pytest.raises(ValueError, match="not a participant"):
+        await svc.interject_as_ceo(UUID(conv.id), "ghost-agent", "hi")
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_unknown_conversation_raises(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    with pytest.raises(ValueError, match="Conversation not found"):
+        await svc.interject_as_ceo(uuid4(), "be-qa", "hi")
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_publishes_a2a_message_sent_event(
+    a2a_setup: dict,
+) -> None:
+    """Same operator-live-view chokepoint as send()/send_chat_message() —
+    the panel's /ws/system invalidation must fire for an interjection too."""
+    svc = a2a_setup["svc"]
+    task_id = a2a_setup["task_id"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa", task_id=task_id)
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
+        sent = await svc.interject_as_ceo(UUID(conv.id), "be-qa", "ship it")
+
+    mock_bus.publish.assert_awaited_once()
+    published = mock_bus.publish.await_args.args[0]
+    assert published.type is EventType.A2A_MESSAGE_SENT
+    data = published.data
+    # Points at the VIEWED conversation, not a re-homed ceo<->target one.
+    assert data["conversation_id"] == conv.id
+    assert data["conversation_id"] == sent.conversation_id
+    assert data["task_id"] == str(task_id)
+    assert data["from_agent"] == "ceo"
+    assert data["to_agent"] == "be-qa"
+
+
+# ---------------------------------------------------------------------------
 # list_admin_pairs — the A2A switchboard's static-matrix + DB join
 # ---------------------------------------------------------------------------
 

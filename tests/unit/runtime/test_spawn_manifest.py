@@ -36,7 +36,7 @@ class TestBuildForRole:
         assert m.bash_allowed is True
         assert "ROBOCO_SDK_URL" in m.env or "ROBOCO_PUBLIC_BASE_URL" in m.env
 
-    def test_main_pm_manifest_subagent_uses_parent_model(self) -> None:
+    def test_main_pm_manifest_denies_subagents(self) -> None:
         m = build_for_role(
             SpawnInputs(
                 agent_id=uuid4(),
@@ -46,8 +46,9 @@ class TestBuildForRole:
                 agent_model="minimax-m3:cloud",
             )
         )
-        assert m.subagent_allowed is True
-        assert m.subagent_model == "minimax-m3:cloud"
+        # Fleet-wide subagent ban (CEO, 2026-07-09) covers coordinators too.
+        assert m.subagent_allowed is False
+        assert m.subagent_model is None
 
     def test_qa_manifest_no_write(self) -> None:
         m = build_for_role(

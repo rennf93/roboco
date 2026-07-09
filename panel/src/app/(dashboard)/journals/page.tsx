@@ -8,9 +8,9 @@ import { AgentList } from "@/components/journals/agent-list";
 import { JournalView } from "@/components/journals/journal-view";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BookOpen, Search, RefreshCw } from "lucide-react";
+import { usePageRefresh } from "@/hooks";
+import { BookOpen, Search } from "lucide-react";
 
 const JOURNALS_STATE_KEY = "roboco-journals-state";
 
@@ -75,6 +75,16 @@ function JournalsPageContent() {
   const taskFilter = urlTask;
 
   const { data: agents, isLoading: loadingAgents, refetch } = useAgents();
+
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   // Save state to localStorage whenever URL params change
   useEffect(() => {
@@ -160,10 +170,6 @@ function JournalsPageContent() {
             View agent reflections, learnings, and decisions
           </p>
         </div>
-        <Button variant="outline" onClick={() => refetch()}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {/* Main Content — one screen; the agent list and the detail each scroll inside */}

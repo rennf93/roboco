@@ -42,6 +42,14 @@ _TIMEOUT = 30
 # shared _TIMEOUT above is tuned for fast content-tool calls (note/dm/
 # evidence) and would give up first — client must outlast the server op.
 _COMMIT_TIMEOUT = 190
+# request_sandbox provisions inline; ensure_sandbox now always provisions the
+# project's FULL opted-in set on first call (kills the superset/teardown
+# race — see ensure_sandbox's docstring), so an all-three-cold first request
+# is the norm, not the rare case. Worst case: 3 x 300s cold pulls
+# (SandboxProvisioner._DOCKER_PULL_TIMEOUT_SECONDS) + readiness (~135s) ~=
+# 1035s — images are pre-pulled at startup in practice, so cold pulls here
+# are the exception, but the timeout must cover the worst case anyway.
+_SANDBOX_TIMEOUT = 1080
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -622,6 +630,12 @@ def propose_video(
     """UX/UI dev: propose your video's composition + captions. Metadata only —
     this does NOT render (rendering happens later, off this path).
 
+    Before authoring, read motion/README.md for the design bar and
+    motion/kit/README.md for the panel-demo kit — build in the panel-demo
+    register on motion/kit/ (extend motion/compositions/panel-demo/) rather
+    than starting from scratch or shipping a text card, unless the occasion
+    has no product visual to show.
+
     Call this exactly ONCE per authoring task, after building the HyperFrames
     composition in motion/compositions/<id>/. Then commit + open_pr to send
     it through the normal PR-review gate.
@@ -692,6 +706,26 @@ def notify(
 def evidence(task_id: str) -> dict[str, Any]:
     """Inspect a task's PR diff, commits, files. Fetches dev branch into workspace."""
     return _post("/api/v1/do/evidence", {"task_id": task_id})
+
+
+def request_sandbox(services: list[str] | None = None) -> dict[str, Any]:
+    """Provision (or reuse) a throwaway sandbox DB/Redis/Mongo for YOUR active task.
+
+    On-demand — nothing is provisioned at spawn. Omit ``services`` to get the
+    project's whole opted-in set; requesting a service the project didn't opt
+    into is rejected with the allowed set named. Creds come back in
+    ``evidence``, one entry per service: ``{host, port, user, password,
+    database, env: {ROBOCO_TEST_*: value}}`` — export the ``env`` values
+    verbatim for gate tooling that reads them. The whole opted-in set is
+    provisioned on first call, so calling this again for any subset or
+    superset of it is a cheap no-op (same creds, no re-provisioning); a
+    project that never opted into sandbox services will reject this.
+    """
+    return _post(
+        "/api/v1/do/request_sandbox",
+        {"services": services},
+        timeout=_SANDBOX_TIMEOUT,
+    )
 
 
 def draft_playbook(
@@ -891,6 +925,7 @@ _TOOLS: dict[str, Any] = {
     "dm": dm,
     "notify": notify,
     "evidence": evidence,
+    "request_sandbox": request_sandbox,
     "progress": progress,
     "notify_list": notify_list,
     "notify_get": notify_get,

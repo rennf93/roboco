@@ -70,6 +70,27 @@ def _get(path: str, params: dict[str, Any]) -> dict[str, Any]:
         return result
 
 
+_PROJECT_SLUG_ENV = "ROBOCO_PROJECT_SLUG"
+
+
+def _resolve_project_slug(project_slug: str | None) -> str | dict[str, Any]:
+    """Resolve the slug to query: explicit arg wins, else the orchestrator's
+    env-injected slug for this agent's own project. Returns an error dict
+    (never raises) when neither is available.
+    """
+    slug = project_slug or os.environ.get(_PROJECT_SLUG_ENV)
+    if not slug:
+        return {
+            "error": "missing_project_slug",
+            "detail": (
+                "no project_slug given and "
+                f"{_PROJECT_SLUG_ENV} is not set in this agent's environment — "
+                "pass project_slug explicitly"
+            ),
+        }
+    return slug
+
+
 def _cap_diff(result: dict[str, Any]) -> dict[str, Any]:
     """Truncate an oversized diff for context embedding; annotate the cut."""
     diff = result.get("diff")
@@ -85,35 +106,43 @@ def _cap_diff(result: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool()
-def roboco_git_status(project_slug: str) -> dict[str, Any]:
+def roboco_git_status(project_slug: str | None = None) -> dict[str, Any]:
     """Read-only: current git status of your workspace.
 
     Args:
-        project_slug: Project slug (e.g. "roboco").
+        project_slug: Optional — omit it and your own project is used
+            (from this agent's environment).
 
     Returns:
         Current branch, staged/unstaged/untracked files, ahead/behind counts.
     """
-    return _get("/api/git/status", {"project_slug": project_slug})
+    slug = _resolve_project_slug(project_slug)
+    if isinstance(slug, dict):
+        return slug
+    return _get("/api/git/status", {"project_slug": slug})
 
 
 @mcp.tool()
 def roboco_git_log(
-    project_slug: str,
+    project_slug: str | None = None,
     limit: int = 10,
     branch: str | None = None,
 ) -> dict[str, Any]:
     """Read-only: recent commits on the named branch (default: current).
 
     Args:
-        project_slug: Project slug.
+        project_slug: Optional — omit it and your own project is used
+            (from this agent's environment).
         limit: Number of commits to return (max 50).
         branch: Branch to inspect; defaults to the current checked-out branch.
 
     Returns:
         List of commits with hash, short_hash, message, author, date.
     """
-    params: dict[str, Any] = {"project_slug": project_slug, "limit": limit}
+    slug = _resolve_project_slug(project_slug)
+    if isinstance(slug, dict):
+        return slug
+    params: dict[str, Any] = {"project_slug": slug, "limit": limit}
     if branch is not None:
         params["branch"] = branch
     return _get("/api/git/log", params)
@@ -121,21 +150,25 @@ def roboco_git_log(
 
 @mcp.tool()
 def roboco_git_diff(
-    project_slug: str,
+    project_slug: str | None = None,
     staged: bool = False,
     file_path: str | None = None,
 ) -> dict[str, Any]:
     """Read-only: diff of your workspace against the index.
 
     Args:
-        project_slug: Project slug.
+        project_slug: Optional — omit it and your own project is used
+            (from this agent's environment).
         staged: If True, show staged changes; otherwise show unstaged.
         file_path: Optional path to scope the diff to a single file.
 
     Returns:
         Diff text plus files_changed count.
     """
-    params: dict[str, Any] = {"project_slug": project_slug, "staged": staged}
+    slug = _resolve_project_slug(project_slug)
+    if isinstance(slug, dict):
+        return slug
+    params: dict[str, Any] = {"project_slug": slug, "staged": staged}
     if file_path is not None:
         params["file_path"] = file_path
     return _cap_diff(_get("/api/git/diff", params))
@@ -143,21 +176,25 @@ def roboco_git_diff(
 
 @mcp.tool()
 def roboco_git_branch_list(
-    project_slug: str,
+    project_slug: str | None = None,
     include_remote: bool = False,
 ) -> dict[str, Any]:
     """Read-only: list local (and optionally remote) branches.
 
     Args:
-        project_slug: Project slug.
+        project_slug: Optional — omit it and your own project is used
+            (from this agent's environment).
         include_remote: If True, also include remote-tracking branches.
 
     Returns:
         Branches with current branch marked.
     """
+    slug = _resolve_project_slug(project_slug)
+    if isinstance(slug, dict):
+        return slug
     return _get(
         "/api/git/branches",
-        {"project_slug": project_slug, "include_remote": include_remote},
+        {"project_slug": slug, "include_remote": include_remote},
     )
 
 

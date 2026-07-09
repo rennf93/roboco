@@ -1070,6 +1070,123 @@ async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
 
 
 # ---------------------------------------------------------------------------
+# rebase_onto_base — stash=True auto-stash/pop (the dirty-workspace exit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_true_auto_stashes_and_pops() -> None:
+    """stash=True: a dirty tree is stashed (not refused), rebased, popped back."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "1"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {"status": "rebased", "unique_commits": 1}
+    push_args = ["stash", "push", "-u", "-m", "sync_branch autostash"]
+    pop_args = ["stash", "pop"]
+    assert push_args in calls
+    assert pop_args in calls
+    # Stash push runs before the rebase, pop runs after.
+    assert calls.index(push_args) < calls.index(["rebase", "origin/master"])
+    assert calls.index(pop_args) > calls.index(["rebase", "origin/master"])
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_pop_conflict_preserves_stash() -> None:
+    """A conflicted pop is flagged, never auto-resolved — stash stays intact."""
+    svc = _service()
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "1"
+        elif args == ["stash", "pop"]:
+            res.returncode = 1  # pop conflicted — stash is NOT dropped by git
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {
+        "status": "rebased",
+        "unique_commits": 1,
+        "stash_pop_conflict": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_true_rebase_conflict_skips_pop() -> None:
+    """A rebase conflict aborts before ever attempting the pop — no double
+    conflict; the stash is reported preserved for the caller to surface."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args == ["rebase", "origin/master"]:
+            res.returncode = 1
+        elif args[:2] == ["diff", "--name-only"]:
+            res.stdout = "src/a.py\n"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {
+        "status": "conflicts",
+        "files": ["src/a.py"],
+        "stash_preserved": True,
+    }
+    assert ["stash", "pop"] not in calls
+
+
+# ---------------------------------------------------------------------------
 # _link_commit_to_task — flush; the runner commits (no out-of-band commit)
 # ---------------------------------------------------------------------------
 

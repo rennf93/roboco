@@ -7,18 +7,20 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.video import (
     TikTokCredentialsSetRequest,
     TikTokCredentialsStatus,
+    VideoPipelineItemResponse,
     VideoPostApproveRequest,
     VideoPostExecuteResponse,
+    VideoPostHistoryResponse,
     VideoPostRejectRequest,
     VideoPostResponse,
     VideoRequestBody,
@@ -138,6 +140,7 @@ def _to_response(task: TaskTable) -> VideoPostResponse:
         tiktok_caption=draft.get("tiktok_caption"),
         reject_reason=markers.get_video_reject_reason(task),
         mp4_paths=dict(draft.get("mp4_paths") or {}),
+        source_task_id=draft.get("source_task_id"),
     )
 
 
@@ -163,6 +166,75 @@ async def list_video_posts(
     _require_ceo(agent)
     tasks = await get_video_post_service(db).list_held_video_posts()
     return [_to_response(t) for t in tasks]
+
+
+def _to_pipeline_item(task: TaskTable) -> VideoPipelineItemResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPipelineItemResponse(
+        task_id=str(task.id),
+        title=task.title,
+        occasion=str(draft.get("occasion") or ""),
+        status=_status_value(task),
+        pr_number=task.pr_number,
+        composition_id=draft.get("composition_id"),
+        render_status=draft.get("render_status"),
+        render_attempts=int(draft.get("render_attempts", 0)),
+        render_error=draft.get("render_error"),
+    )
+
+
+@router.get("/pipeline", response_model=list[VideoPipelineItemResponse])
+async def list_video_pipeline(
+    db: DbSession, agent: CurrentAgentContext
+) -> list[VideoPipelineItemResponse]:
+    """Every in-flight source=video authoring task, from claim through the
+    render loop's retry/failure states — the Social page's pipeline-
+    visibility strip. A rendered task has already materialized its
+    video_post draft (visible instead via ``/posts``) and drops out here."""
+    _require_ceo(agent)
+    tasks = await get_task_service(db).list_video_pipeline_tasks()
+    return [_to_pipeline_item(t) for t in tasks]
+
+
+def _posted_ids(draft: dict[str, Any]) -> dict[str, str]:
+    """Every ``{platform}_posted_id`` key stamped by approve, keyed by
+    platform (e.g. ``{"x": "..", "tiktok": ".."}``)."""
+    suffix = "_posted_id"
+    return {
+        k[: -len(suffix)]: str(v) for k, v in draft.items() if k.endswith(suffix) and v
+    }
+
+
+def _to_history_response(task: TaskTable) -> VideoPostHistoryResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPostHistoryResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=_status_value(task),
+        occasion=str(draft.get("occasion") or ""),
+        script=str(draft.get("script") or ""),
+        platforms=list(draft.get("platforms") or []),
+        x_caption=draft.get("x_caption"),
+        tiktok_caption=draft.get("tiktok_caption"),
+        reject_reason=markers.get_video_reject_reason(task),
+        posted=_posted_ids(draft),
+        acted_at=task.updated_at or task.created_at,
+        source_task_id=draft.get("source_task_id"),
+    )
+
+
+@router.get("/posts/history", response_model=list[VideoPostHistoryResponse])
+async def list_video_post_history(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[VideoPostHistoryResponse]:
+    """Posted or rejected video_post drafts, newest-acted-first, bounded by
+    `limit`."""
+    _require_ceo(agent)
+    tasks = await get_video_post_service(db).list_video_post_history(limit=limit)
+    return [_to_history_response(t) for t in tasks]
 
 
 @router.get("/posts/{task_id}/media", response_model=None)

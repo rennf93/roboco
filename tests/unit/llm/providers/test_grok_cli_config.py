@@ -97,14 +97,14 @@ def test_main_pm_keeps_shell_but_denies_git(monkeypatch: pytest.MonkeyPatch) -> 
     assert "--effort" not in args
 
 
-def test_prompter_allows_subagents_but_no_shell_or_edit(
+def test_prompter_gets_no_subagents_shell_or_edit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ROBOCO_GROK_REASONING_EFFORT", raising=False)
     dis = _disallowed(gc.grok_cli_args_for_role("prompter"))
-    # The intake interviewer may fan out to subagents (parity with Claude's Task)…
-    assert "Agent" not in dis
-    # …but it is still a read-only conversational role: no shell, no editing.
+    # Fleet-wide subagent ban (CEO, 2026-07-09): no role fans out, intake included.
+    assert "Agent" in dis
+    # And it remains a read-only conversational role: no shell, no editing.
     assert "run_terminal_cmd" in dis
     assert "search_replace" in dis
 

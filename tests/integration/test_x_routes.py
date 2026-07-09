@@ -22,6 +22,8 @@ from roboco.services.task import X_POST_SOURCE
 from roboco.services.x_client import XClient, XMention, XPostResult
 from roboco.services.x_post_service import XPostService
 
+HISTORY_LIMIT = 2
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -191,6 +193,79 @@ async def test_reject_cancels_and_records_reason(
     refreshed = await db_session.get(TaskTable, task.id)
     assert refreshed is not None
     assert refreshed.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_history_returns_posted_and_rejected_newest_first(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    rejected = await _seed_draft(db_session)
+    await ceo_client.post(
+        f"/api/x/posts/{rejected.id}/reject", json={"reason": "off-brand tone"}
+    )
+    posted = await _seed_draft(db_session)
+    with (
+        patch(
+            "roboco.services.x_post_service.build_x_client",
+            return_value=_StubClient(),
+        ),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await ceo_client.post(f"/api/x/posts/{posted.id}/approve", json={})
+
+    resp = await ceo_client.get("/api/x/posts/history")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    ids = [row["task_id"] for row in body]
+    assert str(posted.id) in ids
+    assert str(rejected.id) in ids
+    assert ids.index(str(posted.id)) < ids.index(str(rejected.id))
+    posted_row = next(row for row in body if row["task_id"] == str(posted.id))
+    assert posted_row["status"] == "completed"
+    assert posted_row["tweet_id"] == "42"
+    rejected_row = next(row for row in body if row["task_id"] == str(rejected.id))
+    assert rejected_row["status"] == "cancelled"
+    assert rejected_row["reject_reason"] == "off-brand tone"
+
+
+@pytest.mark.asyncio
+async def test_history_excludes_open_drafts(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """Every approve/reject route in this file commits durably (the route
+    always calls db.commit()), so other tests' posted/rejected rows persist
+    in this shared-DB test session — history is never provably empty. Assert
+    identity instead: THIS still-open draft must not appear."""
+    open_task = await _seed_draft(db_session)
+    resp = await ceo_client.get("/api/x/posts/history")
+    assert resp.status_code == HTTPStatus.OK
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(open_task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_history_respects_limit(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    for _ in range(3):
+        t = await _seed_draft(db_session)
+        await ceo_client.post(
+            f"/api/x/posts/{t.id}/reject", json={"reason": "not relevant"}
+        )
+    resp = await ceo_client.get("/api/x/posts/history", params={"limit": HISTORY_LIMIT})
+    assert resp.status_code == HTTPStatus.OK
+    assert len(resp.json()) == HISTORY_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_history_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/x/posts/history")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

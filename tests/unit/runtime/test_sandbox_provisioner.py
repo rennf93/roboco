@@ -40,6 +40,10 @@ class _FakeRunner:
         # path skips the pull). Tests exercising the pull path override these.
         self.image_present: bool = True
         self.pull_rc: int = 0
+        # is_live()'s `docker inspect --format={{.State.Running}}` fake —
+        # set post-construction, mirroring image_present/pull_rc above.
+        self.inspect_rc: int = 0
+        self.inspect_running: bool = True
         self._ps_call_count = 0
 
     async def __call__(
@@ -48,26 +52,33 @@ class _FakeRunner:
         self.calls.append(args)
         verb = args[0]
         if verb == "run":
-            return self.run_rc, b"container-id\n", b""
-        if verb == "exec":
-            return self.exec_rc, b"", b""
-        if verb in ("stop", "kill", "rm"):
-            return self.teardown_rc, b"", b""
-        if verb == "image":
+            rc, out, err = self.run_rc, b"container-id\n", b""
+        elif verb == "exec":
+            rc, out, err = self.exec_rc, b"", b""
+        elif verb in ("stop", "kill", "rm"):
+            rc, out, err = self.teardown_rc, b"", b""
+        elif verb == "image":
             # `image inspect <img>` — rc 0 means present (skip pull).
             if args[1] != "inspect":
                 raise AssertionError(f"unexpected image subverb: {args[1]}")
-            return (0 if self.image_present else 1), b"", b""
-        if verb == "pull":
-            return self.pull_rc, b"", b"" if self.pull_rc == 0 else b"pull failed\n"
-        if verb == "ps":
+            rc, out, err = (0 if self.image_present else 1), b"", b""
+        elif verb == "pull":
+            rc = self.pull_rc
+            out, err = b"", (b"" if rc == 0 else b"pull failed\n")
+        elif verb == "ps":
             self._ps_call_count += 1
             # First ps call = the sandbox-labeled listing; second = live agents.
             listing = (
                 self.ps_output if self._ps_call_count == 1 else self.ps_live_output
             )
-            return 0, listing, b""
-        raise AssertionError(f"unexpected docker verb: {verb}")
+            rc, out, err = 0, listing, b""
+        elif verb == "inspect":
+            rc = self.inspect_rc
+            out = b"true\n" if self.inspect_running else b"false\n"
+            err = b""
+        else:
+            raise AssertionError(f"unexpected docker verb: {verb}")
+        return rc, out, err
 
 
 @pytest.fixture(autouse=True)
@@ -296,3 +307,48 @@ async def test_provision_pull_failure_raises() -> None:
         await provisioner.provision("dev-9", ["postgres"])
     # `docker run` never reached — pull failed first.
     assert not any(c[0] == "run" for c in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_is_live_true_when_container_running() -> None:
+    runner = _FakeRunner()
+
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-10", ["postgres", "redis"]) is True
+    expected_inspect_calls = 2
+    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    assert len(inspects) == expected_inspect_calls
+
+
+@pytest.mark.asyncio
+async def test_is_live_false_when_container_stopped() -> None:
+    """rc 0 but State.Running == false — container exists but isn't running."""
+    runner = _FakeRunner()
+    runner.inspect_running = False
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-11", ["postgres"]) is False
+
+
+@pytest.mark.asyncio
+async def test_is_live_false_when_container_missing() -> None:
+    """Nonzero rc — `docker inspect` fails outright on a removed container."""
+    runner = _FakeRunner()
+    runner.inspect_rc = 1
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-12", ["postgres"]) is False
+
+
+@pytest.mark.asyncio
+async def test_is_live_short_circuits_on_first_dead_service() -> None:
+    """A dead first service skips checking the rest — no need to inspect
+    every container once one is already known dead."""
+    runner = _FakeRunner()
+    runner.inspect_rc = 1
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-13", ["postgres", "redis"]) is False
+    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    assert len(inspects) == 1

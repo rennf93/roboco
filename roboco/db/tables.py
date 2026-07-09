@@ -180,6 +180,13 @@ class TaskTable(Base):
         ARRAY(String), nullable=False, default=list
     )
 
+    if TYPE_CHECKING:
+        # ponytail: transient, non-persisted — set only by TaskService.cancel()
+        # to surface orphaned parent-AC coverage without a response-schema
+        # change. Declared here only so mypy accepts the attribute; SQLAlchemy
+        # never sees it (TYPE_CHECKING is False at runtime).
+        orphaned_parent_acs: list[str] | None
+
     # Status
     status: Mapped[TaskStatus] = mapped_column(
         _str_enum(TaskStatus), nullable=False, default=TaskStatus.PENDING, index=True

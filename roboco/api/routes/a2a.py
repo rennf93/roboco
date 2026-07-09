@@ -1078,10 +1078,11 @@ async def reply_as_ceo(
     agent: CurrentAgentContext,
     data: AdminReplyRequest,
 ) -> MessageResponse:
-    """CEO-only: chime into an existing A2A conversation as itself.
+    """CEO-only: interject into an existing A2A conversation as itself.
 
-    The CEO addresses one of the conversation's two real participants (A2A
-    conversations are strictly pairwise) on the conversation's linked task.
+    A one-directional interjection, not a CEO<->agent DM: the message is
+    inserted into THIS conversation (readable by both participants) and
+    addressed to one of its two real participants via ``interject_as_ceo``.
     """
     _require_ceo(agent)
     service = A2AService(db)
@@ -1094,23 +1095,12 @@ async def reply_as_ceo(
         )
     _resolve_reply_target(conv, data.to_agent)
 
-    try:
-        msg = await service.send(
-            from_agent=agent.agent_id,
-            to_agent=data.to_agent,
-            task_id=require_uuid(conv.task_id),
-            body=data.content,
-            skill=data.skill,
-        )
-    except A2AAccessDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "A2A_ACCESS_DENIED",
-                "message": e.message,
-                "route_hint": e.route_hint,
-            },
-        ) from None
+    msg = await service.interject_as_ceo(
+        conversation_id=require_uuid(conversation_id),
+        to_agent=data.to_agent,
+        content=data.content,
+        skill=data.skill,
+    )
 
     await db.commit()
 

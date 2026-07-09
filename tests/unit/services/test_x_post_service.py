@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings as cfg
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
 ONE = 1
+TWO = 2
 
 
 class _StubClient(XClient):
@@ -123,6 +125,40 @@ async def _seed_draft(
     markers.set_x_draft_body(task, body)
     await session.flush()
     return task
+
+
+_FEATURE_SLUG = "org-memory"
+_FEATURE_TITLE = "Organizational Memory Loop"
+
+
+async def _seed_feature_draft(
+    session: AsyncSession,
+    *,
+    wants_video: bool = True,
+    video_script: str = "",
+    body: str = "Draft body",
+) -> TaskTable:
+    """An X_FEATURE_SOURCE draft carrying the x_feature_ref marker
+    ``propose_feature_spotlight`` stamps (Task 4, 2026-07-09 pipeline fixes):
+    slug/title always, plus wants_video/video_script when a companion video
+    was requested at authoring time."""
+    task = await _seed_draft(session, source=X_FEATURE_SOURCE, body=body)
+    markers.set_x_feature_ref(
+        task,
+        {
+            "slug": _FEATURE_SLUG,
+            "title": _FEATURE_TITLE,
+            "wants_video": wants_video,
+            "video_script": video_script,
+        },
+    )
+    await session.flush()
+    return task
+
+
+def _enable_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "video_engine_enabled", True)
+    monkeypatch.setattr(cfg, "video_on_spotlight", True)
 
 
 def _svc(session: AsyncSession) -> XPostService:
@@ -323,8 +359,9 @@ async def test_list_open_posts_excludes_terminal(db_session: AsyncSession) -> No
 async def test_approve_posts_feature_spotlight_draft(
     db_session: AsyncSession,
 ) -> None:
-    """The feature-spotlight source needs zero service changes: it rides the
-    same generic approve path as x_post/x_reply."""
+    """The feature-spotlight source rides the same generic post path as
+    x_post/x_reply; it only branches for the best-effort video hook below
+    (a no-op here since this draft carries no x_feature_ref marker)."""
     task = await _seed_draft(db_session, source=X_FEATURE_SOURCE)
     client = _StubClient()
     with (
@@ -365,6 +402,74 @@ async def test_reject_completed_raises(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_post_history_excludes_open_drafts(
+    db_session: AsyncSession,
+) -> None:
+    open_task = await _seed_draft(db_session)
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    history = await _svc(db_session).list_post_history()
+    ids = {t.id for t in history}
+    assert rejected_task.id in ids
+    assert open_task.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_newest_acted_first(
+    db_session: AsyncSession,
+) -> None:
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    posted_task = await _seed_draft(db_session)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(posted_task))
+    history = await _svc(db_session).list_post_history()
+    ids = [t.id for t in history]
+    assert ids.index(posted_task.id) < ids.index(rejected_task.id)
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_includes_marker_fields(
+    db_session: AsyncSession,
+) -> None:
+    posted_task = await _seed_draft(db_session)
+    client = _StubClient(tweet_id="777")
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(posted_task))
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "off-brand tone")
+
+    history = await _svc(db_session).list_post_history()
+    by_id = {t.id: t for t in history}
+    assert markers.get_x_posted_tweet_id(by_id[posted_task.id]) == "777"
+    assert markers.get_x_reject_reason(by_id[rejected_task.id]) == "off-brand tone"
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_respects_limit(db_session: AsyncSession) -> None:
+    tasks = []
+    for _ in range(3):
+        t = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+        await _svc(db_session).reject(_id(t), "not relevant")
+        tasks.append(t)
+    history = await _svc(db_session).list_post_history(limit=2)
+    assert len(history) == TWO
+    ids = {t.id for t in history}
+    assert tasks[2].id in ids
+    assert tasks[1].id in ids
+    assert tasks[0].id not in ids
+
+
+@pytest.mark.asyncio
 async def test_approve_does_not_flush_edited_body_before_lock(
     db_session: AsyncSession,
 ) -> None:
@@ -394,3 +499,221 @@ async def test_approve_does_not_flush_edited_body_before_lock(
     assert result.status == "already_posted"
     await db_session.refresh(task)
     assert markers.get_x_draft_body(task) == original_body
+
+
+# --------------------------------------------------------------------------- #
+# Spotlight video hook (Task 4, 2026-07-09 pipeline fixes): moved from
+# authoring time (propose_feature_spotlight) to this posted-success branch so
+# a ux-dev never burns a cycle on a spotlight the CEO then rejects.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_with_video_opens_video_task(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session, video_script="Custom voiceover script")
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    video_engine.open_video_task.assert_awaited_once()
+    kwargs = video_engine.open_video_task.call_args.kwargs
+    assert kwargs["occasion"] == "spotlight org-memory"
+    assert kwargs["platforms"] == ["x", "tiktok"]
+    assert kwargs["script"] == "Custom voiceover script"
+    assert kwargs["brief"] == "Organizational Memory Loop: Draft body"
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_video_falls_back_to_brief_script(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No explicit video_script -> script falls back to the brief, mirroring
+    the fallback the authoring-time hook used to do."""
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session)
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    kwargs = video_engine.open_video_task.call_args.kwargs
+    expected_brief = "Organizational Memory Loop: Draft body"
+    assert kwargs["script"] == expected_brief
+    assert kwargs["brief"] == expected_brief
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_reapprove_does_not_reopen_video(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Idempotent re-approve: the second call short-circuits on the already-
+    COMPLETED check before ever reaching _post/_open_spotlight_video again."""
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session)
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        svc = _svc(db_session)
+        first = await svc.approve(_id(task))
+        second = await svc.approve(_id(task))
+    assert first is not None
+    assert first.status == "posted"
+    assert second is not None
+    assert second.status == "already_posted"
+    video_engine.open_video_task.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_plain_x_post_never_opens_video(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plain x_post draft carries no x_feature_ref, so the source check
+    alone keeps the video hook from ever firing for it."""
+    _enable_video(monkeypatch)
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reject_feature_spotlight_with_wants_video_opens_none(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rejecting a spotlight draft never posts, so the video hook (which only
+    fires from the posted-success branch of _post) never runs either."""
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session)
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.video_engine.get_video_engine",
+        return_value=video_engine,
+    ):
+        updated = await _svc(db_session).reject(_id(task), "not on-brand")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_video_flags_off_skips(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "video_engine_enabled", False)
+    monkeypatch.setattr(cfg, "video_on_spotlight", False)
+    task = await _seed_feature_draft(db_session)
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_without_wants_video_skips(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flags on but the draft's author didn't request a video (wants_video
+    absent/False on the marker) -> no video task, distinct from the
+    flags-off case above."""
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session, wants_video=False)
+    client = _StubClient()
+    video_engine = AsyncMock()
+    video_engine.open_video_task = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_video_failure_does_not_break_post(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort: a video-engine blow-up must not affect the already-
+    succeeded post."""
+    _enable_video(monkeypatch)
+    task = await _seed_feature_draft(db_session)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            side_effect=RuntimeError("video-engine boom"),
+        ),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    await db_session.refresh(task)
+    assert task.status == TS.COMPLETED

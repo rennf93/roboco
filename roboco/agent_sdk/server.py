@@ -46,7 +46,10 @@ from roboco.agent_sdk.transcript_usage import (
 )
 from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _BUDGET
-from roboco.foundation.policy.agent_loop import retry_limit_for
+from roboco.foundation.policy.agent_loop import (
+    absolute_retry_limit_for,
+    retry_limit_for,
+)
 from roboco.services.gateway.envelope import Envelope
 
 logger = structlog.get_logger()
@@ -448,6 +451,12 @@ class _SessionState:
         self.verb_attempts: dict[tuple[str, str | None], deque[float]] = defaultdict(
             deque
         )
+        # Session-scoped, never-pruned cumulative rejection count per (verb,
+        # task_id) — catches slow-drip retries that space out past the 60s
+        # window above (see foundation.agent_loop VERB_ABSOLUTE_RETRY_MULTIPLIER).
+        self.verb_absolute_attempts: dict[tuple[str, str | None], int] = defaultdict(
+            int
+        )
         # Cumulative token usage for this session. Populated by /usage/sync,
         # which parses the Claude Code transcript and *sets* these absolutely
         # (the additive /usage/report path remains for explicit deltas).
@@ -561,11 +570,70 @@ def _check_verb_circuit(verb: str, task_id: str | None) -> dict[str, Any] | None
         remediate=(
             f"verb {verb!r} has been rejected {count} times in "
             f"{_VERB_ATTEMPT_WINDOW_S}s. Stop retrying. Call "
-            "i_am_blocked(reason='unable to satisfy gate after N attempts') "
-            "or i_am_idle() to release the claim. The PM will pick it up."
+            "i_am_blocked(reason='unable to satisfy gate after N attempts'), "
+            "unclaim() to release the claim back to the pool, or i_am_idle() "
+            "if you hold no claim. The PM will pick it up."
         ),
     )
     return env.as_dict()
+
+
+def _record_verb_attempt_absolute(verb: str, task_id: str | None) -> None:
+    """Bump the never-pruned cumulative rejection count for (verb, task_id).
+
+    Companion to `_record_verb_attempt` — same key, but this one never
+    decays, so it still accumulates when rejections are spaced past the
+    60s window (the slow-drip case the sliding breaker alone misses).
+    """
+    _state.verb_absolute_attempts[(verb, task_id)] += 1
+
+
+def _verb_absolute_attempt_count(verb: str, task_id: str | None) -> int:
+    """Cumulative rejection count for (verb, task_id); 0 for unseen keys."""
+    return _state.verb_absolute_attempts.get((verb, task_id), 0)
+
+
+def _check_verb_absolute_circuit(
+    verb: str, task_id: str | None
+) -> dict[str, Any] | None:
+    """Return a circuit_open envelope dict if the ABSOLUTE session cap is hit.
+
+    Independent of window pruning — trips a slow-drip retry (one rejection
+    every few minutes) that never accumulates enough in any single 60s
+    window to trip `_check_verb_circuit`.
+    """
+    cap = absolute_retry_limit_for(verb)
+    if cap is None:
+        return None
+    count = _verb_absolute_attempt_count(verb, task_id)
+    if count < cap:
+        return None
+    env = Envelope.circuit_open(
+        verb=verb,
+        attempts=count,
+        window_seconds=_VERB_ATTEMPT_WINDOW_S,
+        message=(
+            f"verb {verb!r} rejected {count} times this session "
+            f"(absolute cap {cap}) — circuit breaker open"
+        ),
+        remediate=(
+            f"verb {verb!r} has been rejected {count} times this session "
+            f"(absolute cap {cap}, regardless of pacing). Stop retrying. Call "
+            "i_am_blocked(reason='unable to satisfy gate after N attempts'), "
+            "unclaim() to release the claim back to the pool, or i_am_idle() "
+            "if you hold no claim. The PM will pick it up."
+        ),
+    )
+    return env.as_dict()
+
+
+def _check_any_verb_circuit(verb: str, task_id: str | None) -> dict[str, Any] | None:
+    """Windowed breaker first (the common fast-storm case), then the
+    session-scoped absolute cap (catches the slow-drip case the window
+    empties between)."""
+    return _check_verb_circuit(verb, task_id) or _check_verb_absolute_circuit(
+        verb, task_id
+    )
 
 
 @app.post("/verb/attempted", response_model=VerbCircuitStatus)
@@ -581,17 +649,17 @@ async def verb_attempted(req: VerbAttemptRequest) -> VerbCircuitStatus:
     """
     if req.rejection_kind in _CIRCUIT_REJECTION_KINDS:
         _record_verb_attempt(req.verb, req.task_id)
+        _record_verb_attempt_absolute(req.verb, req.task_id)
     limit = retry_limit_for(req.verb)
     count = _verb_attempt_count(req.verb, req.task_id)
-    is_open = limit is not None and count >= limit
-    envelope_dict = _check_verb_circuit(req.verb, req.task_id) if is_open else None
+    envelope_dict = _check_any_verb_circuit(req.verb, req.task_id)
     return VerbCircuitStatus(
         verb=req.verb,
         task_id=req.task_id,
         attempts=count,
         limit=limit,
         window_seconds=_VERB_ATTEMPT_WINDOW_S,
-        open=is_open,
+        open=envelope_dict is not None,
         circuit_envelope=envelope_dict,
     )
 
@@ -603,15 +671,14 @@ async def verb_circuit_status(
     """Read-only breaker state for (verb, task_id) — does NOT record an attempt."""
     limit = retry_limit_for(verb)
     count = _verb_attempt_count(verb, task_id)
-    is_open = limit is not None and count >= limit
-    envelope_dict = _check_verb_circuit(verb, task_id) if is_open else None
+    envelope_dict = _check_any_verb_circuit(verb, task_id)
     return VerbCircuitStatus(
         verb=verb,
         task_id=task_id,
         attempts=count,
         limit=limit,
         window_seconds=_VERB_ATTEMPT_WINDOW_S,
-        open=is_open,
+        open=envelope_dict is not None,
         circuit_envelope=envelope_dict,
     )
 

@@ -288,6 +288,59 @@ async def test_list_awaiting_main_pm_all_returns_root_tasks() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list_video_pipeline_tasks — pipeline-strip basis (task 1, 2026-07-09)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_video_pipeline_tasks_keeps_non_terminal_and_unrendered() -> None:
+    """The query itself only excludes CANCELLED at the SQL level; the
+    COMPLETED-but-rendered drop happens in Python off the marker, so this
+    exercises that filter directly against a mixed mocked result set."""
+    in_progress = _build_task(status=TaskStatus.IN_PROGRESS, orchestration_markers=None)
+    awaiting_ceo = _build_task(
+        status=TaskStatus.AWAITING_CEO_APPROVAL, orchestration_markers=None
+    )
+    rendered = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={"video_draft": {"render_status": "rendered"}},
+    )
+    pending_render = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={"video_draft": {"render_attempts": 2}},
+    )
+    failed_render = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={
+            "video_draft": {"render_status": "failed", "render_error": "boom"}
+        },
+    )
+    scalars = MagicMock()
+    scalars.all.return_value = [
+        in_progress,
+        awaiting_ceo,
+        rendered,
+        pending_render,
+        failed_render,
+    ]
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_video_pipeline_tasks()
+    assert out == [in_progress, awaiting_ceo, pending_render, failed_render]
+
+
+@pytest.mark.asyncio
+async def test_list_video_pipeline_tasks_empty_when_nothing_in_flight() -> None:
+    scalars = MagicMock()
+    scalars.all.return_value = []
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.list_video_pipeline_tasks() == []
+
+
+# ---------------------------------------------------------------------------
 # all_subtasks_terminal
 # ---------------------------------------------------------------------------
 
@@ -1094,6 +1147,18 @@ async def test_uncovered_parent_acs_recognizes_text_declared_coverage() -> None:
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
 
 
+def test_unknown_ac_refs_flags_refs_not_on_parent() -> None:
+    # declare_coverage's validation primitive: accepts a parent criterion by
+    # id OR exact text; anything else is unknown and must be rejected with
+    # the parent's real AC list in the remediate.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    assert TaskService.unknown_ac_refs(parent, ["id-a", "crit b", "bogus"]) == ["bogus"]
+    assert TaskService.unknown_ac_refs(parent, ["id-a", "crit b"]) == []
+
+
 @pytest.mark.asyncio
 async def test_parent_ac_coverage_normalizes_text_refs() -> None:
     # A text-declared coverage ref from a COMPLETED child surfaces as
@@ -1101,6 +1166,7 @@ async def test_parent_ac_coverage_normalizes_text_refs() -> None:
     parent = _build_task(
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=[],
     )
     svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["crit a"])])
     cov = await svc.parent_ac_coverage(parent.id)
@@ -1109,6 +1175,7 @@ async def test_parent_ac_coverage_normalizes_text_refs() -> None:
         "text": "crit a",
         "claimed": True,
         "verified": True,
+        "claimed_by": "child",
     }
 
 
@@ -1120,6 +1187,7 @@ async def test_parent_ac_coverage_maps_claimed_and_verified() -> None:
     parent = _build_task(
         acceptance_criteria=["crit a", "crit b", "crit c"],
         acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=[],
     )
     svc = _svc_with_children(
         parent,
@@ -1129,9 +1197,27 @@ async def test_parent_ac_coverage_maps_claimed_and_verified() -> None:
         ],
     )
     assert await svc.parent_ac_coverage(parent.id) == [
-        {"id": "id-a", "text": "crit a", "claimed": True, "verified": True},
-        {"id": "id-b", "text": "crit b", "claimed": True, "verified": False},
-        {"id": "id-c", "text": "crit c", "claimed": False, "verified": False},
+        {
+            "id": "id-a",
+            "text": "crit a",
+            "claimed": True,
+            "verified": True,
+            "claimed_by": "child",
+        },
+        {
+            "id": "id-b",
+            "text": "crit b",
+            "claimed": True,
+            "verified": False,
+            "claimed_by": "child",
+        },
+        {
+            "id": "id-c",
+            "text": "crit c",
+            "claimed": False,
+            "verified": False,
+            "claimed_by": None,
+        },
     ]
 
 
@@ -1142,6 +1228,85 @@ async def test_parent_ac_coverage_empty_without_ac_ids() -> None:
     parent = _build_task(acceptance_criteria=["a"], acceptance_criteria_ids=[])
     svc = _svc_with_children(parent, [(TaskStatus.IN_PROGRESS, ["id-a"])])
     assert await svc.parent_ac_coverage(parent.id) == []
+
+
+@pytest.mark.asyncio
+async def test_parent_ac_coverage_marks_root_owned_claimed_by() -> None:
+    # A criterion the parent declared on ITS OWN parent_ac_refs (root-owned,
+    # via declare_coverage(task_id=<own root>, ...)) reads claimed_by="root";
+    # one claimed only via a child reads "child"; untouched is None.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b", "crit c"],
+        acceptance_criteria_ids=["id-a", "id-b", "id-c"],
+        parent_ac_refs=["id-a"],
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-b"])])
+    assert await svc.parent_ac_coverage(parent.id) == [
+        {
+            "id": "id-a",
+            "text": "crit a",
+            "claimed": True,
+            "verified": True,
+            "claimed_by": "root",
+        },
+        {
+            "id": "id-b",
+            "text": "crit b",
+            "claimed": True,
+            "verified": True,
+            "claimed_by": "child",
+        },
+        {
+            "id": "id-c",
+            "text": "crit c",
+            "claimed": False,
+            "verified": False,
+            "claimed_by": None,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uncovered_parent_acs_root_owned_satisfied_without_child() -> None:
+    # Root-owned refs are satisfied unconditionally -- no child, no COMPLETED
+    # status to wait on. The root's own machinery (PR-supersede, closing a
+    # contributor PR) does the work at/after submit, not a cell.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+    )
+    svc = _svc_with_children(parent, [])
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_parent_acs_root_owned_counts_as_claimed() -> None:
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+        parent_ac_refs=["id-a"],
+    )
+    svc = _svc_with_children(parent, [])
+    assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == ["crit b"]
+
+
+@pytest.mark.asyncio
+async def test_production_replay_mixed_child_and_root_owned_coverage() -> None:
+    # The live pattern: a Main-PM root with 5 ACs -- 3 satisfied by a
+    # completed cell subtask, 2 that only the root's own machinery can
+    # satisfy (PR-supersede, closing a contributor PR) and are declared
+    # root-owned instead of pushed into the cell's acceptance_criteria. Both
+    # the idle gate (unclaimed) and the roll-up gate (uncovered) must pass.
+    ids = [f"id-{i}" for i in range(5)]
+    parent = _build_task(
+        acceptance_criteria=[f"crit {i}" for i in range(5)],
+        acceptance_criteria_ids=ids,
+        parent_ac_refs=["id-3", "id-4"],
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-0", "id-1", "id-2"])])
+    assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == []
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
 
 
 @pytest.mark.asyncio

@@ -1838,6 +1838,66 @@ class A2AService:
         )
         return msg
 
+    async def interject_as_ceo(
+        self,
+        conversation_id: UUID,
+        to_agent: str,
+        content: str,
+        skill: str | None = None,
+    ) -> A2AChatMessage:
+        """CEO interjection: post a message directly into an existing
+        agent<->agent conversation, addressed to one of its participants.
+
+        One-directional and NOT a participant send: unlike
+        ``send_chat_message`` (which requires the sender to be a party to
+        the conversation), the CEO here is watching and interjecting into
+        someone else's thread, not conversing in its own — so the
+        participant check on the sender is deliberately bypassed rather
+        than weakened for every other caller. ``to_agent`` still must be
+        one of the conversation's two real participants.
+
+        Only ``to_agent``'s unread counter is bumped (a ping to whoever
+        it's addressed to); the other participant still sees the row via
+        the shared transcript / ``read_a2a``, just without a ping.
+
+        Direction is encoded as an ``@{to_agent}: `` content prefix —
+        ponytail: no ``to_agent`` column yet; add one (and stop parsing
+        the prefix) if the panel ever needs to render/filter by recipient
+        directly instead.
+        """
+        conv = await self.session.get(A2AConversationTable, conversation_id)
+        if conv is None:
+            raise ValueError(f"Conversation not found: {conversation_id}")
+        if to_agent not in (conv.agent_a, conv.agent_b):
+            raise ValueError(
+                f"{to_agent} is not a participant in this conversation "
+                f"(participants: {conv.agent_a}, {conv.agent_b})"
+            )
+
+        msg = A2AMessageTable(
+            conversation_id=conversation_id,
+            from_agent="ceo",
+            content=f"@{to_agent}: {content}",
+            message_kind=A2AMessageKind.MESSAGE,
+            skill=skill,
+        )
+        self.session.add(msg)
+
+        conv.message_count += 1
+        conv.last_message_at = datetime.now(UTC)
+        if to_agent == conv.agent_a:
+            conv.unread_by_a += 1
+        else:
+            conv.unread_by_b += 1
+
+        await self.session.flush()
+        await self.session.refresh(msg)
+
+        model = self._msg_to_model(msg)
+        task_id = str(conv.task_id) if conv.task_id else None
+        await self._publish_a2a_message_sent(model, task_id, "ceo", to_agent, skill)
+        return model
+
     @staticmethod
     async def _publish_a2a_message_sent(
         msg: A2AChatMessage,

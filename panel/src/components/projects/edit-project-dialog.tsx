@@ -482,8 +482,8 @@ function EditProjectForm({
                 </div>
               ))}
               <p className="text-xs text-muted-foreground">
-                Provision a throwaway sandbox DB/Redis/Mongo per agent spawn for
-                this project instead of the production credentials.
+                Provision a throwaway sandbox DB/Redis per agent spawn for this
+                project instead of the production credentials.
               </p>
             </div>
           </>

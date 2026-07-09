@@ -49,6 +49,19 @@ class SpawnAgentRequest(BaseModel):
     model: str | None = None
 
 
+class SpawnAgentResponse(AgentStatusResponse):
+    """Response to a spawn request.
+
+    ``already_running`` is True when the spawn was a no-op because the agent
+    was already active — the route detected a pre-existing active instance
+    whose identity matches the instance returned by ``spawn_agent`` (which
+    silently reuses a running instance rather than erroring, so dispatchers
+    keep their existing no-op semantics). False for a genuine new spawn.
+    """
+
+    already_running: bool = False
+
+
 class ResolveWaitRequest(BaseModel):
     """Request to resolve a wait condition."""
 

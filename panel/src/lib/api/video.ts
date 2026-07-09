@@ -22,12 +22,47 @@ export interface VideoPost {
   tiktok_caption?: string | null;
   reject_reason?: string | null;
   mp4_paths?: Record<string, string>;
+  source_task_id?: string | null; // the authoring task this draft rendered from
+}
+
+// One in-flight source=video authoring task — GET /video/pipeline
+// (roboco/api/routes/video.py). Spans claim through the render loop's
+// retry/failure states; a rendered task drops out (it's visible via
+// VideoPost/listPosts instead).
+export interface VideoPipelineItem {
+  task_id: string;
+  title: string;
+  occasion: string;
+  status: string;
+  pr_number: number | null;
+  composition_id: string | null;
+  render_status: string | null; // null (pending/retrying) | "rendered" | "failed"
+  render_attempts: number;
+  max_attempts: number;
+  render_error: string | null;
 }
 
 export interface VideoPostExecuteResult {
   status: string; // posted | posted_partial | post_failed | already_posted | ...
   posted: Record<string, string>; // platform -> posted id
   detail: string;
+}
+
+// One acted-on draft (posted or rejected) — the CEO's history view.
+export interface VideoPostHistoryEntry {
+  task_id: string;
+  source: string; // "video_post"
+  title: string;
+  status: string; // "completed" | "cancelled"
+  occasion: string;
+  script: string;
+  platforms: string[];
+  x_caption?: string | null;
+  tiktok_caption?: string | null;
+  reject_reason?: string | null;
+  posted: Record<string, string>; // platform -> posted id
+  acted_at: string;
+  source_task_id?: string | null; // the authoring task this draft rendered from
 }
 
 export interface VideoRequestResult {
@@ -54,6 +89,20 @@ export function videoMediaUrl(taskId: string, cut: VideoCut): string {
 export const videoApi = {
   listPosts: async (): Promise<VideoPost[]> => {
     const { data } = await api.get<VideoPost[]>("/video/posts");
+    return data;
+  },
+  // Every in-flight source=video authoring task — the pipeline strip's basis.
+  listPipeline: async (): Promise<VideoPipelineItem[]> => {
+    const { data } = await api.get<VideoPipelineItem[]>("/video/pipeline");
+    return data;
+  },
+  // Posted or rejected drafts, newest-acted-first. Fixed default limit (50);
+  // no "load more" — pass a higher limit if the panel ever needs it.
+  listHistory: async (limit = 50): Promise<VideoPostHistoryEntry[]> => {
+    const { data } = await api.get<VideoPostHistoryEntry[]>(
+      "/video/posts/history",
+      { params: { limit } },
+    );
     return data;
   },
   // Fetches the rendered cut as a Blob via axios (carrying the auth headers
@@ -88,10 +137,7 @@ export const videoApi = {
     brief: string;
     platforms: string[];
   }): Promise<VideoRequestResult> => {
-    const { data } = await api.post<VideoRequestResult>(
-      "/video/request",
-      body,
-    );
+    const { data } = await api.post<VideoRequestResult>("/video/request", body);
     return data;
   },
   getCredentialsStatus: async (): Promise<TikTokCredentialsStatus> => {

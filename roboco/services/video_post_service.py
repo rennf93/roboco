@@ -181,6 +181,11 @@ class VideoPostService(BaseService):
         """Every held video_post draft awaiting the CEO (panel queue basis)."""
         return await get_task_service(self.session).list_open_video_post_drafts()
 
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected), newest-acted-
+        first — the panel history basis."""
+        return await get_task_service(self.session).list_video_post_history(limit=limit)
+
     async def approve(
         self,
         task_id: UUID,

@@ -3,7 +3,9 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { A2ASwitchboard } from "../a2a-switchboard";
 
-function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary {
+function buildPair(
+  overrides: Partial<AdminPairSummary> = {},
+): AdminPairSummary {
   return {
     agent_a: "be-dev-1",
     role_a: "developer",

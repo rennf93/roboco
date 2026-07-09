@@ -14,7 +14,11 @@ holds. These tests pin the handler:
 - not_authorized: only the current claimant can sync (ownership gate)
 - no branch: branchless / not-yet-claimed task → invalid_state, steer to
   i_will_work_on
-- protected base: resolved base == master/main → invalid_state (defense-in-depth)
+- protected base: master/main refused only when MIS-resolved — a branch-bearing
+  parent exists (base should have been that branch) or the parent row is
+  missing/corrupt. A standalone (parentless) task and a child of a branchless
+  coordination parent legitimately rebase onto master (it IS their merge
+  target; the push only ever hits the task branch). ``-``-refs always refused.
 - git failure: sync_task_branch raises → invalid_state, steer to i_am_blocked
 """
 
@@ -88,7 +92,7 @@ async def test_sync_branch_rebases_and_returns_evidence() -> None:
         env = await c.sync_branch(aid, tid)
 
     git_svc.sync_task_branch.assert_awaited_once_with(
-        t, base_branch=_BASE, actor_agent_id=aid
+        t, base_branch=_BASE, actor_agent_id=aid, stash=False
     )
     assert env.error is None
     assert env.evidence is not None
@@ -181,18 +185,20 @@ async def test_sync_branch_no_branch_steers_to_i_will_work_on() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_branch_refuses_protected_base() -> None:
+async def test_sync_branch_refuses_master_base_with_branch_bearing_parent() -> None:
     aid = uuid4()
     tid = uuid4()
     t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
     task_svc = AsyncMock()
+    # Both the task fetch and the parent fetch resolve to a branch-bearing row:
+    # the base should have been the parent's branch, so master is mis-resolved.
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
     git_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
-    # Defense-in-depth: a base that resolved to master must never be rebased into.
     with patch(
         "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
         new=AsyncMock(return_value="master"),
@@ -201,6 +207,109 @@ async def test_sync_branch_refuses_protected_base() -> None:
 
     assert env.error == "invalid_state"
     assert "protected" in (env.message or "")
+    git_svc.sync_task_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_allows_master_base_for_standalone_task() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    # Parentless standalone task (video / ci-watch / dep-update): master IS
+    # the merge target, so the rebase must go through.
+    t.parent_task_id = None
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "commits_rebased": 2}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch="master", actor_agent_id=aid, stash=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_allows_master_base_for_branchless_parent_child() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
+    branchless_parent = MagicMock(branch_name=None)
+    task_svc = AsyncMock()
+    # First get: the task itself; second get: the branchless coordination
+    # parent — its child was cut from master, so master is the true base.
+    task_svc.get.side_effect = [t, branchless_parent]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "commits_rebased": 1}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch="master", actor_agent_id=aid, stash=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_refuses_master_base_when_parent_row_missing() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [t, None]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
+    git_svc.sync_task_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_refuses_injection_ref_unconditionally() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = None
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="-evil-ref"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
     git_svc.sync_task_branch.assert_not_awaited()
 
 
@@ -225,6 +334,118 @@ async def test_sync_branch_git_failure_steers_to_i_am_blocked() -> None:
 
     assert env.error == "invalid_state"
     assert "i_am_blocked" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_passes_stash_flag_through() -> None:
+    """stash=True on the verb forwards to GitService.sync_task_branch."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "unique_commits": 1}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch=_BASE, actor_agent_id=aid, stash=True
+    )
+    assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_dirty_workspace_failure_steers_to_stash_or_commit() -> None:
+    """A DIRTY_WORKSPACE failure gets a specific, actionable remediate — not
+    the generic i_am_blocked escalation."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.side_effect = RuntimeError(
+        "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes."
+    )
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
+    assert "stash=True" in (env.remediate or "")
+    assert "commit(" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_conflicts_with_stash_preserved_notes_it_in_next() -> None:
+    """A conflict with stash_preserved=True tells the dev their stash is safe."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "conflicts",
+        "files": ["src/a.py"],
+        "stash_preserved": True,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    assert env.error is None
+    assert "stash" in (env.next or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_stash_pop_conflict_notes_preserved_stash() -> None:
+    """A clean rebase whose stash pop conflicted must not read as a plain
+    success — the dev still has manual work to finish."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "rebased",
+        "unique_commits": 2,
+        "stash_pop_conflict": True,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    assert env.error is None
+    assert "conflict" in (env.next or "").lower()
+    assert "preserved" in (env.next or "").lower()
 
 
 @pytest.mark.asyncio

@@ -87,7 +87,9 @@ _BASH_ROLES = frozenset({"developer", "documenter", "cell_pm", "main_pm"})
 # The intake interviewer reads the codebase to draft a task and may fan out
 # exploration to subagents (parity with the Claude intake's ``Task`` allowance);
 # every other role drives work through the gateway verbs, never CLI subagents.
-_SUBAGENT_ALLOWED_ROLES = frozenset({"prompter"})
+_SUBAGENT_ALLOWED_ROLES: frozenset[str] = (
+    frozenset()
+)  # fleet-wide ban: no agent spawns subagents (CEO, 2026-07-09)
 
 # Grok CLI tool IDs (from the CLI's --tools/--disallowed-tools reference).
 _TOOL_SHELL = "run_terminal_cmd"

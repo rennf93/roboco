@@ -9,6 +9,12 @@ second approve is a no-op that returns the already-posted result. Rejecting
 records the reason and CANCELS the draft (unlike the release proposal there is
 no revision workflow here — the CEO edits inline and re-approves, or a fresh
 draft is originated on the next cycle/release).
+
+A successfully-posted ``x_feature`` (spotlight) draft additionally fires
+``_open_spotlight_video`` — the companion-video hook moved here from
+authoring time (``propose_feature_spotlight``) so it only fires once the CEO
+has actually approved the spotlight, mirroring the
+``ReleaseProposalService.approve`` -> ``_draft_video`` seam.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
-from roboco.services.task import X_SOURCES, get_task_service
+from roboco.services.task import X_FEATURE_SOURCE, X_SOURCES, get_task_service
 from roboco.services.x_client import MAX_TWEET_CHARS, build_x_client
 from roboco.services.x_credentials import get_x_credentials_service
 
@@ -77,6 +83,11 @@ class XPostService(BaseService):
     async def list_open_posts(self) -> list[TaskTable]:
         """Every held X draft (both sources) awaiting the CEO."""
         return await get_task_service(self.session).list_open_x_posts()
+
+    async def list_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on X drafts (posted or rejected), newest-acted-first —
+        the panel history basis."""
+        return await get_task_service(self.session).list_x_post_history(limit=limit)
 
     async def approve(
         self, task_id: UUID, edited_body: str | None = None
@@ -183,9 +194,47 @@ class XPostService(BaseService):
         # release — otherwise a racing approve could acquire the lock the
         # instant we drop it and double-post before the route-level commit.
         await self.session.commit()
+        if task.source == X_FEATURE_SOURCE:
+            await self._open_spotlight_video(task, body)
         return XPostExecuteResult(
             status="posted", tweet_id=result.tweet_id, detail=result.detail
         )
+
+    async def _open_spotlight_video(self, task: TaskTable, posted_body: str) -> None:
+        """Mirrors ``ReleaseProposalService._draft_video``: a best-effort side
+        effect after the post has already succeeded, never allowed to affect
+        the result above. Moved here from authoring time
+        (``propose_feature_spotlight``) so a ux-dev never burns a delivery
+        cycle on a spotlight video for a draft the CEO ends up rejecting —
+        this only fires once the tweet is actually live.
+
+        Fires only when the draft's ``x_feature_ref`` marker carries
+        ``wants_video`` (stamped by ``propose_feature_spotlight``) and both
+        ``video_engine_enabled`` and ``video_on_spotlight`` are on.
+        ``open_video_task``'s own occasion-dedup covers a hypothetical repeat
+        call; the COMPLETED short-circuit in ``approve()`` already prevents
+        ``_post`` (and so this) from running twice for the same draft.
+        """
+        if not (settings.video_engine_enabled and settings.video_on_spotlight):
+            return
+        ref = markers.get_x_feature_ref(task) or {}
+        if not ref.get("wants_video"):
+            return
+        feature_slug = str(ref.get("slug") or "")
+        feature_title = str(ref.get("title") or "")
+        video_script = str(ref.get("video_script") or "")
+        try:
+            from roboco.services.video_engine import get_video_engine
+
+            feature_brief = f"{feature_title}: {posted_body}"
+            await get_video_engine(self.session).open_video_task(
+                occasion=f"spotlight {feature_slug}",
+                script=video_script.strip() or feature_brief,
+                platforms=["x", "tiktok"],
+                brief=feature_brief,
+            )
+        except Exception as exc:
+            logger.warning("spotlight video draft failed (best-effort): %s", exc)
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
         """Record the CEO's reason and cancel the draft (never posted)."""

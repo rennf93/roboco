@@ -64,7 +64,7 @@ def _wire_secretary_spawn_mocks(
             orch._running = False
         return "containerid0123456789"
 
-    async def _remove(name: str) -> None:
+    async def _remove(name: str, **_kw: Any) -> None:
         removed.append(name)
 
     monkeypatch.setattr(

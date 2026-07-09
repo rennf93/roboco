@@ -1482,6 +1482,39 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_video_pipeline_tasks(self) -> list[TaskTable]:
+        """Every source=VIDEO_SOURCE authoring task still visible in the
+        Social page's pipeline strip: any non-terminal status, plus
+        COMPLETED tasks the render loop hasn't finished with (render_status
+        unset — pending/retrying — or terminally "failed"). A rendered
+        COMPLETED task already materialized its video_post draft and drops
+        out of view. composition_id/render_status/render_attempts live in
+        the JSON marker, not a column, so that half of the filter runs in
+        Python on this bounded scan (mirrors list_completed_video_tasks).
+        Newest-first + bounded, so a large old backlog can't crowd a
+        currently-active item out of the scanned window; the panel can
+        re-order for display.
+        """
+        from roboco.config import settings
+
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_SOURCE,
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
+        )
+        tasks = list(result.scalars().all())
+        return [
+            t
+            for t in tasks
+            if t.status != TaskStatus.COMPLETED
+            or (markers.get_video_draft(t) or {}).get("render_status")
+            in (None, "failed")
+        ]
+
     async def list_open_video_post_drafts(self) -> list[TaskTable]:
         """Non-terminal video_post held drafts only (excludes the video
         authoring source) — the panel-queue basis for VideoPostService,
@@ -1494,6 +1527,37 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_x_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on X drafts (posted or rejected, both sources) — the panel
+        history basis. Newest-acted-first (updated_at, bumped by the
+        approve/reject status write) so the most recent decision reads
+        first; bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected) — the panel
+        history basis, mirroring list_x_post_history. Newest-acted-first,
+        bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -3909,7 +3973,16 @@ class TaskService(BaseService):
             return await self._unclaim_pending_assignment(task)
         if task.status == TaskStatus.BLOCKED:
             return await self._unclaim_from_blocked(task)
-        if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+        # verifying (self-verification before awaiting_qa) and needs_revision
+        # (QA/CEO sent it back) are both claims a dev can be sitting on when it
+        # decides to bail — a wedged dev retrying unclaim from either got a
+        # silent rejection with no legal exit (the 2026-07 5h+ wedge incident).
+        if task.status not in (
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.VERIFYING,
+            TaskStatus.NEEDS_REVISION,
+        ):
             return None
 
         # Look up the requesting agent's role so role-restricted-transition
@@ -6188,6 +6261,7 @@ class TaskService(BaseService):
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
+        cancelled_now: list[TaskTable] = []
         for descendant in descendants:
             if descendant.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
                 continue
@@ -6213,6 +6287,7 @@ class TaskService(BaseService):
                     ),
                 ) from e
             cancelled_count += 1
+            cancelled_now.append(descendant)
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
             )
@@ -6227,9 +6302,29 @@ class TaskService(BaseService):
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
+        cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
+        if orphaned:
+            self.log.warning(
+                "Cancel orphaned parent AC coverage",
+                task_id=str(task_id),
+                orphaned_parent_acs=orphaned,
+            )
+            self._emit_orphaned_ac_audit(task_id, orphaned)
+        # ponytail: transient, non-persisted attribute — same-request
+        # evidence for a caller that wants to surface it without a response
+        # schema change; upgrade to a real field if a caller needs it
+        # across a request boundary.
+        task.orphaned_parent_acs = orphaned
 
         # Index lifecycle event (fire-and-forget)
         bg_task = asyncio.create_task(
@@ -6241,6 +6336,7 @@ class TaskService(BaseService):
                 details={
                     "cancelled_by_role": agent_role,
                     "descendants_cancelled": cancelled_count,
+                    "orphaned_parent_acs": orphaned,
                 },
             )
         )
@@ -6248,6 +6344,51 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _detect_orphaned_parent_acs(
+        self, cancelled: list[TaskTable]
+    ) -> list[str]:
+        """Parent-AC texts a just-cancelled task declared that no surviving
+        sibling covers.
+
+        Runs after the cascade commits, so ``_parent_ac_ref_sets`` reads each
+        cancelled task's real post-cancel status. Safe-by-construction: a
+        task with no ``parent_ac_refs`` (the common case) contributes
+        nothing.
+        """
+        texts: list[str] = []
+        for t in cancelled:
+            if not t.parent_task_id or not t.parent_ac_refs:
+                continue
+            loaded = await self._parent_ac_ref_sets(cast("UUID", t.parent_task_id))
+            if loaded is None:
+                continue
+            parent, claimed, _verified, _any, _root_owned = loaded
+            own = self._normalize_ac_refs(parent, t.parent_ac_refs)
+            orphaned_ids = own - claimed
+            if orphaned_ids:
+                texts.extend(self._ac_texts_for(parent, orphaned_ids))
+        return texts
+
+    def _emit_orphaned_ac_audit(self, task_id: UUID, orphaned: list[str]) -> None:
+        """Persist the orphaned-coverage warning as evidence.
+
+        Mirrors ``_emit_escalation_audit`` — an additive row alongside the
+        generic ``task.cancelled`` transition audit, best-effort for
+        observability and never gating the cancel itself.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.cancelled_ac_orphaned",
+                agent_id=None,
+                target_type="task",
+                target_id=task_id,
+                severity="warning",
+                details={"orphaned_parent_acs": orphaned},
+            )
+        )
 
     async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None:
         """Best-effort CEO completion notification (granular effort breakdown).
@@ -8028,17 +8169,25 @@ class TaskService(BaseService):
 
     async def _parent_ac_ref_sets(
         self, task_id: UUID
-    ) -> tuple[TaskTable, set[str], set[str], bool] | None:
+    ) -> tuple[TaskTable, set[str], set[str], bool, set[str]] | None:
         """Load a parent and its children's parent-AC-ref coverage sets.
 
         Shared core of the three AC-coverage primitives. Returns ``None`` when
         the parent is missing or has no stable criterion ids (nothing to cover).
-        Otherwise ``(parent, claimed, verified, any_declared)`` where
-        ``claimed`` is the union of parent_ac_refs over all non-cancelled
+        Otherwise ``(parent, claimed, verified, any_declared, root_owned)``
+        where ``claimed`` is the union of parent_ac_refs over all non-cancelled
         children, ``verified`` the union over COMPLETED children only, and
         ``any_declared`` whether *any* child declared a ref at all (the
         safe-by-construction inertness signal — a cancelled-only declaration
         still counts as "coverage tracking is active here").
+
+        ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
+        itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
+        only the root's own machinery satisfies (e.g. PR-supersede, closing a
+        contributor PR), never a cell. Root-owned refs are unconditionally
+        folded into both ``claimed`` and ``verified``: there is no child
+        status to gate on, the work happens at/after the root's own
+        submit/supersede by construction.
         """
         parent = await self.get(task_id)
         if not parent or not parent.acceptance_criteria_ids:
@@ -8058,7 +8207,12 @@ class TaskService(BaseService):
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
-        return parent, claimed, verified, any_declared
+        root_owned = self._normalize_ac_refs(parent, parent.parent_ac_refs)
+        if root_owned:
+            any_declared = True
+            claimed |= root_owned
+            verified |= root_owned
+        return parent, claimed, verified, any_declared, root_owned
 
     @staticmethod
     def _normalize_ac_refs(parent: TaskTable, refs: list[str] | None) -> set[str]:
@@ -8093,6 +8247,73 @@ class TaskService(BaseService):
             if ac_id not in covered
         ]
 
+    @staticmethod
+    def _ac_texts_for(parent: TaskTable, ids: set[str]) -> list[str]:
+        """Texts of specific parent-criterion ids, in the parent's own order."""
+        ac_ids = parent.acceptance_criteria_ids or []
+        ac_texts = parent.acceptance_criteria or []
+        return [
+            ac_texts[idx] if idx < len(ac_texts) else ac_id
+            for idx, ac_id in enumerate(ac_ids)
+            if ac_id in ids
+        ]
+
+    @staticmethod
+    def unknown_ac_refs(parent: TaskTable, refs: list[str]) -> list[str]:
+        """Refs that match neither a parent criterion's id nor its exact text.
+
+        Used by ``declare_coverage`` to reject a stamp against a criterion
+        that does not exist on the parent — ``covers_parent_criteria`` (via
+        ``delegate``) stores refs unvalidated, but a PM declaring coverage
+        after the fact gets a hard check with the parent's AC list in the
+        remediate.
+        """
+        valid_ids = set(parent.acceptance_criteria_ids or [])
+        valid_texts = set(parent.acceptance_criteria or [])
+        return [r for r in refs if r not in valid_ids and r not in valid_texts]
+
+    async def add_parent_ac_refs(
+        self, task_id: UUID, refs: list[str], declared_by: UUID | None = None
+    ) -> TaskTable | None:
+        """UNION ``refs`` into a task's ``parent_ac_refs`` (idempotent) + audit.
+
+        Lets a PM stamp coverage onto an already-existing child after the
+        fact — e.g. a completed replacement whose original ``delegate``
+        omitted ``covers_parent_criteria`` (the roll-up-gate deadlock
+        ``declare_coverage`` fixes). Refs use the same id-or-text
+        representation ``covers_parent_criteria`` writes, resolved at read
+        time by ``_normalize_ac_refs``. Callers must validate refs against
+        the parent's criteria first (``unknown_ac_refs``) — this method
+        merges unconditionally.
+
+        Agnostic to whether ``task_id`` is a CHILD (refs resolve against its
+        real parent's criteria) or a task declaring root-owned coverage on
+        ITSELF (refs resolve against its own criteria, read back by
+        ``_parent_ac_ref_sets`` when ``task_id`` is later queried as a
+        parent) — this method only ever writes the one row's own field.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        existing = task.parent_ac_refs or []
+        merged = existing + [r for r in refs if r not in existing]
+        if merged != existing:
+            task.parent_ac_refs = merged
+        self.session.add(
+            AuditLogTable(
+                event_type="task.coverage_declared",
+                agent_id=declared_by,
+                target_type="task",
+                target_id=task_id,
+                severity="info",
+                details={"criteria": refs},
+            )
+        )
+        await self.session.flush()
+        return task
+
     async def uncovered_parent_acceptance_criteria(self, task_id: UUID) -> list[str]:
         """Parent ACs not yet satisfied by a COMPLETED child — for the roll-up gate.
 
@@ -8107,7 +8328,7 @@ class TaskService(BaseService):
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, _claimed, verified, any_declared = loaded
+        parent, _claimed, verified, any_declared, _root_owned = loaded
         if not any_declared:
             return []
         return self._criteria_texts_not_in(parent, verified)
@@ -8128,7 +8349,7 @@ class TaskService(BaseService):
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, claimed, _verified, any_declared = loaded
+        parent, claimed, _verified, any_declared, _root_owned = loaded
         if not any_declared:
             return []
         return self._criteria_texts_not_in(parent, claimed)
@@ -8144,11 +8365,15 @@ class TaskService(BaseService):
         it always reports the parent's criteria so a decomposing PM can see, per
         delegate, which criteria still lack a subtask. Visibility source for the
         decomposition briefing; the gates read the inert variants instead.
+
+        ``claimed_by`` distinguishes a root-owned criterion (declared on the
+        parent itself — ``"root"``) from one claimed by a child (``"child"``)
+        or not claimed at all (``None``), so the PM can see the mapping.
         """
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, claimed, verified, _any = loaded
+        parent, claimed, verified, _any, root_owned = loaded
         ids = parent.acceptance_criteria_ids or []
         texts = parent.acceptance_criteria or []
         return [
@@ -8157,6 +8382,13 @@ class TaskService(BaseService):
                 "text": texts[idx] if idx < len(texts) else ac_id,
                 "claimed": ac_id in claimed,
                 "verified": ac_id in verified,
+                "claimed_by": (
+                    "root"
+                    if ac_id in root_owned
+                    else "child"
+                    if ac_id in claimed
+                    else None
+                ),
             }
             for idx, ac_id in enumerate(ids)
         ]

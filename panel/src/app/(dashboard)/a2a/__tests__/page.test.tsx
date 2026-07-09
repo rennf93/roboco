@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { PageRefreshProvider } from "@/components/providers";
 import type {
   AdminConversationSummary,
   AdminPairSummary,
@@ -62,6 +64,10 @@ vi.mock("sonner", () => ({
 }));
 
 import A2APage from "../page";
+
+function withPageRefresh(ui: ReactNode) {
+  return <PageRefreshProvider>{ui}</PageRefreshProvider>;
+}
 
 function buildConversation(
   overrides: Partial<AdminConversationSummary> = {},
@@ -142,12 +148,12 @@ describe("A2APage", () => {
   });
 
   it("shows the transcript pane and composer for a task-linked conversation", () => {
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(screen.getByText("transcript body text")).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/chime in/i)).toBeInTheDocument();
     expect(
       screen.getByText(
-        /direct A2A message from you to the selected participant/i,
+        /posts into this conversation — visible to both participants/i,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
@@ -162,7 +168,7 @@ describe("A2APage", () => {
       error: null,
       refetch: vi.fn(),
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(screen.getByPlaceholderText(/chime in/i)).toBeInTheDocument();
   });
 
@@ -175,7 +181,7 @@ describe("A2APage", () => {
       error: null,
       refetch: vi.fn(),
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(screen.queryByPlaceholderText(/chime in/i)).not.toBeInTheDocument();
     expect(
       screen.getByText(/no linked task, so a reply can't be sent/i),
@@ -196,7 +202,7 @@ describe("A2APage", () => {
       a2aMessages: [],
       isConnected: true,
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.conversations,
     });
@@ -218,7 +224,7 @@ describe("A2APage", () => {
       a2aMessages: [],
       isConnected: false,
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.conversations,
     });
@@ -237,7 +243,7 @@ describe("A2APage", () => {
       isLoading: false,
       refetch: vi.fn(),
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(screen.getByText("Switchboard")).toBeInTheDocument();
     expect(screen.getByText(/Backend Cell/)).toBeInTheDocument();
   });
@@ -248,7 +254,7 @@ describe("A2APage", () => {
       isLoading: false,
       refetch: vi.fn(),
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(screen.getByText("Switchboard")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTitle("Classic conversation list"));
@@ -268,7 +274,7 @@ describe("A2APage", () => {
       a2aMessages: [],
       isConnected: false,
     });
-    const { rerender } = render(<A2APage />);
+    const { rerender } = render(withPageRefresh(<A2APage />));
     // No invalidation while offline.
     expect(invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.all,
@@ -281,7 +287,7 @@ describe("A2APage", () => {
       isConnected: true,
     });
     act(() => {
-      rerender(<A2APage />);
+      rerender(withPageRefresh(<A2APage />));
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.all,
@@ -297,7 +303,7 @@ describe("A2APage", () => {
       a2aMessages: [],
       isConnected: true,
     });
-    render(<A2APage />);
+    render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.all,
     });

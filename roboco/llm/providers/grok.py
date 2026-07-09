@@ -80,7 +80,9 @@ class _GrokHost(Protocol):
     import cycle) and is trivially mockable in tests.
     """
 
-    async def _remove_container(self, container_name: str) -> None: ...
+    async def _remove_container(
+        self, container_name: str, *, stop_reason: str | None = None
+    ) -> None: ...
 
     def _ensure_grok_usage_dir(self, agent_id: str) -> None: ...
 
@@ -120,7 +122,9 @@ class GrokCliProvider(AgentProvider):
             )
 
         container_name = _container_name(config.agent_id)
-        await self._host._remove_container(container_name)
+        await self._host._remove_container(
+            container_name, stop_reason="pre_spawn_stale_clear"
+        )
         # Pre-create the per-agent data dir (world-writable) before the bind
         # mount so the non-root agent can write the usage file (else EACCES).
         self._host._ensure_grok_usage_dir(config.agent_id)

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useCallback } from "react";
+import { Suspense, useMemo, useCallback, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
 import { WorkSessionStatus } from "@/types";
@@ -9,9 +9,8 @@ import {
   WorkSessionTable,
   WorkSessionFilters,
 } from "@/components/work-sessions";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw } from "lucide-react";
+import { usePageRefresh } from "@/hooks";
 
 function WorkSessionsPageContent() {
   const router = useRouter();
@@ -60,6 +59,16 @@ function WorkSessionsPageContent() {
   // Fetch work sessions
   const { data: sessions, isLoading, error, refetch } = useWorkSessions();
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
+
   // Filter sessions client-side for search and multi-select status filter
   const filteredSessions = useMemo(() => {
     if (!sessions) return [];
@@ -99,12 +108,6 @@ function WorkSessionsPageContent() {
             Track git branches and pull requests for active work
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
-        </div>
       </div>
 
       {/* Filters - Sticky */}
@@ -122,7 +125,7 @@ function WorkSessionsPageContent() {
         <OfflineState
           title="Cannot Load Work Sessions"
           description="Start the RoboCo orchestrator to view work sessions. Work sessions track agent activity on git branches."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <WorkSessionTable sessions={filteredSessions} isLoading={isLoading} />

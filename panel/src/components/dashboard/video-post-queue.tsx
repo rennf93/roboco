@@ -83,7 +83,11 @@ function VideoPostRow({
   onReject: (post: VideoPost) => void;
   approving: boolean;
 }) {
-  const [cut, setCut] = useState<VideoCut>("vertical");
+  // Default to whichever cut actually rendered — a missing vertical cut
+  // (mp4_paths lacks the key) must not open on a guaranteed-blank player.
+  const [cut, setCut] = useState<VideoCut>(() =>
+    post.mp4_paths?.vertical ? "vertical" : "square",
+  );
   const [editX, setEditX] = useState(post.platforms.includes("x"));
   const [editTiktok, setEditTiktok] = useState(
     post.platforms.includes("tiktok"),
@@ -101,7 +105,13 @@ function VideoPostRow({
   // A native <video src> GET doesn't carry axios's auth headers, so fetch
   // the cut as a Blob (through axios) and drive <video> off an object URL
   // instead. Re-fetches on cut change; always revokes the previous URL.
+  // Skips the fetch entirely when mp4_paths has no entry for this cut — the
+  // JSX below never renders <video> in that case (falls back to a missing-
+  // cut placeholder instead), so a stale videoSrc is simply never read.
   useEffect(() => {
+    if (!post.mp4_paths?.[cut]) {
+      return;
+    }
     let cancelled = false;
     let objectUrl: string | null = null;
     videoApi
@@ -118,7 +128,7 @@ function VideoPostRow({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [post.task_id, cut]);
+  }, [post.task_id, cut, post.mp4_paths]);
 
   const xOverLimit = editX && xCaption.length > MAX_X_CAPTION_CHARS;
   const tiktokOverLimit =
@@ -140,33 +150,52 @@ function VideoPostRow({
         {post.occasion && <Badge variant="outline">{post.occasion}</Badge>}
       </div>
 
+      <p className="mb-1 text-sm font-medium">{post.title}</p>
+      {post.script && (
+        <p className="mb-3 line-clamp-2 text-sm text-muted-foreground">
+          {post.script}
+        </p>
+      )}
+
       <div className="mb-3 space-y-2">
         <div className="flex gap-2">
           <Button
             type="button"
             size="sm"
             variant={cut === "vertical" ? "default" : "outline"}
+            disabled={!post.mp4_paths?.vertical}
+            title={
+              post.mp4_paths?.vertical ? undefined : "9:16 hasn't rendered yet"
+            }
             onClick={() => setCut("vertical")}
           >
-            9:16
+            9:16{!post.mp4_paths?.vertical && " (missing)"}
           </Button>
           <Button
             type="button"
             size="sm"
             variant={cut === "square" ? "default" : "outline"}
+            disabled={!post.mp4_paths?.square}
+            title={post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"}
             onClick={() => setCut("square")}
           >
-            1:1
+            1:1{!post.mp4_paths?.square && " (missing)"}
           </Button>
         </div>
-        <video
-          key={`${post.task_id}-${cut}`}
-          controls
-          className="mx-auto max-h-96 w-full rounded-md bg-black object-contain"
-          src={videoSrc ?? undefined}
-        >
-          Your browser does not support embedded video.
-        </video>
+        {post.mp4_paths?.[cut] ? (
+          <video
+            key={`${post.task_id}-${cut}`}
+            controls
+            className="mx-auto max-h-96 w-full rounded-md bg-black object-contain"
+            src={videoSrc ?? undefined}
+          >
+            Your browser does not support embedded video.
+          </video>
+        ) : (
+          <div className="flex h-48 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+            This cut hasn&apos;t rendered yet
+          </div>
+        )}
       </div>
 
       <div className="space-y-3">
@@ -374,7 +403,8 @@ function RequestVideoDialog({
 // CEO queue for held video_post drafts (rendered clips from release/
 // spotlight/on-demand triggers). Hidden while loading; shows an empty-state
 // card (with the on-demand request action) when there are no drafts yet —
-// mirrors XPostQueue.
+// mirrors XPostQueue. Posted/rejected drafts move to the unified history on
+// /social (SocialHistorySection).
 export function VideoPostQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<VideoPost | null>(null);
@@ -385,6 +415,14 @@ export function VideoPostQueue({ className }: { className?: string }) {
   const { data: posts, isLoading } = useQuery({
     queryKey: ["video", "posts"],
     queryFn: () => videoApi.listPosts(),
+    refetchInterval: 30000,
+  });
+  // Only consulted for the empty-state copy below — tells apart "nothing
+  // rendered yet, but N videos are moving through the pipeline" from a
+  // truly idle engine. Same 30s cadence as the queue + the pipeline strip.
+  const { data: pipeline } = useQuery({
+    queryKey: ["video", "pipeline"],
+    queryFn: () => videoApi.listPipeline(),
     refetchInterval: 30000,
   });
 
@@ -475,9 +513,9 @@ export function VideoPostQueue({ className }: { className?: string }) {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              No drafts yet. Set your keys in Settings → X (Twitter) / TikTok
-              Credentials and enable the video engine — or request one on demand
-              above.
+              {pipeline && pipeline.length > 0
+                ? `${pipeline.length} video${pipeline.length === 1 ? "" : "s"} in flight — nothing rendered yet. Check the pipeline above for status.`
+                : "No drafts yet. Set your keys in Settings → X (Twitter) / TikTok Credentials and enable the video engine — or request one on demand above."}
             </p>
           </CardContent>
         </Card>

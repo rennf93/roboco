@@ -40,7 +40,9 @@ vi.mock("@/components/ui/select", () => {
       onValueChange?: (v: string) => void;
       children: React.ReactNode;
     }) => (
-      <Ctx.Provider value={onValueChange ?? (() => {})}>{children}</Ctx.Provider>
+      <Ctx.Provider value={onValueChange ?? (() => {})}>
+        {children}
+      </Ctx.Provider>
     ),
     SelectTrigger: ({ children }: { children: React.ReactNode }) => (
       <div>{children}</div>

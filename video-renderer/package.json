@@ -9,7 +9,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@hyperframes/engine": "^0.7.36",

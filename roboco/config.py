@@ -4,8 +4,11 @@ RoboCo Configuration
 Environment-based settings using Pydantic Settings.
 """
 
+import asyncio
+import importlib
 import ipaddress
 import os
+from collections.abc import Callable
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlparse
@@ -32,7 +35,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.19.0"
+    app_version: str = "0.20.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -43,6 +46,20 @@ class Settings(BaseSettings):
     # ==========================================================================
     host: str = Field(default="127.0.0.1", description="Use 0.0.0.0 for containers")
     port: int = 8000
+    uvicorn_loop: Literal["asyncio", "uvloop"] = Field(
+        default="asyncio",
+        description=(
+            "Event loop for the production orchestrator's API server and the "
+            "e2e smoke harness's in-thread uvicorn (env ROBOCO_UVICORN_LOOP). "
+            "Default 'asyncio': this API is a control plane, not a high-QPS "
+            "service — deterministic beats fast, and a uvloop+asyncpg "
+            "segfault class (uvloop 0.22 + asyncpg 0.31 + Python 3.13, GitHub "
+            "CI) never reproduces on stock asyncio. 'uvloop' opts back in; "
+            "uvloop stays an installed dependency either way. See "
+            "resolve_uvicorn_loop_factory() for the asyncio.run() call sites "
+            "(uvicorn's own Config.loop is only read by Server.run())."
+        ),
+    )
     api_url: str | None = Field(
         default=None,
         description="Override API URL for containerized agents (e.g., http://roboco-orchestrator:8000)",
@@ -256,18 +273,6 @@ class Settings(BaseSettings):
             "GATEWAY_ENABLED_ROLES — it could never claim its work and would "
             "respawn on the same task forever; alert the overseer once instead. "
             "Off => legacy behavior (respawn until the strike breaker trips)."
-        ),
-    )
-    pr_gate_auto_submit_enabled: bool = Field(
-        default=True,
-        description=(
-            "When every child of an assembled parent is terminal, run the "
-            "submit_up/submit_root gate system-side as the owning PM instead "
-            "of spawning the PM for that turn — the submit's substance "
-            "(freshness rebase, integrity check, PR open) is deterministic "
-            "gate code. A gate rejection falls back to the classic PM "
-            "closure spawn; the PM keeps the judgment turns (merge, "
-            "revision). Off => every closure spawns the PM to submit."
         ),
     )
     gateway_health_enabled: bool = Field(
@@ -1316,6 +1321,20 @@ class Settings(BaseSettings):
             "request path instead of the default."
         ),
     )
+    db_commit_cancel_grace_seconds: float = Field(
+        default=5.0,
+        ge=0.0,
+        description=(
+            "Grace period DbCommitMiddleware gives an in-flight "
+            "session.commit() that FlowVerbTimeoutMiddleware's asyncio.timeout "
+            "cancelled mid-wire, before giving up and invalidating the "
+            "session. The commit runs shielded from that cancellation so it "
+            "can finish naturally within the grace window instead of being "
+            "severed on the spot — severing an asyncpg operation mid-protocol "
+            "is implicated in a uvloop segfault class, so this bounds how "
+            "often that ever happens instead of eliminating it outright."
+        ),
+    )
     git_commit_timeout_seconds: int = Field(
         default=180,
         ge=30,
@@ -1582,6 +1601,27 @@ class Settings(BaseSettings):
         ),
         description="Banned single-word commit subjects",
     )
+
+
+def resolve_uvicorn_loop_factory(
+    loop: Literal["asyncio", "uvloop"],
+) -> Callable[[], asyncio.AbstractEventLoop] | None:
+    """``asyncio.run(..., loop_factory=...)`` input for ``settings.uvicorn_loop``.
+
+    uvicorn's own ``Config.loop`` only takes effect through ``Server.run()`` /
+    ``uvicorn.run()`` (they resolve it via ``asyncio.run(loop_factory=...)``
+    internally); a launch site that calls ``Server.serve()`` inside an
+    already-running loop (the production orchestrator's bootstrap) never
+    consults it at all — the loop was already chosen by whatever called
+    ``asyncio.run()`` first. This is that resolver for those call sites.
+    """
+    if loop != "uvloop":
+        return None
+    # importlib (not a top-level `import uvloop`): uvloop rides in via
+    # uvicorn[standard], not a direct dependency, and this keeps PLC0415 happy.
+    uvloop = importlib.import_module("uvloop")
+    factory: Callable[[], asyncio.AbstractEventLoop] = uvloop.new_event_loop
+    return factory
 
 
 @lru_cache

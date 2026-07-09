@@ -37,6 +37,22 @@ export interface XPostExecuteResult {
   detail: string;
 }
 
+// One acted-on draft (posted or rejected) — the CEO's history view.
+export interface XPostHistoryEntry {
+  task_id: string;
+  source: "x_post" | "x_reply" | "x_feature";
+  title: string;
+  status: string; // "completed" | "cancelled"
+  body: string;
+  char_count: number;
+  release_version?: string | null;
+  mention?: XMentionRef | null;
+  feature?: XFeatureRef | null;
+  tweet_id?: string | null;
+  reject_reason?: string | null;
+  acted_at: string;
+}
+
 export interface XCredentialsStatus {
   has_credentials: boolean;
 }
@@ -44,6 +60,14 @@ export interface XCredentialsStatus {
 export const xApi = {
   listPosts: async (): Promise<XPost[]> => {
     const { data } = await api.get<XPost[]>("/x/posts");
+    return data;
+  },
+  // Posted or rejected drafts, newest-acted-first. Fixed default limit (50);
+  // no "load more" — pass a higher limit if the panel ever needs it.
+  listHistory: async (limit = 50): Promise<XPostHistoryEntry[]> => {
+    const { data } = await api.get<XPostHistoryEntry[]>("/x/posts/history", {
+      params: { limit },
+    });
     return data;
   },
   approve: async (

@@ -383,6 +383,9 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         "i_am_idle",  # signal only
         "unclaim",  # voluntary release; no rationale required
         "reassign",  # mechanical intra-cell hand-off; branch/WIP preserved
+        # declare_coverage is a mechanical AC-ref stamp + its own audit row
+        # (task.coverage_declared) — no journal rationale required.
+        "declare_coverage",
         "resume",  # pure state move paused→in_progress
         # claim_review's tracing applies on pass_review / fail_review.
         "claim_review",

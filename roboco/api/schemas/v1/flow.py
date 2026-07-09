@@ -143,6 +143,20 @@ class ReassignRequest(BaseModel):
     new_assignee: str = Field(..., min_length=1)
 
 
+class DeclareCoverageRequest(BaseModel):
+    """HTTP body for the cell_pm/main_pm `declare_coverage` verb.
+
+    ``task_id`` is the CHILD to stamp (or the caller's OWN root/coordination
+    task, for root-owned criteria); ``criteria`` are that task's parent's
+    acceptance criteria — or its own, in root-owned mode — by id or exact
+    text (same representation as `delegate`'s `covers_parent_criteria`). The
+    choreographer validates ownership + unknown criteria.
+    """
+
+    task_id: UUID
+    criteria: StrList = Field(..., min_length=1)
+
+
 class ResumeRequest(BaseModel):
     task_id: UUID
 
@@ -156,6 +170,10 @@ class SyncBranchRequest(BaseModel):
     """
 
     task_id: UUID
+    # Auto-stash (tracked + untracked) instead of refusing DIRTY_WORKSPACE;
+    # popped back after the rebase. Default False preserves the prior refuse
+    # behavior for callers that don't opt in.
+    stash: bool = False
 
 
 class IAmIdleRequest(BaseModel):

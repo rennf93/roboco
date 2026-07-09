@@ -14,8 +14,8 @@ Workspace Structure:
                 +-- [git repo files]
 
     Example:
-        /data/workspaces/roboco/backend/be-dev-1/
-        /data/workspaces/roboco/backend/be-dev-2/
+        /data/workspaces/roboco-api/backend/be-dev-1/
+        /data/workspaces/roboco-api/backend/be-dev-2/
 
     This allows multiple agents to work on the same project in parallel,
     each on their own branch, without file conflicts.

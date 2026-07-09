@@ -135,9 +135,10 @@ def test_pm_merge_chain_to_root_branch(e2e_stack: E2EStack) -> None:
 def test_auto_submit_cuts_the_pm_turn(
     e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The wave-1 turn cut, end to end: no agent calls submit_up — the
+    """The turn cut, end to end: no agent calls submit_up — the
     orchestrator's ``_try_auto_submit`` drives the REAL submit verb through
-    the REAL API as the owning PM, and the gate chain continues unchanged."""
+    the REAL API as the owning PM, unconditionally, and the gate chain
+    continues unchanged."""
     from roboco.config import settings
     from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -150,7 +151,6 @@ def test_auto_submit_cuts_the_pm_turn(
 
     # --- the cut: the orchestrator submits system-side ----------------------
     monkeypatch.setattr(settings, "api_url", stack.base_url)
-    monkeypatch.setattr(settings, "pr_gate_auto_submit_enabled", True)
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._tick_handled_tasks = set()
     orch._bg_tasks = set()
@@ -166,7 +166,8 @@ def test_auto_submit_cuts_the_pm_turn(
 
     async def _go() -> bool:
         async with httpx.AsyncClient(timeout=60) as client:
-            return await orch._try_auto_submit(client, cell_task_dict, "be-pm")
+            ok, _reason = await orch._try_auto_submit(client, cell_task_dict, "be-pm")
+            return ok
 
     assert asyncio.run(_go()) is True, "auto-submit should accept a clean parent"
 

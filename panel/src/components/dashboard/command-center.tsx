@@ -1,11 +1,13 @@
 "use client";
 
+import { useEffect } from "react";
 import {
   useCeoOverview,
   useAuditorFlags,
   useRecentActivity,
 } from "@/hooks/use-dashboard";
 import { useTasks } from "@/hooks/use-tasks";
+import { usePageRefresh } from "@/hooks";
 import { TeamHealthCards } from "./team-health-cards";
 import { KeyMetricsPanel } from "./key-metrics-panel";
 import { AuditorAlertsPanel } from "./auditor-alerts-panel";
@@ -16,15 +18,14 @@ import { CeoApprovalQueue } from "./ceo-approval-queue";
 import { PrReviewQueue } from "./pr-review-queue";
 import { ReleaseProposalCard } from "./release-proposal-card";
 import { PlaybookReviewQueue } from "./playbook-review-queue";
-import { XPostQueue } from "./x-post-queue";
-import { VideoPostQueue } from "./video-post-queue";
+import { SocialSummaryCard } from "./social-summary-card";
 import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
-import { RefreshCw, Settings, AlertCircle } from "lucide-react";
+import { Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
 
 export function CommandCenter() {
@@ -53,14 +54,37 @@ export function CommandCenter() {
     refetch: refetchActivity,
   } = useRecentActivity(24);
 
-  const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
+  const { register, unregister } = usePageRefresh();
 
-  const handleRefresh = () => {
-    refetchOverview();
-    refetchFlags();
-    refetchTasks();
-    refetchActivity();
-  };
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetchOverview();
+      },
+      () => {
+        void refetchFlags();
+      },
+      () => {
+        void refetchTasks();
+      },
+      () => {
+        void refetchActivity();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [
+    register,
+    unregister,
+    refetchOverview,
+    refetchFlags,
+    refetchTasks,
+    refetchActivity,
+  ]);
+
+  const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
 
   return (
     // flex-col + explicit `order` (reset via md:order-none): below md the CEO
@@ -79,10 +103,6 @@ export function CommandCenter() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
           <Link href="/settings" prefetch={false}>
             <Button variant="ghost" size="icon">
               <Settings className="h-5 w-5" />
@@ -95,7 +115,7 @@ export function CommandCenter() {
       {hasError && (
         <div className="order-2 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive md:order-none">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          Some data failed to load. Click Refresh to try again.
+          Some data failed to load. Use the header refresh button to try again.
         </div>
       )}
 
@@ -121,14 +141,10 @@ export function CommandCenter() {
         <PlaybookReviewQueue />
       </div>
 
-      {/* X post/reply queue (hidden when no drafts) */}
+      {/* Social (X + video) summary — the full queues + unified history live
+          on /social, avoiding a duplicated surface here. */}
       <div className="order-4 md:order-none">
-        <XPostQueue />
-      </div>
-
-      {/* Video post queue (always visible — carries the on-demand request action) */}
-      <div className="order-4 md:order-none">
-        <VideoPostQueue />
+        <SocialSummaryCard />
       </div>
 
       {/* Board roadmap queue (hidden when no cycle authored) */}

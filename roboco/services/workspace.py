@@ -13,9 +13,9 @@ parallel development without conflicts:
                 └── [git repo files]
 
 Example:
-    /data/workspaces/roboco/backend/be-dev-1/
-    /data/workspaces/roboco/backend/be-dev-2/
-    /data/workspaces/roboco/frontend/fe-dev-1/
+    /data/workspaces/roboco-api/backend/be-dev-1/
+    /data/workspaces/roboco-api/backend/be-dev-2/
+    /data/workspaces/roboco-api/frontend/fe-dev-1/
 """
 
 import asyncio
@@ -193,6 +193,51 @@ def _resolve_clone_root(workspace: Path) -> Path:
     if workspace.parent.name == ".worktrees":
         return workspace.parent.parent
     return workspace
+
+
+def _iter_git_dir_entries(clone_root: Path) -> Iterator[str]:
+    """Yield ``clone_root/.git`` and every entry beneath it.
+
+    No ``_PRUNE_DIRS`` filtering needed — ``.git`` never contains the heavy
+    gitignored/agent-regenerated trees (node_modules, .venv, ...) that make a
+    full-workspace walk expensive.
+    """
+    git_dir = clone_root / ".git"
+    if not git_dir.is_dir():
+        return
+    yield str(git_dir)
+    for root, dirs, files in os.walk(git_dir):
+        for name in (*dirs, *files):
+            yield str(Path(root) / name)
+
+
+def _ensure_git_dir_owned(workspace: Path) -> None:
+    """Chown + group-write ONLY ``.git/`` — the fast path for git ops that can
+    only ever write refs/objects/index, never the working tree (add, commit,
+    fetch, push; the SET forms of branch/symbolic-ref).
+
+    Worktree-aware: resolves through ``_resolve_clone_root`` so an op run
+    inside a ``.worktrees/<id>`` checkout repairs the SHARED
+    ``clone_root/.git`` — where the worktree's own per-task admin dir
+    (``.git/worktrees/<id>/``) plus the shared refs/objects actually live —
+    not the worktree's own ``.git``, which is just a small gitlink FILE.
+    """
+    clone_root = _resolve_clone_root(workspace)
+    if not clone_root.exists():
+        return
+
+    failed_chowns = sum(
+        _own_and_grant_rw(entry) for entry in _iter_git_dir_entries(clone_root)
+    )
+
+    if failed_chowns:
+        logger.warning(
+            "Some chowns failed during ensure_git_dir_owned — "
+            "agent .git writes may still fail. Check docker user-namespace "
+            "config or run agents as root on this host.",
+            workspace=str(clone_root),
+            failures=failed_chowns,
+        )
 
 
 def _uv_subprocess_env(workspace: Path) -> dict[str, str]:

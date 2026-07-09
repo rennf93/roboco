@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import type { ReleaseProposal } from "@/lib/api/release";
 
 // Control useQuery per test; the mutation + queryClient hooks just need to exist.
@@ -30,6 +31,11 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { ReleaseProposalCard } from "../release-proposal-card";
+import { PageRefreshProvider } from "@/components/providers";
+
+function withPageRefresh(ui: ReactNode) {
+  return <PageRefreshProvider>{ui}</PageRefreshProvider>;
+}
 
 function buildProposal(): ReleaseProposal {
   return {
@@ -74,18 +80,16 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
       refetch: vi.fn(),
     });
 
-    render(<ReleaseProposalCard />);
+    render(withPageRefresh(<ReleaseProposalCard />));
 
     // The failure must be visible — not a silent hide. The error card surfaces
-    // the underlying message and a retry affordance.
+    // the underlying message. Refresh is now handled by the navbar refresh button.
     expect(
       screen.getByText(/couldn't load the release proposal/i),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/release service unavailable/i),
     ).toBeInTheDocument();
-    // A retry affordance so the CEO can re-fetch without a full page reload.
-    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
   it("still hides on the 404 no-open-proposal empty state (regression guard)", () => {
@@ -99,7 +103,7 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
       refetch: vi.fn(),
     });
 
-    const { container } = render(<ReleaseProposalCard />);
+    const { container } = render(withPageRefresh(<ReleaseProposalCard />));
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -112,7 +116,7 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
       refetch: vi.fn(),
     });
 
-    render(<ReleaseProposalCard />);
+    render(withPageRefresh(<ReleaseProposalCard />));
     expect(screen.getByText(/Release Proposal/i)).toBeInTheDocument();
     expect(screen.getByText("v0.14.0")).toBeInTheDocument();
     expect(

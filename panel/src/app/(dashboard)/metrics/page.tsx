@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
+import { usePageRefresh } from "@/hooks";
 import {
   useUsageSummary,
   useUsageTimeSeries,
@@ -185,15 +186,27 @@ function PerformanceTabContent() {
     refetch: refetchStatus,
   } = useOrchestratorStatus();
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetchTasks();
+      },
+      () => {
+        void refetchStatus();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [register, unregister, refetchTasks, refetchStatus]);
+
   const isOffline =
     (tasksError || statusError) &&
     (tasksError?.message?.includes("Network Error") ||
       statusError?.message?.includes("Network Error"));
-
-  const refetch = () => {
-    refetchTasks();
-    refetchStatus();
-  };
 
   const taskList = tasks || [];
   const agentList = status?.agents || [];
@@ -269,7 +282,7 @@ function PerformanceTabContent() {
       <OfflineState
         title="Cannot Load Performance Metrics"
         description="Start the RoboCo orchestrator to view performance analytics."
-        onRetry={refetch}
+        onRetry={() => void refresh()}
       />
     );
   }
