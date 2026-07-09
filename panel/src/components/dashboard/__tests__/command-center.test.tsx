@@ -57,6 +57,15 @@ vi.mock("../ceo-approval-queue", () => ({
 vi.mock("../pr-review-queue", () => ({
   PrReviewQueue: () => <div>PrReviewQueueStub</div>,
 }));
+vi.mock("@/hooks/use-page-refresh", () => ({
+  usePageRefresh: () => ({
+    register: vi.fn(),
+    unregister: vi.fn(),
+    refresh: vi.fn(),
+    loading: false,
+    disabled: false,
+  }),
+}));
 vi.mock("../release-proposal-card", () => ({
   ReleaseProposalCard: () => <div>ReleaseProposalCardStub</div>,
 }));
