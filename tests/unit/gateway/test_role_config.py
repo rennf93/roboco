@@ -50,8 +50,6 @@ class TestRoleConfigCatalog:
 
     def test_no_role_allows_subagents(self) -> None:
         # Fleet-wide invariant (CEO, 2026-07-09): not a single role fans out.
-        from roboco.services.gateway.role_config import ROLE_CONFIGS
-
         for role, cfg in ROLE_CONFIGS.items():
             assert cfg.allows_subagent is False, role
 
