@@ -33,7 +33,7 @@ __pycache__/
 *.egg
 
 # Virtual environments
-.venv/
+.venv
 venv/
 ENV/
 env/
