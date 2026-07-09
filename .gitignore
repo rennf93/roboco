@@ -112,7 +112,10 @@ video-renderer/node_modules/
 # <orientation>.html directly, never index.html)
 motion/compositions/*/index.html
 # Internal-only: strategy/scratch/reference dumps — never publish
-docs/internal/
+docs/internal/*
+!docs/internal/specs/
+docs/internal/specs/*
+!docs/internal/specs/2026-07-09-ci-run-28987195247-investigation.md
 .pnpm-store/
 
 # MkDocs build output (published to gh-pages by CI; never committed to master)
