@@ -4914,9 +4914,20 @@ class GitService(BaseService):
         project = await project_service.get_by_slug(project_slug)
         if project is None:
             return None
-        ws = workspace or (
-            Path(project.workspace_path) if project.workspace_path else None
-        )
+        ws = workspace
+        if ws is None and project.workspace_path:
+            # workspace_path is API-settable (PM-gated route): only a path
+            # inside THIS project's workspace tree may receive the scaffold
+            # commit — anything else (arbitrary dir, another project's clone)
+            # is refused as "no usable workspace".
+            candidate = Path(project.workspace_path)
+            try:
+                candidate.resolve().relative_to(
+                    Path(settings.workspaces_root) / project.slug
+                )
+                ws = candidate
+            except (ValueError, OSError):
+                ws = None
         if ws is None or not ws.exists():
             return None
         base = project.default_branch or "master"

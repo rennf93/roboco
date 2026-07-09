@@ -417,7 +417,9 @@ class IntakeDriver:
 
 
 # The intake agent's hard tool allowlist: read-only built-ins + the draft tool.
-_INTAKE_BASE_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob", "Task")
+# No ``Task``: the fleet-wide subagent ban (CEO, 2026-07-09) includes intake —
+# it reads the codebase directly instead of fanning out research subagents.
+_INTAKE_BASE_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
 
 def build_intake_options(
@@ -435,7 +437,7 @@ def build_intake_options(
     - ``strict_mcp_config=True`` + ``setting_sources=[]`` → ignore the host's
       ``~/.claude.json`` / ``settings.json``; use ONLY the MCP server below.
     - ``permission_mode="dontAsk"`` (NOT ``bypassPermissions``) + a ``can_use_tool``
-      gate → a hard allowlist (Read/Grep/Glob/Task + ``propose_draft`` +
+      gate → a hard allowlist (Read/Grep/Glob + ``propose_draft`` +
       ``propose_batch`` + ``search_past_tasks``), no prompts.
 
     Draft emission: the agent calls the ``propose_draft`` MCP tool, which the
@@ -557,10 +559,10 @@ def build_intake_options(
         return PermissionResultDeny(
             message=(
                 f"{tool_name} is not available to the intake agent. Your only tools "
-                "are Read, Grep, Glob, Task, propose_draft, propose_batch (for a "
-                "MegaTask), and search_past_tasks. Ask the human inline; when the "
-                "spec is ready, call propose_draft (one task) or propose_batch "
-                "(several)."
+                "are Read, Grep, Glob, propose_draft, propose_batch (for a "
+                "MegaTask), and search_past_tasks. Read the codebase yourself — "
+                "no subagents. Ask the human inline; when the spec is ready, call "
+                "propose_draft (one task) or propose_batch (several)."
             )
         )
 
