@@ -4012,9 +4012,9 @@ class GitService(BaseService):
         ``stash`` popped into a conflict (see below).
 
         Never touches the base branch and only ever force-pushes
-        ``head_branch`` (with ``--force-with-lease``). The caller must ensure
-        ``base_branch`` is not a protected/default branch — agents never
-        rebase-merge into master.
+        ``head_branch`` (with ``--force-with-lease``). A master/main base is
+        legitimate when it is the head's true merge target; the choreographer
+        refuses only a mis-resolved one.
 
         Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
         ``git reset --hard`` below can't discard uncommitted agent edits —
@@ -4181,8 +4181,10 @@ class GitService(BaseService):
         ``stash`` forwards to :meth:`rebase_onto_base` — auto-stash a dirty
         worktree instead of refusing DIRTY_WORKSPACE.
 
-        The caller MUST ensure ``base_branch`` is not a protected branch —
-        agents never rebase into master/main; the choreographer guards this.
+        A master/main base is legitimate when it is the task's true merge
+        target (standalone task, branchless-parent child); the choreographer
+        refuses only a mis-resolved one. The push only ever targets the task
+        branch.
         """
         if not task.branch_name:
             raise ValueError("sync_task_branch requires a task with a branch_name")

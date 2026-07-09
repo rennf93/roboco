@@ -4146,24 +4146,51 @@ class Choreographer:
                 "",
             )
         base_branch = await resolve_parent_branch(t, self.task)
-        # Defense-in-depth: agents never rebase into a protected/default branch
-        # or a ``-``-prefixed (shell-injection) ref. A dev task's base is its
-        # parent (cell-task) branch, so this should never fire — but never let a
-        # rebase reach master through a branchless-parent fallback.
-        if base_branch.startswith("-") or base_branch in ("master", "main"):
+        # ``-``-prefixed refs are refused unconditionally (argument-injection
+        # guard). master/main is refused only when the resolution looks WRONG
+        # (a branch-bearing parent exists, or the parent row is unresolvable):
+        # a standalone task or a child of a branchless coordination parent
+        # legitimately merges into the project default branch, and the rebase
+        # only ever force-pushes the task branch (with lease) — it cannot
+        # write to the base.
+        if base_branch.startswith("-") or (
+            base_branch in ("master", "main") and await self._base_is_misresolved(t)
+        ):
             return (
                 Envelope.invalid_state(
                     message=f"resolved base branch '{base_branch}' is protected",
                     remediate=(
-                        "the task's base resolved to master/main; sync_branch"
-                        " refuses to rebase into a protected branch — escalate"
-                        " via i_am_blocked(reason='...') if your base is wrong"
+                        "the task's base resolved to master/main even though it"
+                        " has a parent that should own the base branch — the"
+                        " hierarchy resolution looks wrong; escalate via"
+                        " i_am_blocked(reason='...') instead of rebasing"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
                 "",
             )
         return None, base_branch
+
+    async def _base_is_misresolved(self, t: Any) -> bool:
+        """True when a master/main base cannot be the task's real merge target.
+
+        Mirrors ``resolve_parent_branch``: a parentless task and a child of a
+        branchless coordination parent both legitimately merge into the
+        project default branch, so master/main is their true base. A
+        branch-bearing parent (the base should have been that branch) or an
+        unresolvable parent row means the resolution went wrong — refuse.
+        """
+        parent_id = getattr(t, "parent_task_id", None)
+        if parent_id is None:
+            return False
+        try:
+            pid = UUID(str(parent_id))
+        except ValueError:
+            return True
+        parent = await self.task.get(pid)
+        if parent is None:
+            return True
+        return bool(parent.branch_name)
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.

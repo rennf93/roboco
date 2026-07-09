@@ -14,7 +14,11 @@ holds. These tests pin the handler:
 - not_authorized: only the current claimant can sync (ownership gate)
 - no branch: branchless / not-yet-claimed task → invalid_state, steer to
   i_will_work_on
-- protected base: resolved base == master/main → invalid_state (defense-in-depth)
+- protected base: master/main refused only when MIS-resolved — a branch-bearing
+  parent exists (base should have been that branch) or the parent row is
+  missing/corrupt. A standalone (parentless) task and a child of a branchless
+  coordination parent legitimately rebase onto master (it IS their merge
+  target; the push only ever hits the task branch). ``-``-refs always refused.
 - git failure: sync_task_branch raises → invalid_state, steer to i_am_blocked
 """
 
@@ -181,18 +185,20 @@ async def test_sync_branch_no_branch_steers_to_i_will_work_on() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_branch_refuses_protected_base() -> None:
+async def test_sync_branch_refuses_master_base_with_branch_bearing_parent() -> None:
     aid = uuid4()
     tid = uuid4()
     t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
     task_svc = AsyncMock()
+    # Both the task fetch and the parent fetch resolve to a branch-bearing row:
+    # the base should have been the parent's branch, so master is mis-resolved.
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
     git_svc = AsyncMock()
     deps = _make_deps(task=task_svc, git=git_svc)
     c = Choreographer(deps)
 
-    # Defense-in-depth: a base that resolved to master must never be rebased into.
     with patch(
         "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
         new=AsyncMock(return_value="master"),
@@ -201,6 +207,109 @@ async def test_sync_branch_refuses_protected_base() -> None:
 
     assert env.error == "invalid_state"
     assert "protected" in (env.message or "")
+    git_svc.sync_task_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_allows_master_base_for_standalone_task() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    # Parentless standalone task (video / ci-watch / dep-update): master IS
+    # the merge target, so the rebase must go through.
+    t.parent_task_id = None
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "commits_rebased": 2}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch="master", actor_agent_id=aid, stash=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_allows_master_base_for_branchless_parent_child() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
+    branchless_parent = MagicMock(branch_name=None)
+    task_svc = AsyncMock()
+    # First get: the task itself; second get: the branchless coordination
+    # parent — its child was cut from master, so master is the true base.
+    task_svc.get.side_effect = [t, branchless_parent]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "commits_rebased": 1}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch="master", actor_agent_id=aid, stash=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_refuses_master_base_when_parent_row_missing() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [t, None]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="master"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
+    git_svc.sync_task_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_refuses_injection_ref_unconditionally() -> None:
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    t.parent_task_id = None
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value="-evil-ref"),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
     git_svc.sync_task_branch.assert_not_awaited()
 
 
