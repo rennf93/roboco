@@ -27,7 +27,7 @@ class RoleConfig:
     flow_tools: tuple[str, ...]  # roboco-flow verbs
     do_tools: tuple[str, ...]  # roboco-do content tools
     allows_write: bool  # Edit, Write to workspace
-    allows_subagent: bool  # `Agent` tool (parallel research)
+    allows_subagent: bool  # `Agent` tool — fleet-wide False (CEO ban, 2026-07-09)
     description: str
 
 
@@ -201,7 +201,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_CELL_PM_FLOW,
         do_tools=_CELL_PM_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description="Triages, unblocks, and completes cell tasks; merges leaf PRs.",
     ),
     "main_pm": RoleConfig(
@@ -209,7 +209,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_MAIN_PM_FLOW,
         do_tools=_MAIN_PM_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description="Coordinates across cells; opens master PR; escalates to CEO.",
     ),
     "product_owner": RoleConfig(
@@ -217,7 +217,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_PRODUCT_OWNER_FLOW,
         do_tools=_PRODUCT_OWNER_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description="Product oversight; escalates strategic decisions to CEO.",
     ),
     "head_marketing": RoleConfig(
@@ -225,7 +225,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_HEAD_MARKETING_FLOW,
         do_tools=_HEAD_MARKETING_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description="Marketing oversight; escalates to CEO.",
     ),
     "auditor": RoleConfig(
@@ -252,7 +252,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_PROMPTER_FLOW,
         do_tools=_PROMPTER_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description=(
             "Intake interviewer; chats only with the human, reads the codebase, "
             "and drafts a task. No outward agent comms; never writes or merges."
@@ -263,7 +263,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         flow_tools=_SECRETARY_FLOW,
         do_tools=_SECRETARY_DO,
         allows_write=False,
-        allows_subagent=True,
+        allows_subagent=False,
         description=(
             "CEO's chief-of-staff; chats only with the CEO and carries gated CEO "
             "authority. Reads company state and executes the CEO's directives, "

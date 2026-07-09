@@ -46,7 +46,14 @@ class TestRoleConfigCatalog:
         assert "complete" in cfg.flow_tools
         assert "unblock" in cfg.flow_tools
         assert "triage" in cfg.flow_tools
-        assert cfg.allows_subagent is True  # PMs may need parallel research
+        assert cfg.allows_subagent is False  # fleet-wide subagent ban (2026-07-09)
+
+    def test_no_role_allows_subagents(self) -> None:
+        # Fleet-wide invariant (CEO, 2026-07-09): not a single role fans out.
+        from roboco.services.gateway.role_config import ROLE_CONFIGS
+
+        for role, cfg in ROLE_CONFIGS.items():
+            assert cfg.allows_subagent is False, role
 
     def test_main_pm_config(self) -> None:
         cfg = get_role_config("main_pm")
