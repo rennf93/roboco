@@ -38,19 +38,6 @@ This composition is the library's reference point — match its restraint, don't
 
 ## Panel-demo kit (`kit/`)
 
-`kit/` is a second register alongside the release-announcement's text-card
-style: reusable `pk-`-namespaced CSS/HTML that recreates the control panel's
-look (dark chrome, task cards, status pills, toasts, a typing reveal, a
-cursor) so a composition can simulate the product actually being used,
-instead of announcing it over a headline. Use the **text-card register**
-(release-announcement's pattern) for version/feature announcements with no
-product visuals; use the **demo register** (`kit/`) whenever the story is
-"watch this happen in the app" — a task moving through the panel, a feature
-being triggered, an agent doing something visible.
+`kit/` is a second register alongside the release-announcement's text-card style: reusable `pk-`-namespaced CSS/HTML that recreates the control panel's look (dark chrome, task cards, status pills, toasts, a typing reveal, a cursor) so a composition can simulate the product actually being used, instead of announcing it over a headline. Use the **text-card register** (release-announcement's pattern) for version/feature announcements with no product visuals; use the **demo register** (`kit/`) whenever the story is "watch this happen in the app" — a task moving through the panel, a feature being triggered, an agent doing something visible.
 
-`compositions/panel-demo/` is the reference composition: a task title types
-into an intake field, a card materializes in a column, a cursor clicks it
-done, a toast confirms, out on "roboco.tech". Start a new demo-register
-composition from its structure and `kit.css`'s classes rather than
-reinventing the panel's chrome per clip. See `kit/README.md` for the full
-piece-by-piece reference.
+`compositions/panel-demo/` is the reference composition: a task title types into an intake field, a card materializes in a column, a cursor clicks it done, a toast confirms, out on "roboco.tech". Start a new demo-register composition from its structure and `kit.css`'s classes rather than reinventing the panel's chrome per clip. See `kit/README.md` for the full piece-by-piece reference.
