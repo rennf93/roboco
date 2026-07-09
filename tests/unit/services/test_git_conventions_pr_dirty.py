@@ -36,11 +36,15 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "commit", "-m", "init")
 
 
-def _svc(monkeypatch: pytest.MonkeyPatch, repo: Path) -> GitService:
+def _svc(monkeypatch: pytest.MonkeyPatch, repo: Path, root: Path) -> GitService:
     svc = GitService.__new__(GitService)
     svc.session = AsyncMock()
 
+    # The workspace-scope guard requires workspace_path under
+    # {workspaces_root}/{project.slug}; anchor the root at the test dir.
+    monkeypatch.setattr(git_module.settings, "workspaces_root", str(root))
     project = MagicMock()
+    project.slug = "g-proj"
     project.workspace_path = str(repo)
     project.default_branch = "master"
     project_service = MagicMock()
@@ -69,12 +73,12 @@ async def test_dirty_tree_refused_before_any_checkout(
     """A dirty working tree is the agent's active workspace — refuse, return
     None, and leave the tree exactly as it was (no scaffold branch, dirty
     change still uncommitted in the working tree)."""
-    repo = tmp_path / "repo"
+    repo = tmp_path / "g-proj" / "repo"
     _init_repo(repo)
     # Dirty the tree: modify a tracked file (the agent's in-progress work).
     (repo / "README.md").write_text("# dirty work in progress\n")
 
-    svc = _svc(monkeypatch, repo)
+    svc = _svc(monkeypatch, repo, tmp_path)
 
     result = await svc.open_conventions_pr(
         "g-proj", content="version: 1\n", title="scaffold", body="b"
@@ -111,10 +115,10 @@ async def test_clean_tree_proceeds_and_commits_on_scaffold(
     """A clean tree proceeds: the conventions file is committed on the
     scaffold branch cut from master, and master itself is untouched
     (regression guard for the fix not over-rejecting the clean case)."""
-    repo = tmp_path / "repo"
+    repo = tmp_path / "g-proj" / "repo"
     _init_repo(repo)
 
-    svc = _svc(monkeypatch, repo)
+    svc = _svc(monkeypatch, repo, tmp_path)
 
     result = await svc.open_conventions_pr(
         "g-proj", content="version: 1\n", title="scaffold", body="b"
@@ -154,12 +158,13 @@ async def test_missing_base_branch_refused(
     not fall through to ``checkout -B <scaffold>`` from the current branch —
     that would base the scaffold on the agent's task branch. Refuse when the
     checkout doesn't actually land on base."""
-    repo = tmp_path / "repo"
+    repo = tmp_path / "g-proj" / "repo"
     _init_repo(repo)
 
-    svc = _svc(monkeypatch, repo)
+    svc = _svc(monkeypatch, repo, tmp_path)
     # Override the project default to a branch that doesn't exist locally.
     project = MagicMock()
+    project.slug = "g-proj"
     project.workspace_path = str(repo)
     project.default_branch = "nonexistent-base"
     project_service = MagicMock()

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from roboco.agent_sdk.intake_driver import (
+    _INTAKE_BASE_TOOLS,
     IntakeDriver,
     StreamChunk,
     normalize,
@@ -408,3 +409,20 @@ async def test_driver_denies_prompt_injection_without_sending() -> None:
     assert "prompt-injection" in collected[0].text
     assert collected[-1].kind == "text"
     assert collected[-1].text == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Fleet-wide subagent ban (CEO, 2026-07-09)
+# ---------------------------------------------------------------------------
+
+
+def test_intake_base_tools_carry_no_subagent_tool() -> None:
+    """The intake allowlist is read-only built-ins ONLY — no ``Task``.
+
+    The fleet-wide subagent ban includes the intake interviewer: it reads the
+    codebase directly instead of fanning out research subagents (observed
+    live: intake stalled the interview waiting on seven Task spawns). Both
+    ``allowed_tools`` and the ``can_use_tool`` gate derive from this tuple,
+    so pinning the literal pins the ban on the Claude path.
+    """
+    assert _INTAKE_BASE_TOOLS == ("Read", "Grep", "Glob")

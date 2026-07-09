@@ -2136,6 +2136,9 @@ class AgentOrchestrator:
         git_context: SpawnGitContext | None,
     ) -> tuple[AgentConfig, AgentInstance, Path | None]:
         """Build AgentConfig + AgentInstance and surface per-agent settings path."""
+        # agent_id lands in per-agent settings/prompt/briefing filenames below;
+        # re-assert single-segment safety at the proximate write site.
+        self._safe_agent_path_segment(agent_id)
         project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
         ambient = await self._resolve_conventions_ambient(project_slug, task_id)
         blueprint_path = self._generate_composed_prompt(agent_id, ambient=ambient)

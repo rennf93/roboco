@@ -307,6 +307,24 @@ class WorkspaceError(Exception):
     pass
 
 
+def _safe_segment(value: str, label: str) -> str:
+    """Return ``value`` if safe as one path segment under the workspace root.
+
+    Slugs/teams are regex- or enum-validated at creation, but every workspace
+    path is built here — reject traversal vectors (empty, ``.``/``..``,
+    separators, NUL) at the chokepoint so the tree is safe by construction.
+    """
+    if (
+        not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise WorkspaceError(f"unsafe {label} for a workspace path: {value!r}")
+    return value
+
+
 # Marker file recording the lockfile digest the dev-deps install last ran
 # against. Lives under .git/ so it never shows up in `git status` (the agent's
 # clean-tree checks would otherwise trip on it) and is wiped with the clone.
@@ -449,7 +467,12 @@ class WorkspaceService:
                 "Add the agent to AGENT_TEAM_MAP in roboco/agents_config.py."
             )
         team_str = team.value if isinstance(team, Team) else str(team)
-        return self.root / project_slug / team_str / agent_slug
+        return (
+            self.root
+            / _safe_segment(project_slug, "project slug")
+            / _safe_segment(team_str, "team")
+            / _safe_segment(agent_slug, "agent slug")
+        )
 
     def get_clone_root_path(
         self,
