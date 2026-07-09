@@ -1313,11 +1313,14 @@ class ContentActions:
         feature hasn't already been covered, then materializes the held X-queue
         draft and completes the caller's exploration task. One call per cycle.
 
-        ``wants_video`` optionally requests a companion video (gated on
-        ``video_engine_enabled AND video_on_spotlight``, on top of this
-        default-False param) — a best-effort side effect that never disturbs
-        the spotlight draft above. Defaults leave the flow byte-for-byte
-        unchanged.
+        ``wants_video`` optionally requests a companion video. The video
+        authoring task no longer opens here — it opens later, at CEO-approve
+        time (``XPostService._open_spotlight_video``, gated on
+        ``video_engine_enabled AND video_on_spotlight``), so a ux-dev never
+        burns a cycle on a spotlight the CEO then rejects. This verb only
+        records the request (+ optional script) on the draft's
+        ``x_feature_ref`` marker for approve time to read. Defaults leave the
+        flow byte-for-byte unchanged.
         """
         role = await self._caller_role(agent_id)
         if role not in _FEATURE_SPOTLIGHT_ROLES:
@@ -1365,11 +1368,22 @@ class ContentActions:
             feature_title=feature_title,
             body=body,
         )
-        video_armed = settings.video_engine_enabled and settings.video_on_spotlight
-        if wants_video and video_armed:
-            await self._open_spotlight_video(
-                feature_slug, feature_title, body, video_script
+        if wants_video:
+            # Gating (video_engine_enabled AND video_on_spotlight) and the
+            # actual open_video_task call happen later, at CEO-approve time —
+            # see XPostService._open_spotlight_video. Stash the request here
+            # so approve time has it; slug/title are already on this ref from
+            # materialize_feature_spotlight above, so re-set alongside them.
+            markers.set_x_feature_ref(
+                new_task,
+                {
+                    "slug": feature_slug,
+                    "title": feature_title,
+                    "wants_video": True,
+                    "video_script": video_script.strip(),
+                },
             )
+            await self.task.session.flush()
         return Envelope.ok(
             status="feature_spotlight_proposed",
             task_id=str(new_task.id),
@@ -1379,25 +1393,6 @@ class ContentActions:
                 "feature_title": feature_title,
             },
         )
-
-    async def _open_spotlight_video(
-        self, feature_slug: str, feature_title: str, body: str, video_script: str
-    ) -> None:
-        """Best-effort: a spotlight video failure must never break the
-        spotlight draft that already materialized above. HoM decides *what*
-        (this brief); UX/UI later builds *how* (the composition)."""
-        try:
-            from roboco.services.video_engine import get_video_engine
-
-            feature_brief = f"{feature_title}: {body}"
-            await get_video_engine(self.task.session).open_video_task(
-                occasion=f"spotlight {feature_slug}",
-                script=video_script.strip() or feature_brief,
-                platforms=["x", "tiktok"],
-                brief=feature_brief,
-            )
-        except Exception as exc:
-            logger.warning("spotlight video draft failed (best-effort)", error=str(exc))
 
     @classmethod
     def _reject_caption(

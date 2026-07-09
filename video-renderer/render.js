@@ -9,17 +9,36 @@
 // streamed the response.
 import { createRenderJob, executeRenderJob } from "@hyperframes/producer";
 import { existsSync } from "node:fs";
-import { cp, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import * as tar from "tar";
 
-const FPS = 30;
 // @hyperframes/producer reads each cut's dimensions from the composition HTML
 // itself (data-width/data-height on the stage), so the sidecar no longer
 // passes width/height — it only picks the quality tier.
 const QUALITY = "high";
+
+const DEFAULT_FPS = 30;
+const MIN_FPS = 24;
+const MAX_FPS = 60;
+
+/**
+ * Read the composition-declared frame rate off its HTML text (the
+ * `data-fps` attribute motion/README.md instructs authors to set — it
+ * appears on both `<html>` and `#stage` in every composition seen so far;
+ * a plain regex over the whole file catches either). Falls back to
+ * DEFAULT_FPS when absent, unparsable, or outside the sane broadcast bound —
+ * never lets a bad attribute wedge the job at an undefined rate.
+ */
+export function parseFps(html) {
+  const match = /data-fps=["'](\d+)["']/.exec(html);
+  if (!match) return DEFAULT_FPS;
+  const fps = Number(match[1]);
+  if (!Number.isFinite(fps) || fps < MIN_FPS || fps > MAX_FPS) return DEFAULT_FPS;
+  return fps;
+}
 
 // Caps the DECOMPRESSED size (a gzip bomb inflates a tiny upload into a huge
 // tar stream); MAX_UPLOAD_BYTES in server.js only bounds the compressed
@@ -142,6 +161,12 @@ export async function renderComposition({
       throw new UnknownCompositionError(compositionId, knownIds);
     }
 
+    const entryHtml = await readFile(
+      path.join(compositionDir, `${orientation}.html`),
+      "utf8",
+    );
+    const fps = parseFps(entryHtml);
+
     // The HTML files <script src="props.js"></script> reads this — set up by
     // Task T2, but the sidecar must write the file per render so the HTML
     // picks up per-release content + orientation.
@@ -171,7 +196,7 @@ export async function renderComposition({
     // out of the job config), and resolves the cut's HTML from entryFile
     // relative to projectDir.
     const job = createRenderJob({
-      fps: FPS,
+      fps,
       quality: QUALITY,
       format: "mp4",
       entryFile: `${orientation}.html`,
