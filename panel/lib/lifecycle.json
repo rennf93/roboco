@@ -44,7 +44,7 @@
         "pr_reviewer"
       ],
       "composes": [],
-      "description": "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it \u2014 mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.",
+      "description": "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.",
       "name": "claim_gate_review",
       "pre_side_effects": [],
       "side_effects": []
@@ -80,7 +80,7 @@
       "composes": [
         "complete"
       ],
-      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell\u2192root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root\u2192master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering \u2014 no trailing pr_merge side_effect is declared here.",
+      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering — no trailing pr_merge side_effect is declared here.",
       "name": "complete",
       "pre_side_effects": [],
       "side_effects": []
@@ -93,7 +93,7 @@
       "composes": [
         "create_subtask"
       ],
-      "description": "Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/research, UX devs also design). documentation is NOT delegatable \u2014 the lifecycle auto-creates the doc phase after the code subtask passes QA.",
+      "description": "Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/research, UX devs also design). documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.",
       "name": "delegate",
       "pre_side_effects": [],
       "side_effects": []
@@ -130,7 +130,7 @@
       "composes": [
         "qa_fail"
       ],
-      "description": "Fail QA with concrete issues. Transitions to needs_revision.",
+      "description": "Fail QA with concrete issues. Transitions needs_revision.",
       "name": "fail_review",
       "pre_side_effects": [],
       "side_effects": []
@@ -192,7 +192,7 @@
         "secretary"
       ],
       "composes": [],
-      "description": "Signal you have no active work. PMs auto-pause owned in_progress tasks.",
+      "description": "Signal you have no work. PMs auto-pause owned in_progress tasks.",
       "name": "i_am_idle",
       "pre_side_effects": [],
       "side_effects": []
@@ -304,7 +304,7 @@
         "cell_pm"
       ],
       "composes": [],
-      "description": "Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved \u2014 the new developer continues the work-in-progress. No status change.",
+      "description": "Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.",
       "name": "reassign",
       "pre_side_effects": [],
       "side_effects": []
@@ -317,7 +317,7 @@
       "composes": [
         "request_changes"
       ],
-      "description": "Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review \u2014 never i_am_blocked/escalate, which have no revision routing.",
+      "description": "Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review — never i_am_blocked/escalate, which have no revision routing.",
       "name": "request_changes",
       "pre_side_effects": [],
       "side_effects": []
@@ -345,7 +345,7 @@
       "composes": [
         "submit_for_review"
       ],
-      "description": "Main PM opens the root\u2192master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed \u2014 a Main-PM root is planning-typed, never code.",
+      "description": "Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed — a root is planning-typed, never code.",
       "name": "submit_root",
       "pre_side_effects": [
         "create_root_pr"
@@ -359,7 +359,7 @@
       "composes": [
         "submit_for_review"
       ],
-      "description": "Cell PM opens the cell\u2192root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.",
+      "description": "Cell PM opens the cell→root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.",
       "name": "submit_up",
       "pre_side_effects": [
         "create_pr"
@@ -371,7 +371,7 @@
         "developer"
       ],
       "composes": [],
-      "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again.",
+      "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again.",
       "name": "sync_branch",
       "pre_side_effects": [],
       "side_effects": []
@@ -423,7 +423,7 @@
         "qa"
       ],
       "composes": [],
-      "description": "Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.",
+      "description": "Voluntarily release a claim back to pending. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.",
       "name": "unclaim",
       "pre_side_effects": [],
       "side_effects": []

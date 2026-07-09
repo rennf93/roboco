@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, Suspense } from "react";
+import { useState, useCallback, Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { KBIndexType, RAGQueryResponse } from "@/types";
 import {
@@ -49,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { getErrorMessage } from "@/lib/api/client";
+import { usePageRefresh } from "@/hooks";
 
 // Components
 import { KBSearchBar } from "./kb-search-bar";
@@ -176,6 +177,24 @@ function KnowledgeBaseBrowserContent() {
     isLoading: loadingHealth,
     refetch: refetchHealth,
   } = useRAGHealth();
+
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetchStats();
+      },
+      () => {
+        void refetchHealth();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [register, unregister, refetchStats, refetchHealth]);
+
   const deleteIndex = useDeleteIndex();
   const refreshIndex = useRefreshIndex();
   const reindexAll = useReindexAll();
@@ -249,11 +268,6 @@ function KnowledgeBaseBrowserContent() {
     }
   };
 
-  const handleRefresh = () => {
-    refetchStats();
-    refetchHealth();
-  };
-
   // Calculate totals for admin
   const totalDocs =
     stats?.indexes.reduce((sum, idx) => sum + idx.document_count, 0) ?? 0;
@@ -282,7 +296,7 @@ function KnowledgeBaseBrowserContent() {
         <OfflineState
           title="Cannot Connect to Knowledge Base"
           description="Start the RoboCo orchestrator to access the knowledge base."
-          onRetry={() => refetchStats()}
+          onRetry={() => void refresh()}
         />
       </div>
     );
@@ -298,10 +312,6 @@ function KnowledgeBaseBrowserContent() {
             Search and query indexed knowledge
           </p>
         </div>
-        <Button variant="outline" onClick={handleRefresh}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {/* Tabs */}

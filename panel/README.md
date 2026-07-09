@@ -51,6 +51,23 @@ That gives you Next dev-server on `localhost:3000`, but you still need the orche
 - `src/lib/api/` — typed API client (thin wrappers over `fetch`)
 - `src/lib/` — constants, utilities, WebSocket hooks
 - `src/types/` — shared TypeScript types mirroring backend schemas
+- `src/hooks/` — reusable React hooks (see [Frontend hooks](../docs/frontend/hooks.md))
+
+## Hooks
+
+The panel exposes public hooks under `@/hooks`. See [Frontend hooks](../docs/frontend/hooks.md) for full API reference and examples.
+
+### `usePageRefresh`
+
+Page-scoped refresh coordinator. Pages register data-refetch callbacks; the navbar refresh button in `src/components/layout/header.tsx` calls `refresh()` and reflects the combined `loading`/`disabled` state.
+
+```tsx
+import { usePageRefresh } from "@/hooks";
+
+const { register, unregister, refresh, loading, disabled } = usePageRefresh();
+```
+
+Wrap your page or layout in `PageRefreshProvider` from `@/components/providers` before consuming the hook. Dashboard pages should register their refetch callbacks and avoid adding inline "Refresh" buttons; see [`docs/frontend/components/page-refresh-provider.md`](../docs/frontend/components/page-refresh-provider.md) for the full wiring list and examples.
 
 ## Backend schema changes
 

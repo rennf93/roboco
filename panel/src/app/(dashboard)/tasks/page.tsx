@@ -15,9 +15,8 @@ import {
   SortDirection,
 } from "@/components/tasks";
 import type { TaskFilters as TaskApiFilters } from "@/lib/api/tasks";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw } from "lucide-react";
+import { usePageRefresh } from "@/hooks";
 
 function TasksPageContent() {
   const router = useRouter();
@@ -180,8 +179,29 @@ function TasksPageContent() {
   const { data: tasks, isLoading, error, refetch } = useTasks(filters);
 
   // Projects + products: power the Project/Product filter options + name display.
-  const { data: projects } = useProjects();
-  const { data: products } = useProducts();
+  const { data: projects, refetch: refetchProjects } = useProjects();
+  const { data: products, refetch: refetchProducts } = useProducts();
+
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetch();
+      },
+      () => {
+        void refetchProjects();
+      },
+      () => {
+        void refetchProducts();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [register, unregister, refetch, refetchProjects, refetchProducts]);
+
   const projectNames = useMemo(
     () => Object.fromEntries((projects ?? []).map((p) => [p.id, p.name])),
     [projects],
@@ -276,10 +296,6 @@ function TasksPageContent() {
         </div>
         <div className="flex items-center gap-2">
           <CreateTaskDialog />
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -308,7 +324,7 @@ function TasksPageContent() {
         <OfflineState
           title="Cannot Load Tasks"
           description="Start the RoboCo orchestrator to manage tasks. Tasks you create will be picked up by agents when the backend is running."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <TaskTable

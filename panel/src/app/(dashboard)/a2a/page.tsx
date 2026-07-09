@@ -17,6 +17,7 @@ import {
   useA2AMessages,
 } from "@/hooks/use-a2a-live";
 import { useA2ALiveStream } from "@/hooks/use-websocket";
+import { usePageRefresh } from "@/hooks";
 import { A2AConversationList } from "@/components/a2a/a2a-conversation-list";
 import { A2ASwitchboard } from "@/components/a2a/a2a-switchboard";
 import { A2ATranscript } from "@/components/a2a/a2a-transcript";
@@ -37,7 +38,6 @@ import {
   List as ListIcon,
   MessagesSquare,
   Radio,
-  RefreshCw,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -96,6 +96,32 @@ function A2APageContent() {
     isLoading: loadingMessages,
     refetch: refetchMessages,
   } = useA2AMessages(selectedId);
+
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetchConversations();
+      },
+      () => {
+        void refetchPairs();
+      },
+      () => {
+        void refetchMessages();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [
+    register,
+    unregister,
+    refetchConversations,
+    refetchPairs,
+    refetchMessages,
+  ]);
 
   // Live wiring: every persisted A2A message is announced on /ws/system as an
   // `a2a.message` frame. Invalidate-on-frame (the session-detail idiom) — the
@@ -160,12 +186,6 @@ function A2APageContent() {
     [handleSelect, router, searchParams],
   );
 
-  const handleRefresh = () => {
-    refetchConversations();
-    refetchPairs();
-    if (selectedId) refetchMessages();
-  };
-
   const conversations = conversationData?.items ?? [];
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
   const messages = messagesData?.items ?? [];
@@ -213,10 +233,6 @@ function A2APageContent() {
               {isConnected ? "Live" : "Offline"}
             </span>
           </div>
-          <Button variant="outline" onClick={handleRefresh}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -224,7 +240,7 @@ function A2APageContent() {
         <OfflineState
           title="Cannot Load A2A Conversations"
           description="Start the RoboCo orchestrator to view agent-to-agent chats."
-          onRetry={() => refetchConversations()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <>
