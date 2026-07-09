@@ -161,7 +161,14 @@ def test_gather_snapshot_reads_the_real_repo() -> None:
     snap = gather_snapshot(root, master_ci_conclusion=None)
     # The repo version moves with each release — assert it's a semver, not a literal.
     assert re.fullmatch(r"\d+\.\d+\.\d+", snap.current_version)
-    assert snap.last_tag is not None
+    # last_tag depends on the ambient checkout, not on gather_snapshot's logic:
+    # agent dev/QA workspaces clone with --no-tags by design (workspace.py's
+    # _clone_repo), so git describe legitimately finds nothing there, while CI
+    # (ci.yml pins fetch-tags: true) and the production release-manager read
+    # clone (workspace.py's _sync_read_clone) both fetch tags explicitly.
+    # Assert the shape wherever a tag IS present instead of assuming one
+    # always exists, so this stays meaningful in both kinds of checkout.
+    assert snap.last_tag is None or re.fullmatch(r"v\d+\.\d+\.\d+", snap.last_tag)
     assert isinstance(snap.commits, list)
     assert "pyproject.toml" in snap.canonical_bump_files
     assert snap.changelog_text  # CHANGELOG.md is non-empty
