@@ -125,7 +125,8 @@ function XPostRow({
 }
 
 // CEO queue for held X drafts (release posts + mention replies). Hidden when
-// empty (mirrors the release-proposal + playbook-review queues).
+// empty (mirrors the release-proposal + playbook-review queues). Posted/
+// rejected drafts move to the unified history on /social (SocialHistorySection).
 export function XPostQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<XPost | null>(null);

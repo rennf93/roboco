@@ -15,6 +15,7 @@ from roboco.runtime.sandbox import SandboxProvisioner, SandboxProvisionError
 _NETWORK = "roboco_default"
 _PG_PORT = 5432
 _REDIS_PORT = 6379
+_MONGO_PORT = 27017
 
 
 class _FakeRunner:
@@ -39,6 +40,10 @@ class _FakeRunner:
         # path skips the pull). Tests exercising the pull path override these.
         self.image_present: bool = True
         self.pull_rc: int = 0
+        # is_live()'s `docker inspect --format={{.State.Running}}` fake —
+        # set post-construction, mirroring image_present/pull_rc above.
+        self.inspect_rc: int = 0
+        self.inspect_running: bool = True
         self._ps_call_count = 0
 
     async def __call__(
@@ -47,34 +52,43 @@ class _FakeRunner:
         self.calls.append(args)
         verb = args[0]
         if verb == "run":
-            return self.run_rc, b"container-id\n", b""
-        if verb == "exec":
-            return self.exec_rc, b"", b""
-        if verb in ("stop", "kill", "rm"):
-            return self.teardown_rc, b"", b""
-        if verb == "image":
+            rc, out, err = self.run_rc, b"container-id\n", b""
+        elif verb == "exec":
+            rc, out, err = self.exec_rc, b"", b""
+        elif verb in ("stop", "kill", "rm"):
+            rc, out, err = self.teardown_rc, b"", b""
+        elif verb == "image":
             # `image inspect <img>` — rc 0 means present (skip pull).
             if args[1] != "inspect":
                 raise AssertionError(f"unexpected image subverb: {args[1]}")
-            return (0 if self.image_present else 1), b"", b""
-        if verb == "pull":
-            return self.pull_rc, b"", b"" if self.pull_rc == 0 else b"pull failed\n"
-        if verb == "ps":
+            rc, out, err = (0 if self.image_present else 1), b"", b""
+        elif verb == "pull":
+            rc = self.pull_rc
+            out, err = b"", (b"" if rc == 0 else b"pull failed\n")
+        elif verb == "ps":
             self._ps_call_count += 1
             # First ps call = the sandbox-labeled listing; second = live agents.
             listing = (
                 self.ps_output if self._ps_call_count == 1 else self.ps_live_output
             )
-            return 0, listing, b""
-        raise AssertionError(f"unexpected docker verb: {verb}")
+            rc, out, err = 0, listing, b""
+        elif verb == "inspect":
+            rc = self.inspect_rc
+            out = b"true\n" if self.inspect_running else b"false\n"
+            err = b""
+        else:
+            raise AssertionError(f"unexpected docker verb: {verb}")
+        return rc, out, err
 
 
 @pytest.fixture(autouse=True)
 def _fast_readiness_deadlines(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shrink the polling deadlines so the timeout path is fast in tests."""
-    monkeypatch.setattr(sandbox_module, "_PG_READY_DEADLINE_SECONDS", 0.05)
-    monkeypatch.setattr(sandbox_module, "_REDIS_READY_DEADLINE_SECONDS", 0.05)
+    """Shrink the polling cadence + every engine's deadline so the timeout path
+    is fast in tests. Deadlines live on the engine instances now (not module
+    constants), so monkeypatch them on the registry."""
     monkeypatch.setattr(sandbox_module, "_READY_POLL_INTERVAL_SECONDS", 0.01)
+    for engine in sandbox_module.SANDBOX_ENGINES.values():
+        monkeypatch.setattr(engine, "ready_deadline", 0.05)
 
 
 @pytest.mark.asyncio
@@ -84,16 +98,16 @@ async def test_provision_both_services_happy_path() -> None:
 
     info = await provisioner.provision("dev-1", ["postgres", "redis"])
 
-    assert info.postgres is not None
-    assert info.postgres.host == "roboco-sandbox-pg-dev-1"
-    assert info.postgres.port == _PG_PORT
-    assert info.postgres.user == "sandbox"
-    assert info.postgres.database == "sandbox"
-    assert info.redis is not None
-    assert info.redis.host == "roboco-sandbox-redis-dev-1"
-    assert info.redis.port == _REDIS_PORT
+    pg = info.services["postgres"]
+    assert pg.host == "roboco-sandbox-pg-dev-1"
+    assert pg.port == _PG_PORT
+    assert pg.user == "sandbox"
+    assert pg.database == "sandbox"
+    rd = info.services["redis"]
+    assert rd.host == "roboco-sandbox-redis-dev-1"
+    assert rd.port == _REDIS_PORT
     # Passwords are per-sandbox random tokens, not equal to each other.
-    assert info.postgres.password != info.redis.password
+    assert pg.password != rd.password
 
 
 @pytest.mark.asyncio
@@ -110,6 +124,27 @@ async def test_provision_labels_are_correct() -> None:
     labels = [run_call[i + 1] for i in label_indices]
     assert sandbox_module.SANDBOX_LABEL in labels
     assert "roboco.sandbox.owner=roboco-agent-dev-2" in labels
+
+
+@pytest.mark.asyncio
+async def test_provision_mongo_engine() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision("dev-mongo", ["mongo"])
+
+    mongo = info.services["mongo"]
+    assert mongo.host == "roboco-sandbox-mongo-dev-mongo"
+    assert mongo.port == _MONGO_PORT
+    assert mongo.user == "sandbox"
+    assert mongo.database == "admin"
+    run_call = next(c for c in runner.calls if c[0] == "run")
+    assert "mongo:8" in run_call
+    # MONGO_INITDB_ROOT_PASSWORD env is baked into the run.
+    assert any(a.startswith("MONGO_INITDB_ROOT_PASSWORD=") for a in run_call)
+    # /data/db tmpfs mount for the engine.
+    assert "--tmpfs" in run_call
+    assert run_call[run_call.index("--tmpfs") + 1] == "/data/db"
 
 
 @pytest.mark.asyncio
@@ -272,3 +307,48 @@ async def test_provision_pull_failure_raises() -> None:
         await provisioner.provision("dev-9", ["postgres"])
     # `docker run` never reached — pull failed first.
     assert not any(c[0] == "run" for c in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_is_live_true_when_container_running() -> None:
+    runner = _FakeRunner()
+
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-10", ["postgres", "redis"]) is True
+    expected_inspect_calls = 2
+    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    assert len(inspects) == expected_inspect_calls
+
+
+@pytest.mark.asyncio
+async def test_is_live_false_when_container_stopped() -> None:
+    """rc 0 but State.Running == false — container exists but isn't running."""
+    runner = _FakeRunner()
+    runner.inspect_running = False
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-11", ["postgres"]) is False
+
+
+@pytest.mark.asyncio
+async def test_is_live_false_when_container_missing() -> None:
+    """Nonzero rc — `docker inspect` fails outright on a removed container."""
+    runner = _FakeRunner()
+    runner.inspect_rc = 1
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-12", ["postgres"]) is False
+
+
+@pytest.mark.asyncio
+async def test_is_live_short_circuits_on_first_dead_service() -> None:
+    """A dead first service skips checking the rest — no need to inspect
+    every container once one is already known dead."""
+    runner = _FakeRunner()
+    runner.inspect_rc = 1
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    assert await provisioner.is_live("dev-13", ["postgres", "redis"]) is False
+    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    assert len(inspects) == 1

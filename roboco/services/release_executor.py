@@ -6,7 +6,8 @@ before any publish. Idempotent: re-running an already-published version is a
 no-op. The bump/gate/commit/publish steps live behind a ``ReleaseOps`` seam so
 the fail-closed ORDERING (the correctness this feature exists to guarantee) is
 unit-tested deterministically; the production ``_GitReleaseOps`` performs the
-real git / ``make quality`` / ``gh`` work on a writable clone.
+real git / ``make quality`` work on a writable clone and publishes the GitHub
+release over REST (the orchestrator image ships no ``gh`` binary).
 """
 
 from __future__ import annotations
@@ -155,10 +156,10 @@ class ReleaseExecutor:
                 version, report.drafted_changelog
             )
         except RuntimeError as exc:
-            # ``gh release create`` failed (auth/quota/network). The commit is
-            # already pushed and CI is green, so the release is half-landed —
-            # surface it as a structured outcome (not a 500) so the CEO can
-            # retry ``gh release create`` for the same version.
+            # The GitHub release POST failed (auth/quota/network). The commit
+            # is already pushed and CI is green, so the release is half-landed
+            # — surface it as a structured outcome (not a 500) so the CEO can
+            # retry the publish for the same version.
             logger.error("release publish failed", error=str(exc)[:300])
             return ReleaseResult(
                 status="publish_failed",
@@ -166,7 +167,7 @@ class ReleaseExecutor:
                 files_changed=files,
                 commit_sha=commit_sha,
                 release_url=None,
-                detail=f"gh release create failed — not published (fail-closed): {exc}",
+                detail=f"release publish failed — not published (fail-closed): {exc}",
             )
         logger.info(
             "release published",
@@ -185,24 +186,27 @@ class ReleaseExecutor:
 
 
 # --------------------------------------------------------------------------- #
-# Production ops — real git / make / gh on a writable clone.
+# Production ops — real git / make on a writable clone; publish via REST.
 # --------------------------------------------------------------------------- #
 
 _CI_POLL_INTERVAL_SECONDS = 30
 _CI_MAX_POLLS = 80  # ~40 min ceiling
 
-# Subprocess deadlines. A hung git / make / gh would otherwise block the
+# Subprocess deadlines. A hung git / make would otherwise block the
 # CEO-gated release loop indefinitely. Each is generous enough that a
 # legitimate, slow operation is never wrongly aborted — only a true hang fails
 # closed. Mirrors the quality-gate ``_run_one`` kill-on-timeout idiom.
 _GIT_OP_TIMEOUT_SECONDS = 300  # git add/commit/rev-parse/ls-remote/push
 _RELEASE_GATE_TIMEOUT_SECONDS = 1800  # make quality — full ruff/mypy/pytest suite
-_PUBLISH_TIMEOUT_SECONDS = 300  # gh release create
+_PUBLISH_TIMEOUT_SECONDS = 300  # GitHub release POST (httpx client timeout)
 _CLONE_TIMEOUT_SECONDS = 600  # git clone / rm -rf the release clone
 
 # The conventional non-zero rc a timed-out subprocess reports so every caller's
 # fail-closed branch (rc != 0) fires instead of hanging the release loop.
 _TIMEOUT_RC = 124
+
+# GitHub REST "created" — the only success status for the release POST.
+_HTTP_CREATED = 201
 
 
 async def _await_proc(
@@ -384,32 +388,49 @@ class _GitReleaseOps:
         return False
 
     async def publish_release(self, version: str, notes: str) -> str:
+        # REST, not `gh release create` — the orchestrator image ships no gh
+        # binary, so the CLI path fails at publish time with a missing binary.
+        import httpx
+
+        from roboco.config import settings
+        from roboco.services.git import GitService
+        from roboco.services.project import ProjectService
+
         tag = f"v{version}"
-        proc = await asyncio.create_subprocess_exec(
-            "gh",
-            "release",
-            "create",
-            tag,
-            "--title",
-            tag,
-            "--notes",
-            notes,
-            "--target",
-            self._default_branch,
-            cwd=str(self._root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+        token = await ProjectService(self._session).get_decrypted_token_by_slug(
+            self._slug
         )
-        rc, out = await _await_proc(proc, _PUBLISH_TIMEOUT_SECONDS)
-        text = out.strip()
-        if rc != 0:
-            logger.error("gh release create failed", error=text[:300])
-            raise RuntimeError(f"gh release create failed: {text[:200]}")
-        url = next(
-            (line.strip() for line in text.splitlines() if line.startswith("http")),
-            "",
-        )
-        return url
+        if not token:
+            raise RuntimeError(f"release publish failed: no git token for {self._slug}")
+        owner, repo = GitService._parse_git_url(self._git_url)
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_PUBLISH_TIMEOUT_SECONDS) as client:
+                resp = await client.post(
+                    f"{api_base}/repos/{owner}/{repo}/releases",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={
+                        "tag_name": tag,
+                        "name": tag,
+                        "body": notes,
+                        "target_commitish": self._default_branch,
+                    },
+                )
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"release publish failed: {e}") from e
+        if resp.status_code != _HTTP_CREATED:
+            detail = resp.text[:200]
+            logger.error(
+                "release publish failed", status=resp.status_code, error=detail
+            )
+            raise RuntimeError(
+                f"release publish failed: HTTP {resp.status_code}: {detail}"
+            )
+        return str(resp.json().get("html_url") or "")
 
 
 def _bump_uv_lock(text: str, old: str, new: str) -> str:

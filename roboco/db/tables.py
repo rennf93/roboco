@@ -160,6 +160,12 @@ class TaskTable(Base):
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Server-derived architectural constraints (project baseline conventions
+    # block), moved out of `description` (migration 068). Nullable: flag-off /
+    # no-conventions / pre-migration rows have none. The conventions also
+    # reach the agent at spawn via the ambient block — this column is for
+    # panel visibility, not agent correctness.
+    constraints: Mapped[str | None] = mapped_column(Text, nullable=True)
     acceptance_criteria: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False
     )
@@ -173,6 +179,13 @@ class TaskTable(Base):
     parent_ac_refs: Mapped[list[str]] = mapped_column(
         ARRAY(String), nullable=False, default=list
     )
+
+    if TYPE_CHECKING:
+        # ponytail: transient, non-persisted — set only by TaskService.cancel()
+        # to surface orphaned parent-AC coverage without a response-schema
+        # change. Declared here only so mypy accepts the attribute; SQLAlchemy
+        # never sees it (TYPE_CHECKING is False at runtime).
+        orphaned_parent_acs: list[str] | None
 
     # Status
     status: Mapped[TaskStatus] = mapped_column(

@@ -216,6 +216,10 @@ export interface Task {
   id: string;
   title: string;
   description: string;
+  // Server-derived architectural constraints (project baseline conventions),
+  // moved out of description. Null when conventions are flag-off / none /
+  // pre-migration. Read-only on the panel — system-derived, not human-edited.
+  constraints?: string | null;
   acceptance_criteria: string[];
   status: TaskStatus;
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
@@ -416,6 +420,9 @@ export interface AgentStatusResponse {
   error_count: number;
   started_at: string | null;
   waiting_for: string | null;
+  // Only set on the spawn response: true when the spawn was a no-op because
+  // the agent was already active (see SpawnAgentResponse on the backend).
+  already_running?: boolean;
 }
 
 // OrchestratorStatusResponse from backend

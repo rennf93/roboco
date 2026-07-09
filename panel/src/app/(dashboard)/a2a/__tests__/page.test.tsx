@@ -153,7 +153,7 @@ describe("A2APage", () => {
     expect(screen.getByPlaceholderText(/chime in/i)).toBeInTheDocument();
     expect(
       screen.getByText(
-        /direct A2A message from you to the selected participant/i,
+        /posts into this conversation — visible to both participants/i,
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();

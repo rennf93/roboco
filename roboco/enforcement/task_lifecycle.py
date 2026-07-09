@@ -87,13 +87,17 @@ _LEGACY_OPERATIONAL_EDGES: dict[Status, frozenset[Status]] = {
     # in ROLE_RESTRICTED_TRANSITIONS below). The canonical exit is submit_qa
     # -> awaiting_qa -> (qa_pass) -> awaiting_documentation; a direct
     # verifying->awaiting_documentation edge would bypass the QA review hop.
-    Status.VERIFYING: frozenset({Status.NEEDS_REVISION}),
+    # PENDING is voluntary unclaim (TaskService.unclaim_for_agent) — a dev
+    # mid self-verification is still a claim it can hand back.
+    Status.VERIFYING: frozenset({Status.NEEDS_REVISION, Status.PENDING}),
     # QA can park a task as blocked while waiting on dev clarification.
     Status.AWAITING_QA: frozenset({Status.BLOCKED}),
     # PM claim + PM reject path on review queue.
     Status.AWAITING_PM_REVIEW: frozenset({Status.CLAIMED, Status.NEEDS_REVISION}),
-    # Re-entry from revision back into active dev work (without re-claim).
-    Status.NEEDS_REVISION: frozenset({Status.IN_PROGRESS}),
+    # Re-entry from revision back into active dev work (without re-claim), or
+    # voluntary unclaim back to the pool (TaskService.unclaim_for_agent) — a
+    # dev sent back for revision otherwise had no legal exit but in_progress.
+    Status.NEEDS_REVISION: frozenset({Status.IN_PROGRESS, Status.PENDING}),
 }
 
 # Role pins for legacy operational edges. Same shape as the spec-derived

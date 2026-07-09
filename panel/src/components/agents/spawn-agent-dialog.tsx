@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useSpawnAgent } from "@/hooks/use-agents";
+import { getErrorMessage } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,21 +33,34 @@ export function SpawnAgentDialog({
   const [taskId, setTaskId] = useState("");
   const [initialPrompt, setInitialPrompt] = useState("");
   const spawnAgent = useSpawnAgent();
+  // Synchronous re-entrancy guard: `spawnAgent.isPending` only flips on a
+  // re-render, which lags a fast double-click/double-fire by a tick or two —
+  // the guard below blocks a second call within the same synchronous burst
+  // regardless of render timing.
+  const submittingRef = useRef(false);
 
   const handleSpawn = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     try {
-      await spawnAgent.mutateAsync({
+      const result = await spawnAgent.mutateAsync({
         agentId,
         request: {
           task_id: taskId || undefined,
           initial_prompt: initialPrompt || undefined,
         },
       });
-      toast.success(`Agent ${agentName} spawned successfully`);
+      if (result.already_running) {
+        toast.info(`Agent ${agentName} already running — spawn skipped`);
+      } else {
+        toast.success(`Agent ${agentName} spawned successfully`);
+      }
       setOpen(false);
       resetForm();
-    } catch {
-      toast.error("Failed to spawn agent");
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    } finally {
+      submittingRef.current = false;
     }
   };
 

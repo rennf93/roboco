@@ -18,8 +18,7 @@ import { CeoApprovalQueue } from "./ceo-approval-queue";
 import { PrReviewQueue } from "./pr-review-queue";
 import { ReleaseProposalCard } from "./release-proposal-card";
 import { PlaybookReviewQueue } from "./playbook-review-queue";
-import { XPostQueue } from "./x-post-queue";
-import { VideoPostQueue } from "./video-post-queue";
+import { SocialSummaryCard } from "./social-summary-card";
 import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
@@ -142,14 +141,10 @@ export function CommandCenter() {
         <PlaybookReviewQueue />
       </div>
 
-      {/* X post/reply queue (hidden when no drafts) */}
+      {/* Social (X + video) summary — the full queues + unified history live
+          on /social, avoiding a duplicated surface here. */}
       <div className="order-4 md:order-none">
-        <XPostQueue />
-      </div>
-
-      {/* Video post queue (always visible — carries the on-demand request action) */}
-      <div className="order-4 md:order-none">
-        <VideoPostQueue />
+        <SocialSummaryCard />
       </div>
 
       {/* Board roadmap queue (hidden when no cycle authored) */}

@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 # UUID annotates a Pydantic model field below, so it must stay a runtime import
 # (Pydantic resolves the annotation when building the model) despite `from
 # __future__ import annotations` making it look type-checking-only to ruff.
 from uuid import UUID  # noqa: TC003
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, field_validator
 from roboco.api.middleware import (
+    DbCommitMiddleware,
     _uuid_field_remediation,
     get_status_code,
     setup_middleware,
 )
+from roboco.config import settings
+from roboco.db.base import _discard_on_cancel
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -39,6 +44,9 @@ from roboco.services.base import (
     ValidationError as ServiceValidationError,
 )
 from structlog.testing import capture_logs
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # ---------------------------------------------------------------------------
 # get_status_code
@@ -417,3 +425,393 @@ def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
     assert logged_body["title"] == "visible-title"  # non-secret preserved
     assert logged_body["git_token"] == "***REDACTED***"  # secret redacted
     assert "ghp_secret_xyz" not in str(logged_body)
+
+
+# ---------------------------------------------------------------------------
+# FlowVerbTimeoutMiddleware — per-verb budget selection
+# ---------------------------------------------------------------------------
+
+
+def _make_flow_app() -> FastAPI:
+    """Two /api/v1/flow/* routes that each sleep past the fast budget but
+    under the slow one, so the picked timeout is observable by outcome."""
+    app = FastAPI()
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _normal_verb() -> Any:
+        await asyncio.sleep(0.3)
+        return {"status": "ok"}
+
+    @app.post("/api/v1/flow/developer/i_am_done")
+    async def _slow_verb() -> Any:
+        await asyncio.sleep(0.3)
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_flow_verb_timeout_normal_verb_uses_default_budget(
+    monkeypatch: Any,
+) -> None:
+    """A verb outside _SLOW_VERBS keeps the short default budget — a 0.3s
+    handler exceeds a 0.05s budget and comes back as a 504."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "flow_verb_slow_timeout_seconds", 5)
+
+    client = TestClient(_make_flow_app())
+    response = client.post("/api/v1/flow/developer/give_me_work")
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+
+
+def test_flow_verb_timeout_slow_verb_uses_slow_budget(monkeypatch: Any) -> None:
+    """A _SLOW_VERBS verb gets the longer budget — the same 0.3s handler that
+    times out on the default budget completes fine under the slow one."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "flow_verb_slow_timeout_seconds", 5)
+
+    client = TestClient(_make_flow_app())
+    response = client.post("/api/v1/flow/developer/i_am_done")
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# DbCommitMiddleware — commits the request's DB session before the response
+# reaches the client. Reproduces the race: FastAPI sends the response before
+# a Depends(get_db)-with-yield dependency's post-yield commit runs.
+# ---------------------------------------------------------------------------
+
+
+class _OrderedSession:
+    """get_db-style fake session for ordering assertions.
+
+    Exposes ``in_transaction()`` / ``commit()`` / ``rollback()`` like the real
+    ``AsyncSession`` the middleware drives, recording call order in a shared
+    list so a test can assert the commit happens before the wire send.
+    """
+
+    def __init__(self, order: list[str], fail_commit: bool = False) -> None:
+        self._order = order
+        self._fail_commit = fail_commit
+        self._txn = True
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit")
+        if self._fail_commit:
+            raise RuntimeError("commit failed")
+        self._txn = False
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+
+async def _fake_get_db(request: Request) -> Any:
+    """Module-level get_db-style dependency: stash the session on
+    request.state, yield, commit post-yield as the fallback — the exact
+    shape ``roboco.db.base.get_db`` uses and ``DbCommitMiddleware`` targets.
+
+    Reads its order-list/fail-flag from ``request.app.state`` rather than a
+    closure: ``Annotated[Any, Depends(...)]`` is stringified by this file's
+    ``from __future__ import annotations``, and ``typing.get_type_hints``
+    only resolves names from the function's module globals — a local
+    closure name would raise, silently downgrading the parameter to a plain
+    query param instead of a dependency.
+    """
+    order: list[str] = request.app.state.db_commit_order
+    session = _OrderedSession(order, fail_commit=request.app.state.db_commit_fail)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_db_commit_app(order: list[str], fail_commit: bool = False) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+    app.state.db_commit_fail = fail_commit
+
+    @app.post("/write")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db)]) -> Any:
+        order.append("route_body")
+        return {"ok": True}
+
+    setup_middleware(app)
+    return app
+
+
+def _instrumented_transport(app: FastAPI, order: list[str]) -> httpx.ASGITransport:
+    """Wraps ``app`` so 'wire_response_start' marks the instant bytes would
+    leave the server — the outermost observation point, past every
+    middleware including DbCommitMiddleware. ``raise_app_exceptions=False``
+    lets the failing-commit test inspect the resulting 5xx response instead
+    of the exception ServerErrorMiddleware always re-raises after sending it."""
+
+    async def outer(scope: Any, receive: Any, send: Any) -> None:
+        async def capture(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                order.append("wire_response_start")
+            await send(message)
+
+        await app(scope, receive, capture)
+
+    return httpx.ASGITransport(app=outer, raise_app_exceptions=False)
+
+
+async def test_db_commit_middleware_commits_before_response_reaches_client() -> None:
+    """The client only sees the response after the session commits — proving
+    the middleware, not get_db's post-yield fallback (which FastAPI's own
+    routing runs AFTER the response is already on the wire), commits in time."""
+    order: list[str] = []
+    app = _make_db_commit_app(order)
+    transport = _instrumented_transport(app, order)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/write")
+    assert response.status_code == HTTPStatus.OK
+    assert "commit" in order
+    assert "wire_response_start" in order
+    assert order.index("commit") < order.index("wire_response_start"), order
+
+
+async def test_db_commit_middleware_failing_commit_returns_5xx_not_200() -> None:
+    """A commit that fails after the route succeeded must not report 200 —
+    the response hasn't reached the wire yet, so it comes back as a 5xx."""
+    order: list[str] = []
+    app = _make_db_commit_app(order, fail_commit=True)
+    transport = _instrumented_transport(app, order)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/write")
+    assert response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+    assert "commit" in order
+
+
+async def test_db_commit_middleware_skips_non_http_scope() -> None:
+    """Websocket (and any non-http) scope passes straight through untouched —
+    no send wrapping, no state lookup."""
+    calls: list[dict[str, Any]] = []
+
+    async def inner_app(scope: Any, _receive: Any, _send: Any) -> None:
+        calls.append(scope)
+
+    middleware = DbCommitMiddleware(inner_app)
+    scope = {"type": "websocket"}
+
+    async def receive() -> dict[str, Any]:
+        return {}
+
+    async def send(_message: Any) -> None:
+        raise AssertionError("send should not be called for a websocket scope")
+
+    await middleware(scope, receive, send)
+    assert calls == [scope]
+
+
+def test_db_commit_middleware_passes_through_session_less_request() -> None:
+    """A request whose route never installs a get_db-style dependency (no
+    request.state.db_session stashed) reaches the client unmodified."""
+    app = FastAPI()
+
+    @app.get("/plain")
+    async def _plain() -> Any:
+        return {"ok": True}
+
+    setup_middleware(app)
+    client = TestClient(app)
+    response = client.get("/plain")
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# FlowVerbTimeoutMiddleware x DbCommitMiddleware — cancellation landing
+# mid-commit (2026-07-08 CI segfault: FlowVerbTimeoutMiddleware's
+# asyncio.timeout is scoped to the whole request, so it can fire while
+# DbCommitMiddleware's own `await session.commit()` is in flight, not just
+# while a route handler hangs before responding).
+# ---------------------------------------------------------------------------
+
+
+class _CancelableCommitSession:
+    """get_db-style fake session whose ``commit()`` blocks forever on an
+    Event — it only ever exits via cancellation, reproducing the exact race
+    where FlowVerbTimeoutMiddleware's timeout fires mid-``commit()``."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+        self._txn = True
+        self._never_set = asyncio.Event()
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit_start")
+        await self._never_set.wait()
+        self._order.append("commit_end")  # unreachable: proves no commit-after-cancel
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+    async def invalidate(self) -> None:
+        # Mirrors real SQLAlchemy Session.invalidate(): a no-op past the
+        # first call (no open transaction left to touch) — both
+        # _commit_shielded and get_db's own cancel handler call this for the
+        # same cancelled request, and only the first should count.
+        if self._txn:
+            self._order.append("invalidate")
+        self._txn = False
+
+
+class _SlowButFinishingCommitSession:
+    """get_db-style fake session whose ``commit()`` outlives the server-side
+    timeout but finishes well within the shield's grace period — proving a
+    cancelled-mid-commit request still lets the commit land instead of
+    severing it on the spot."""
+
+    def __init__(self, order: list[str], delay: float) -> None:
+        self._order = order
+        self._delay = delay
+        self._txn = True
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit_start")
+        await asyncio.sleep(self._delay)
+        self._order.append("commit_end")
+        self._txn = False
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+    async def invalidate(self) -> None:
+        # Mirrors real SQLAlchemy Session.invalidate(): a no-op once the
+        # transaction is already gone (a successful commit clears it) — the
+        # cancel-completes-successfully test relies on this, exactly like the
+        # double-invalidate case above.
+        if self._txn:
+            self._order.append("invalidate")
+        self._txn = False
+
+
+async def _fake_get_db_cancel_safe(request: Request) -> Any:
+    """get_db-style dependency wired to the real ``_discard_on_cancel``
+    helper (``roboco.db.base``) so this test exercises the actual fix, not a
+    re-implementation of it."""
+    order: list[str] = request.app.state.db_commit_order
+    session = _CancelableCommitSession(order)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except asyncio.CancelledError:
+        # The double only duck-types AsyncSession's commit/rollback/invalidate
+        # surface — cast for the real helper's signature.
+        await _discard_on_cancel(cast("AsyncSession", session))
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_cancel_during_commit_app(order: list[str]) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db_cancel_safe)]) -> Any:
+        order.append("route_body")
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_cancellation_mid_commit_invalidates_not_rollback(monkeypatch: Any) -> None:
+    """A flow-verb request that blows its server-side timeout WHILE
+    DbCommitMiddleware's commit is in flight, and the commit is STILL stuck
+    past the shield's grace period, must: propagate CancelledError cleanly
+    to a 504 (not hang, not a raw 500), discard the session via
+    ``invalidate()`` — NOT ``rollback()`` (SQLAlchemy's own docs: rolling
+    back a cancelled/timed-out operation risks issuing another command over
+    a connection whose wire-protocol state is now undefined, which is what
+    let a later request's pool checkout crash on the poisoned connection) —
+    and never resume/complete the cancelled commit.
+    """
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "db_commit_cancel_grace_seconds", 0.05)
+    order: list[str] = []
+    app = _make_cancel_during_commit_app(order)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/flow/developer/give_me_work")
+
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+    assert order == ["route_body", "commit_start", "invalidate"], order
+
+
+async def _fake_get_db_slow_commit(request: Request) -> Any:
+    """Module-level for the same reason as ``_fake_get_db_cancel_safe`` above —
+    a local closure isn't resolvable as a FastAPI dependency under this file's
+    ``from __future__ import annotations``."""
+    order: list[str] = request.app.state.db_commit_order
+    delay: float = request.app.state.db_commit_delay
+    session = _SlowButFinishingCommitSession(order, delay)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except asyncio.CancelledError:
+        await _discard_on_cancel(cast("AsyncSession", session))
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_slow_commit_app(order: list[str], delay: float) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+    app.state.db_commit_delay = delay
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db_slow_commit)]) -> Any:
+        order.append("route_body")
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_cancellation_mid_commit_lets_commit_finish_within_grace(
+    monkeypatch: Any,
+) -> None:
+    """A commit already in flight when the server-side timeout fires, but
+    that finishes on its own well within the shield's grace period, must be
+    allowed to land — never severed on the spot. No rollback, no invalidate
+    (nothing to undo — the data is durably committed), and the timeout's own
+    CancelledError still propagates to the client as a clean 504 (the
+    client's retry is idempotent-safe regardless)."""
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    monkeypatch.setattr(settings, "db_commit_cancel_grace_seconds", 2.0)
+    order: list[str] = []
+    app = _make_slow_commit_app(order, delay=0.15)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/flow/developer/give_me_work")
+
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+    assert order == ["route_body", "commit_start", "commit_end"], order

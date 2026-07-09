@@ -1,4 +1,4 @@
-"""Per-agent-spawn sandbox provisioner: throwaway Postgres/Redis containers.
+"""Per-agent-spawn sandbox provisioner: throwaway engine containers.
 
 Orchestrator-side sibling containers to the agent container — never
 docker-in-agent (the socket/CLI stay structurally absent from agent images).
@@ -6,6 +6,10 @@ Lifetime tracks the agent container 1:1: provisioned before `docker run`,
 torn down whenever the agent container is stopped/removed. Standalone and
 unit-testable: docker plumbing is a thin injected callable, not a dependency
 on the orchestrator module.
+
+Engine specs (image, run args, readiness probe, env emission) live in the
+pure registry ``roboco/models/sandbox.py``; this module only runs docker
+against them. Adding an engine is one entry there — no branch edited here.
 """
 
 from __future__ import annotations
@@ -17,8 +21,13 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from roboco.models.project import VALID_SANDBOX_SERVICES
-from roboco.models.runtime import PostgresSandbox, RedisSandbox, SandboxInfo
+from roboco.models.sandbox import (
+    SANDBOX_ENGINES,
+    VALID_SANDBOX_SERVICES,
+    SandboxConnection,
+    SandboxEngine,
+    SandboxInfo,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -39,10 +48,8 @@ _DOCKER_PS_TIMEOUT_SECONDS = 10.0
 # explicitly with a generous deadline breaks it at the source.
 _DOCKER_PULL_TIMEOUT_SECONDS = 300.0
 
-# Readiness poll deadlines — pg's first-boot init (initdb + start) is slower
-# than redis's near-instant start.
-_PG_READY_DEADLINE_SECONDS = 60.0
-_REDIS_READY_DEADLINE_SECONDS = 15.0
+# Readiness poll interval. Per-engine deadlines live on the engine
+# (`SandboxEngine.ready_deadline`); only the poll cadence is shared here.
 _READY_POLL_INTERVAL_SECONDS = 1.0
 
 # Janitor grace: a sandbox is provisioned BEFORE its agent container exists,
@@ -79,21 +86,13 @@ class SandboxProvisionError(RuntimeError):
     """Raised when a sandbox container fails to start or become ready."""
 
 
-def _pg_name(agent_id: str) -> str:
-    return f"roboco-sandbox-pg-{agent_id}"
-
-
-def _redis_name(agent_id: str) -> str:
-    return f"roboco-sandbox-redis-{agent_id}"
-
-
 def _owner_label(agent_id: str) -> str:
     return f"{_AGENT_CONTAINER_PREFIX}{agent_id}"
 
 
 @dataclass
 class SandboxProvisioner:
-    """Provisions/tears down throwaway Postgres+Redis sibling containers.
+    """Provisions/tears down throwaway engine sibling containers.
 
     ``network`` is caller-supplied (the orchestrator's `AGENT_NETWORK`
     constant) rather than hardcoded here, so a future network-isolation
@@ -140,110 +139,55 @@ class SandboxProvisioner:
         # spawn attempt (and a respawn-tracker strike).
         await self.teardown(agent_id)
         self._provisioned_at[_owner_label(agent_id)] = time.monotonic()
-        postgres: PostgresSandbox | None = None
-        redis: RedisSandbox | None = None
+        connections: dict[str, SandboxConnection] = {}
         try:
-            if "postgres" in services:
-                postgres = await self._provision_postgres(agent_id)
-            if "redis" in services:
-                redis = await self._provision_redis(agent_id)
+            for service in services:
+                engine = SANDBOX_ENGINES[service]
+                connections[service] = await self._provision_engine(agent_id, engine)
         except Exception:
             await self.teardown(agent_id)
             raise
-        return SandboxInfo(postgres=postgres, redis=redis)
+        return SandboxInfo(services=connections)
 
-    async def _provision_postgres(self, agent_id: str) -> PostgresSandbox:
-        name = _pg_name(agent_id)
+    async def _provision_engine(
+        self, agent_id: str, engine: SandboxEngine
+    ) -> SandboxConnection:
+        name = engine.container_name(agent_id)
         password = secrets.token_hex(16)
         run = self._run()
-        await self._ensure_image("postgres:16-alpine")
-        rc, _, stderr = await run(
-            [
-                "run",
-                "-d",
-                "--name",
-                name,
-                "--network",
-                self.network,
-                "--label",
-                SANDBOX_LABEL,
-                "--label",
-                f"{_OWNER_LABEL_KEY}={_owner_label(agent_id)}",
-                "--tmpfs",
-                "/var/lib/postgresql/data",
-                "--memory",
-                "512m",
-                "--cpus",
-                "1",
-                "-e",
-                "POSTGRES_USER=sandbox",
-                "-e",
-                f"POSTGRES_PASSWORD={password}",
-                "-e",
-                "POSTGRES_DB=sandbox",
-                "postgres:16-alpine",
-            ],
-            _DOCKER_RUN_TIMEOUT_SECONDS,
-        )
-        if rc != 0:
-            raise SandboxProvisionError(
-                f"postgres sandbox run failed for {name}: "
-                f"{stderr.decode(errors='replace')}"
-            )
-        ready = await self._wait_ready(
-            name, ["pg_isready", "-U", "sandbox"], _PG_READY_DEADLINE_SECONDS
-        )
-        if not ready:
-            raise SandboxProvisionError(
-                f"postgres sandbox {name} did not become ready in time"
-            )
-        return PostgresSandbox(
-            host=name, port=5432, user="sandbox", password=password, database="sandbox"
-        )
-
-    async def _provision_redis(self, agent_id: str) -> RedisSandbox:
-        name = _redis_name(agent_id)
-        password = secrets.token_hex(16)
-        run = self._run()
-        await self._ensure_image("redis:8-alpine")
-        rc, _, stderr = await run(
-            [
-                "run",
-                "-d",
-                "--name",
-                name,
-                "--network",
-                self.network,
-                "--label",
-                SANDBOX_LABEL,
-                "--label",
-                f"{_OWNER_LABEL_KEY}={_owner_label(agent_id)}",
-                "--memory",
-                "512m",
-                "--cpus",
-                "1",
-                "redis:8-alpine",
-                "redis-server",
-                "--requirepass",
-                password,
-            ],
-            _DOCKER_RUN_TIMEOUT_SECONDS,
-        )
-        if rc != 0:
-            raise SandboxProvisionError(
-                f"redis sandbox run failed for {name}: "
-                f"{stderr.decode(errors='replace')}"
-            )
-        ready = await self._wait_ready(
+        await self._ensure_image(engine.image)
+        args = [
+            "run",
+            "-d",
+            "--name",
             name,
-            ["redis-cli", "-a", password, "ping"],
-            _REDIS_READY_DEADLINE_SECONDS,
+            "--network",
+            self.network,
+            "--label",
+            SANDBOX_LABEL,
+            "--label",
+            f"{_OWNER_LABEL_KEY}={_owner_label(agent_id)}",
+        ]
+        for mount in engine.tmpfs:
+            args += ["--tmpfs", mount]
+        args += ["--memory", "512m", "--cpus", "1"]
+        args += engine.run_env(password)
+        args.append(engine.image)
+        args += engine.run_command(password)
+        rc, _, stderr = await run(args, _DOCKER_RUN_TIMEOUT_SECONDS)
+        if rc != 0:
+            raise SandboxProvisionError(
+                f"{engine.name} sandbox run failed for {name}: "
+                f"{stderr.decode(errors='replace')}"
+            )
+        ready = await self._wait_ready(
+            name, engine.ready_probe(password), engine.ready_deadline
         )
         if not ready:
             raise SandboxProvisionError(
-                f"redis sandbox {name} did not become ready in time"
+                f"{engine.name} sandbox {name} did not become ready in time"
             )
-        return RedisSandbox(host=name, port=6379, password=password)
+        return engine.connection(name, password)
 
     async def _wait_ready(
         self, container: str, probe_cmd: list[str], deadline_seconds: float
@@ -262,10 +206,35 @@ class SandboxProvisioner:
             await asyncio.sleep(_READY_POLL_INTERVAL_SECONDS)
         return False
 
+    async def is_live(self, agent_id: str, services: list[str]) -> bool:
+        """True iff every named service's sandbox container is running.
+
+        On-demand liveness check for a cache hit (not the janitor's mass
+        sweep): a container OOM-killed or manually removed while the agent
+        lives fails this, so the caller can evict the stale cache entry and
+        re-provision instead of handing back creds for a dead container.
+        """
+        run = self._run()
+        for service in services:
+            engine = SANDBOX_ENGINES.get(service)
+            if engine is None:
+                return False
+            name = engine.container_name(agent_id)
+            try:
+                rc, stdout, _ = await run(
+                    ["inspect", "--format={{.State.Running}}", name],
+                    _DOCKER_EXEC_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                return False
+            if rc != 0 or stdout.decode().strip() != "true":
+                return False
+        return True
+
     async def teardown(self, agent_id: str) -> None:
-        """Idempotent: stop+kill+rm both sandbox containers. Never raises."""
-        for name in (_pg_name(agent_id), _redis_name(agent_id)):
-            await self._teardown_one(name)
+        """Idempotent: stop+kill+rm every engine's sandbox container. Never raises."""
+        for engine in SANDBOX_ENGINES.values():
+            await self._teardown_one(engine.container_name(agent_id))
 
     async def _teardown_one(self, name: str) -> None:
         run = self._run()

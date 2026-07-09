@@ -11,6 +11,7 @@ from roboco.api.schemas.v1.flow import (
     DelegateRequest,
     IWillPlanRequest,
     IWillWorkOnRequest,
+    SubTaskCreate,
 )
 from roboco.models.base import Complexity
 
@@ -146,3 +147,101 @@ def test_strlist_drops_non_string_junk_instead_of_crashing() -> None:
         technical_considerations=technical_considerations,
     )
     assert req.technical_considerations == ["real note"]
+
+
+# ---------------------------------------------------------------------------
+# Task-content guardrails (2026-07-07): ceilings on plan content + AC caps.
+# ---------------------------------------------------------------------------
+
+
+def test_i_will_plan_request_rejects_overlong_plan() -> None:
+    """plan >2000 chars is rejected at the boundary — the bloat defect."""
+    with pytest.raises(ValidationError) as exc:
+        IWillPlanRequest(
+            task_id=uuid4(),
+            plan="x" * 2001,
+            approach="a" * 150,
+        )
+    assert "plan" in str(exc.value)
+
+
+def test_i_will_plan_request_rejects_overlong_approach() -> None:
+    """approach >800 chars is rejected — no ceiling was the bloat bug."""
+    with pytest.raises(ValidationError) as exc:
+        IWillPlanRequest(
+            task_id=uuid4(),
+            plan="plan",
+            approach="a" * 801,
+        )
+    assert "approach" in str(exc.value)
+
+
+def test_i_will_plan_request_rejects_overlong_subtask_title() -> None:
+    with pytest.raises(ValidationError):
+        IWillPlanRequest(
+            task_id=uuid4(),
+            plan="plan",
+            approach="a" * 150,
+            sub_tasks=[SubTaskCreate(title="t" * 201, description="d" * 30)],
+        )
+
+
+def test_i_will_plan_request_rejects_overlong_subtask_description() -> None:
+    with pytest.raises(ValidationError):
+        IWillPlanRequest(
+            task_id=uuid4(),
+            plan="plan",
+            approach="a" * 150,
+            sub_tasks=[SubTaskCreate(title="ok title", description="d" * 601)],
+        )
+
+
+def test_i_will_plan_request_rejects_thin_subtask_description() -> None:
+    """A sub_task description <20 chars fails the typed SubTaskCreate model."""
+    with pytest.raises(ValidationError):
+        IWillPlanRequest(
+            task_id=uuid4(),
+            plan="plan",
+            approach="a" * 150,
+            sub_tasks=[SubTaskCreate(title="ok title", description="too short")],
+        )
+
+
+def test_delegate_request_rejects_overlong_acceptance_criterion() -> None:
+    """An AC item >200 chars is rejected — a criterion that long is a restated
+    description, not a verifiable outcome."""
+    long_ac = "x" * 201
+    with pytest.raises(ValidationError) as exc:
+        DelegateRequest.model_validate(
+            {
+                "parent_task_id": uuid4(),
+                "title": "t",
+                "description": "add the new endpoint plus tests",
+                "assigned_to": "be-dev-1",
+                "team": "backend",
+                "task_type": "code",
+                "nature": "technical",
+                "estimated_complexity": "medium",
+                "acceptance_criteria": [long_ac],
+            }
+        )
+    assert "acceptance_criteria" in str(exc.value)
+
+
+def test_delegate_request_rejects_too_many_acceptance_criteria() -> None:
+    """An AC list >7 items is rejected — over-decomposition of criteria."""
+    with pytest.raises(ValidationError) as exc:
+        DelegateRequest.model_validate(
+            {
+                "parent_task_id": uuid4(),
+                "title": "t",
+                "description": "add the new endpoint plus tests",
+                "assigned_to": "be-dev-1",
+                "team": "backend",
+                "task_type": "code",
+                "nature": "technical",
+                "estimated_complexity": "medium",
+                "acceptance_criteria": [f"criterion {i}" for i in range(8)],
+            }
+        )
+    assert "acceptance_criteria" in str(exc.value)

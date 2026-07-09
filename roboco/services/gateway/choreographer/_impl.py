@@ -77,13 +77,26 @@ _PM_APPROACH_MIN_LEN = 150
 # description that actually says what the step does.
 _PM_SUBTASK_DESC_MIN_LEN = 60
 
+# Per-sub_task ceilings — mirror IWillPlanRequest.SubTaskCreate so direct
+# service-layer callers (MCP, fixtures) can't bypass the Pydantic boundary
+# with a 5000-char description (the bloat defect: descriptions dominated by
+# over-long sub-task prose).
+_PM_SUBTASK_TITLE_MAX_LEN = 200
+_PM_SUBTASK_DESC_MAX_LEN = 600
+
+# Over-decomposition cap (the 2026-07-07 task-quality defect): a plan with
+# more than this many sub_tasks should be split into sibling coordination
+# tasks, not one giant plan.
+_PM_SUBTASKS_MAX = 7
+
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
-    """Return a hint if any PM sub_task is title-only / thin.
+    """Return a hint if any PM sub_task is title-only / thin / over-long.
 
     Each sub_task is a delegate target AND a progress-checklist item, so
-    a title with no real description is not a plan. Returns None when
-    every sub_task carries a title and a substantive description.
+    a title with no real description is not a plan. Also caps title +
+    description length so a sub_task can't bloat the plan. Returns None
+    when every sub_task carries a title and a substantive description.
     """
     for i, st in enumerate(sub_tasks):
         if not isinstance(st, dict):
@@ -92,11 +105,23 @@ def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
         desc = str(st.get("description") or "").strip()
         if not title:
             return f"sub_task #{i + 1} has no title."
+        if len(title) > _PM_SUBTASK_TITLE_MAX_LEN:
+            return (
+                f"sub_task #{i + 1} ('{title[:40]}') title is too long "
+                f"({len(title)} chars) — keep titles <= "
+                f"{_PM_SUBTASK_TITLE_MAX_LEN} chars."
+            )
         if len(desc) < _PM_SUBTASK_DESC_MIN_LEN:
             return (
                 f"sub_task #{i + 1} ('{title[:40]}') description is too thin "
                 f"({len(desc)} chars) — need >= {_PM_SUBTASK_DESC_MIN_LEN} "
                 "characters describing what the step actually does."
+            )
+        if len(desc) > _PM_SUBTASK_DESC_MAX_LEN:
+            return (
+                f"sub_task #{i + 1} ('{title[:40]}') description is too long "
+                f"({len(desc)} chars) — keep descriptions <= "
+                f"{_PM_SUBTASK_DESC_MAX_LEN} chars; split if larger."
             )
     return None
 
@@ -540,6 +565,24 @@ class Choreographer:
         elif thin := _thin_subtask_hint(sub_tasks):
             missing.append("sub_tasks")
             field_hints["sub_tasks"] = thin
+        elif len(sub_tasks) > _PM_SUBTASKS_MAX:
+            # Over-decomposition cap (the 2026-07-07 task-quality defect):
+            # a plan with >7 sub_tasks is one giant plan that should be split
+            # into sibling coordination tasks. Per-item title/description
+            # bounds are in _thin_subtask_hint above. We deliberately do NOT
+            # ban sub_tasks on code tasks (PMs legitimately plan code-typed
+            # parents into dev subtasks — the 2026-05-08 rule,
+            # test_cell_pm_can_plan_code_typed_parent_via_i_will_plan) nor
+            # require >=2 on roots (a single-cell root → one cell task is a
+            # legitimate pass-through, test_pm_can_plan_non_code_parent) —
+            # both judgment calls the gate can't make without false positives.
+            missing.append("sub_tasks")
+            field_hints["sub_tasks"] = (
+                f"too many sub_tasks ({len(sub_tasks)}) — decompose into "
+                f"at most {_PM_SUBTASKS_MAX}. If the work is genuinely "
+                "larger, split it into sibling coordination tasks instead "
+                "of one giant plan."
+            )
         if not missing:
             return None
         return await self._emit_rejection(
@@ -549,8 +592,11 @@ class Choreographer:
                 remediate=(
                     "re-issue i_will_plan(task_id, plan, approach, "
                     "sub_tasks=[{'title': '...', 'description': '...'}, ...]) "
-                    f"with approach >= {_PM_APPROACH_MIN_LEN} chars and every "
-                    f"sub_task description >= {_PM_SUBTASK_DESC_MIN_LEN} chars."
+                    f"with approach >= {_PM_APPROACH_MIN_LEN} and <= 800 "
+                    f"chars, every sub_task description >= "
+                    f"{_PM_SUBTASK_DESC_MIN_LEN} and <= "
+                    f"{_PM_SUBTASK_DESC_MAX_LEN} chars, and at most "
+                    f"{_PM_SUBTASKS_MAX} sub_tasks."
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=task, role=role_str),
@@ -608,6 +654,10 @@ class Choreographer:
             "missing": env.missing or [],
             "attempt_id": str(_uuid4()),
         }
+        if env.remediate:
+            # Conventions-gate rejections carry the file:line violation
+            # listing ONLY here — without it the audit row is unactionable.
+            details["remediate"] = env.remediate
         cid = structlog.contextvars.get_contextvars().get("correlation_id")
         if cid is not None:
             details["correlation_id"] = cid
@@ -623,6 +673,31 @@ class Choreographer:
             # response is the contract; the audit row is observability-only.
             logger.warning("audit.log_event failed", error=str(exc), verb=verb)
         return env
+
+    async def _teardown_sandbox_best_effort(self, agent_id: UUID) -> None:
+        """Release the caller's request_sandbox sidecar on successful exit.
+
+        Called from the six verbs whose success means the caller's
+        engagement with its work has ended (i_am_done, unclaim, i_am_idle,
+        pass_review/fail_review, i_documented) — no shared success-emit
+        path spans all six (they live across three mixin files, each
+        building its own ``Envelope.ok`` at its own site), so this is
+        called once at each verb's existing success point rather than
+        duplicated teardown logic. No orchestrator (e2e harness, startup)
+        is a silent no-op; any other failure is logged, never raised —
+        the container-removal teardown + janitor sweep remain the backstop.
+        """
+        orch = self.orchestrator
+        if orch is None:
+            return
+        from roboco.agents_config import _resolve_to_slug
+
+        try:
+            await orch.release_sandbox(_resolve_to_slug(str(agent_id)))
+        except Exception as exc:
+            logger.warning(
+                "sandbox_release_failed", agent_id=str(agent_id), error=str(exc)
+            )
 
     @classmethod
     def _free_text_soup(
@@ -1165,7 +1240,9 @@ class Choreographer:
                 f"{len(uncovered)} parent acceptance criteria are not covered by a "
                 f"completed subtask before {context_phrase}: {listing}. Delegate "
                 "(or reassign) subtasks covering them and let those pass QA + "
-                "complete first."
+                "complete first. If a completed subtask already implements a "
+                "criterion, stamp it: declare_coverage(task_id=<child>, "
+                "criteria=[...])."
             ),
             context_briefing=await self._briefing_for(agent_id, task_id),
         )
@@ -2242,7 +2319,12 @@ class Choreographer:
                     "your latest commits are local-only and QA reviews the "
                     "pushed PR branch. resolve the push error (often a "
                     "transient network / fetch timeout) and call i_am_done "
-                    "again."
+                    "again. if it says your branch is behind its remote "
+                    "counterpart, call sync_branch() to rebase + force-push. "
+                    "if sync_branch reports a dirty workspace, commit(...) "
+                    "(omit files to stage everything) THEN sync_branch() "
+                    "THEN i_am_done() again. still stuck? unclaim() releases "
+                    "the task back to the pool."
                 ),
                 context_briefing=ctx.briefing,
             )
@@ -2908,6 +2990,7 @@ class Choreographer:
         )
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -3483,7 +3566,8 @@ class Choreographer:
                         "from awaiting_documentation"
                         if str(t.status) == "awaiting_documentation"
                         else "only a task assigned to you in pending / claimed"
-                        " / in_progress can be unclaimed"
+                        " / in_progress / verifying / needs_revision can be"
+                        " unclaimed"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
@@ -3494,6 +3578,7 @@ class Choreographer:
         # Deliberately no _touch — unclaim clears assigned_to, so there is
         # no claimant heartbeat to refresh. (Asymmetric with `resume` by
         # design: resume keeps the same claimant active and does heartbeat.)
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status=str(after.status),
             task_id=str(task_id),
@@ -3637,6 +3722,137 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=after, role=role_str)
 
+    async def _declare_coverage_guard(
+        self, pm_agent_id: UUID, child: Any, agent: Any, briefing: dict[str, Any]
+    ) -> tuple[Envelope | None, Any]:
+        """Role + parent-presence + ownership guard for ``declare_coverage``.
+
+        Returns ``(rejection, parent)`` — ``parent`` is non-``None`` only
+        when ``rejection`` is ``None``. Ownership mirrors submit_up (the PM
+        assigned to the parent coordination task), with a fallback for any
+        PM on the child's own team — the minimum bar the spec asks for.
+        """
+        if agent is None or agent.role not in ("cell_pm", "main_pm"):
+            return (
+                Envelope.not_authorized(
+                    message="declare_coverage is reserved for PM roles",
+                    remediate="only a cell PM or main PM may declare coverage",
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        if not child.parent_task_id:
+            return (
+                Envelope.invalid_state(
+                    message="task has no parent; nothing to cover",
+                    remediate=(
+                        "declare_coverage only applies to a decomposition"
+                        " child (a subtask with a parent coordination task)"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        parent = await self.task.get(child.parent_task_id)
+        if parent is None:
+            return (
+                Envelope.invalid_state(
+                    message="parent task not found",
+                    remediate="the parent task may have been deleted; escalate",
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        child_team = getattr(child.team, "value", child.team)
+        agent_team = getattr(agent, "team", None)
+        agent_team_val = getattr(agent_team, "value", agent_team)
+        owns_parent = parent.assigned_to == pm_agent_id
+        on_child_team = child_team is not None and child_team == agent_team_val
+        if not owns_parent and not on_child_team:
+            return (
+                Envelope.not_authorized(
+                    message="not the parent's PM and not on the child's team",
+                    remediate=(
+                        "declare_coverage requires owning the parent"
+                        " coordination task or being a PM on the child's team"
+                    ),
+                    context_briefing=briefing,
+                ),
+                None,
+            )
+        return None, parent
+
+    async def declare_coverage(
+        self, pm_agent_id: UUID, task_id: UUID, criteria: list[str]
+    ) -> Envelope:
+        """PM stamps parent acceptance criteria onto an existing child.
+
+        Fixes the roll-up-gate deadlock where a replacement child —
+        delegated without ``covers_parent_criteria`` — finishes a parent
+        AC's real work but ``_parent_acs_covered_envelope`` still shows it
+        uncovered, since only ``delegate`` writes ``parent_ac_refs`` today.
+        ``criteria`` takes the same id-or-text representation
+        ``covers_parent_criteria`` does (``TaskService._normalize_ac_refs``
+        resolves it at read time), so a PM can copy straight out of the
+        gate's own uncovered-criteria listing. ``task_id`` is the CHILD
+        (any non-cancelled status — the live case is a completed child).
+        """
+        child = await self.task.get(task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=child)
+        if child is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="declare_coverage",
+            )
+        agent = await self.task.agent_for(pm_agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        rejection, parent = await self._declare_coverage_guard(
+            pm_agent_id, child, agent, briefing
+        )
+        if rejection is not None:
+            return await self._emit_rejection(
+                rejection.with_introspection(task=child, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="declare_coverage",
+            )
+        unknown = self.task.unknown_ac_refs(parent, criteria)
+        if unknown:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"unknown criteria: {'; '.join(unknown)}",
+                    remediate=(
+                        "criteria must match a parent acceptance criterion"
+                        " (id or exact text): "
+                        f"{'; '.join(parent.acceptance_criteria or [])}"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=child, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="declare_coverage",
+            )
+        updated = await self.task.add_parent_ac_refs(
+            task_id, criteria, declared_by=pm_agent_id
+        )
+        uncovered = await self.task.uncovered_parent_acceptance_criteria(
+            child.parent_task_id
+        )
+        next_hint = (
+            "submit_up's roll-up gate will pass on the parent now"
+            if not uncovered
+            else f"{len(uncovered)} parent ACs still uncovered: {'; '.join(uncovered)}"
+        )
+        return Envelope.ok(
+            status=str((updated or child).status),
+            task_id=str(task_id),
+            next=next_hint,
+            evidence={"remaining_uncovered_parent_acs": uncovered},
+            context_briefing=briefing,
+        ).with_introspection(task=updated or child, role=role_str)
+
     async def resume(self, agent_id: UUID, task_id: UUID) -> Envelope:
         """Resume a paused task this agent owns; transitions paused → in_progress.
 
@@ -3745,7 +3961,9 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=after, role=role_str)
 
-    async def sync_branch(self, agent_id: UUID, task_id: UUID) -> Envelope:
+    async def sync_branch(
+        self, agent_id: UUID, task_id: UUID, stash: bool = False
+    ) -> Envelope:
         """Rebase the caller's task branch onto its current base THROUGH the gate.
 
         Raw shell git is denied to agents (the ``Bash(git:*)`` base deny), so a
@@ -3760,6 +3978,11 @@ class Choreographer:
         guards branch + base, then runs the git op. Conflicts abort the rebase
         (no force-push) and return the conflicted files — resolve by hand,
         commit, then sync_branch again.
+
+        ``stash=True`` auto-stashes uncommitted changes (tracked + untracked)
+        before rebasing and pops them back after, instead of refusing
+        DIRTY_WORKSPACE — the dev-facing dead end where the prescribed fix
+        (stage/commit) required a raw ``git`` agents are denied.
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(agent_id, task_id, task=t)
@@ -3777,16 +4000,23 @@ class Choreographer:
             )
         try:
             result = await self.git.sync_task_branch(
-                t, base_branch=base_branch, actor_agent_id=agent_id
+                t, base_branch=base_branch, actor_agent_id=agent_id, stash=stash
             )
         except Exception as exc:
+            dirty = "DIRTY_WORKSPACE" in str(exc)
+            remediate = (
+                "your workspace has uncommitted changes; call"
+                " sync_branch(stash=True) to auto-stash, rebase, and restore"
+                " them, or commit(...) (omit files to stage everything) then"
+                " sync_branch() again"
+                if dirty
+                else "the git rebase could not complete; escalate via"
+                " i_am_blocked(reason='...') with the error"
+            )
             return await self._emit_rejection(
                 Envelope.invalid_state(
                     message=f"sync_branch failed: {exc}",
-                    remediate=(
-                        "the git rebase could not complete; escalate via"
-                        " i_am_blocked(reason='...') with the error"
-                    ),
+                    remediate=remediate,
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
                 agent_id=agent_id,
@@ -3795,27 +4025,46 @@ class Choreographer:
             )
         # Heartbeat — the agent is actively working the task.
         await self._touch(task_id)
-        status = str(result.get("status", "unknown"))
         evidence = {
             "rebase": result,
             "base_branch": base_branch,
             "head_branch": str(t.branch_name),
         }
-        if status == "conflicts":
-            # The rebase was aborted (no force-push); tell the dev to resolve.
-            next_hint = (
-                f"sync_branch hit conflicts on {result.get('files', [])};"
-                " resolve by hand, commit(message='...'), then sync_branch again"
-            )
-        else:
-            next_hint = spec_module._INTENT_VERBS["sync_branch"].next_hint(t)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
-            next=next_hint,
+            next=self._sync_branch_next_hint(t, result),
             evidence=evidence,
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    @staticmethod
+    def _sync_branch_next_hint(t: Any, result: dict[str, Any]) -> str:
+        """Compute the ``next`` hint for a completed ``sync_branch`` run.
+
+        Three shapes: a rebase conflict (files listed, stash noted if one was
+        taken), a clean rebase whose stash pop then conflicted (stash
+        preserved, never dropped), or the plain spec default.
+        """
+        status = str(result.get("status", "unknown"))
+        if status == "conflicts":
+            hint = (
+                f"sync_branch hit conflicts on {result.get('files', [])};"
+                " resolve by hand, commit(message='...'), then sync_branch again"
+            )
+            if result.get("stash_preserved"):
+                hint += (
+                    " — your stashed changes were left untouched (git stash"
+                    " list); pop them by hand once the conflict is resolved"
+                )
+            return hint
+        if result.get("stash_pop_conflict"):
+            return (
+                "sync_branch rebased cleanly but restoring your stashed "
+                "changes conflicted; the stash is preserved (not dropped) — "
+                "resolve the conflict by hand, then commit(...) and continue"
+            )
+        return spec_module._INTENT_VERBS["sync_branch"].next_hint(t)
 
     async def _sync_branch_preflight_rejection(
         self,
@@ -3953,6 +4202,10 @@ class Choreographer:
             )
         else:
             next_msg = "container will shut down"
+        # The agent truly disengages here (container shuts down) — unlike
+        # the idle_with_unread early return above, which sends it right
+        # back to work, so no teardown fires there.
+        await self._teardown_sandbox_best_effort(agent_id)
         return Envelope.ok(
             status="idle",
             task_id=None,

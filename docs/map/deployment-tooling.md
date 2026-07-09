@@ -251,7 +251,7 @@ deployment-tooling
 - ROBOCO_DEP_UPDATE_ENABLED / _INTERVAL_SECONDS / _MAX_OPEN_TASKS / _MAX_PER_CYCLE
 - ROBOCO_RELEASE_MANAGER_ENABLED / _MIN_COMMITS / _INTERVAL_SECONDS / _CI_WORKFLOW
 - ROBOCO_ORG_MEMORY_ENABLED / _TOP_K / _MIN_SCORE
-- ROBOCO_SANDBOX_DB_ENABLED — sandboxed per-agent-spawn Postgres/Redis provisioner (`roboco/runtime/sandbox.py`); a project also needs its `sandbox_services` column set
+- ROBOCO_SANDBOX_DB_ENABLED — sandboxed per-agent-spawn engine provisioner (`roboco/runtime/sandbox.py` + registry in `roboco/models/sandbox.py`); a project also needs its `sandbox_services` column set
 - ROBOCO_DB_NETWORK_ISOLATED — set true only by the compose topology carrying the `roboco_data` data-only network; suppresses the legacy prod-creds gate-env injection
 - ROBOCO_CLOUD_AUTH_ENABLED / _EMAIL / _PASSWORD / _SECRET / _COOKIE_MAX_AGE — FastAPI Users cookie login for the single seeded CEO; `Settings` fails loud at startup if armed with no secret
 - ROBOCO_X_ENGINE_ENABLED / _MENTIONS_INTERVAL_SECONDS / _MENTIONS_MAX_PER_CYCLE / _MENTIONS_MIN_ENGAGEMENT / _MAX_OPEN_POSTS / ROBOCO_X_ACCOUNT_USER_ID / _REQUEST_TIMEOUT_SECONDS — the X (Twitter) engine; inert without stored OAuth 1.0a credentials regardless of the flag

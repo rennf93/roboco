@@ -38,34 +38,6 @@ class SpawnGitContext:
     task_short_id: str | None = None
 
 
-@dataclass(frozen=True)
-class PostgresSandbox:
-    """Connection info for a per-spawn throwaway Postgres sandbox container."""
-
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
-
-
-@dataclass(frozen=True)
-class RedisSandbox:
-    """Connection info for a per-spawn throwaway Redis sandbox container."""
-
-    host: str
-    port: int
-    password: str
-
-
-@dataclass(frozen=True)
-class SandboxInfo:
-    """Sandbox container(s) provisioned for one agent spawn (services opted-in)."""
-
-    postgres: PostgresSandbox | None = None
-    redis: RedisSandbox | None = None
-
-
 @dataclass
 class OrchestratorAgentConfig:
     """Configuration for an agent in the orchestrator."""
@@ -92,10 +64,12 @@ class OrchestratorAgentConfig:
     provider_type: str = "anthropic"
     provider_base_url: str | None = None
     provider_auth_token: str | None = None
-    # Set when a sandbox DB/Redis was provisioned for this spawn
-    # (sandbox_db_enabled + the project's sandbox_services). Its presence
-    # suppresses the legacy `_append_gate_env` prod-creds injection.
-    sandbox_info: SandboxInfo | None = None
+    # Services this spawn's project has opted into (sandbox_db_enabled + the
+    # project's sandbox_services) — an availability probe only. A non-empty
+    # list suppresses the legacy `_append_gate_env` prod-creds injection in
+    # favor of a marker env; actual provisioning happens on demand via the
+    # `request_sandbox` do-verb (`AgentOrchestrator.ensure_sandbox`), never here.
+    sandbox_available_services: list[str] = field(default_factory=list)
 
 
 @dataclass

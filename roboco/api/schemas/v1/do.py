@@ -168,6 +168,13 @@ class EvidenceRequest(BaseModel):
     task_id: UUID
 
 
+class RequestSandboxRequest(BaseModel):
+    """On-demand sandbox DB/Redis/Mongo. Omitted `services` = the project's
+    whole opted-in set."""
+
+    services: list[str] | None = None
+
+
 class ProgressRequest(BaseModel):
     """Progress update; % is DERIVED from the plan checklist.
 

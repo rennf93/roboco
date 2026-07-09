@@ -1124,25 +1124,30 @@ class TaskService(BaseService):
         return task
 
     async def _attach_baseline_constraints(self, task: TaskTable) -> None:
-        """Append the project's block-rule constraints to the task description.
+        """Write the project's block-rule constraints to ``task.constraints``.
 
         Server-derived backstop (flag-gated): every project task carries the
         hard conventions even if nothing upstream added them — the layer the
-        design calls "can't be skipped". Idempotent and non-suppressible: it
-        appends only baseline constraints not already present (dedup by exact
-        string), so a second pass adds nothing AND an agent-authored
-        ``## Constraints`` section can never suppress the mandatory baseline.
-        Best-effort: a failure never blocks task creation.
+        design calls "can't be skipped". Idempotent: appends only baseline
+        constraints not already present in the column (dedup by exact string),
+        so a second pass adds nothing AND an agent-authored ``## Constraints``
+        section in the description can never suppress the mandatory baseline
+        (the column is the source of truth for the panel; the description is
+        the human-authored instruction only — 2026-07-07 task-quality fix).
+        The conventions ALSO reach the agent at spawn via the ambient block
+        (``ConventionsService.render_ambient_block``), so this column is for
+        panel visibility, not agent correctness. Best-effort: a failure never
+        blocks task creation.
         """
         baseline = await self._project_baseline_constraints(task)
         if not baseline:
             return
-        existing = task.description or ""
+        existing = task.constraints or ""
         missing = [item for item in baseline if item not in existing]
         if not missing:
             return
         section = "## Constraints\n" + "\n".join(f"- {item}" for item in missing)
-        task.description = f"{existing}\n\n{section}" if existing else section
+        task.constraints = f"{existing}\n\n{section}" if existing else section
         await self.session.flush()
 
     async def _project_baseline_constraints(self, task: TaskTable) -> list[str]:
@@ -1489,6 +1494,37 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_x_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on X drafts (posted or rejected, both sources) — the panel
+        history basis. Newest-acted-first (updated_at, bumped by the
+        approve/reject status write) so the most recent decision reads
+        first; bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected) — the panel
+        history basis, mirroring list_x_post_history. Newest-acted-first,
+        bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -3904,7 +3940,16 @@ class TaskService(BaseService):
             return await self._unclaim_pending_assignment(task)
         if task.status == TaskStatus.BLOCKED:
             return await self._unclaim_from_blocked(task)
-        if task.status not in (TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS):
+        # verifying (self-verification before awaiting_qa) and needs_revision
+        # (QA/CEO sent it back) are both claims a dev can be sitting on when it
+        # decides to bail — a wedged dev retrying unclaim from either got a
+        # silent rejection with no legal exit (the 2026-07 5h+ wedge incident).
+        if task.status not in (
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.VERIFYING,
+            TaskStatus.NEEDS_REVISION,
+        ):
             return None
 
         # Look up the requesting agent's role so role-restricted-transition
@@ -6183,6 +6228,7 @@ class TaskService(BaseService):
         # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
+        cancelled_now: list[TaskTable] = []
         for descendant in descendants:
             if descendant.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
                 continue
@@ -6208,6 +6254,7 @@ class TaskService(BaseService):
                     ),
                 ) from e
             cancelled_count += 1
+            cancelled_now.append(descendant)
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
             )
@@ -6222,9 +6269,29 @@ class TaskService(BaseService):
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
+        cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
+
+        # Origin fix: a cancelled child may have declared parent_ac_refs that
+        # no surviving sibling covers, leaving the roll-up gate
+        # (_parent_acs_covered_envelope) demanding coverage for already-
+        # finished work once a replacement is delegated. Warn-and-surface
+        # only — no hard gate; the PM re-declares via declare_coverage.
+        orphaned = await self._detect_orphaned_parent_acs(cancelled_now)
+        if orphaned:
+            self.log.warning(
+                "Cancel orphaned parent AC coverage",
+                task_id=str(task_id),
+                orphaned_parent_acs=orphaned,
+            )
+            self._emit_orphaned_ac_audit(task_id, orphaned)
+        # ponytail: transient, non-persisted attribute — same-request
+        # evidence for a caller that wants to surface it without a response
+        # schema change; upgrade to a real field if a caller needs it
+        # across a request boundary.
+        task.orphaned_parent_acs = orphaned
 
         # Index lifecycle event (fire-and-forget)
         bg_task = asyncio.create_task(
@@ -6236,6 +6303,7 @@ class TaskService(BaseService):
                 details={
                     "cancelled_by_role": agent_role,
                     "descendants_cancelled": cancelled_count,
+                    "orphaned_parent_acs": orphaned,
                 },
             )
         )
@@ -6243,6 +6311,51 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _detect_orphaned_parent_acs(
+        self, cancelled: list[TaskTable]
+    ) -> list[str]:
+        """Parent-AC texts a just-cancelled task declared that no surviving
+        sibling covers.
+
+        Runs after the cascade commits, so ``_parent_ac_ref_sets`` reads each
+        cancelled task's real post-cancel status. Safe-by-construction: a
+        task with no ``parent_ac_refs`` (the common case) contributes
+        nothing.
+        """
+        texts: list[str] = []
+        for t in cancelled:
+            if not t.parent_task_id or not t.parent_ac_refs:
+                continue
+            loaded = await self._parent_ac_ref_sets(cast("UUID", t.parent_task_id))
+            if loaded is None:
+                continue
+            parent, claimed, _verified, _any = loaded
+            own = self._normalize_ac_refs(parent, t.parent_ac_refs)
+            orphaned_ids = own - claimed
+            if orphaned_ids:
+                texts.extend(self._ac_texts_for(parent, orphaned_ids))
+        return texts
+
+    def _emit_orphaned_ac_audit(self, task_id: UUID, orphaned: list[str]) -> None:
+        """Persist the orphaned-coverage warning as evidence.
+
+        Mirrors ``_emit_escalation_audit`` — an additive row alongside the
+        generic ``task.cancelled`` transition audit, best-effort for
+        observability and never gating the cancel itself.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.cancelled_ac_orphaned",
+                agent_id=None,
+                target_type="task",
+                target_id=task_id,
+                severity="warning",
+                details={"orphaned_parent_acs": orphaned},
+            )
+        )
 
     async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None:
         """Best-effort CEO completion notification (granular effort breakdown).
@@ -8087,6 +8200,67 @@ class TaskService(BaseService):
             for idx, ac_id in enumerate(ids)
             if ac_id not in covered
         ]
+
+    @staticmethod
+    def _ac_texts_for(parent: TaskTable, ids: set[str]) -> list[str]:
+        """Texts of specific parent-criterion ids, in the parent's own order."""
+        ac_ids = parent.acceptance_criteria_ids or []
+        ac_texts = parent.acceptance_criteria or []
+        return [
+            ac_texts[idx] if idx < len(ac_texts) else ac_id
+            for idx, ac_id in enumerate(ac_ids)
+            if ac_id in ids
+        ]
+
+    @staticmethod
+    def unknown_ac_refs(parent: TaskTable, refs: list[str]) -> list[str]:
+        """Refs that match neither a parent criterion's id nor its exact text.
+
+        Used by ``declare_coverage`` to reject a stamp against a criterion
+        that does not exist on the parent — ``covers_parent_criteria`` (via
+        ``delegate``) stores refs unvalidated, but a PM declaring coverage
+        after the fact gets a hard check with the parent's AC list in the
+        remediate.
+        """
+        valid_ids = set(parent.acceptance_criteria_ids or [])
+        valid_texts = set(parent.acceptance_criteria or [])
+        return [r for r in refs if r not in valid_ids and r not in valid_texts]
+
+    async def add_parent_ac_refs(
+        self, task_id: UUID, refs: list[str], declared_by: UUID | None = None
+    ) -> TaskTable | None:
+        """UNION ``refs`` into a child's ``parent_ac_refs`` (idempotent) + audit.
+
+        Lets a PM stamp coverage onto an already-existing child after the
+        fact — e.g. a completed replacement whose original ``delegate``
+        omitted ``covers_parent_criteria`` (the roll-up-gate deadlock
+        ``declare_coverage`` fixes). Refs use the same id-or-text
+        representation ``covers_parent_criteria`` writes, resolved at read
+        time by ``_normalize_ac_refs``. Callers must validate refs against
+        the parent's criteria first (``unknown_ac_refs``) — this method
+        merges unconditionally.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        existing = task.parent_ac_refs or []
+        merged = existing + [r for r in refs if r not in existing]
+        if merged != existing:
+            task.parent_ac_refs = merged
+        self.session.add(
+            AuditLogTable(
+                event_type="task.coverage_declared",
+                agent_id=declared_by,
+                target_type="task",
+                target_id=task_id,
+                severity="info",
+                details={"criteria": refs},
+            )
+        )
+        await self.session.flush()
+        return task
 
     async def uncovered_parent_acceptance_criteria(self, task_id: UUID) -> list[str]:
         """Parent ACs not yet satisfied by a COMPLETED child — for the roll-up gate.

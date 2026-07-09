@@ -28,6 +28,7 @@ export type {
   XPost,
   XMentionRef,
   XPostExecuteResult,
+  XPostHistoryEntry,
   XCredentialsStatus,
 } from "./x";
 export { roadmapApi } from "./roadmap";
@@ -41,6 +42,7 @@ export type {
   VideoCut,
   VideoPost,
   VideoPostExecuteResult,
+  VideoPostHistoryEntry,
   VideoRequestResult,
   TikTokCredentialsStatus,
 } from "./video";

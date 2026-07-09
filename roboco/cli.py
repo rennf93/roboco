@@ -9,6 +9,7 @@ import argparse
 import asyncio
 
 from roboco.bootstrap import main
+from roboco.config import resolve_uvicorn_loop_factory, settings
 from roboco.db import bootstrap_database
 
 
@@ -41,16 +42,21 @@ def parse_args() -> argparse.Namespace:
 def cli() -> None:
     """CLI entry point."""
     args = parse_args()
+    # Sets the process-wide event loop for the whole run — including the
+    # API server started inside main() via Server.serve(), which never
+    # reads uvicorn's own Config.loop (see resolve_uvicorn_loop_factory).
+    loop_factory = resolve_uvicorn_loop_factory(settings.uvicorn_loop)
 
     if args.db_only:
-        asyncio.run(bootstrap_database())
+        asyncio.run(bootstrap_database(), loop_factory=loop_factory)
     else:
         asyncio.run(
             main(
                 skip_db=args.skip_db,
                 skip_orchestrator=args.skip_orchestrator,
                 spawn_agents=args.spawn,
-            )
+            ),
+            loop_factory=loop_factory,
         )
 
 

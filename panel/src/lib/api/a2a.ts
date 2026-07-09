@@ -88,9 +88,9 @@ export interface A2AChatMessage {
 }
 
 /**
- * CEO reply payload. The backend sends a DIRECT CEO -> to_agent message (it
- * lands in the CEO<->to_agent pairwise conversation), not an injection into
- * the watched transcript.
+ * CEO interjection payload. The backend posts this INTO the conversation
+ * being viewed (readable by both participants), addressed to `to_agent` —
+ * not a re-homed CEO<->to_agent pairwise DM.
  */
 export interface AdminReplyRequest {
   to_agent: string;

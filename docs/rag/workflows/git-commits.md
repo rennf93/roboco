@@ -57,8 +57,9 @@ You don't push or create a PR yourself. The choreographer pushed the commit duri
 
 ```python
 # Read-only inspection (any role) — roboco-git-readonly MCP
-status = roboco_git_status(project_slug="roboco")
-log = roboco_git_log(project_slug="roboco", branch="feature/backend/a1b2c3d4--def67890")
-diff = roboco_git_diff(project_slug="roboco")
-branches = roboco_git_branch_list(project_slug="roboco")
+# project_slug is optional — omit it and your own project is used.
+status = roboco_git_status()
+log = roboco_git_log(branch="feature/backend/a1b2c3d4--def67890")
+diff = roboco_git_diff()
+branches = roboco_git_branch_list()
 ```

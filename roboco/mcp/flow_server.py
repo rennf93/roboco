@@ -27,6 +27,7 @@ from pydantic import BeforeValidator
 
 from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.content.validators import coerce_str_list
+from roboco.foundation.policy.flow_timeouts import CLIENT_HEADROOM_SECONDS, SLOW_VERBS
 
 # A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
 # parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives
@@ -50,7 +51,22 @@ SDK_URL = os.environ.get("ROBOCO_SDK_URL", "http://localhost:9000")
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
-_TIMEOUT = 30
+# Client wall = the matching server wall (FlowVerbTimeoutMiddleware) plus
+# headroom, so the client always outlasts the server's asyncio.timeout and
+# sees the clean 504 gateway_timeout envelope instead of a raw transport
+# timeout. This module can't read Settings (it's a subprocess in the agent
+# container), so the two server budgets are mirrored via env vars the
+# orchestrator injects at spawn from settings.flow_verb_timeout_seconds /
+# flow_verb_slow_timeout_seconds; the literal fallbacks match those settings'
+# own defaults (120 / 900).
+_SERVER_TIMEOUT_SECONDS = float(
+    os.environ.get("ROBOCO_FLOW_VERB_TIMEOUT_SECONDS", "120")
+)
+_SERVER_SLOW_TIMEOUT_SECONDS = float(
+    os.environ.get("ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS", "900")
+)
+_TIMEOUT = _SERVER_TIMEOUT_SECONDS + CLIENT_HEADROOM_SECONDS
+_SLOW_TIMEOUT = _SERVER_SLOW_TIMEOUT_SECONDS + CLIENT_HEADROOM_SECONDS
 # Tight timeout for SDK loopback — the SDK is a local sidecar; anything
 # slower than 2s is unhealthy and the gateway path must not stall on it.
 _SDK_TIMEOUT = 2.0
@@ -285,6 +301,16 @@ def _build_headers() -> dict[str, str]:
     return headers
 
 
+def _client_timeout_for(verb: str) -> float:
+    """The httpx client timeout for one verb — must outlast its server wall.
+
+    Mirrors ``FlowVerbTimeoutMiddleware``'s own budget selection so the two
+    walls agree: a slow verb gets the slow server budget + headroom, every
+    other verb gets the default budget + headroom.
+    """
+    return _SLOW_TIMEOUT if verb in SLOW_VERBS else _TIMEOUT
+
+
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     """POST a request to the orchestrator and return the JSON envelope.
 
@@ -301,7 +327,9 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     being returned to the agent — preventing further hammering on a verb
     that won't succeed. Successful (ok) envelopes never touch the SDK.
     """
-    with httpx.Client(timeout=_TIMEOUT) as client:
+    # Client must outlast the server middleware budget so agents get the
+    # 504 envelope, not a raw timeout.
+    with httpx.Client(timeout=_client_timeout_for(_verb_from_path(path))) as client:
         response = client.post(
             f"{ORCHESTRATOR_URL}{path}",
             headers=_build_headers(),
@@ -618,7 +646,7 @@ def resume(task_id: str) -> dict[str, Any]:
     return _post(_role_path("resume"), {"task_id": task_id})
 
 
-def sync_branch(task_id: str) -> dict[str, Any]:
+def sync_branch(task_id: str, stash: bool = False) -> dict[str, Any]:
     """Re-sync your branch onto its base through the gate.
 
     Rebases the task's branch onto its resolved parent/base branch (fetch +
@@ -629,8 +657,16 @@ def sync_branch(task_id: str) -> dict[str, Any]:
     i_am_done as normal. On ``conflicts`` status the envelope's ``next`` tells
     you the rebase aborted and your branch is unchanged — resolve the conflict
     in your working tree first (the gate does not force a conflicted rebase).
+
+    Args:
+        task_id: UUID of the task whose branch you're re-syncing.
+        stash: If your workspace has uncommitted changes, pass True to
+            auto-stash them (tracked + untracked), rebase, then restore them
+            — instead of refusing DIRTY_WORKSPACE. A conflicted restore
+            leaves the stash in place (never dropped); the envelope's
+            ``next`` tells you to resolve it by hand.
     """
-    return _post(_role_path("sync_branch"), {"task_id": task_id})
+    return _post(_role_path("sync_branch"), {"task_id": task_id, "stash": stash})
 
 
 def i_am_idle() -> dict[str, Any]:
@@ -744,6 +780,23 @@ def unblock(task_id: str, reason: str, restore: bool = True) -> dict[str, Any]:
     return _post(
         _role_path("unblock"),
         {"task_id": task_id, "reason": reason, "restore": restore},
+    )
+
+
+def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
+    """PM: stamp parent acceptance criteria onto an existing child (task_id).
+
+    Use when a completed subtask already implements a parent AC but was
+    delegated without `covers_parent_criteria` (e.g. it's a replacement for a
+    cancelled sibling) — the roll-up gate (submit_up/submit_root) keeps
+    demanding coverage otherwise. `criteria` are the parent's acceptance
+    criteria, by id or exact text (copy them straight out of the gate's
+    rejection listing). Returns evidence.remaining_uncovered_parent_acs so you
+    know if submit_up will now pass.
+    """
+    return _post(
+        _role_path("declare_coverage"),
+        {"task_id": task_id, "criteria": criteria},
     )
 
 
@@ -958,6 +1011,7 @@ _TOOLS: dict[str, Any] = {
     "delegate": delegate,
     "submit_up": submit_up,
     "submit_root": submit_root,
+    "declare_coverage": declare_coverage,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
 }

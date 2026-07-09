@@ -141,8 +141,15 @@ class Task(TimestampMixin):
     id: UUID = Field(default_factory=uuid4, description="Unique task identifier")
     title: str = Field(..., min_length=1, max_length=200, description="Task title")
     description: str = Field(..., description="Detailed task description")
+    # Server-derived architectural constraints (the project's baseline
+    # conventions block), moved out of `description` so the description is the
+    # human-authored instruction only (2026-07-07 task-quality fix). The
+    # conventions ALSO reach the agent at spawn via the ambient block, so
+    # this field is for panel visibility, not agent correctness. Nullable:
+    # flag-off / no-conventions / pre-migration rows have none.
+    constraints: str | None = Field(default=None)
     acceptance_criteria: list[str] = Field(
-        ..., min_length=1, description="How do we know it's done?"
+        ..., min_length=1, max_length=7, description="How do we know it's done?"
     )
     acceptance_criteria_ids: list[str] = Field(
         default_factory=list,

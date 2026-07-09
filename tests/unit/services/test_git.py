@@ -7,6 +7,7 @@ mock the network and filesystem boundaries.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -513,6 +514,122 @@ async def test_create_pr_returns_pr_dict() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_pr_records_pr_despite_cancellation_after_post() -> None:
+    """A cancellation landing after the GitHub POST succeeds but before the
+    local record commits must not lose the record: asyncio.shield lets
+    _record_pr_atomically finish, the cancellation still propagates."""
+    project_id = uuid4()
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        assigned_to=uuid4(),
+        title="Add login",
+        description="A short description",
+    )
+    fake_project = MagicMock(slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+
+    recorded = {"done": False}
+
+    async def _slow_record(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(0.05)
+        recorded["done"] = True
+
+    _bind(svc, "_record_pr_atomically", _slow_record)
+
+    fake_resp = MagicMock()
+    fake_resp.is_success = True
+    fake_resp.status_code = 201
+    fake_resp.json.return_value = {
+        "number": _EXPECTED_PR_NUMBER,
+        "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
+    }
+    _bind(svc, "_post_pr", AsyncMock(return_value=fake_resp))
+
+    with _patch_project_service(fake_project):
+        task = asyncio.ensure_future(
+            svc.create_pr("feature/backend/abc12345", parent="master", is_root_pr=True)
+        )
+        await asyncio.sleep(0.01)  # let create_pr reach the shielded await
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    # _await_shielded waits the in-flight record out BEFORE re-raising, so
+    # by the time `await task` raised, the record had already completed.
+    assert recorded["done"] is True, (
+        "shield must let the record finish despite cancellation"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_pr_cancellation_waits_out_record_before_reraising() -> None:
+    """Ordering guard for _await_shielded: on cancellation the in-flight
+    _record_pr_atomically must run to COMPLETION before CancelledError
+    re-raises to the caller. A bare asyncio.shield detaches the write and
+    re-raises immediately — the write then races get_db's rollback on the
+    same AsyncSession and asyncpg raises InterfaceError ('another operation
+    is in progress'), escaping as a 500 instead of the middleware's 504."""
+    project_id = uuid4()
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        assigned_to=uuid4(),
+        title="Add login",
+        description="A short description",
+    )
+    fake_project = MagicMock(slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+
+    order: list[str] = []
+
+    async def _slow_record(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(0.05)
+        order.append("record_done")
+
+    _bind(svc, "_record_pr_atomically", _slow_record)
+
+    fake_resp = MagicMock()
+    fake_resp.is_success = True
+    fake_resp.status_code = 201
+    fake_resp.json.return_value = {
+        "number": _EXPECTED_PR_NUMBER,
+        "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
+    }
+    _bind(svc, "_post_pr", AsyncMock(return_value=fake_resp))
+
+    with _patch_project_service(fake_project):
+        task = asyncio.ensure_future(
+            svc.create_pr("feature/backend/abc12345", parent="master", is_root_pr=True)
+        )
+        await asyncio.sleep(0.01)  # mid-record: cancellation lands in the shield
+        task.cancel()
+        # pytest.raises re-raises any OTHER exception type (e.g. the
+        # InterfaceError a racing rollback would surface), failing the test —
+        # that is assertion (a): CancelledError and nothing else propagates.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Appended synchronously right after propagation: no other coroutine
+        # can run in between, so this marker coming SECOND proves the record
+        # coroutine had already completed before the cancellation re-raised.
+        order.append("cancel_raised")
+
+    assert order == ["record_done", "cancel_raised"], (
+        f"record must complete BEFORE the cancellation re-raises; got {order}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_pr_raises_when_branch_not_found() -> None:
     svc = _service()
     _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
@@ -950,6 +1067,123 @@ async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
     assert calls[0] == ["status", "--porcelain"]
     assert ["fetch", "origin"] in calls
     assert ["rebase", "origin/master"] in calls
+
+
+# ---------------------------------------------------------------------------
+# rebase_onto_base — stash=True auto-stash/pop (the dirty-workspace exit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_true_auto_stashes_and_pops() -> None:
+    """stash=True: a dirty tree is stashed (not refused), rebased, popped back."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "1"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {"status": "rebased", "unique_commits": 1}
+    push_args = ["stash", "push", "-u", "-m", "sync_branch autostash"]
+    pop_args = ["stash", "pop"]
+    assert push_args in calls
+    assert pop_args in calls
+    # Stash push runs before the rebase, pop runs after.
+    assert calls.index(push_args) < calls.index(["rebase", "origin/master"])
+    assert calls.index(pop_args) > calls.index(["rebase", "origin/master"])
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_pop_conflict_preserves_stash() -> None:
+    """A conflicted pop is flagged, never auto-resolved — stash stays intact."""
+    svc = _service()
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "1"
+        elif args == ["stash", "pop"]:
+            res.returncode = 1  # pop conflicted — stash is NOT dropped by git
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {
+        "status": "rebased",
+        "unique_commits": 1,
+        "stash_pop_conflict": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_stash_true_rebase_conflict_skips_pop() -> None:
+    """A rebase conflict aborts before ever attempting the pop — no double
+    conflict; the stash is reported preserved for the caller to surface."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = " M dirty.py\n"
+        elif args == ["rebase", "origin/master"]:
+            res.returncode = 1
+        elif args[:2] == ["diff", "--name-only"]:
+            res.stdout = "src/a.py\n"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+        stash=True,
+    )
+
+    assert result == {
+        "status": "conflicts",
+        "files": ["src/a.py"],
+        "stash_preserved": True,
+    }
+    assert ["stash", "pop"] not in calls
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `open_pr` | `open_pr(task_id: UUID)` |
 | `resume` | `resume(task_id: UUID)` |
-| `sync_branch` | `sync_branch(task_id: UUID)` |
+| `sync_branch` | `sync_branch(task_id: UUID, stash: bool = False)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
@@ -29,6 +29,7 @@
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `propose_video` | `propose_video(composition_id: str, x_caption: str, tiktok_caption: str, platforms: list[str], input_props: str | Any | None = None)` |
+| `request_sandbox` | `request_sandbox(services: list[str] | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |

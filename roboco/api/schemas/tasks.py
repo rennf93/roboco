@@ -200,7 +200,9 @@ class TaskUpdate(BaseModel):
     # Basic info
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, min_length=20)
-    acceptance_criteria: list[str] | None = Field(default=None, min_length=1)
+    acceptance_criteria: list[str] | None = Field(
+        default=None, min_length=1, max_length=7
+    )
     priority: int | None = Field(default=None, ge=0, le=3)
     sequence: int | None = Field(default=None, ge=0)  # Order within siblings
     target_date: datetime | None = None
@@ -288,6 +290,10 @@ class TaskResponse(BaseModel):
     id: UUID
     title: str
     description: str
+    # Server-derived architectural constraints (project baseline conventions),
+    # moved out of `description` (migration 068). None when conventions are
+    # flag-off, the project has none, or the row predates the column.
+    constraints: str | None = None
     acceptance_criteria: list[str]
 
     # Status
@@ -773,6 +779,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         id=require_uuid(task.id),
         title=task.title,
         description=task.description,
+        constraints=getattr(task, "constraints", None),
         acceptance_criteria=task.acceptance_criteria or [],
         status=task.status,
         priority=task.priority,

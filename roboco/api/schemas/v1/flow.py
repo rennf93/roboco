@@ -20,6 +20,38 @@ from roboco.models.base import Complexity
 # technical_considerations, covers_parent_criteria).
 StrList = Annotated[list[str], BeforeValidator(coerce_str_list)]
 
+# AC discipline (the 2026-07-07 task-quality defect: restated, over-long
+# acceptance criteria). Mirrors roboco.foundation.policy.task_completeness
+# so an over-long / over-count AC list is rejected at the request boundary.
+_AC_MAX_ITEMS = 7
+_AC_MAX_ITEM_CHARS = 200
+
+
+class SubTaskCreate(BaseModel):
+    """A PM sub_task — a delegate target AND a progress-checklist item.
+
+    Mirrors DelegateRequest title/description caps so an over-long sub_task
+    can't bloat the plan (the 2026-07-07 task-quality defect). The server
+    assigns id + order; callers supply title + description only.
+    """
+
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(..., min_length=20, max_length=600)
+
+
+class RiskCreate(BaseModel):
+    """A {risk, mitigation} entry — what could go wrong and how it's handled."""
+
+    risk: str = Field(..., min_length=1, max_length=300)
+    mitigation: str = Field(..., min_length=1, max_length=600)
+
+
+class OpenQuestionCreate(BaseModel):
+    """An open question the PM wants answered before/during work."""
+
+    question: str = Field(..., min_length=1, max_length=300)
+    answered: bool = False
+
 
 class GiveMeWorkRequest(BaseModel):
     """Empty request body — agent_id comes from header."""
@@ -111,6 +143,19 @@ class ReassignRequest(BaseModel):
     new_assignee: str = Field(..., min_length=1)
 
 
+class DeclareCoverageRequest(BaseModel):
+    """HTTP body for the cell_pm/main_pm `declare_coverage` verb.
+
+    ``task_id`` is the CHILD to stamp; ``criteria`` are parent acceptance
+    criteria (id or exact text — same representation as `delegate`'s
+    `covers_parent_criteria`). The choreographer validates ownership +
+    unknown criteria.
+    """
+
+    task_id: UUID
+    criteria: StrList = Field(..., min_length=1)
+
+
 class ResumeRequest(BaseModel):
     task_id: UUID
 
@@ -124,6 +169,10 @@ class SyncBranchRequest(BaseModel):
     """
 
     task_id: UUID
+    # Auto-stash (tracked + untracked) instead of refusing DIRTY_WORKSPACE;
+    # popped back after the rebase. Default False preserves the prior refuse
+    # behavior for callers that don't opt in.
+    stash: bool = False
 
 
 class IAmIdleRequest(BaseModel):
@@ -240,7 +289,7 @@ class EscalateToCeoRequest(BaseModel):
 
 class IWillPlanRequest(BaseModel):
     task_id: UUID
-    plan: str = Field(..., min_length=1)
+    plan: str = Field(..., min_length=1, max_length=2000)
     # Pre-gateway parity: Approach is REQUIRED — agents
     # could not transition claimed → in_progress without filling this in the
     # pre-gateway flow. The Plan tab depends on it; smoke run 3 confirmed
@@ -248,14 +297,16 @@ class IWillPlanRequest(BaseModel):
     # min_length must match choreographer._impl._PM_APPROACH_MIN_LEN. Raised
     # 20→150: a 20-char approach was a one-liner; the approach +
     # sub_tasks are also the progress checklist, so they must be substantive.
-    approach: str = Field(..., min_length=150)
-    sub_tasks: list[dict[str, str]] = Field(
+    # max_length caps the bloat defect (approach that ran to thousands of
+    # chars restating the description). Must match the gate ceiling.
+    approach: str = Field(..., min_length=150, max_length=800)
+    sub_tasks: list[SubTaskCreate] = Field(
         default_factory=list,
         description="List of {title, description} — server assigns id + order",
     )
     technical_considerations: StrList = Field(default_factory=list)
-    risks: list[dict[str, str]] = Field(default_factory=list)
-    open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
+    risks: list[RiskCreate] = Field(default_factory=list)
+    open_questions: list[OpenQuestionCreate] = Field(default_factory=list)
 
 
 class DelegateRequest(BaseModel):
@@ -283,8 +334,24 @@ class DelegateRequest(BaseModel):
     nature: str = Field(..., min_length=1)
     estimated_complexity: Complexity
     # acceptance_criteria is required and non-empty; downstream policy
-    # also denylist-checks each item against placeholder phrases.
-    acceptance_criteria: StrList = Field(..., min_length=1)
+    # also denylist-checks each item against placeholder phrases. The
+    # per-item cap (<=200 chars) + list cap (<=7) mirror the policy so an
+    # over-long / over-count AC list is rejected at the boundary (422), not
+    # only by the service-layer completeness check.
+    acceptance_criteria: StrList = Field(..., min_length=1, max_length=7)
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def _ac_items_bounded(cls, v: list[str]) -> list[str]:
+        for i, item in enumerate(v):
+            if len(item.strip()) > _AC_MAX_ITEM_CHARS:
+                raise ValueError(
+                    f"acceptance_criteria[{i}] is {len(item.strip())} chars "
+                    f"(max {_AC_MAX_ITEM_CHARS}) — a criterion that long is a "
+                    "restated description, not a verifiable outcome. Split it."
+                )
+        return v
+
     # Optional per-subtask project override. When omitted, the choreographer
     # resolves the project from the parent's Product map for this cell, then
     # falls back to the parent's project. Plain optional field — no validator.

@@ -88,7 +88,7 @@ async def test_sync_branch_rebases_and_returns_evidence() -> None:
         env = await c.sync_branch(aid, tid)
 
     git_svc.sync_task_branch.assert_awaited_once_with(
-        t, base_branch=_BASE, actor_agent_id=aid
+        t, base_branch=_BASE, actor_agent_id=aid, stash=False
     )
     assert env.error is None
     assert env.evidence is not None
@@ -225,6 +225,118 @@ async def test_sync_branch_git_failure_steers_to_i_am_blocked() -> None:
 
     assert env.error == "invalid_state"
     assert "i_am_blocked" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_passes_stash_flag_through() -> None:
+    """stash=True on the verb forwards to GitService.sync_task_branch."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {"status": "rebased", "unique_commits": 1}
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    git_svc.sync_task_branch.assert_awaited_once_with(
+        t, base_branch=_BASE, actor_agent_id=aid, stash=True
+    )
+    assert env.error is None
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_dirty_workspace_failure_steers_to_stash_or_commit() -> None:
+    """A DIRTY_WORKSPACE failure gets a specific, actionable remediate — not
+    the generic i_am_blocked escalation."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.side_effect = RuntimeError(
+        "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes."
+    )
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
+    assert "stash=True" in (env.remediate or "")
+    assert "commit(" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_conflicts_with_stash_preserved_notes_it_in_next() -> None:
+    """A conflict with stash_preserved=True tells the dev their stash is safe."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "conflicts",
+        "files": ["src/a.py"],
+        "stash_preserved": True,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    assert env.error is None
+    assert "stash" in (env.next or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_stash_pop_conflict_notes_preserved_stash() -> None:
+    """A clean rebase whose stash pop conflicted must not read as a plain
+    success — the dev still has manual work to finish."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "rebased",
+        "unique_commits": 2,
+        "stash_pop_conflict": True,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    assert env.error is None
+    assert "conflict" in (env.next or "").lower()
+    assert "preserved" in (env.next or "").lower()
 
 
 @pytest.mark.asyncio

@@ -52,13 +52,18 @@ def test_commit_posts_message_and_files(do_module: Any) -> None:
     fake_response.json.return_value = {"status": "in_progress", "task_id": "x"}
     fake_client.post.return_value = fake_response
 
-    with patch("httpx.Client", return_value=fake_client):
+    with patch("httpx.Client", return_value=fake_client) as client_cls:
         result = do_module.commit("feat(api): add /healthz", files=["foo.py"])
 
     assert result["status"] == "in_progress"
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/do/commit" in args[0]
     assert kwargs["json"] == {"message": "feat(api): add /healthz", "files": ["foo.py"]}
+    # commit stages+commits a large changeset server-side (up to
+    # git_commit_timeout_seconds, default 180s) — the shared _TIMEOUT (30s)
+    # is tuned for fast content-tool calls and would give up first.
+    assert client_cls.call_args.kwargs["timeout"] == do_module._COMMIT_TIMEOUT
+    assert do_module._COMMIT_TIMEOUT > do_module._TIMEOUT
 
 
 def test_note_default_scope_note(do_module: Any) -> None:

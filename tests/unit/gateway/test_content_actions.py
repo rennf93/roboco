@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.config import settings
+from roboco.exceptions import GitCommandError
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
@@ -160,6 +161,75 @@ async def test_commit_strips_existing_task_prefix() -> None:
     call_kwargs = git_svc.commit.call_args.kwargs
     assert call_kwargs["message"].startswith(expected_prefix)
     assert "[ABC12345]" not in call_kwargs["message"]
+
+
+@pytest.mark.asyncio
+async def test_commit_no_changes_added_returns_files_remediate() -> None:
+    """A `files` list matching no modified paths → actionable remediate.
+
+    Regression: git.commit raising "no changes added to commit" (an agent
+    passed `files` that no-op'd the `git add`) used to propagate as a raw
+    GitCommandError instead of an envelope.
+    """
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        branch_name="feature/backend/abc",
+        active_claimant_id=agent_id,
+    )
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    git_svc = AsyncMock()
+    git_svc.commit.side_effect = GitCommandError("commit", "no changes added to commit")
+
+    deps = _make_deps(task=task_svc, git=git_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(
+        agent_id=agent_id,
+        message="feat(api): add /healthz endpoint for liveness checks",
+        files=["nonexistent.py"],
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+    assert "nonexistent.py" in body["remediate"]
+    assert "omit files" in body["remediate"]
+    task_svc.add_progress.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_commit_generic_git_failure_returns_envelope_not_exception() -> None:
+    """A generic git failure is caught and returned as an envelope, not raised."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        branch_name="feature/backend/abc",
+        active_claimant_id=agent_id,
+    )
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = task_obj
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    git_svc = AsyncMock()
+    git_svc.commit.side_effect = GitCommandError("commit", "fatal: some other failure")
+
+    deps = _make_deps(task=task_svc, git=git_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.commit(
+        agent_id=agent_id,
+        message="feat(api): add /healthz endpoint for liveness checks",
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+    assert "inspect" in body["remediate"]
+    task_svc.add_progress.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,15 @@ Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR in
 **Composes:** complete
 
 
+## declare_coverage
+
+Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact — for a replacement child whose delegate omitted covers_parent_criteria. No status change; the verb body owns ownership + criterion validation.
+
+**Allowed roles:** cell_pm, main_pm
+
+**Composes:** (no atomic actions)
+
+
 ## delegate
 
 Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/research, UX devs also design). documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
@@ -256,7 +265,7 @@ Cell PM opens the cell→root PR and moves the cell task into the PR-review gate
 
 ## sync_branch
 
-Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again.
+Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again. Pass stash=True to auto-stash uncommitted changes instead of refusing DIRTY_WORKSPACE; they are restored after the rebase.
 
 **Allowed roles:** developer
 

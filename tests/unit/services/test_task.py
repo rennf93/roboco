@@ -1094,6 +1094,18 @@ async def test_uncovered_parent_acs_recognizes_text_declared_coverage() -> None:
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
 
 
+def test_unknown_ac_refs_flags_refs_not_on_parent() -> None:
+    # declare_coverage's validation primitive: accepts a parent criterion by
+    # id OR exact text; anything else is unknown and must be rejected with
+    # the parent's real AC list in the remediate.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    assert TaskService.unknown_ac_refs(parent, ["id-a", "crit b", "bogus"]) == ["bogus"]
+    assert TaskService.unknown_ac_refs(parent, ["id-a", "crit b"]) == []
+
+
 @pytest.mark.asyncio
 async def test_parent_ac_coverage_normalizes_text_refs() -> None:
     # A text-declared coverage ref from a COMPLETED child surfaces as

@@ -4,6 +4,7 @@ These are the only verbs the gateway will accept from you. Calling any
 other verb will be rejected with a Decision telling you the right one.
 
 - **complete**: Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering — no trailing pr_merge side_effect is declared here.
+- **declare_coverage**: Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact — for a replacement child whose delegate omitted covers_parent_criteria. No status change; the verb body owns ownership + criterion validation.
 - **delegate**: Create a subtask under the current task. Validates the delegation chain (main_pm->cell_pm; cell_pm->its team's devs) and the assignee-vs-task_type rule (Cell PMs get planning-typed tasks; devs get code/research, UX devs also design). documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
 - **escalate_up**: Escalate to your role's escalation_target.
 - **give_me_work**: Return your most-actionable task or signal idle.

@@ -26,7 +26,7 @@ It searches ALL knowledge sources and supports follow-up questions.
 roboco_kb_search(
     query="rate limiting redis implementation",
     top_k=5,                      # Results to return
-    project="roboco",             # Optional project filter
+    project="roboco-api",         # Optional project filter
     index_types=["code", "docs"]  # Filter by type
 )
 ```

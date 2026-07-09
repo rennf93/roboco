@@ -4,9 +4,12 @@ API Middleware
 Request/response middleware for logging, error handling, and correlation IDs.
 """
 
+import asyncio
+import json
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from typing import Any, cast
 
 import structlog
@@ -16,8 +19,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from roboco.api.schemas.common import ErrorCode
+from roboco.config import settings
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -26,6 +31,7 @@ from roboco.exceptions import (
     RobocoError,
     ValidationError,
 )
+from roboco.foundation.policy.flow_timeouts import SLOW_VERBS as _SLOW_VERBS
 from roboco.services.base import (
     ConflictError as ServiceConflictError,
 )
@@ -472,6 +478,225 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_exception_handler(RateLimitError, rate_limit_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 
-    # Middleware (added in reverse order due to LIFO)
+    # Middleware (added in reverse order due to LIFO): the LAST add_middleware
+    # call is the OUTERMOST. DbCommitMiddleware is added FIRST so it is the
+    # INNERMOST of all four — closest to the routes, right next to CORS —
+    # and, critically, INSIDE FlowVerbTimeoutMiddleware: a hanging commit on a
+    # flow-verb request stays bounded by Flow's asyncio.timeout, and Flow's
+    # own synthesized 504 (sent via its own upstream `send`, never re-entering
+    # `self.app`) never reaches DbCommitMiddleware at all. FlowVerbTimeoutMiddleware
+    # is added next so correlation + logging still wrap the 504 it returns,
+    # AND its asyncio.timeout cancels the route coroutine + its get_db
+    # dependency directly (same task, reliable cancel).
+    app.add_middleware(DbCommitMiddleware)
+    app.add_middleware(FlowVerbTimeoutMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+
+
+class FlowVerbTimeoutMiddleware:
+    """Pure-ASGI server-side timeout on gateway intent-verb requests.
+
+    A hung flow verb — e.g. ``claim()`` blocked on a ``SELECT ... FOR
+    UPDATE`` row lock held by a prior stuck transaction — would otherwise hold
+    its request transaction open indefinitely. uvicorn does not cancel the
+    endpoint coroutine on client disconnect, and ``get_db`` only rolled back
+    on ``Exception``, so the row lock was never released and every later
+    task-row write on that task wedged (the 2026-07-07
+    ``kimi-k2.7-code:cloud`` agent on task 79d686f0). This wraps each
+    ``/api/v1/flow/*`` request in ``asyncio.timeout``; on expiry the inner
+    app is cancelled (CancelledError propagates through ``get_db``, which now
+    invalidates the session — releasing the lock and discarding a connection
+    that may be mid-protocol rather than reusing it via a rollback, see
+    ``get_db``) and a clean retryable 504 envelope is returned. Pure ASGI (not
+    BaseHTTPMiddleware) so cancellation propagates into the route coroutine
+    without the spawned-task gap.
+
+    Reads (``evidence``) and journal writes (``note``) don't touch the task
+    row, so they are unaffected; only task-row writes route through ``claim``.
+
+    ``_SLOW_VERBS`` (from ``roboco.foundation.policy.flow_timeouts`` — git
+    push + quality gate, a multi-step PR-create chain, workspace clone, or
+    planning writes) get the longer ``flow_verb_slow_timeout_seconds`` budget
+    instead of the default — routine calls to those verbs otherwise exceed
+    120s. The same set drives the agent-side MCP client's timeout
+    (``roboco/mcp/flow_server.py``) so the two walls can't drift apart.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].startswith("/api/v1/flow/"):
+            await self.app(scope, receive, send)
+            return
+        verb = scope["path"].rstrip("/").rsplit("/", 1)[-1]
+        timeout = (
+            settings.flow_verb_slow_timeout_seconds
+            if verb in _SLOW_VERBS
+            else settings.flow_verb_timeout_seconds
+        )
+        started = False
+
+        async def send_wrapper(message: Any) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            async with asyncio.timeout(timeout):
+                await self.app(scope, receive, send_wrapper)
+        except TimeoutError:
+            # The inner app was cancelled mid-verb; get_db has already
+            # invalidated the session (releasing the FOR UPDATE lock and
+            # discarding the connection) by the time we get here.
+            if started:
+                # The route had already begun a response before the timeout
+                # fired — the client owns whatever was sent; we cannot start
+                # a new one. Rare for a hung verb (it hangs before responding).
+                return
+            body = json.dumps(
+                {
+                    "status": None,
+                    "task_id": None,
+                    "next": None,
+                    "evidence": {},
+                    "context_briefing": {},
+                    "error": "gateway_timeout",
+                    "message": (
+                        f"verb exceeded the {timeout:.0f}s server-side timeout; "
+                        "the request transaction was rolled back"
+                    ),
+                    "remediate": (
+                        "retry the verb; if it persists the underlying task "
+                        "may be wedged — escalate"
+                    ),
+                }
+            ).encode()
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ]
+            try:
+                await send(
+                    {"type": "http.response.start", "status": 504, "headers": headers}
+                )
+                await send({"type": "http.response.body", "body": body})
+            except Exception:
+                # Client may have already disconnected (the original trigger);
+                # the lock is released regardless. Nothing to do.
+                pass
+
+
+class DbCommitMiddleware:
+    """Commits the request's DB session before the response reaches the client.
+
+    FastAPI resolves ``Depends(get_db)`` on the request-scoped ``AsyncExitStack``
+    and sends the response (``fastapi/routing.py``'s ``request_response``,
+    ``await response(scope, receive, send)``) BEFORE that stack unwinds and
+    runs ``get_db``'s post-yield ``await session.commit()``. So every write
+    endpoint that relies on it returns 200 while its commit is still pending —
+    a follow-up request (or a fresh connection) can read pre-commit state —
+    and a commit that later FAILS leaves the client told "ok" with nothing
+    persisted.
+
+    ``get_db_committed`` (``roboco/db/base.py`` — the ``roboco.api.deps.DbSession``
+    target every route depends on) stashes the live session on
+    ``request.state.db_session`` before yielding. This middleware wraps
+    ``send``: on the FIRST ``http.response.start`` it commits that session
+    BEFORE forwarding the event, so the client only ever sees the response
+    after the commit lands. A commit failure rolls back and re-raises — the
+    response hasn't started, so the surrounding exception-handling machinery
+    (FastAPI's handlers / Starlette's ``ServerErrorMiddleware``) turns it into
+    a clean 500 instead of the silent post-200 loss. ``session.in_transaction()``
+    makes the check idempotent and skips the exception path for free: an
+    exception rolls back (and closes) the session inside ``get_db`` before
+    its error response is built, so by the time THAT response's
+    ``http.response.start`` reaches here there is no open transaction left
+    to commit.
+
+    Added INSIDE (closer to the routes than) ``FlowVerbTimeoutMiddleware`` —
+    see ``setup_middleware`` — so a hanging commit on a flow-verb request
+    stays bounded by Flow's ``asyncio.timeout``. That timeout is scoped to
+    the WHOLE ``self.app(...)`` call including this middleware, so its
+    deadline can fire while the commit below is itself in flight (not just
+    while a route handler hangs before responding) — ``started`` in the
+    outer middleware is still ``False`` at that point (its own wrapped
+    ``send`` hasn't been called yet), so it sends its 504 normally once the
+    ``CancelledError`` below propagates.
+
+    The commit itself (``_commit_shielded``) runs cancellation-safe: a bare
+    ``await session.commit()`` cancelled mid-wire abandons the asyncpg
+    connection in an undefined protocol state, and the pool's own recovery —
+    ``invalidate()`` forcing the driver's ``terminate()`` — is itself
+    implicated in a uvloop/asyncpg segfault class observed on CI (uvloop
+    0.22 + asyncpg 0.31 + Python 3.13; see ``ROBOCO_UVICORN_LOOP``). So the
+    commit runs as its own task, shielded from this request's cancellation,
+    and gets a short grace (``settings.db_commit_cancel_grace_seconds``) to
+    finish naturally instead of being severed on the spot. Only a commit
+    that actually fails, or one still stuck past the grace, gets invalidated
+    — and re-raising the original ``CancelledError`` afterward still
+    propagates up through FastAPI's dependency ``AsyncExitStack`` (still
+    open here — ``response(scope, receive, send)`` is called from inside it,
+    see ``get_db_committed``'s docstring) into ``get_db``'s own
+    ``except asyncio.CancelledError``, which invalidates the session again —
+    a safe no-op (SQLAlchemy's ``Session.invalidate()`` only touches the
+    connection once; a session with no open transaction left skips it) that
+    keeps the two layers independent rather than coupled.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                session = scope.get("state", {}).get("db_session")
+                if session is not None and session.in_transaction():
+                    await _commit_shielded(session)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+async def _commit_shielded(session: Any) -> None:
+    """Commit ``session`` without abandoning it mid-wire on cancellation.
+
+    Runs the commit as an independent task and shields the wait on it from
+    this request's own cancellation (a plain ``await session.commit()``
+    would otherwise hand the request task's cancel straight to the commit
+    task, since awaiting a Task makes it the awaiter's ``_fut_waiter``).
+    On cancel, the commit keeps running in the background for up to
+    ``settings.db_commit_cancel_grace_seconds``:
+
+    - finishes successfully -> nothing to undo, just re-raise the cancel
+      (the client's retry is idempotent-safe; data is already durable).
+    - finishes with an error, or is still stuck past the grace -> the
+      connection is in a state worth discarding; invalidate() then re-raise.
+
+    A non-cancellation commit failure (shield propagates it unchanged)
+    takes the plain rollback path, unchanged from before.
+    """
+    commit_task = asyncio.ensure_future(session.commit())
+    try:
+        await asyncio.shield(commit_task)
+    except asyncio.CancelledError:
+        done, _pending = await asyncio.wait(
+            {commit_task}, timeout=settings.db_commit_cancel_grace_seconds
+        )
+        if commit_task not in done:
+            commit_task.cancel()
+            with suppress(BaseException):
+                await commit_task
+        if not commit_task.cancelled() and commit_task.exception() is None:
+            raise  # committed despite the cancel — nothing to undo
+        await session.invalidate()
+        raise
+    except Exception:
+        await session.rollback()
+        raise

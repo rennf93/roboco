@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -45,10 +45,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git gnupg jq build-essential \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force \
     && apt-get purge -y --auto-remove gnupg \
-    && rm -rf /var/lib/apt/lists/* /root/.npm /tmp/*
+    && rm -rf /var/lib/apt/lists/*
+
+# Split from the apt layer above: this churns with every claude-code CLI
+# release, while the OS/node layer above stays stable across those bumps.
+RUN npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force \
+    && rm -rf /root/.npm /tmp/*
 
 RUN useradd -m -s /bin/bash agent
 
@@ -56,12 +60,17 @@ RUN useradd -m -s /bin/bash agent
 # `uv run python -m roboco.mcp.<server>`. Without it, all 10 roboco MCP
 # servers fail to start and the agent falls back to raw HTTP, losing every
 # guardrail and inline schema the MCP layer provides.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy the pre-built venv + source from builder, owned by agent user
-COPY --from=builder --chown=agent:agent /app /app
+# Copy the pre-built venv + source from builder, owned by agent user.
+# .venv first (invalidated only by pyproject.toml/uv.lock changes via the
+# builder's own dep-then-project split), source dirs last so an app-code-only
+# change doesn't bust the much larger .venv layer's cache.
+COPY --from=builder --chown=agent:agent /app/.venv /app/.venv
+COPY --from=builder --chown=agent:agent /app/pyproject.toml /app/uv.lock /app/README.md /app/
+COPY --from=builder --chown=agent:agent /app/roboco /app/roboco
 
 # Hook scripts: 0755 so the `agent` user (not root) can read+execute them.
 # SessionStart hook runs these as agent; stricter perms break the hook with

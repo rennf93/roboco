@@ -299,6 +299,10 @@ class ContentActionsDeps:
     # context. Matches the choreographer's EvidenceRepo wiring so both
     # paths surface the same shape.
     evidence_repo: Any = None
+    # request_sandbox's ensure_sandbox call. Mirrors ChoreographerDeps.orchestrator:
+    # optional so tests that don't exercise sandbox provisioning need not plumb
+    # it in; None degrades to a retryable "orchestrator unavailable" envelope.
+    orchestrator: Any = None
 
 
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
@@ -411,6 +415,10 @@ class ContentActions:
     @property
     def evidence_repo(self) -> Any:
         return self._deps.evidence_repo
+
+    @property
+    def orchestrator(self) -> Any:
+        return self._deps.orchestrator
 
     async def _touch_heartbeat(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat refresh on a content-write success path.
@@ -559,12 +567,15 @@ class ContentActions:
             return reject
         canonical_prefix = f"[{str(t.id)[:8]}]"
         final_message = f"{canonical_prefix} {subject}"
-        commit_result = await self.git.commit(
-            branch_name=t.branch_name,
-            message=final_message,
-            task_id=t.id,
-            files=files,
-        )
+        try:
+            commit_result = await self.git.commit(
+                branch_name=t.branch_name,
+                message=final_message,
+                task_id=t.id,
+                files=files,
+            )
+        except GitError as exc:
+            return self._commit_git_error_envelope(exc, files=files)
         sha = commit_result.get("sha", "")
         await self.task.add_progress(
             t.id, agent_id, f"committed {sha[:8]}: {final_message}"
@@ -574,6 +585,32 @@ class ContentActions:
             status=str(t.status),
             task_id=str(t.id),
             next="continue committing, or open_pr when ready",
+            context_briefing={},
+        )
+
+    @staticmethod
+    def _commit_git_error_envelope(
+        exc: GitError, *, files: list[str] | None
+    ) -> Envelope:
+        """Map a failed `git commit` onto an actionable invalid_state envelope.
+
+        A "no changes added to commit" / "nothing to commit" failure means
+        the passed `files` matched no modified paths; anything else is a
+        generic git failure the agent should inspect and retry.
+        """
+        text = str(exc)
+        if files and (
+            "no changes added to commit" in text or "nothing to commit" in text
+        ):
+            remediate = (
+                f"the files list {files!r} matched no modified paths; omit "
+                "files to stage all changes, or pass the exact modified paths"
+            )
+        else:
+            remediate = "inspect the git error above and retry"
+        return Envelope.invalid_state(
+            message=text,
+            remediate=remediate,
             context_briefing={},
         )
 
@@ -1794,6 +1831,133 @@ class ContentActions:
             task_id=str(task_id),
             next="continue",
             evidence=ev.as_dict(),
+            context_briefing={},
+        )
+
+    async def _sandbox_active_task(self, agent_id: UUID) -> tuple[Any, Envelope | None]:
+        """request_sandbox's task guard: an active, project-bound task, or a
+        clean invalid_state rejection."""
+        t = await self.task.get_active_task_for_agent(agent_id)
+        if t is None or t.project_id is None:
+            return None, Envelope.invalid_state(
+                message="no claimed task with a project — cannot scope a sandbox",
+                remediate=(
+                    "call give_me_work() first; request_sandbox needs an "
+                    "active, project-bound task"
+                ),
+                context_briefing={},
+            )
+        return t, None
+
+    @staticmethod
+    def _sandbox_scope(
+        project: Any, services: list[str] | None
+    ) -> tuple[frozenset[str], Envelope | None]:
+        """request_sandbox's opt-in guard: the resolved service set, or a
+        clean invalid_state rejection naming the project's allowed set."""
+        opted = frozenset(project.sandbox_services or []) if project else frozenset()
+        if not opted:
+            return frozenset(), Envelope.invalid_state(
+                message="project has not opted into any sandbox service",
+                remediate=(
+                    "ask a PM/CEO to set sandbox_services in project "
+                    "settings before requesting a sandbox"
+                ),
+                context_briefing={},
+            )
+        requested = opted if services is None else frozenset(services)
+        unknown = requested - opted
+        if unknown:
+            return frozenset(), Envelope.invalid_state(
+                message=f"requested service(s) {sorted(unknown)} not opted into",
+                remediate=(
+                    f"this project's opted-in set is {sorted(opted)} — "
+                    "request a subset of that"
+                ),
+                context_briefing={},
+            )
+        return requested, None
+
+    async def request_sandbox(
+        self,
+        *,
+        agent_id: UUID,
+        services: list[str] | None = None,
+    ) -> Envelope:
+        """On-demand sandbox DB/Redis/Mongo (dev + QA only, see role_config).
+
+        Replaces eager per-spawn provisioning: a sandbox is created only when
+        an agent actually asks for one, keyed off the CALLER's authenticated
+        slug (never another agent's). ``services`` omitted means the
+        project's whole opted-in set.
+
+        Guards, in order: flag off; caller has no claimed/active,
+        project-bound task (`_sandbox_active_task`); project not opted into
+        any sandbox service, or a requested service outside its opted set
+        (`_sandbox_scope`, names the allowed set); orchestrator handle
+        unavailable (retryable). `ensure_sandbox` always provisions the
+        project's whole opted-in set regardless of ``services`` (so a later
+        call can never trigger a mid-session teardown of a live container);
+        the evidence payload here is filtered back down to what THIS call
+        asked for. Creds come back in the evidence payload, never as
+        injected env — see
+        ``docs/internal/specs/2026-07-08-sandbox-on-demand.md`` §4.
+        """
+        if not settings.sandbox_db_enabled:
+            return Envelope.invalid_state(
+                message="sandbox provisioning is disabled",
+                remediate=(
+                    "ROBOCO_SANDBOX_DB_ENABLED is off — ask the CEO to arm "
+                    "it, or rely on the legacy gate env if this project "
+                    "isn't sandboxed"
+                ),
+                context_briefing={},
+            )
+        t, rejection = await self._sandbox_active_task(agent_id)
+        if rejection is not None:
+            return rejection
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(self.task.session).get(t.project_id)
+        requested, rejection = self._sandbox_scope(project, services)
+        if rejection is not None:
+            return rejection
+        opted = frozenset(project.sandbox_services or []) if project else frozenset()
+        if self.orchestrator is None:
+            return Envelope.invalid_state(
+                message="orchestrator handle unavailable — cannot provision a sandbox",
+                remediate=(
+                    "retry request_sandbox shortly; the orchestrator may be restarting"
+                ),
+                context_briefing={},
+            )
+        from roboco.agents_config import _resolve_to_slug
+        from roboco.runtime.sandbox import SandboxProvisionError
+
+        agent_slug = _resolve_to_slug(str(agent_id))
+        try:
+            info = await self.orchestrator.ensure_sandbox(
+                agent_slug, sorted(requested), sorted(opted)
+            )
+        except SandboxProvisionError as e:
+            return Envelope.invalid_state(
+                message=f"sandbox provisioning failed: {e}",
+                remediate="retry shortly; escalate to your PM if it keeps failing",
+                context_briefing={},
+            )
+        await self._touch_heartbeat(t.id)
+        # ensure_sandbox provisions the project's whole opted-in set (see its
+        # docstring); the evidence payload stays scoped to what THIS call
+        # asked for.
+        payload = info.as_payload()
+        filtered = {
+            name: payload[name] for name in sorted(requested) if name in payload
+        }
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(t.id),
+            next="use the returned creds for this session; call again anytime",
+            evidence=filtered,
             context_briefing={},
         )
 

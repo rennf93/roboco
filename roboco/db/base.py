@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 import structlog
 from alembic import command
 from alembic.config import Config
+from fastapi import Depends, Request
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -82,15 +84,80 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         @router.get("/items")
         async def get_items(db: AsyncSession = Depends(get_db)):
             ...
+
+    Also called directly (no ``Depends``, outside HTTP request scope) by
+    ``websocket.py`` and a couple of read-only helpers — keep this signature
+    free of any required/HTTP-only parameter. For a request-scoped route that
+    wants its commit to land BEFORE the response reaches the client, depend
+    on ``get_db_committed`` instead (``roboco.api.deps.DbSession`` — the one
+    place every route already goes through — already does).
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
         try:
             yield session
             await session.commit()
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
         except Exception:
             await session.rollback()
             raise
+
+
+async def _discard_on_cancel(session: AsyncSession) -> None:
+    """Discard (never reuse) a session cancelled mid-flight.
+
+    A server-side ``asyncio.timeout`` (``FlowVerbTimeoutMiddleware``) can fire
+    while the session is mid ``await`` on a real DBAPI round-trip — not just
+    while idle holding a ``FOR UPDATE`` lock, but also mid-``commit()``
+    (``DbCommitMiddleware`` runs its own commit in the ASGI send path, still
+    inside the same cancellable scope). Cancelling a greenlet-bridged asyncpg
+    operation mid-flight leaves the connection's wire-protocol state
+    undefined; SQLAlchemy's own docs (``Session.invalidate``) prescribe
+    exactly this: on a Timeout/cancellation, invalidate rather than rollback,
+    since rollback() itself would issue another command over a connection
+    that may already be desynced, and a desynced connection returned to the
+    pool is what later corrupted a *different* request's checkout (the
+    uvloop/asyncpg segfault class this fixes). A plain hang (asyncio.sleep,
+    no DBAPI call in flight when cancelled) is also safe to invalidate — just
+    slightly more heavy-handed than the rollback it used to get.
+    """
+    try:
+        await session.invalidate()
+    except Exception as e:
+        # The connection is already being discarded; a failure tearing it
+        # down further (SQLAlchemy's own pool logs the underlying cause) must
+        # not mask the CancelledError the caller is propagating.
+        logger.debug("Session invalidate-on-cancel raised", error=str(e))
+
+
+async def get_db_committed(
+    request: Request, db: Annotated[AsyncSession, Depends(get_db)]
+) -> AsyncGenerator[AsyncSession]:
+    """FastAPI-only wrapper around ``get_db``: stashes the live session on
+    ``request.state.db_session`` so ``DbCommitMiddleware``
+    (``roboco/api/middleware.py``) can commit it BEFORE the response reaches
+    the client.
+
+    FastAPI resolves ``Depends(get_db)`` on the request-scoped exit stack, and
+    its routing sends the response to the client BEFORE that stack unwinds —
+    so ``get_db``'s post-yield ``commit()`` used to land after a 200 already
+    went out.
+
+    This is a separate function rather than a ``request`` parameter added to
+    ``get_db`` itself: FastAPI only special-cases a dependency parameter
+    typed exactly ``Request`` (``lenient_issubclass`` in
+    ``fastapi/dependencies/utils.py``) — a ``Request | None`` union is NOT
+    special-cased and instead gets validated as a Pydantic response field,
+    which crashes route registration outright (``Request`` isn't a valid
+    Pydantic field type). ``get_db`` is also called directly with no request
+    in scope, so its signature has to stay request-free; this wrapper is the
+    request-scoped variant, resolved once per request (FastAPI dependency
+    caching) so ``db`` here is the exact same session ``get_db`` yields.
+    """
+    request.state.db_session = db
+    yield db
 
 
 @asynccontextmanager
@@ -107,6 +174,9 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
         except Exception:
             await session.rollback()
             raise
@@ -136,6 +206,15 @@ async def _db_has_alembic_version(conn: AsyncConnection) -> bool:
         )
     )
     return bool(result.scalar())
+
+
+# Hard ceiling on the alembic worker thread. Its env.py nests asyncio.run +
+# a fresh NullPool engine + a greenlet bridge inside a (possibly reused)
+# executor thread — a hang there previously blocked the API bind forever
+# (2026-07-08 NAS outage: two consecutive boots stuck after the alembic
+# context lines with zero SQL activity). A timeout can't kill the thread,
+# but failing loud lets the container restart into a clean retry.
+_ALEMBIC_TIMEOUT_SECONDS = 300
 
 
 async def run_migrations() -> None:
@@ -172,9 +251,31 @@ async def run_migrations() -> None:
                 revision=initial_revision,
             )
             command.stamp(cfg, initial_revision)
+        logger.info("Alembic upgrade starting")
         command.upgrade(cfg, "head")
+        logger.info("Alembic upgrade finished")
 
-    await asyncio.to_thread(_run_alembic)
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_run_alembic), timeout=_ALEMBIC_TIMEOUT_SECONDS
+        )
+    except TimeoutError as e:
+        raise RuntimeError(
+            f"alembic migration runner exceeded {_ALEMBIC_TIMEOUT_SECONDS}s — "
+            "worker thread wedged (nested asyncio.run in alembic/env.py); "
+            "failing startup loudly instead of hanging the API bind"
+        ) from e
+
+
+class _InitState:
+    """Per-process init_db latch, keyed by database URL (see init_db docstring).
+
+    URL-keyed so a process that initializes a DIFFERENT database (test
+    fixtures build throwaway DBs) always runs in full; only a repeat call
+    for the same database no-ops.
+    """
+
+    completed_url: str | None = None
 
 
 async def init_db() -> None:
@@ -194,7 +295,16 @@ async def init_db() -> None:
                  to gap-fill any ORM table a migration didn't create.
                  `create_all` cannot ALTER an existing table, so an ORM column
                  added without a migration needs a fresh rebuild to appear.
+
+    Idempotent per process: bootstrap and the API lifespan both call this in
+    the same interpreter seconds apart; the second call re-entered the fragile
+    alembic-in-thread machinery for zero benefit and hung the 2026-07-08 NAS
+    boot twice. A completed run latches, later calls no-op. drop_db resets the
+    latch so tests rebuilding the schema keep working.
     """
+    if _InitState.completed_url == settings.database_url:
+        logger.info("init_db already completed in this process — skipping")
+        return
     engine = get_engine()
     async with engine.begin() as conn:
         # pgvector must exist before tables that use the vector type
@@ -229,6 +339,7 @@ async def init_db() -> None:
     # subsequent request to introspect the current (post-migration) schema.
     await engine.dispose()
     logger.info("DB engine pool disposed to refresh asyncpg type cache")
+    _InitState.completed_url = settings.database_url
 
 
 async def drop_db() -> None:
@@ -240,6 +351,7 @@ async def drop_db() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    _InitState.completed_url = None
 
 
 async def close_db() -> None:

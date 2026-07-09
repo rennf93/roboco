@@ -35,7 +35,6 @@ dependencies = [
     # Utilities
     "httpx",
     "python-multipart",
-    "python-jose[cryptography]",  # JWT
     "passlib[bcrypt]",  # Password hashing
     "tenacity",  # Retry logic
     "structlog",  # Structured logging
@@ -83,7 +82,6 @@ dev = [
 
     # Type Stubs
     "types-passlib",
-    "types-python-jose",
     "types-PyYAML",
 
     # Development
@@ -397,8 +395,7 @@ DEP002 = [
     "python-multipart",
     # Database migrations (CLI tool)
     "alembic",
-    # Auth libraries (used via passlib[bcrypt], python-jose[cryptography])
-    "python-jose",
+    # Auth libraries (used via passlib[bcrypt])
     "passlib",
     # LLM utilities (embeddings/token counting)
     "openai",
@@ -426,7 +423,6 @@ DEP002 = [
     "rich",
     # Type stubs (used by mypy)
     "types-passlib",
-    "types-python-jose",
     "types-PyYAML",
 ]
 # DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
 ONE = 1
+TWO = 2
 
 
 class _StubClient(XClient):
@@ -362,6 +363,74 @@ async def test_reject_completed_raises(db_session: AsyncSession) -> None:
     await db_session.flush()
     with pytest.raises(TaskAlreadyCompletedError):
         await _svc(db_session).reject(_id(task), "nope")
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_excludes_open_drafts(
+    db_session: AsyncSession,
+) -> None:
+    open_task = await _seed_draft(db_session)
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    history = await _svc(db_session).list_post_history()
+    ids = {t.id for t in history}
+    assert rejected_task.id in ids
+    assert open_task.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_newest_acted_first(
+    db_session: AsyncSession,
+) -> None:
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    posted_task = await _seed_draft(db_session)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(posted_task))
+    history = await _svc(db_session).list_post_history()
+    ids = [t.id for t in history]
+    assert ids.index(posted_task.id) < ids.index(rejected_task.id)
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_includes_marker_fields(
+    db_session: AsyncSession,
+) -> None:
+    posted_task = await _seed_draft(db_session)
+    client = _StubClient(tweet_id="777")
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(posted_task))
+    rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    await _svc(db_session).reject(_id(rejected_task), "off-brand tone")
+
+    history = await _svc(db_session).list_post_history()
+    by_id = {t.id: t for t in history}
+    assert markers.get_x_posted_tweet_id(by_id[posted_task.id]) == "777"
+    assert markers.get_x_reject_reason(by_id[rejected_task.id]) == "off-brand tone"
+
+
+@pytest.mark.asyncio
+async def test_list_post_history_respects_limit(db_session: AsyncSession) -> None:
+    tasks = []
+    for _ in range(3):
+        t = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+        await _svc(db_session).reject(_id(t), "not relevant")
+        tasks.append(t)
+    history = await _svc(db_session).list_post_history(limit=2)
+    assert len(history) == TWO
+    ids = {t.id for t in history}
+    assert tasks[2].id in ids
+    assert tasks[1].id in ids
+    assert tasks[0].id not in ids
 
 
 @pytest.mark.asyncio

@@ -270,7 +270,7 @@ def test_i_am_done_notes_defaults_to_empty(flow_module: types.ModuleType) -> Non
 
 
 def test_sync_branch_posts_to_dev_path(flow_module: types.ModuleType) -> None:
-    """sync_branch forwards task_id to /api/v1/flow/developer/sync_branch."""
+    """sync_branch forwards task_id + stash to /api/v1/flow/developer/sync_branch."""
     fake_client = _make_fake_client({"status": "ok"})
 
     with patch("httpx.Client", return_value=fake_client):
@@ -279,7 +279,18 @@ def test_sync_branch_posts_to_dev_path(flow_module: types.ModuleType) -> None:
     assert result == {"status": "ok"}
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/flow/developer/sync_branch" in args[0]
-    assert kwargs["json"] == {"task_id": "task-abc"}
+    assert kwargs["json"] == {"task_id": "task-abc", "stash": False}
+
+
+def test_sync_branch_forwards_stash_true(flow_module: types.ModuleType) -> None:
+    """sync_branch(stash=True) forwards the flag through the body."""
+    fake_client = _make_fake_client({"status": "ok"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        flow_module.sync_branch("task-abc", stash=True)
+
+    _, kwargs = fake_client.post.call_args
+    assert kwargs["json"] == {"task_id": "task-abc", "stash": True}
 
 
 def test_i_am_blocked_sends_reason(flow_module: types.ModuleType) -> None:
@@ -502,6 +513,80 @@ def test_escalate_up_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:
         "task_id": "task-uuid",
         "reason": "cross-cell help needed",
     }
+
+
+# ---------------------------------------------------------------------------
+# Client-side timeout selection — must always outlast the matching server
+# wall (FlowVerbTimeoutMiddleware) so the agent sees the clean 504 envelope
+# instead of a raw httpx timeout. See roboco.foundation.policy.flow_timeouts.
+# ---------------------------------------------------------------------------
+
+
+def test_client_timeout_normal_verb_is_default_plus_headroom(
+    flow_module: types.ModuleType,
+) -> None:
+    assert flow_module._TIMEOUT == (
+        flow_module._SERVER_TIMEOUT_SECONDS + flow_module.CLIENT_HEADROOM_SECONDS
+    )
+    assert flow_module._client_timeout_for("give_me_work") == flow_module._TIMEOUT
+
+
+def test_client_timeout_slow_verb_is_slow_budget_plus_headroom(
+    flow_module: types.ModuleType,
+) -> None:
+    assert flow_module._SLOW_TIMEOUT == (
+        flow_module._SERVER_SLOW_TIMEOUT_SECONDS + flow_module.CLIENT_HEADROOM_SECONDS
+    )
+    assert flow_module._client_timeout_for("i_am_done") == flow_module._SLOW_TIMEOUT
+    # Every SLOW_VERBS member routes through the same slow budget.
+    for verb in flow_module.SLOW_VERBS:
+        assert flow_module._client_timeout_for(verb) == flow_module._SLOW_TIMEOUT
+
+
+def test_client_timeout_env_override_respected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest_path = tmp_path / "tool-manifest.json"
+    manifest_path.write_text(json.dumps(_FULL_MANIFEST))
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest_path))
+    monkeypatch.setenv("ROBOCO_FLOW_VERB_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS", "600")
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+    try:
+        assert srv._TIMEOUT == 45 + srv.CLIENT_HEADROOM_SECONDS
+        assert srv._SLOW_TIMEOUT == 600 + srv.CLIENT_HEADROOM_SECONDS
+        assert srv._client_timeout_for("give_me_work") == srv._TIMEOUT
+        assert srv._client_timeout_for("i_am_done") == srv._SLOW_TIMEOUT
+    finally:
+        importlib.reload(srv)  # restore module state for later tests
+
+
+def test_post_opens_httpx_client_with_slow_timeout_for_slow_verb(
+    flow_module: types.ModuleType,
+) -> None:
+    fake_client = _make_fake_client({"status": "awaiting_qa"})
+
+    with patch("httpx.Client", return_value=fake_client) as client_cls:
+        flow_module.i_am_done("task-abc", notes="done")
+
+    assert client_cls.call_args.kwargs["timeout"] == flow_module._SLOW_TIMEOUT
+
+
+def test_post_opens_httpx_client_with_default_timeout_for_normal_verb(
+    flow_module: types.ModuleType,
+) -> None:
+    fake_client = _make_fake_client({"status": "idle"})
+
+    with patch("httpx.Client", return_value=fake_client) as client_cls:
+        flow_module.give_me_work()
+
+    assert client_cls.call_args.kwargs["timeout"] == flow_module._TIMEOUT
 
 
 def test_escalate_to_ceo_passes_reason(monkeypatch: pytest.MonkeyPatch) -> None:

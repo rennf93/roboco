@@ -91,6 +91,14 @@ async def _run_one(workspace: Path, command: str) -> tuple[int, str]:
         # the process lingers as a transient zombie and the FDs leak.
         await proc.wait()
         return 124, f"command timed out after {_GATE_TIMEOUT_SECONDS}s"
+    except asyncio.CancelledError:
+        # An outer cancellation (e.g. FlowVerbTimeoutMiddleware's own
+        # asyncio.timeout expiring around the whole submit) throws in here
+        # instead of the wait_for's own TimeoutError above — same orphaned
+        # child + leaked FDs if left unkilled. Kill/reap, then propagate.
+        proc.kill()
+        await proc.wait()
+        raise
     rc = proc.returncode
     if rc is None:
         # communicate() returned without a recorded exit code (the process

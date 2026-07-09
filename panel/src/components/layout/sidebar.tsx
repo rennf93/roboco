@@ -23,6 +23,7 @@ import {
   Sparkles,
   Building2,
   Radio,
+  Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,6 +33,7 @@ export const navItems = [
   // Dashboard
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
   { title: "Business", href: "/business", icon: Building2 },
+  { title: "Social", href: "/social", icon: Share2 },
 
   // Work Management
   { title: "Tasks", href: "/tasks", icon: ListTodo },

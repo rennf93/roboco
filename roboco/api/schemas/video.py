@@ -1,6 +1,6 @@
 """Schemas for the video engine's on-demand request + CEO approval surface."""
 
-from __future__ import annotations
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,24 @@ class VideoPostRejectRequest(BaseModel):
     """The CEO's reason for declining a draft."""
 
     reason: str = Field(min_length=4)
+
+
+class VideoPostHistoryResponse(BaseModel):
+    """One acted-on video_post draft (posted or rejected) — the CEO's
+    history view."""
+
+    task_id: str
+    source: str  # "video_post"
+    title: str
+    status: str  # "completed" | "cancelled"
+    occasion: str
+    script: str
+    platforms: list[str]
+    x_caption: str | None = None
+    tiktok_caption: str | None = None
+    reject_reason: str | None = None
+    posted: dict[str, str] = Field(default_factory=dict)  # platform -> posted id
+    acted_at: datetime
 
 
 class TikTokCredentialsStatus(BaseModel):

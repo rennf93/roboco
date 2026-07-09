@@ -30,6 +30,22 @@ export interface VideoPostExecuteResult {
   detail: string;
 }
 
+// One acted-on draft (posted or rejected) — the CEO's history view.
+export interface VideoPostHistoryEntry {
+  task_id: string;
+  source: string; // "video_post"
+  title: string;
+  status: string; // "completed" | "cancelled"
+  occasion: string;
+  script: string;
+  platforms: string[];
+  x_caption?: string | null;
+  tiktok_caption?: string | null;
+  reject_reason?: string | null;
+  posted: Record<string, string>; // platform -> posted id
+  acted_at: string;
+}
+
 export interface VideoRequestResult {
   status: string; // "opened" | "disabled" | "not_opened"
   task_id?: string | null;
@@ -54,6 +70,15 @@ export function videoMediaUrl(taskId: string, cut: VideoCut): string {
 export const videoApi = {
   listPosts: async (): Promise<VideoPost[]> => {
     const { data } = await api.get<VideoPost[]>("/video/posts");
+    return data;
+  },
+  // Posted or rejected drafts, newest-acted-first. Fixed default limit (50);
+  // no "load more" — pass a higher limit if the panel ever needs it.
+  listHistory: async (limit = 50): Promise<VideoPostHistoryEntry[]> => {
+    const { data } = await api.get<VideoPostHistoryEntry[]>(
+      "/video/posts/history",
+      { params: { limit } },
+    );
     return data;
   },
   // Fetches the rendered cut as a Blob via axios (carrying the auth headers

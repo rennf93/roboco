@@ -4,6 +4,10 @@
 
 import type { A2AChatMessage } from "@/lib/api/a2a";
 
+/** The human CEO's fixed slug — never a valid reply target (the CEO composes
+ * as itself, so it can't be its own recipient). */
+export const CEO_SLUG = "ceo";
+
 /**
  * Slug of the sender of the chronologically latest message, or null when the
  * transcript is empty. Sorts defensively — the API contract is oldest-first,
@@ -18,6 +22,16 @@ export function lastSenderOf(
       new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
   return sorted[sorted.length - 1].from_agent;
+}
+
+/**
+ * Valid reply recipients for a conversation: both participants, minus the
+ * CEO itself when it's a party. A CEO<->agent conversation has exactly one
+ * possible target (the agent) — no picker ambiguity, and critically no way
+ * to select "ceo" and have the CEO reply to itself.
+ */
+export function recipientOptions(agentA: string, agentB: string): string[] {
+  return [agentA, agentB].filter((slug) => slug !== CEO_SLUG);
 }
 
 /**

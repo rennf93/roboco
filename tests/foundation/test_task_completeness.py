@@ -152,3 +152,34 @@ def test_fill_parent_from_active_task_does_not_overwrite_explicit() -> None:
     payload = {"parent_task_id": "explicit-id"}
     result = tc.fill_parent_from_active_task(payload, "active-id")
     assert result["parent_task_id"] == "explicit-id"
+
+
+# ---------------------------------------------------------------------------
+# AC discipline (2026-07-07 task-quality defect): per-item cap + max count.
+# ---------------------------------------------------------------------------
+
+
+def test_task_at_create_rejects_too_many_acceptance_criteria() -> None:
+    """An AC list >7 items is over-decomposition of criteria."""
+    result = tc.check(
+        tc.TASK_AT_CREATE, _task(acceptance_criteria=[f"c{i}" for i in range(8)])
+    )
+    assert result.passed is False
+    assert "acceptance_criteria" in result.missing
+
+
+def test_task_at_create_accepts_seven_acceptance_criteria() -> None:
+    """Exactly 7 AC items is the cap — must pass."""
+    result = tc.check(
+        tc.TASK_AT_CREATE, _task(acceptance_criteria=[f"c{i}" for i in range(7)])
+    )
+    assert result.passed is True
+
+
+def test_task_at_create_rejects_overlong_acceptance_criterion() -> None:
+    """An AC item >200 chars is a restated description, not a criterion."""
+    long_ac = "x" * 201
+    result = tc.check(tc.TASK_AT_CREATE, _task(acceptance_criteria=[long_ac]))
+    assert result.passed is False
+    assert "acceptance_criteria" in result.missing
+    assert any("200" in h for h in result.field_hints.values())
