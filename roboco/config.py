@@ -953,9 +953,11 @@ class Settings(BaseSettings):
         ),
     )
     x_feature_spotlight_interval_seconds: int = Field(
-        default=259200,  # 3 days — tunable; marketing cadence is a CEO call, not a
-        # technical constant. Sits between the 30-min mentions poll
-        # and the weekly roadmap cycle.
+        default=86400,  # 1 day — tunable; marketing cadence is a CEO call, not a
+        # technical constant. This is the BASE loop tick only: the engine's own
+        # smart-cadence guard (XEngine._feature_activity_stretch_skip) stretches
+        # the effective cadence to 3x this whenever nothing has shipped since
+        # the last spotlight activity, so a quiet week doesn't fire daily.
         ge=3600,
         description="Seconds between feature-spotlight exploration cycles.",
     )

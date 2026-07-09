@@ -21,16 +21,19 @@ from ``ReleaseProposalService.approve()``'s publish success branch;
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import redis.asyncio as redis
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from roboco.config import settings
 from roboco.db.tables import (
     AgentSpawnSessionTable,
+    TaskTable,
     XSeenFeatureTable,
     XSeenMentionTable,
 )
@@ -61,7 +64,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import ProjectTable, TaskTable
+    from roboco.db.tables import ProjectTable
     from roboco.services.task import TaskService
 
 _CHAT_TIMEOUT_SECONDS = 60.0
@@ -147,10 +150,64 @@ _FEATURE_EXPLORATION_TITLE = "X feature-spotlight exploration"
 _FEATURE_EXPLORATION_DESCRIPTION = (
     "Investigate RoboCo's own shipped capabilities — CHANGELOG.md, the "
     "feature-flags ledger, docs/map, the company charter, and the knowledge "
-    "base — and pick ONE under-publicized feature not already covered (see "
-    "the seen-features list on this task). Draft ONE marketing post via "
-    "propose_feature_spotlight()."
+    "base — and pick ONE under-publicized, fresh-but-unspotlighted feature "
+    "not already covered (see the seen-features list on this task). Draft "
+    "ONE marketing post via propose_feature_spotlight(). If nothing shipped "
+    "is genuinely worth spotlighting this cycle, call "
+    "propose_feature_spotlight(skip=True, skip_reason='<why>') instead — a "
+    "weak, forced spotlight is worse than skipping a cycle; the skip still "
+    "counts as this cycle's activity so the engine doesn't re-fire daily "
+    "into the same quiet period."
 )
+
+# --- CHANGELOG.md parsing (activity-stretch signal + brief enrichment) -----
+# Keep-a-Changelog headers are regular enough for a small regex split instead
+# of a markdown-parser dependency: "## [X.Y.Z] - YYYY-MM-DD" release headers,
+# "### Added/Fixed/Changed/..." subsection headers within each release body.
+_CHANGELOG_VERSION_RE = re.compile(
+    r"^## \[(?P<version>[^\]]+)\] - (?P<date>\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE
+)
+_CHANGELOG_SUBSECTION_RE = re.compile(r"^### (?P<title>.+?)\s*$", re.MULTILINE)
+
+
+def _parse_changelog_sections(text: str) -> list[dict[str, Any]]:
+    """Split a Keep-a-Changelog file into per-release sections: version, date
+    (the file's own day granularity), and subsection titles. Pure + best-
+    effort — a malformed/missing header just yields fewer/no sections, never
+    raises, so a hand-edited CHANGELOG can't break the engine."""
+    headers = list(_CHANGELOG_VERSION_RE.finditer(text))
+    sections: list[dict[str, Any]] = []
+    for i, m in enumerate(headers):
+        start = m.end()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        titles = [t.strip() for t in _CHANGELOG_SUBSECTION_RE.findall(text[start:end])]
+        sections.append(
+            {"version": m.group("version"), "date": m.group("date"), "titles": titles}
+        )
+    return sections
+
+
+def _sections_since(
+    sections: list[dict[str, Any]], cutoff: datetime
+) -> list[dict[str, Any]]:
+    """Sections dated strictly after ``cutoff``'s calendar date.
+
+    The CHANGELOG only carries day granularity, so a section dated the same
+    day as an intra-day cutoff can't be ordered against it and is
+    conservatively treated as not-new (a false "nothing shipped" costs one
+    extra quiet cycle; a false "something shipped" would let a weak forced
+    spotlight through — the former is the cheaper mistake).
+    """
+    cutoff_date = cutoff.date()
+    out: list[dict[str, Any]] = []
+    for section in sections:
+        try:
+            sec_date = datetime.strptime(section["date"], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if sec_date > cutoff_date:
+            out.append(section)
+    return out
 
 
 class XEngine(BaseService):
@@ -383,14 +440,15 @@ class XEngine(BaseService):
 
         No-ops when the flags are off, no X credentials are configured (drafting
         content nobody can ever post is pointless — mirrors the release/mentions
-        guard), a cycle is already open, the shared open-post cap is reached, or
-        the RoboCo project isn't resolvable. Never authors content itself — HoM
-        does, via propose_feature_spotlight() once the dispatcher spawns it.
+        guard), a materialized spotlight draft is still awaiting the CEO (never
+        stack a second one), nothing has shipped since the last spotlight
+        activity and the stretched cadence hasn't elapsed yet (the "smart
+        cadence" guard — see ``_feature_activity_stretch_skip``), a cycle is
+        already open, the shared open-post cap is reached, or the RoboCo
+        project isn't resolvable. Never authors content itself — HoM does, via
+        propose_feature_spotlight() once the dispatcher spawns it.
         """
-        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
-            return None
-        client = await self._client()
-        if not client.configured:
+        if not await self._feature_spotlight_may_proceed():
             return None
         task_svc = get_task_service(self.session)
         # Cancel a stale + spawnless exploration so the engine can re-arm; a
@@ -408,6 +466,181 @@ class XEngine(BaseService):
         return await self._originate_feature_exploration(
             task_svc, cast("UUID", project.id)
         )
+
+    async def _feature_spotlight_may_proceed(self) -> bool:
+        """Bundles the flags/creds/pending-draft/activity-stretch guards into
+        one boolean so ``open_feature_spotlight_exploration``'s own
+        return-statement count stays under the xenon/PLR0911 budget — each
+        sub-guard still logs its own skip reason."""
+        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
+            return False
+        client = await self._client()
+        if not client.configured:
+            return False
+        task_svc = get_task_service(self.session)
+        if await self._pending_spotlight_draft_open(task_svc):
+            return False
+        return not await self._feature_activity_stretch_skip()
+
+    async def _pending_spotlight_draft_open(self, task_svc: TaskService) -> bool:
+        """True when a materialized x_feature draft is still open (PENDING,
+        awaiting the CEO in the X post queue) — never stack a second spotlight
+        draft while one is unreviewed. Distinct from the shared numeric
+        open-post cap below: this is a one-open-draft rule specific to the
+        spotlight source."""
+        drafts = await task_svc.list_open_feature_spotlight_drafts()
+        if not drafts:
+            return False
+        self.log.info(
+            "x-engine: feature-spotlight draft still open; skipping this cycle",
+            open_draft_id=str(drafts[0].id),
+        )
+        return True
+
+    async def _feature_activity_stretch_skip(self) -> bool:
+        """True to skip this cycle under the smart-cadence guard.
+
+        Stretches the effective cadence to 3x the base interval whenever
+        nothing has shipped (per CHANGELOG.md) since the last spotlight
+        activity, so a quiet stretch doesn't fire the Head of Marketing daily
+        into nothing. Always False on no activity history yet (a first-ever
+        cycle is never stretched) or on a changelog-read failure (fail open —
+        a signal outage must never silently starve the engine of cycles).
+        """
+        last_activity = await self._last_spotlight_activity()
+        if last_activity is None:
+            return False
+        try:
+            shipped = bool(await self._shipped_sections_since(last_activity))
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: changelog activity check failed (fail open)",
+                error=str(exc),
+            )
+            return False
+        if shipped:
+            return False
+        stretched_seconds = 3 * settings.x_feature_spotlight_interval_seconds
+        quiet = (datetime.now(UTC) - last_activity).total_seconds() < stretched_seconds
+        if quiet:
+            self.log.info(
+                "x-engine: feature-spotlight cadence stretched "
+                "(nothing shipped since last activity)",
+                last_activity=last_activity.isoformat(),
+                stretched_seconds=stretched_seconds,
+            )
+        return quiet
+
+    async def _last_spotlight_activity(self) -> datetime | None:
+        """Latest genuine spotlight-cycle activity, or None with no history yet.
+
+        Two sources, taking the max: a materialized draft's ``seen_at``
+        (XSeenFeatureTable), or a COMPLETED exploration task's ``updated_at``
+        — a HoM "skip" verdict completes the exploration with no
+        seen-features row, so ``updated_at`` is the only signal that advances
+        on a skip (mirrors ``list_x_post_history``'s use of ``updated_at`` as
+        "when this was acted on"). Deliberately excludes CANCELLED
+        explorations: the stale-cycle janitor (``_cancel_stale_exploration``)
+        cancels an abandoned cycle with no HoM action at all, which must not
+        look like activity or the stretch guard would wrongly suppress the
+        very next real cycle.
+        """
+        seen_max = (
+            await self.session.execute(select(func.max(XSeenFeatureTable.seen_at)))
+        ).scalar_one_or_none()
+        explo_max = (
+            await self.session.execute(
+                select(func.max(TaskTable.updated_at)).where(
+                    TaskTable.source == X_FEATURE_EXPLORATION_SOURCE,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        ).scalar_one_or_none()
+        candidates = [v for v in (seen_max, explo_max) if v is not None]
+        return max(candidates) if candidates else None
+
+    async def _shipped_sections_since(self, cutoff: datetime) -> list[dict[str, Any]]:
+        """CHANGELOG.md release sections dated after ``cutoff`` — the shared
+        "did anything ship" signal for both the activity-stretch gate and the
+        exploration brief (``_gather_spotlight_brief``).
+
+        Reads the RoboCo project's read clone (``WorkspaceService.
+        ensure_read_clone``) rather than running a full
+        ``ReleaseReadinessService.assess``: a single small-file read + regex
+        split is far cheaper than the multi-subprocess git snapshot the
+        release manager needs, and this runs on every feature-spotlight loop
+        tick (up to daily), not once per release.
+        """
+        from roboco.services.release_readiness import _read_changelog
+        from roboco.services.workspace import get_workspace_service
+
+        slug = (settings.self_heal_project_slug or "roboco-api").strip()
+        root = await get_workspace_service(self.session).ensure_read_clone(slug)
+        text = _read_changelog(Path(root))
+        return _sections_since(_parse_changelog_sections(text), cutoff)
+
+    async def _recent_rejected_spotlights(
+        self, *, limit: int = 5
+    ) -> list[dict[str, str]]:
+        """Recently CEO-rejected x_feature drafts + their reject reasons, so
+        HoM doesn't re-propose ground the CEO already turned down. Reuses
+        ``list_x_post_history`` (both sources + terminal statuses) and
+        filters in Python — a rejected-spotlight-only query isn't worth a
+        dedicated task-service method for a bounded top-N read."""
+        history = await get_task_service(self.session).list_x_post_history(limit=50)
+        rejected: list[dict[str, str]] = []
+        for t in history:
+            if t.source != X_FEATURE_SOURCE or t.status != TaskStatus.CANCELLED:
+                continue
+            reason = markers.get_x_reject_reason(t)
+            if not reason:
+                continue
+            ref = markers.get_x_feature_ref(t) or {}
+            rejected.append(
+                {
+                    "slug": str(ref.get("slug", "")),
+                    "title": str(ref.get("title", "")),
+                    "reason": reason,
+                }
+            )
+            if len(rejected) >= limit:
+                break
+        return rejected
+
+    async def _gather_spotlight_brief(self) -> dict[str, Any]:
+        """Everything the spawn prompt's brief-enrichment needs beyond the
+        plain seen-slugs list: the seen ledger WITH dates, what shipped since
+        the last spotlight activity (same changelog signal as the
+        activity-stretch gate), and recently CEO-rejected x_feature drafts
+        with their reasons — so HoM can prefer fresh-but-unspotlighted
+        material over stale or already-rejected ground. Every piece is
+        best-effort; a changelog-read failure yields an empty
+        ``shipped_since`` rather than blocking origination.
+        """
+        seen_rows = (
+            await self.session.execute(
+                select(XSeenFeatureTable).order_by(XSeenFeatureTable.seen_at)
+            )
+        ).scalars()
+        seen = [
+            {"slug": row.feature_slug, "seen_at": row.seen_at.isoformat()}
+            for row in seen_rows
+        ]
+        last_activity = await self._last_spotlight_activity()
+        shipped_since: list[dict[str, Any]] = []
+        if last_activity is not None:
+            try:
+                shipped_since = await self._shipped_sections_since(last_activity)
+            except Exception as exc:
+                self.log.warning(
+                    "x-engine: changelog brief read failed (best-effort)",
+                    error=str(exc),
+                )
+        return {
+            "seen": seen,
+            "shipped_since": shipped_since,
+            "rejected": await self._recent_rejected_spotlights(),
+        }
 
     async def _cancel_stale_exploration(self, task_svc: TaskService) -> bool:
         """Return False to block re-arm (fresh cycle or live HoM spawn); return
@@ -451,13 +684,16 @@ class XEngine(BaseService):
         self, task_svc: TaskService, project_id: UUID
     ) -> TaskTable:
         seen = await self._seen_feature_slugs()
+        brief = await self._gather_spotlight_brief()
         task = await task_svc.create(
             TaskCreateRequest(
                 title=_FEATURE_EXPLORATION_TITLE,
                 description=_FEATURE_EXPLORATION_DESCRIPTION,
                 acceptance_criteria=[
                     "propose_feature_spotlight() is called once with an "
-                    "under-publicized, not-yet-covered feature"
+                    "under-publicized, not-yet-covered feature, OR skip=True "
+                    "with a substantive skip_reason when nothing is worth "
+                    "spotlighting this cycle"
                 ],
                 team=Team.BOARD,
                 assigned_to=_foundation.AGENTS["head-marketing"].uuid,
@@ -472,6 +708,7 @@ class XEngine(BaseService):
             )
         )
         markers.set_x_seen_features(task, seen)
+        markers.set_x_spotlight_brief(task, brief)
         await self.session.flush()
         self.log.info(
             "feature-spotlight exploration opened (Head of Marketing)",
@@ -485,6 +722,29 @@ class XEngine(BaseService):
 
     async def is_feature_seen(self, feature_slug: str) -> bool:
         return await self.session.get(XSeenFeatureTable, feature_slug) is not None
+
+    async def skip_feature_spotlight(
+        self, *, exploration_task: TaskTable, reason: str
+    ) -> TaskTable:
+        """Complete a HoM "nothing worth spotlighting this cycle" verdict.
+
+        No draft is materialized and no feature slug is marked seen (a skip
+        covers nothing). The exploration task completes exactly like a
+        materialized spotlight does, so its ``updated_at`` feeds
+        ``_last_spotlight_activity`` — a skip counts as this cycle's activity,
+        which is what keeps the smart-cadence guard from re-firing daily into
+        the same quiet period. Called only from the propose_feature_spotlight
+        content verb's skip=True branch.
+        """
+        markers.set_x_spotlight_skip_reason(exploration_task, reason)
+        exploration_task.status = TaskStatus.COMPLETED
+        await self.session.flush()
+        self.log.info(
+            "x-engine: feature spotlight skipped (nothing to spotlight)",
+            task_id=str(exploration_task.id),
+            reason=reason,
+        )
+        return exploration_task
 
     # ---- shared origination -------------------------------------------------
 

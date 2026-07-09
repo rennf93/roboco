@@ -10,6 +10,7 @@ from roboco.services.settings import FEATURE_FLAGS, validate_setting
 
 _DEFAULT_INTERVAL = 1800
 _DEFAULT_MAX_OPEN = 10
+_DEFAULT_SPOTLIGHT_INTERVAL_SECONDS = 86400  # 1 day
 
 
 def test_x_engine_disabled_by_default() -> None:
@@ -46,3 +47,13 @@ def test_x_feature_spotlight_disabled_by_default() -> None:
 
 def test_x_feature_spotlight_flag_registered_in_feature_flags() -> None:
     assert "x_feature_spotlight_enabled" in [key for key, _ in FEATURE_FLAGS]
+
+
+def test_x_feature_spotlight_interval_defaults_to_one_day() -> None:
+    """CEO directive: default cadence is 1 day (was 3 days) — the engine's
+    own smart-cadence guard stretches this to 3x when quiet instead of the
+    interval itself defaulting slower."""
+    assert (
+        Settings().x_feature_spotlight_interval_seconds
+        == _DEFAULT_SPOTLIGHT_INTERVAL_SECONDS
+    )

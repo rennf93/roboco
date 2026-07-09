@@ -130,13 +130,19 @@ class ProposeRoadmapRequest(BaseModel):
 
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
-    ready-to-post body, plus an optional companion-video request."""
+    ready-to-post body, plus an optional companion-video request — or a
+    ``skip`` verdict when nothing is worth spotlighting this cycle (the
+    feature/title/body fields are then ignored; the handler enforces the
+    real "required unless skipping" rule since a plain Field(..., min_length)
+    can't express that conditional)."""
 
-    feature_slug: str = Field(..., min_length=1, max_length=128)
-    feature_title: str = Field(..., min_length=1)
-    body: str = Field(..., min_length=1)
+    feature_slug: str = Field(default="", max_length=128)
+    feature_title: str = ""
+    body: str = ""
     wants_video: bool = False
     video_script: str = ""
+    skip: bool = False
+    skip_reason: str = ""
 
 
 class ProposeVideoRequest(BaseModel):

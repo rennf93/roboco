@@ -799,6 +799,53 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
 _MAX_VIDEO_RENDER_ATTEMPTS = _markers.MAX_VIDEO_RENDER_ATTEMPTS
 
 
+def _format_seen_features(markers_dict: dict[str, Any]) -> str:
+    """Render the seen-features ledger with dates when the enriched
+    ``x_spotlight_brief`` marker carries them, falling back to the plain
+    slug list (a pre-brief exploration, or a brief-gather failure) — the
+    prompt must never break on a missing/partial marker. Module-level (not a
+    method), mirroring ``_is_non_dev_dispatch_source``, so this is unit
+    testable without a wholesale-mocked ``self`` (xenon budget: keeps
+    ``_build_feature_spotlight_prompt`` a flat render instead of inlining
+    this branching)."""
+    brief = markers_dict.get(_markers.X_SPOTLIGHT_BRIEF) or {}
+    seen = brief.get("seen")
+    if isinstance(seen, list) and seen:
+        return ", ".join(
+            f"{s.get('slug')} (seen {str(s.get('seen_at') or '')[:10]})" for s in seen
+        )
+    slugs = markers_dict.get(_markers.X_SEEN_FEATURES) or []
+    return ", ".join(slugs) if slugs else "(none yet — this is the first cycle)"
+
+
+def _format_shipped_since(markers_dict: dict[str, Any]) -> str:
+    """Render the CHANGELOG sections shipped since the last spotlight
+    activity — empty/missing brief renders as "nothing new" rather than
+    breaking the prompt (see ``_format_seen_features``)."""
+    brief = markers_dict.get(_markers.X_SPOTLIGHT_BRIEF) or {}
+    shipped = brief.get("shipped_since")
+    if not isinstance(shipped, list) or not shipped:
+        return "(nothing new since the last cycle, per CHANGELOG.md)"
+    parts = [
+        f"v{entry.get('version')} ({entry.get('date')}): "
+        f"{', '.join(entry.get('titles') or []) or 'no subsections'}"
+        for entry in shipped
+    ]
+    return "; ".join(parts)
+
+
+def _format_rejected_spotlights(markers_dict: dict[str, Any]) -> str:
+    """Render recently CEO-rejected x_feature drafts + their reasons, so HoM
+    steers away from ground the CEO already turned down."""
+    brief = markers_dict.get(_markers.X_SPOTLIGHT_BRIEF) or {}
+    rejected = brief.get("rejected")
+    if not isinstance(rejected, list) or not rejected:
+        return "(none)"
+    return "; ".join(
+        f"{r.get('title') or r.get('slug')} — {r.get('reason')}" for r in rejected
+    )
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -13657,8 +13704,9 @@ that is not your job here, and the gateway will reject those verbs.
         """Prompt for the Head of Marketing's one-shot feature-spotlight cycle."""
         task_id = task.get("id", "unknown")
         markers_dict = task.get("orchestration_markers") or {}
-        seen = markers_dict.get(_markers.X_SEEN_FEATURES) or []
-        seen_line = ", ".join(seen) if seen else "(none yet — this is the first cycle)"
+        seen_line = _format_seen_features(markers_dict)
+        shipped_line = _format_shipped_since(markers_dict)
+        rejected_line = _format_rejected_spotlights(markers_dict)
         return f"""\
 You are the Head of Marketing. It's time for your periodic feature-spotlight cycle.
 
@@ -13667,9 +13715,14 @@ TASK: {task_id}
 RoboCo markets its own capabilities, not just releases. Investigate what the
 company has actually shipped and draft ONE marketing post about a genuinely
 useful, under-publicized capability — something a user or prospect would not
-already know from the last release announcement.
+already know from the last release announcement. Prefer something fresh but
+not yet spotlighted over stale already-covered ground.
 
 ALREADY COVERED — do not repeat: {seen_line}
+
+SHIPPED SINCE THE LAST CYCLE (CHANGELOG.md): {shipped_line}
+
+RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
 
 == WHAT TO DO ==
 
@@ -13690,9 +13743,15 @@ ALREADY COVERED — do not repeat: {seen_line}
 5. propose_feature_spotlight(feature_slug="<a short stable slug>",
    feature_title="<human-readable feature name>", body="<the post>")
      — call this EXACTLY ONCE.
-6. i_am_idle() — once proposed. The CEO reviews, edits, approves, or rejects
-   the draft in the X post queue; nothing posts without that explicit
-   approval.
+
+   If nothing shipped is genuinely worth spotlighting this cycle, call
+   propose_feature_spotlight(skip=True, skip_reason="<why nothing qualifies>")
+   instead — a weak, forced spotlight is worse than skipping a cycle, and the
+   next cycle will see this skip as recent activity (the cadence won't just
+   re-fire into the same quiet period tomorrow).
+6. i_am_idle() — once proposed (or skipped). The CEO reviews, edits, approves,
+   or rejects the draft in the X post queue; nothing posts without that
+   explicit approval.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.

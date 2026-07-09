@@ -41,6 +41,8 @@ X_REJECT_REASON = "x_reject_reason"
 X_POSTED_TWEET_ID = "x_posted_tweet_id"
 X_FEATURE_REF = "x_feature_ref"
 X_SEEN_FEATURES = "x_seen_features"
+X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
+X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
@@ -206,6 +208,24 @@ def get_x_seen_features(task: HasMarkers) -> list[str]:
 
 def set_x_seen_features(task: HasMarkers, slugs: list[str]) -> None:
     set_marker(task, X_SEEN_FEATURES, [str(s) for s in slugs])
+
+
+def get_x_spotlight_brief(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_SPOTLIGHT_BRIEF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_spotlight_brief(task: HasMarkers, brief: dict[str, Any]) -> None:
+    set_marker(task, X_SPOTLIGHT_BRIEF, brief)
+
+
+def get_x_spotlight_skip_reason(task: HasMarkers) -> str | None:
+    val = get_marker(task, X_SPOTLIGHT_SKIP_REASON)
+    return str(val) if val else None
+
+
+def set_x_spotlight_skip_reason(task: HasMarkers, reason: str) -> None:
+    set_marker(task, X_SPOTLIGHT_SKIP_REASON, reason)
 
 
 # --- board roadmap cycle ---------------------------------------------------

@@ -791,6 +791,13 @@ async def test_feature_spotlight_exploration_carries_seen_features_marker(
     await db_session.flush()
     _enable(monkeypatch, x_feature_spotlight_enabled=True)
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    # These seen rows are unrelated dedup fixtures, not a real "recent
+    # activity" signal for the smart-cadence guard — bypass it here (a
+    # dedicated no-network test covers the guard itself below) so this test
+    # stays about the seen-features marker only.
+    monkeypatch.setattr(
+        engine, "_last_spotlight_activity", AsyncMock(return_value=None)
+    )
     task = await engine.open_feature_spotlight_exploration()
     assert task is not None
     assert set(markers.get_x_seen_features(task)) == {
@@ -874,6 +881,350 @@ async def test_materialize_feature_spotlight_enforces_280_chars(
     body = markers.get_x_draft_body(draft)
     assert body is not None
     assert len(body) <= MAX_TWEET_CHARS
+
+
+# --------------------------------------------------------------------------- #
+# CHANGELOG.md parsing — pure functions, no DB/network needed
+# --------------------------------------------------------------------------- #
+
+_CHANGELOG_FIXTURE = (
+    "# Changelog\n\n"
+    "## [0.21.0] - 2026-07-09\n\n"
+    "### Added\n\n- thing one\n\n### Fixed\n\n- thing two\n\n"
+    "## [0.20.0] - 2026-07-01\n\n"
+    "### Added\n\n- older thing\n"
+)
+
+
+def test_parse_changelog_sections_extracts_version_date_titles() -> None:
+    sections = x_engine_module._parse_changelog_sections(_CHANGELOG_FIXTURE)
+    assert sections[0] == {
+        "version": "0.21.0",
+        "date": "2026-07-09",
+        "titles": ["Added", "Fixed"],
+    }
+    assert sections[1] == {
+        "version": "0.20.0",
+        "date": "2026-07-01",
+        "titles": ["Added"],
+    }
+
+
+def test_parse_changelog_sections_empty_text_yields_no_sections() -> None:
+    assert x_engine_module._parse_changelog_sections("no headers here") == []
+
+
+def test_sections_since_excludes_earlier_and_includes_later() -> None:
+    sections = x_engine_module._parse_changelog_sections(_CHANGELOG_FIXTURE)
+    cutoff = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
+    result = x_engine_module._sections_since(sections, cutoff)
+    assert [s["version"] for s in result] == ["0.21.0"]
+
+
+def test_sections_since_same_calendar_day_as_cutoff_is_not_new() -> None:
+    """Day-granularity conservatism: a section dated the same day as the
+    cutoff can't be ordered against it, so it's treated as not-new."""
+    sections = [{"version": "0.21.0", "date": "2026-07-09", "titles": ["Added"]}]
+    cutoff = datetime(2026, 7, 9, 1, 0, tzinfo=UTC)
+    assert x_engine_module._sections_since(sections, cutoff) == []
+
+
+# --------------------------------------------------------------------------- #
+# Smart spotlight cadence: pending-draft guard, activity-stretch, skip verb
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_completed_exploration(
+    session: AsyncSession, *, project_id: UUID, age: timedelta = timedelta(seconds=0)
+) -> TaskTable:
+    """A COMPLETED x_feature_exploration row with an explicit updated_at —
+    ``onupdate`` only fires on a real UPDATE, not this direct INSERT, so the
+    activity timestamp must be set here rather than relying on the column
+    default."""
+    now = datetime.now(UTC)
+    task = TaskTable(
+        id=uuid4(),
+        title="X feature-spotlight exploration",
+        description="seed",
+        acceptance_criteria=["x"],
+        status=TS.COMPLETED,
+        task_type=TaskType.ADMINISTRATIVE,
+        nature=TaskNature.NON_TECHNICAL,
+        project_id=project_id,
+        created_by=SYSTEM_UUID,
+        assigned_to=HOM_UUID,
+        team=Team.BOARD,
+        source=X_FEATURE_EXPLORATION_SOURCE,
+        confirmed_by_human=False,
+        created_at=now - age,
+        updated_at=now - age,
+    )
+    session.add(task)
+    await session.flush()
+    return task
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_pending_draft_blocks_new_cycle(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A still-open materialized x_feature draft blocks a new exploration —
+    never stack a second spotlight draft while one awaits the CEO."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+    await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="org-memory",
+        feature_title="Organizational Memory Loop",
+        body="Did you know RoboCo agents learn from every completed task?",
+    )
+    second = await engine.open_feature_spotlight_exploration()
+    assert second is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_new_cycle_resumes_once_draft_acted_on(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the CEO acts on the draft (cancelled here, mirroring reject), the
+    pending-draft guard no longer blocks a fresh cycle."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+    draft = await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="org-memory",
+        feature_title="Organizational Memory Loop",
+        body="Did you know RoboCo agents learn from every completed task?",
+    )
+    draft.status = TS.CANCELLED  # mirrors XPostService.reject
+    await db_session.flush()
+    # The activity-stretch guard is covered separately below; bypass it here
+    # so this test is only about the pending-draft guard clearing.
+    monkeypatch.setattr(
+        engine, "_feature_activity_stretch_skip", AsyncMock(return_value=False)
+    )
+    second = await engine.open_feature_spotlight_exploration()
+    assert second is not None
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_activity_stretch_skips_when_quiet(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing shipped since the last (recent) spotlight activity and less
+    than 3x the interval has elapsed -> the cycle is skipped."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    await _seed_completed_exploration(db_session, project_id=cast("UUID", project.id))
+    monkeypatch.setattr(engine, "_shipped_sections_since", AsyncMock(return_value=[]))
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_activity_stretch_fires_when_something_shipped(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even right after the last activity, a newer CHANGELOG section clears
+    the stretch guard and the cycle proceeds."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    await _seed_completed_exploration(db_session, project_id=cast("UUID", project.id))
+    monkeypatch.setattr(
+        engine,
+        "_shipped_sections_since",
+        AsyncMock(
+            return_value=[
+                {"version": "9.9.9", "date": "2099-01-01", "titles": ["Added"]}
+            ]
+        ),
+    )
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_activity_stretch_fires_after_stretched_window(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing shipped, but the 3x-stretched window has already elapsed since
+    the last activity -> the cycle proceeds anyway (the stretch has a
+    ceiling, it doesn't silence the engine forever)."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=10,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    await _seed_completed_exploration(
+        db_session,
+        project_id=cast("UUID", project.id),
+        age=timedelta(seconds=100),  # > 3 * 10s stretched window
+    )
+    monkeypatch.setattr(engine, "_shipped_sections_since", AsyncMock(return_value=[]))
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_no_activity_history_never_stretched(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-ever cycle (no seen rows, no completed explorations): the
+    activity-stretch guard never even reads the changelog."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(engine, "_shipped_sections_since", spy)
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+    spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_activity_stretch_fails_open_on_changelog_error(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changelog-read failure must never silently starve the engine of
+    cycles — fail open (proceed) rather than skip."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    await _seed_completed_exploration(db_session, project_id=cast("UUID", project.id))
+    monkeypatch.setattr(
+        engine,
+        "_shipped_sections_since",
+        AsyncMock(side_effect=RuntimeError("clone failed")),
+    )
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+
+
+@pytest.mark.asyncio
+async def test_skip_feature_spotlight_completes_without_draft_or_seen_slug(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+
+    reason = "nothing shipped this cycle worth a spotlight"
+    result = await engine.skip_feature_spotlight(
+        exploration_task=exploration, reason=reason
+    )
+    assert result.status == TS.COMPLETED
+    assert markers.get_x_spotlight_skip_reason(result) == reason
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+    assert await get_task_service(db_session).list_open_x_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_skip_feature_spotlight_counts_as_activity(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skip (no seen-features row at all) still advances
+    _last_spotlight_activity via the completed exploration's updated_at."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+    assert await engine._last_spotlight_activity() is None
+
+    await engine.skip_feature_spotlight(
+        exploration_task=exploration, reason="quiet week, nothing shipped"
+    )
+    assert await engine._last_spotlight_activity() is not None
+
+
+@pytest.mark.asyncio
+async def test_gather_spotlight_brief_includes_dates_shipped_and_rejected(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    db_session.add(XSeenFeatureTable(feature_slug="org-memory"))
+    await db_session.flush()
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+
+    rejected_task = await engine._originate_post(
+        title="X post: feature spotlight — Old Feature",
+        body="a previously drafted spotlight body",
+        source=X_FEATURE_SOURCE,
+        project_id=cast("UUID", project.id),
+    )
+    markers.set_x_feature_ref(
+        rejected_task, {"slug": "old-one", "title": "Old Feature"}
+    )
+    markers.set_x_reject_reason(rejected_task, "too niche for the audience")
+    rejected_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        engine,
+        "_last_spotlight_activity",
+        AsyncMock(return_value=datetime.now(UTC) - timedelta(days=1)),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_shipped_sections_since",
+        AsyncMock(
+            return_value=[
+                {"version": "1.2.3", "date": "2026-07-09", "titles": ["Added"]}
+            ]
+        ),
+    )
+
+    brief = await engine._gather_spotlight_brief()
+    assert brief["seen"] == [
+        {"slug": "org-memory", "seen_at": brief["seen"][0]["seen_at"]}
+    ]
+    assert brief["shipped_since"] == [
+        {"version": "1.2.3", "date": "2026-07-09", "titles": ["Added"]}
+    ]
+    assert brief["rejected"] == [
+        {
+            "slug": "old-one",
+            "title": "Old Feature",
+            "reason": "too niche for the audience",
+        }
+    ]
 
 
 # --------------------------------------------------------------------------- #
