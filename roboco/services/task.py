@@ -6330,7 +6330,7 @@ class TaskService(BaseService):
             loaded = await self._parent_ac_ref_sets(cast("UUID", t.parent_task_id))
             if loaded is None:
                 continue
-            parent, claimed, _verified, _any = loaded
+            parent, claimed, _verified, _any, _root_owned = loaded
             own = self._normalize_ac_refs(parent, t.parent_ac_refs)
             orphaned_ids = own - claimed
             if orphaned_ids:
@@ -8136,17 +8136,25 @@ class TaskService(BaseService):
 
     async def _parent_ac_ref_sets(
         self, task_id: UUID
-    ) -> tuple[TaskTable, set[str], set[str], bool] | None:
+    ) -> tuple[TaskTable, set[str], set[str], bool, set[str]] | None:
         """Load a parent and its children's parent-AC-ref coverage sets.
 
         Shared core of the three AC-coverage primitives. Returns ``None`` when
         the parent is missing or has no stable criterion ids (nothing to cover).
-        Otherwise ``(parent, claimed, verified, any_declared)`` where
-        ``claimed`` is the union of parent_ac_refs over all non-cancelled
+        Otherwise ``(parent, claimed, verified, any_declared, root_owned)``
+        where ``claimed`` is the union of parent_ac_refs over all non-cancelled
         children, ``verified`` the union over COMPLETED children only, and
         ``any_declared`` whether *any* child declared a ref at all (the
         safe-by-construction inertness signal — a cancelled-only declaration
         still counts as "coverage tracking is active here").
+
+        ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
+        itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
+        only the root's own machinery satisfies (e.g. PR-supersede, closing a
+        contributor PR), never a cell. Root-owned refs are unconditionally
+        folded into both ``claimed`` and ``verified``: there is no child
+        status to gate on, the work happens at/after the root's own
+        submit/supersede by construction.
         """
         parent = await self.get(task_id)
         if not parent or not parent.acceptance_criteria_ids:
@@ -8166,7 +8174,12 @@ class TaskService(BaseService):
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
-        return parent, claimed, verified, any_declared
+        root_owned = self._normalize_ac_refs(parent, parent.parent_ac_refs)
+        if root_owned:
+            any_declared = True
+            claimed |= root_owned
+            verified |= root_owned
+        return parent, claimed, verified, any_declared, root_owned
 
     @staticmethod
     def _normalize_ac_refs(parent: TaskTable, refs: list[str] | None) -> set[str]:
@@ -8229,7 +8242,7 @@ class TaskService(BaseService):
     async def add_parent_ac_refs(
         self, task_id: UUID, refs: list[str], declared_by: UUID | None = None
     ) -> TaskTable | None:
-        """UNION ``refs`` into a child's ``parent_ac_refs`` (idempotent) + audit.
+        """UNION ``refs`` into a task's ``parent_ac_refs`` (idempotent) + audit.
 
         Lets a PM stamp coverage onto an already-existing child after the
         fact — e.g. a completed replacement whose original ``delegate``
@@ -8239,6 +8252,12 @@ class TaskService(BaseService):
         time by ``_normalize_ac_refs``. Callers must validate refs against
         the parent's criteria first (``unknown_ac_refs``) — this method
         merges unconditionally.
+
+        Agnostic to whether ``task_id`` is a CHILD (refs resolve against its
+        real parent's criteria) or a task declaring root-owned coverage on
+        ITSELF (refs resolve against its own criteria, read back by
+        ``_parent_ac_ref_sets`` when ``task_id`` is later queried as a
+        parent) — this method only ever writes the one row's own field.
         """
         from roboco.db.tables import AuditLogTable
 
@@ -8276,7 +8295,7 @@ class TaskService(BaseService):
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, _claimed, verified, any_declared = loaded
+        parent, _claimed, verified, any_declared, _root_owned = loaded
         if not any_declared:
             return []
         return self._criteria_texts_not_in(parent, verified)
@@ -8297,7 +8316,7 @@ class TaskService(BaseService):
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, claimed, _verified, any_declared = loaded
+        parent, claimed, _verified, any_declared, _root_owned = loaded
         if not any_declared:
             return []
         return self._criteria_texts_not_in(parent, claimed)
@@ -8313,11 +8332,15 @@ class TaskService(BaseService):
         it always reports the parent's criteria so a decomposing PM can see, per
         delegate, which criteria still lack a subtask. Visibility source for the
         decomposition briefing; the gates read the inert variants instead.
+
+        ``claimed_by`` distinguishes a root-owned criterion (declared on the
+        parent itself — ``"root"``) from one claimed by a child (``"child"``)
+        or not claimed at all (``None``), so the PM can see the mapping.
         """
         loaded = await self._parent_ac_ref_sets(task_id)
         if loaded is None:
             return []
-        parent, claimed, verified, _any = loaded
+        parent, claimed, verified, _any, root_owned = loaded
         ids = parent.acceptance_criteria_ids or []
         texts = parent.acceptance_criteria or []
         return [
@@ -8326,6 +8349,13 @@ class TaskService(BaseService):
                 "text": texts[idx] if idx < len(texts) else ac_id,
                 "claimed": ac_id in claimed,
                 "verified": ac_id in verified,
+                "claimed_by": (
+                    "root"
+                    if ac_id in root_owned
+                    else "child"
+                    if ac_id in claimed
+                    else None
+                ),
             }
             for idx, ac_id in enumerate(ids)
         ]

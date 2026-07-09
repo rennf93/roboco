@@ -49,7 +49,7 @@ Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR in
 
 ## declare_coverage
 
-Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact — for a replacement child whose delegate omitted covers_parent_criteria. No status change; the verb body owns ownership + criterion validation.
+Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact — for a replacement child whose delegate omitted covers_parent_criteria. Or, targeting your OWN root/coordination task, declare criteria as root-owned (only your own machinery satisfies them — never push these into a cell). No status change; the verb body owns ownership + criterion validation.
 
 **Allowed roles:** cell_pm, main_pm
 

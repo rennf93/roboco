@@ -793,6 +793,12 @@ def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
     criteria, by id or exact text (copy them straight out of the gate's
     rejection listing). Returns evidence.remaining_uncovered_parent_acs so you
     know if submit_up will now pass.
+
+    Root-owned mode: pass YOUR OWN root/coordination task_id (not a child)
+    to declare criteria only you can satisfy — PR ops in your own branch
+    namespace, closing a contributor PR, a root-level merge. These are
+    satisfied by your own machinery at submit/supersede time; never push
+    them into a cell's acceptance_criteria, a cell cannot act on them.
     """
     return _post(
         _role_path("declare_coverage"),
