@@ -52,6 +52,12 @@ That gives you Next dev-server on `localhost:3000`, but you still need the orche
 - `src/lib/` — constants, utilities, WebSocket hooks
 - `src/types/` — shared TypeScript types mirroring backend schemas
 
+## Dependency Management
+
+### Version Alignment
+
+When bumping **Next.js**, always update **eslint-config-next** to match the same version. These packages must stay in sync. See `UPGRADE.md` for detailed procedures and troubleshooting.
+
 ## Backend schema changes
 
 When the backend changes response shapes, mirror them in `src/types/` and the relevant `src/lib/api/` module. Keep API paths relative so nginx routing keeps working.
