@@ -4146,16 +4146,7 @@ class Choreographer:
                 "",
             )
         base_branch = await resolve_parent_branch(t, self.task)
-        # ``-``-prefixed refs are refused unconditionally (argument-injection
-        # guard). master/main is refused only when the resolution looks WRONG
-        # (a branch-bearing parent exists, or the parent row is unresolvable):
-        # a standalone task or a child of a branchless coordination parent
-        # legitimately merges into the project default branch, and the rebase
-        # only ever force-pushes the task branch (with lease) — it cannot
-        # write to the base.
-        if base_branch.startswith("-") or (
-            base_branch in ("master", "main") and await self._base_is_misresolved(t)
-        ):
+        if await self._sync_base_refused(base_branch, t):
             return (
                 Envelope.invalid_state(
                     message=f"resolved base branch '{base_branch}' is protected",
@@ -4171,15 +4162,22 @@ class Choreographer:
             )
         return None, base_branch
 
-    async def _base_is_misresolved(self, t: Any) -> bool:
-        """True when a master/main base cannot be the task's real merge target.
+    async def _sync_base_refused(self, base_branch: str, t: Any) -> bool:
+        """Whether ``sync_branch`` must refuse rebasing onto ``base_branch``.
 
-        Mirrors ``resolve_parent_branch``: a parentless task and a child of a
-        branchless coordination parent both legitimately merge into the
-        project default branch, so master/main is their true base. A
+        ``-``-prefixed refs are refused unconditionally (argument-injection
+        guard). master/main is refused only when it cannot be the task's real
+        merge target — mirroring ``resolve_parent_branch``: a parentless task
+        and a child of a branchless coordination parent both legitimately
+        merge into the project default branch, and the rebase only ever
+        force-pushes the task branch (with lease), never the base. A
         branch-bearing parent (the base should have been that branch) or an
         unresolvable parent row means the resolution went wrong — refuse.
         """
+        if base_branch.startswith("-"):
+            return True
+        if base_branch not in ("master", "main"):
+            return False
         parent_id = getattr(t, "parent_task_id", None)
         if parent_id is None:
             return False
@@ -4188,9 +4186,7 @@ class Choreographer:
         except ValueError:
             return True
         parent = await self.task.get(pid)
-        if parent is None:
-            return True
-        return bool(parent.branch_name)
+        return parent is None or bool(parent.branch_name)
 
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
