@@ -4,6 +4,24 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-07-09
+
+### Added
+
+- **Video pipeline visibility.** A CEO-gated `GET /video/pipeline` lists every in-flight video item with its stage, PR number, composition id, render status, attempt n/max, and the last render error — which the render loop now stamps onto the `video_draft` marker instead of only logging. The Social page gains a pipeline strip above the Video Post Queue (stage chips from authoring through render-failed with the reason), the queue's empty copy is state-aware ("n videos in flight" vs. unconfigured), queue rows show the draft's title and script, missing cuts are disabled instead of a silently blank player, and notification cards deep-link `related_task_id`. `source_task_id` is exposed on both video schemas, linking a draft back to its authoring task.
+- **Rich video authoring briefs.** Release-video briefs carry the full CHANGELOG section for the version (capped at 4,000 chars) plus a highlights list instead of one LLM-compressed sentence; the CEO's `brand_voice` charter text and a pointer to `motion/kit/`'s design bar are appended centrally in `open_video_task`, so release, spotlight, and on-demand paths all inherit them; `suggested_input_props` (version + highlights) is seeded on the `video_draft` marker for the dev to pass through `propose_video`; and a third acceptance criterion pins the design bar.
+
+### Fixed
+
+- **Spotlight videos draft on CEO approval, not at authoring.** The companion-video hook moved from `propose_feature_spotlight` (Head-of-Marketing drafting time) to the CEO-approve success path of an `x_feature` draft, mirroring the release-publish seam — a rejected spotlight no longer burns a ux-dev delivery cycle. The renderer also honors each composition's declared `data-fps` (clamped 24-60) instead of hardcoding 30.
+- **`sync_branch` works for standalone tasks.** The protected-base guard refused every master/main base, structurally wedging any parentless task (video, CI-watch, dep-update) into block/PM/respawn churn when it needed to rebase — hit live on the v0.19.0 video task. The rebase only ever force-pushes the task branch, so the guard now refuses master/main only when the resolution is actually wrong (a branch-bearing parent exists, or the parent row is missing); the `-`-prefix injection guard stays unconditional.
+- **Panel pinned to Next.js 16.1.1 — the 16.2.x line breaks tab navigation in Chrome.** In a production build, in real Chrome, a searchParams-only soft navigation fetched the target payload and then the router MPA-reloaded the current URL, locking every URL-driven tabbed page (kanban, business, metrics, notifications, knowledge base) on the first tab. Bisected with a scripted real-Chrome sweep: 16.1.1 green, 16.2.6 and 16.2.10 red. Dev builds and Playwright's bundled Chromium mask the bug, which is how the bump passed review.
+- **Agent-authored PRs no longer fail the CLA check.** Fleet commits are authored as `<Display Name> <slug@roboco.tech>` — emails linked to no GitHub account — so CLA Assistant demanded signatures no agent can post. The org's own roster identities are now allowlisted, wildcarded per team family.
+
+### Changed
+
+- **Fleet-wide subagent ban.** No role can spawn sub-agents anymore: every `allows_subagent` in the role config flips to False (previously True for the PM, board, prompter, and secretary roles) and the grok path's drifted allowlist empties to match. An invariant test iterates every role config so a single role can't quietly regain it.
+
 ## [0.20.0] - 2026-07-09
 
 ### Added
