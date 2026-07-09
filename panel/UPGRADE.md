@@ -29,7 +29,7 @@ When you bump the `next` package, **always update `eslint-config-next` to match*
    cd panel
    pnpm install
    ```
-   This updates `pnpm-lock.yaml` while preserving `node_modules`, keeping the resolution deterministic.
+This updates `pnpm-lock.yaml` while preserving `node_modules`, keeping the resolution deterministic.
 
 3. **Run the quality gate:**
    ```bash
@@ -39,7 +39,7 @@ When you bump the `next` package, **always update `eslint-config-next` to match*
    pnpm test
    pnpm build
    ```
-   All must pass with no errors before committing.
+All must pass with no errors before committing.
 
 4. **Commit the changes:**
    ```bash
