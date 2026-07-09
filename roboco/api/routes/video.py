@@ -17,6 +17,7 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.video import (
     TikTokCredentialsSetRequest,
     TikTokCredentialsStatus,
+    VideoPipelineItemResponse,
     VideoPostApproveRequest,
     VideoPostExecuteResponse,
     VideoPostHistoryResponse,
@@ -139,6 +140,7 @@ def _to_response(task: TaskTable) -> VideoPostResponse:
         tiktok_caption=draft.get("tiktok_caption"),
         reject_reason=markers.get_video_reject_reason(task),
         mp4_paths=dict(draft.get("mp4_paths") or {}),
+        source_task_id=draft.get("source_task_id"),
     )
 
 
@@ -166,6 +168,34 @@ async def list_video_posts(
     return [_to_response(t) for t in tasks]
 
 
+def _to_pipeline_item(task: TaskTable) -> VideoPipelineItemResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPipelineItemResponse(
+        task_id=str(task.id),
+        title=task.title,
+        occasion=str(draft.get("occasion") or ""),
+        status=_status_value(task),
+        pr_number=task.pr_number,
+        composition_id=draft.get("composition_id"),
+        render_status=draft.get("render_status"),
+        render_attempts=int(draft.get("render_attempts", 0)),
+        render_error=draft.get("render_error"),
+    )
+
+
+@router.get("/pipeline", response_model=list[VideoPipelineItemResponse])
+async def list_video_pipeline(
+    db: DbSession, agent: CurrentAgentContext
+) -> list[VideoPipelineItemResponse]:
+    """Every in-flight source=video authoring task, from claim through the
+    render loop's retry/failure states — the Social page's pipeline-
+    visibility strip. A rendered task has already materialized its
+    video_post draft (visible instead via ``/posts``) and drops out here."""
+    _require_ceo(agent)
+    tasks = await get_task_service(db).list_video_pipeline_tasks()
+    return [_to_pipeline_item(t) for t in tasks]
+
+
 def _posted_ids(draft: dict[str, Any]) -> dict[str, str]:
     """Every ``{platform}_posted_id`` key stamped by approve, keyed by
     platform (e.g. ``{"x": "..", "tiktok": ".."}``)."""
@@ -190,6 +220,7 @@ def _to_history_response(task: TaskTable) -> VideoPostHistoryResponse:
         reject_reason=markers.get_video_reject_reason(task),
         posted=_posted_ids(draft),
         acted_at=task.updated_at or task.created_at,
+        source_task_id=draft.get("source_task_id"),
     )
 
 

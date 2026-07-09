@@ -1482,6 +1482,39 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_video_pipeline_tasks(self) -> list[TaskTable]:
+        """Every source=VIDEO_SOURCE authoring task still visible in the
+        Social page's pipeline strip: any non-terminal status, plus
+        COMPLETED tasks the render loop hasn't finished with (render_status
+        unset — pending/retrying — or terminally "failed"). A rendered
+        COMPLETED task already materialized its video_post draft and drops
+        out of view. composition_id/render_status/render_attempts live in
+        the JSON marker, not a column, so that half of the filter runs in
+        Python on this bounded scan (mirrors list_completed_video_tasks).
+        Newest-first + bounded, so a large old backlog can't crowd a
+        currently-active item out of the scanned window; the panel can
+        re-order for display.
+        """
+        from roboco.config import settings
+
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_SOURCE,
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
+        )
+        tasks = list(result.scalars().all())
+        return [
+            t
+            for t in tasks
+            if t.status != TaskStatus.COMPLETED
+            or (markers.get_video_draft(t) or {}).get("render_status")
+            in (None, "failed")
+        ]
+
     async def list_open_video_post_drafts(self) -> list[TaskTable]:
         """Non-terminal video_post held drafts only (excludes the video
         authoring source) — the panel-queue basis for VideoPostService,

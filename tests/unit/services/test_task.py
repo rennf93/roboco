@@ -288,6 +288,59 @@ async def test_list_awaiting_main_pm_all_returns_root_tasks() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list_video_pipeline_tasks — pipeline-strip basis (task 1, 2026-07-09)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_video_pipeline_tasks_keeps_non_terminal_and_unrendered() -> None:
+    """The query itself only excludes CANCELLED at the SQL level; the
+    COMPLETED-but-rendered drop happens in Python off the marker, so this
+    exercises that filter directly against a mixed mocked result set."""
+    in_progress = _build_task(status=TaskStatus.IN_PROGRESS, orchestration_markers=None)
+    awaiting_ceo = _build_task(
+        status=TaskStatus.AWAITING_CEO_APPROVAL, orchestration_markers=None
+    )
+    rendered = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={"video_draft": {"render_status": "rendered"}},
+    )
+    pending_render = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={"video_draft": {"render_attempts": 2}},
+    )
+    failed_render = _build_task(
+        status=TaskStatus.COMPLETED,
+        orchestration_markers={
+            "video_draft": {"render_status": "failed", "render_error": "boom"}
+        },
+    )
+    scalars = MagicMock()
+    scalars.all.return_value = [
+        in_progress,
+        awaiting_ceo,
+        rendered,
+        pending_render,
+        failed_render,
+    ]
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_video_pipeline_tasks()
+    assert out == [in_progress, awaiting_ceo, pending_render, failed_render]
+
+
+@pytest.mark.asyncio
+async def test_list_video_pipeline_tasks_empty_when_nothing_in_flight() -> None:
+    scalars = MagicMock()
+    scalars.all.return_value = []
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    assert await svc.list_video_pipeline_tasks() == []
+
+
+# ---------------------------------------------------------------------------
 # all_subtasks_terminal
 # ---------------------------------------------------------------------------
 

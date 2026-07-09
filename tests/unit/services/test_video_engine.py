@@ -19,6 +19,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, Complexity, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services import video_engine as video_engine_module
+from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import VIDEO_POST_SOURCE, VIDEO_SOURCE, get_task_service
 from sqlalchemy import delete, select
 
@@ -32,6 +33,7 @@ UX_DEV_2_UUID = _foundation.AGENTS["ux-dev-2"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
+THREE = 3
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -134,6 +136,10 @@ async def test_open_video_task_creates_assigned_authoring_task(
     # would auto-block for subtasks it never owns and deadlock.
     assert task.estimated_complexity == Complexity.LOW
     assert task.acceptance_criteria  # non-empty
+    # Third AC line: composition follows the design bar / demo-kit register.
+    assert len(task.acceptance_criteria) == THREE
+    assert "motion/README.md" in task.acceptance_criteria[2]
+    assert "panel-demo" in task.acceptance_criteria[2]
     project = await db_session.get(ProjectTable, task.project_id)
     assert project is not None
     assert project.slug == SLUG
@@ -142,7 +148,14 @@ async def test_open_video_task_creates_assigned_authoring_task(
     assert draft["occasion"] == "release v1.0.0"
     assert draft["script"] == "Here's what shipped"
     assert draft["platforms"] == ["x", "tiktok"]
-    assert draft["brief"] == "Announce the release"
+    # brief is enriched: raw content + motion design-bar pointer appended.
+    assert draft["brief"].startswith("Announce the release")
+    assert "motion/README.md" in draft["brief"]
+    assert "motion/kit/README.md" in draft["brief"]
+    assert "compositions/panel-demo/" in draft["brief"]
+    assert "Brand voice" not in draft["brief"]  # unset -> omitted
+    assert draft["suggested_input_props"] == {}  # none supplied
+    assert task.description == draft["brief"]
 
 
 @pytest.mark.asyncio
@@ -433,7 +446,16 @@ async def test_draft_release_video_opens_authoring_task(
     assert draft["occasion"] == "release 1.0.0"
     assert draft["platforms"] == ["x", "tiktok"]
     assert draft["script"] == "RoboCo v1.0.0 just shipped a huge release."
-    assert draft["brief"] == draft["script"]
+    # brief is now the structured changelog block, not the LLM one-liner —
+    # the whole CHANGELOG section (not one bullet) plus a highlights list.
+    assert draft["brief"] != draft["script"]
+    assert _CHANGELOG.strip() in draft["brief"]
+    assert "a huge new release" in draft["brief"]
+    assert "motion/README.md" in draft["brief"]
+    assert draft["suggested_input_props"] == {
+        "version": "1.0.0",
+        "highlights": ["a huge new release"],
+    }
 
 
 @pytest.mark.asyncio
@@ -451,6 +473,10 @@ async def test_draft_release_video_falls_back_to_template_on_local_model_failure
     assert draft is not None
     assert "1.0.0" in draft["script"]
     assert "a huge new release" in draft["script"]
+    # The structured brief is built independent of the local model, so a
+    # model outage still produces the full changelog-derived brief.
+    assert _CHANGELOG.strip() in draft["brief"]
+    assert draft["suggested_input_props"]["highlights"] == ["a huge new release"]
 
 
 @pytest.mark.asyncio
@@ -466,6 +492,144 @@ async def test_draft_release_video_falls_back_to_template_on_empty_local_reply(
     draft = markers.get_video_draft(task)
     assert draft is not None
     assert draft["script"] == "RoboCo v2.0.0 just shipped: no bullets."
+    assert "- no bullets" in draft["brief"]
+    assert draft["suggested_input_props"] == {
+        "version": "2.0.0",
+        "highlights": ["no bullets"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_brief_contains_brand_voice_when_set(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    await get_company_goals_service(db_session).upsert(
+        {"brand_voice": "Dry wit, never an exclamation point."}
+    )
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "Dry wit, never an exclamation point." in draft["brief"]
+
+
+# --------------------------------------------------------------------------- #
+# brief enrichment shared by every occasion — brand voice + motion pointer
+# (spec Task 2: "Feed the video brief")
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_brief_carries_motion_pointer_no_brand_voice_by_default(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates the on-demand (`POST /video/request`) caller, which passes
+    its brief through verbatim — enrichment must land centrally here since
+    that route can't append it itself."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="on-demand demo",
+        script="script",
+        platforms=["x"],
+        brief="CEO's on-demand brief, verbatim.",
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["brief"].startswith("CEO's on-demand brief, verbatim.")
+    assert "motion/README.md" in draft["brief"]
+    assert "motion/kit/README.md" in draft["brief"]
+    assert "compositions/panel-demo/" in draft["brief"]
+    assert "Brand voice" not in draft["brief"]  # unset -> omitted
+    assert task.description == draft["brief"]
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_brief_includes_brand_voice_when_set(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    await get_company_goals_service(db_session).upsert(
+        {"brand_voice": "Dry wit, never an exclamation point."}
+    )
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="on-demand demo 2",
+        script="script",
+        platforms=["x"],
+        brief="CEO's on-demand brief.",
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "Dry wit, never an exclamation point." in draft["brief"]
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_does_not_compress_spotlight_brief(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors content_actions._open_spotlight_video's `f"{title}: {body}"`
+    shape — the spotlight body is already rich; enrichment only appends,
+    never truncates or rewrites the original content."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    feature_brief = (
+        "Organizational Memory Loop: Did you know RoboCo agents learn from "
+        "every completed task? A local model distills one high-signal lesson "
+        "per task, retrieved back into future briefings."
+    )
+    task = await engine.open_video_task(
+        occasion="spotlight org-memory",
+        script=feature_brief,
+        platforms=["x", "tiktok"],
+        brief=feature_brief,
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["brief"].startswith(feature_brief)  # not truncated/compressed
+    assert "motion/README.md" in draft["brief"]
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_no_suggested_input_props_defaults_empty(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="spotlight x", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["suggested_input_props"] == {}
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_acceptance_criteria_has_design_bar_line(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="release v9.9.9", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    assert len(task.acceptance_criteria) == THREE
+    assert "motion/README.md" in task.acceptance_criteria[2]
+    assert "panel-demo" in task.acceptance_criteria[2]
 
 
 @pytest.mark.asyncio

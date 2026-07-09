@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect } from "react";
+import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
   useNotifications,
@@ -105,6 +106,19 @@ function NotificationCard({
                 <Badge variant="destructive" className="text-xs">
                   Needs Ack
                 </Badge>
+              )}
+              {notification.related_task_id && (
+                <Link
+                  href={`/tasks/${notification.related_task_id}`}
+                  prefetch={false}
+                >
+                  <Badge
+                    variant="outline"
+                    className="text-xs hover:bg-muted cursor-pointer"
+                  >
+                    Task #{notification.related_task_id.slice(0, 8)}
+                  </Badge>
+                </Link>
               )}
             </div>
             <div className="text-sm text-muted-foreground mt-1">

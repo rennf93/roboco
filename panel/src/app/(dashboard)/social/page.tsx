@@ -1,6 +1,7 @@
 "use client";
 
 import { XPostQueue } from "@/components/dashboard/x-post-queue";
+import { VideoPipelineStrip } from "@/components/dashboard/video-pipeline-strip";
 import { VideoPostQueue } from "@/components/dashboard/video-post-queue";
 import { SocialHistorySection } from "@/components/dashboard/social-history-section";
 
@@ -16,6 +17,7 @@ export default function SocialPage() {
       </div>
 
       <XPostQueue />
+      <VideoPipelineStrip />
       <VideoPostQueue />
       <SocialHistorySection />
     </div>

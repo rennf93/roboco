@@ -630,6 +630,12 @@ def propose_video(
     """UX/UI dev: propose your video's composition + captions. Metadata only —
     this does NOT render (rendering happens later, off this path).
 
+    Before authoring, read motion/README.md for the design bar and
+    motion/kit/README.md for the panel-demo kit — build in the panel-demo
+    register on motion/kit/ (extend motion/compositions/panel-demo/) rather
+    than starting from scratch or shipping a text card, unless the occasion
+    has no product visual to show.
+
     Call this exactly ONCE per authoring task, after building the HyperFrames
     composition in motion/compositions/<id>/. Then commit + open_pr to send
     it through the normal PR-review gate.

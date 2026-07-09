@@ -793,11 +793,10 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
 
 
-# Bounded retry for the video render loop: a failed render (read-clone not yet
-# synced to the just-merged composition, or a transient sidecar blip) retries on
-# a later cycle; only after this many attempts is a task marked terminally
-# failed, so a genuinely broken composition can't re-render forever.
-_MAX_VIDEO_RENDER_ATTEMPTS = 5
+# Bounded retry for the video render loop — single source of truth lives in
+# the policy/markers layer (importable from API code without importing this
+# orchestrator module); mirrored here under the historical name.
+_MAX_VIDEO_RENDER_ATTEMPTS = _markers.MAX_VIDEO_RENDER_ATTEMPTS
 
 
 class AgentOrchestrator:
@@ -8056,7 +8055,7 @@ Start by:
         except Exception as exc:
             attempts = int(draft.get("render_attempts", 0)) + 1
             terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
-            payload = {**draft, "render_attempts": attempts}
+            payload = {**draft, "render_attempts": attempts, "render_error": str(exc)}
             if terminal:
                 payload["render_status"] = "failed"
             markers.set_video_draft(task, payload)
@@ -8136,7 +8135,9 @@ Start by:
             },
             platforms=draft.get("platforms") or [],
         )
-        markers.set_video_draft(task, {**draft, "render_status": "rendered"})
+        rendered_payload = {**draft, "render_status": "rendered"}
+        rendered_payload.pop("render_error", None)  # clear any prior-attempt error
+        markers.set_video_draft(task, rendered_payload)
 
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per

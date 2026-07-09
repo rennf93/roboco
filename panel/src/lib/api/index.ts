@@ -41,6 +41,7 @@ export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,
   VideoPost,
+  VideoPipelineItem,
   VideoPostExecuteResult,
   VideoPostHistoryEntry,
   VideoRequestResult,

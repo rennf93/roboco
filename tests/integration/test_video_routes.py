@@ -45,6 +45,7 @@ SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 UX_DEV_1_UUID = _foundation.AGENTS["ux-dev-1"].uuid
 UX_DEV_2_UUID = _foundation.AGENTS["ux-dev-2"].uuid
 HISTORY_LIMIT = 2
+RETRY_ATTEMPTS = 2
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -163,6 +164,55 @@ async def _seed_draft(
             "tiktok_caption": "Check out this clip on TikTok",
             "render_status": "rendered",
         },
+    )
+    await session.flush()
+    return task
+
+
+async def _seed_authoring_task(
+    session: AsyncSession,
+    *,
+    status: TaskStatus = TaskStatus.IN_PROGRESS,
+    draft_extra: dict[str, object] | None = None,
+    pr_number: int | None = None,
+) -> TaskTable:
+    """A ``source=video`` UX/UI authoring task — the pipeline route's basis.
+    Mirrors ``_seed_draft`` but for the pre-render authoring stage."""
+    system = await _seed_agent(session, AgentRole.SYSTEM, "system")
+    ux_dev = await _seed_agent(session, AgentRole.DEVELOPER, "ux-dev")
+    project = ProjectTable(
+        id=uuid4(),
+        name="RoboCo",
+        slug=f"roboco-{uuid4().hex[:6]}",
+        git_url="https://example.com/roboco.git",
+        assigned_cell=Team.UX_UI,
+        created_by=system.id,
+    )
+    session.add(project)
+    await session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="Video: launch teaser",
+        description="A short teaser for the launch",
+        acceptance_criteria=["dev builds the composition"],
+        status=status,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.LOW,
+        project_id=project.id,
+        created_by=system.id,
+        assigned_to=ux_dev.id,
+        team=Team.UX_UI,
+        source=VIDEO_SOURCE,
+        confirmed_by_human=True,
+        pr_number=pr_number,
+    )
+    session.add(task)
+    await session.flush()
+    markers.set_video_draft(
+        task,
+        {"occasion": "launch teaser", "script": "script", **(draft_extra or {})},
     )
     await session.flush()
     return task
@@ -302,6 +352,139 @@ async def test_list_posts_returns_open_draft(
         "square": "/render/out/1-square.mp4",
         "vertical": "/render/out/1-vertical.mp4",
     }
+
+
+@pytest.mark.asyncio
+async def test_list_posts_includes_source_task_id(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """source_task_id round-trips from the marker to the response — the
+    panel's basis for a future draft->authoring-task deep link."""
+    source_task_id = uuid4()
+    task = await _seed_draft(db_session)
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(task, {**draft, "source_task_id": str(source_task_id)})
+    await db_session.flush()
+    resp = await ceo_client.get("/api/video/posts")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body[0]["source_task_id"] == str(source_task_id)
+
+
+@pytest.mark.asyncio
+async def test_history_includes_source_task_id(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    source_task_id = uuid4()
+    task = await _seed_draft(db_session)
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(task, {**draft, "source_task_id": str(source_task_id)})
+    await db_session.flush()
+    with _LOCKED[0], _LOCKED[1]:
+        await ceo_client.post(
+            f"/api/video/posts/{task.id}/reject", json={"reason": "off-brand"}
+        )
+    resp = await ceo_client.get("/api/video/posts/history")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["source_task_id"] == str(source_task_id)
+
+
+# --- pipeline strip (task 1, 2026-07-09) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pipeline_lists_non_terminal_authoring_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    resp = await ceo_client.get("/api/video/pipeline")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["status"] == "in_progress"
+    assert row["occasion"] == "launch teaser"
+    assert row["render_status"] is None
+    assert row["render_attempts"] == 0
+    assert row["max_attempts"] == markers.MAX_VIDEO_RENDER_ATTEMPTS
+    assert row["render_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_completed_unrendered_with_attempts(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A COMPLETED authoring task the render loop hasn't finished with
+    (render_status unset) stays visible with its retry count."""
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={"composition_id": "Intro", "render_attempts": RETRY_ATTEMPTS},
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["render_attempts"] == RETRY_ATTEMPTS
+    assert row["render_status"] is None
+    assert row["composition_id"] == "Intro"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shows_failed_render_with_error(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={
+            "composition_id": "Intro",
+            "render_status": "failed",
+            "render_attempts": markers.MAX_VIDEO_RENDER_ATTEMPTS,
+            "render_error": "sidecar timeout",
+        },
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    body = resp.json()
+    row = next(r for r in body if r["task_id"] == str(task.id))
+    assert row["render_status"] == "failed"
+    assert row["render_attempts"] == markers.MAX_VIDEO_RENDER_ATTEMPTS
+    assert row["render_error"] == "sidecar timeout"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_excludes_rendered_completed_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A rendered task already materialized its video_post draft — it must
+    not double-appear in the pipeline strip."""
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={"composition_id": "Intro", "render_status": "rendered"},
+    )
+    resp = await ceo_client.get("/api/video/pipeline")
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_pipeline_excludes_cancelled_task(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.CANCELLED)
+    resp = await ceo_client.get("/api/video/pipeline")
+    ids = [row["task_id"] for row in resp.json()]
+    assert str(task.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_pipeline_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/video/pipeline")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio

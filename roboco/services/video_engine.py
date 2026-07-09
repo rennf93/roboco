@@ -19,7 +19,7 @@ while the flag is off.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -28,6 +28,7 @@ from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
+from roboco.services.company_goals import get_company_goals_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
     VIDEO_POST_SOURCE,
@@ -46,10 +47,25 @@ if TYPE_CHECKING:
 _AUTHORING_ACCEPTANCE_CRITERIA = [
     "Both 9:16 and 1:1 cuts render",
     "Captions within platform limits",
+    "Composition follows motion/README.md's design bar and uses the "
+    "panel-demo kit register where the occasion shows the product",
 ]
 _POST_ACCEPTANCE_CRITERIA = ["CEO approves or rejects the draft"]
 
 _CHAT_TIMEOUT_SECONDS = 60.0
+
+# The whole CHANGELOG section for a release, not one bullet — capped so a
+# pathological entry can't blow up the task description.
+_CHANGELOG_BRIEF_CHARS = 4000
+
+# Shared by every open_video_task caller (release/spotlight/on-demand) so the
+# authoring dev always lands on the demo kit instead of a text card.
+_MOTION_DESIGN_POINTER = (
+    "Before authoring: read motion/README.md's design bar and motion/kit/"
+    "README.md. Build in the panel-demo register on motion/kit/ — extend "
+    "compositions/panel-demo/ rather than starting from scratch or shipping "
+    "a text card."
+)
 
 
 async def _chat(prompt: str) -> str | None:
@@ -77,16 +93,24 @@ async def _chat(prompt: str) -> str | None:
         return content if isinstance(content, str) else None
 
 
-def _first_changelog_bullet(changelog: str) -> str:
-    """First CHANGELOG bullet's text, or "" if none — the fallback template's
-    headline when the local model is unavailable."""
+def _changelog_highlights(changelog: str) -> list[str]:
+    """Every bullet line in a CHANGELOG section, in order — the structured
+    highlights list a composition's props.js can render directly."""
+    highlights = []
     for line in changelog.splitlines():
         stripped = line.strip()
         if stripped.startswith(("-", "*")):
             text = stripped.lstrip("-*").strip()
             if text:
-                return text
-    return ""
+                highlights.append(text)
+    return highlights
+
+
+def _first_changelog_bullet(changelog: str) -> str:
+    """First CHANGELOG bullet's text, or "" if none — the fallback template's
+    headline when the local model is unavailable."""
+    highlights = _changelog_highlights(changelog)
+    return highlights[0] if highlights else ""
 
 
 def _fallback_release_script(version: str, changelog: str) -> str:
@@ -104,6 +128,19 @@ def _release_video_prompt(version: str, changelog: str) -> str:
         f"Write the script for RoboCo v{version}, based on this CHANGELOG "
         f"entry:\n{changelog[:1000]}\n"
     )
+
+
+def _release_video_brief(version: str, changelog: str, highlights: list[str]) -> str:
+    """The structured release brief: the (capped) CHANGELOG section for this
+    version plus its highlights list — replaces the old one-liner-as-
+    description. The LLM script stays a separate ``script`` prop suggestion,
+    never the whole brief."""
+    section = changelog[:_CHANGELOG_BRIEF_CHARS].strip() or "(no changelog entry)"
+    parts = [f"RoboCo v{version} release notes:", section]
+    if highlights:
+        bullets = "\n".join(f"- {h}" for h in highlights)
+        parts.append(f"Highlights:\n{bullets}")
+    return "\n\n".join(parts)
 
 
 class VideoEngine(BaseService):
@@ -161,8 +198,39 @@ class VideoEngine(BaseService):
 
     # ---- authoring task (event hooks + on-demand) --------------------------
 
+    async def _brand_voice_note(self) -> str:
+        """CEO-supplied brand-voice sample from the company charter, or ""
+        when unset. Same ``company_goals.brand_voice`` read x_engine's
+        ``_voice_guide`` uses, duplicated locally per this service's
+        no-cross-service-internals policy."""
+        charter = await get_company_goals_service(self.session).get()
+        return (charter.get("brand_voice") or "").strip()
+
+    async def _enrich_brief(self, brief: str) -> str:
+        """Append the CEO's brand-voice sample (when set) and the motion
+        design-bar pointer to any occasion's brief.
+
+        The one seam shared by the release, spotlight, and on-demand callers
+        of ``open_video_task`` — each supplies only its own content, and all
+        three inherit the same enrichment here rather than duplicating it
+        per caller (on-demand's caller, the ``/video/request`` route, passes
+        its brief through verbatim, so this is the only place it can land).
+        """
+        parts = [brief]
+        brand_voice = await self._brand_voice_note()
+        if brand_voice:
+            parts.append(f"Brand voice (from the CEO's charter):\n{brand_voice}")
+        parts.append(_MOTION_DESIGN_POINTER)
+        return "\n\n".join(parts)
+
     async def open_video_task(
-        self, *, occasion: str, script: str, platforms: list[str], brief: str
+        self,
+        *,
+        occasion: str,
+        script: str,
+        platforms: list[str],
+        brief: str,
+        suggested_input_props: dict[str, Any] | None = None,
     ) -> TaskTable | None:
         """Originate ONE UX/UI authoring task for a bespoke video, or None.
 
@@ -173,6 +241,13 @@ class VideoEngine(BaseService):
         delivery task (``source=VIDEO_SOURCE``, ``confirmed_by_human=True``)
         — NOT held — so it dispatches straight to the assigned ux-dev like any
         other pre-assigned code task.
+
+        ``brief`` is enriched (brand-voice + motion design-bar pointer
+        appended) before becoming the task description and the marker's
+        ``brief`` field. ``suggested_input_props`` (e.g. ``{"version": ...,
+        "highlights": [...]}`` from the release caller) is seeded onto the
+        marker as-is so the dev copies real structured data into
+        ``propose_video``'s ``input_props`` instead of hand-typing facts.
         """
         if not settings.video_engine_enabled:
             return None
@@ -194,6 +269,7 @@ class VideoEngine(BaseService):
         from sqlalchemy.exc import SQLAlchemyError
 
         assignee = self._select_ux_dev(open_tasks)
+        enriched_brief = await self._enrich_brief(brief)
         # Savepoint-isolate the insert: a DBAPI error here (FK, deadlock,
         # dropped connection) must roll back ONLY this insert, never poison the
         # shared session — whose next commit is the caller's release-publish
@@ -203,7 +279,7 @@ class VideoEngine(BaseService):
                 task = await task_svc.create(
                     TaskCreateRequest(
                         title=f"Video: {occasion}",
-                        description=brief,
+                        description=enriched_brief,
                         acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
                         team=Team.UX_UI,
                         assigned_to=assignee,
@@ -227,7 +303,8 @@ class VideoEngine(BaseService):
                         "occasion": occasion,
                         "script": script,
                         "platforms": platforms,
-                        "brief": brief,
+                        "brief": enriched_brief,
+                        "suggested_input_props": dict(suggested_input_props or {}),
                     },
                 )
                 await self.session.flush()
@@ -258,15 +335,23 @@ class VideoEngine(BaseService):
         Called from ``ReleaseProposalService.approve()``'s publish success
         branch, right beside the X-post draft hook — never invoked by a loop
         itself.
+
+        The brief is the structured changelog block (built independent of
+        the local model, so it stands even when the model is down); the
+        LLM-drafted (or template-fallback) one-liner is only the ``script``
+        prop suggestion, never the whole brief.
         """
         if not (settings.video_engine_enabled and settings.video_on_release):
             return None
         script = await self._draft_release_script(version, changelog)
+        highlights = _changelog_highlights(changelog)
+        brief = _release_video_brief(version, changelog, highlights)
         return await self.open_video_task(
             occasion=f"release {version}",
             script=script,
             platforms=["x", "tiktok"],
-            brief=script,
+            brief=brief,
+            suggested_input_props={"version": version, "highlights": highlights},
         )
 
     async def _draft_release_script(self, version: str, changelog: str) -> str:
