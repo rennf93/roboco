@@ -26,8 +26,6 @@ export interface PageRefreshState {
 
 export interface PageRefreshProviderProps {
   children: React.ReactNode;
-  /** When true, refresh requests are ignored. */
-  disabled?: boolean;
 }
 
 export const PageRefreshContext = React.createContext<PageRefreshState | null>(
@@ -38,22 +36,25 @@ export const PageRefreshContext = React.createContext<PageRefreshState | null>(
  * Provides a scoped page-refresh registry for child components.
  *
  * Pages and panels can register callbacks that refetch data; UI chrome can call
- * `refresh()` and reflect the combined loading/disabled state.
+ * `refresh()` and reflect the combined loading/disabled state. `disabled` reflects
+ * whether any callback is currently registered — there's nothing to refresh when
+ * the registry is empty.
  */
-export function PageRefreshProvider({
-  children,
-  disabled = false,
-}: PageRefreshProviderProps) {
+export function PageRefreshProvider({ children }: PageRefreshProviderProps) {
   const [loading, setLoading] = React.useState(false);
+  const [registeredCount, setRegisteredCount] = React.useState(0);
   const callbacksRef = React.useRef(new Set<RefreshCallback>());
   const refreshingRef = React.useRef(false);
+  const disabled = registeredCount === 0;
 
   const register = React.useCallback((callback: RefreshCallback) => {
     callbacksRef.current.add(callback);
+    setRegisteredCount(callbacksRef.current.size);
   }, []);
 
   const unregister = React.useCallback((callback: RefreshCallback) => {
     callbacksRef.current.delete(callback);
+    setRegisteredCount(callbacksRef.current.size);
   }, []);
 
   const refresh = React.useCallback(async () => {

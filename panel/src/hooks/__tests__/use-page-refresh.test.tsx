@@ -2,10 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { usePageRefresh } from "../use-page-refresh";
 import { usePageRefresh as usePageRefreshPublic } from "@/hooks";
-import {
-  PageRefreshWrapper,
-  DisabledPageRefreshWrapper,
-} from "@/components/providers/__tests__/test-utils";
+import { PageRefreshWrapper } from "@/components/providers/__tests__/test-utils";
 
 describe("usePageRefresh", () => {
   it("throws when used outside a PageRefreshProvider", () => {
@@ -14,18 +11,24 @@ describe("usePageRefresh", () => {
     );
   });
 
-  it("returns disabled=false and loading=false by default", () => {
+  it("returns disabled=true and loading=false when nothing is registered", () => {
     const { result } = renderHook(() => usePageRefresh(), {
       wrapper: PageRefreshWrapper,
     });
-    expect(result.current.disabled).toBe(false);
+    expect(result.current.disabled).toBe(true);
     expect(result.current.loading).toBe(false);
   });
 
-  it("reflects the provider disabled prop", () => {
+  it("becomes enabled once a callback is registered, and disabled again once unregistered", () => {
+    const cb = vi.fn();
     const { result } = renderHook(() => usePageRefresh(), {
-      wrapper: DisabledPageRefreshWrapper,
+      wrapper: PageRefreshWrapper,
     });
+
+    act(() => result.current.register(cb));
+    expect(result.current.disabled).toBe(false);
+
+    act(() => result.current.unregister(cb));
     expect(result.current.disabled).toBe(true);
   });
 
@@ -92,13 +95,13 @@ describe("usePageRefresh", () => {
     expect(cb).toHaveBeenCalledTimes(1);
   });
 
-  it("does not run callbacks while disabled", async () => {
+  it("does not run any callback when refresh is called with nothing registered", async () => {
     const cb = vi.fn();
     const { result } = renderHook(() => usePageRefresh(), {
-      wrapper: DisabledPageRefreshWrapper,
+      wrapper: PageRefreshWrapper,
     });
 
-    act(() => result.current.register(cb));
+    expect(result.current.disabled).toBe(true);
 
     await act(async () => {
       await result.current.refresh();
