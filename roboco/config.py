@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.19.0"
+    app_version: str = "0.20.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
