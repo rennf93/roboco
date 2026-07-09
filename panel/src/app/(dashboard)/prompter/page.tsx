@@ -152,18 +152,13 @@ export default function PrompterPage() {
                 )}
               </div>
             </div>
-          ) : (
-            <ChatMessages
-              messages={messages}
-              onStart={launchTask}
-              onKeepChatting={keepChatting}
-              isLaunching={isLaunching}
-            />
-          )}
-
-          {/* MegaTask review — the agent proposed a batch; confirm them together */}
-          {state === "batch_preview" && batch && (
-            <div className="mx-4 mb-2">
+          ) : state === "batch_preview" && batch ? (
+            /* MegaTask review — the agent proposed a batch; confirm them
+               together. Owns the scroll area (min-h-0 + overflow-y-auto) so a
+               tall batch — many tasks, per-cell pickers, the wave plan — scrolls
+               instead of overflowing the clipped parent and stranding the launch
+               buttons off-screen. */
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
               <BatchReviewCard
                 batch={batch}
                 waves={batchWaves}
@@ -174,6 +169,13 @@ export default function PrompterPage() {
                 isLaunching={isLaunching}
               />
             </div>
+          ) : (
+            <ChatMessages
+              messages={messages}
+              onStart={launchTask}
+              onKeepChatting={keepChatting}
+              isLaunching={isLaunching}
+            />
           )}
 
           {/* Live activity indicator — "watch it work" (prominent) */}
