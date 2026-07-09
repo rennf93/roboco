@@ -300,3 +300,81 @@ async def test_propose_feature_spotlight_default_wants_video_false_leaves_marker
     assert env.error is None
     assert env.status == "feature_spotlight_proposed"
     assert markers.get_x_feature_ref(materialized) is None
+
+
+# --------------------------------------------------------------------------- #
+# skip — the HoM "nothing worth spotlighting this cycle" exit
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_skip_forbidden_for_product_owner() -> None:
+    env = await _actions("product_owner").propose_feature_spotlight(
+        agent_id=uuid4(), skip=True, skip_reason="nothing shipped worth spotlighting"
+    )
+    assert env.error == "not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_skip_requires_reason() -> None:
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=uuid4(), skip=True
+    )
+    assert env.error == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_skip_rejects_short_reason() -> None:
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=uuid4(), skip=True, skip_reason="meh"
+    )
+    assert env.error == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_skip_no_open_exploration_is_invalid_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_svc = MagicMock()
+    task_svc.list_open_feature_explorations = AsyncMock(return_value=[])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=uuid4(), skip=True, skip_reason="nothing shipped worth spotlighting"
+    )
+    assert env.error == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_skip_completes_exploration_without_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_id = uuid4()
+    exploration = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_feature_explorations = AsyncMock(return_value=[exploration])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+
+    engine = MagicMock()
+    engine.skip_feature_spotlight = AsyncMock(return_value=exploration)
+    monkeypatch.setattr("roboco.services.x_engine.get_x_engine", lambda _s: engine)
+
+    reason = "nothing shipped worth spotlighting this cycle"
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id, skip=True, skip_reason=reason
+    )
+
+    assert env.error is None
+    assert env.status == "feature_spotlight_skipped"
+    assert env.task_id == str(exploration.id)
+    engine.skip_feature_spotlight.assert_awaited_once_with(
+        exploration_task=exploration, reason=reason
+    )
+    engine.materialize_feature_spotlight.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_missing_fields_is_invalid_state() -> None:
+    """Defaulting feature_slug/feature_title/body to "" (so skip=True never
+    forces dummy values) must not weaken non-skip validation."""
+    env = await _actions("head_marketing").propose_feature_spotlight(agent_id=uuid4())
+    assert env.error == "invalid_state"

@@ -586,27 +586,43 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
 
 
 def propose_feature_spotlight(
-    feature_slug: str,
-    feature_title: str,
-    body: str,
+    feature_slug: str = "",
+    feature_title: str = "",
+    body: str = "",
     wants_video: bool = False,
     video_script: str = "",
+    skip: bool = False,
+    skip_reason: str = "",
 ) -> dict[str, Any]:
-    """Head of Marketing: draft ONE feature-spotlight marketing post.
+    """Head of Marketing: draft ONE feature-spotlight marketing post, or skip.
 
     Call this exactly ONCE per exploration cycle, after investigating the
     CHANGELOG, feature-flags ledger, docs/map, charter, and KB to pick a real,
     under-publicized capability. The draft is held in the X post queue for the
     CEO to edit/approve — nothing auto-posts.
 
+    If nothing shipped is genuinely worth spotlighting this cycle, pass
+    skip=True with a substantive skip_reason instead of forcing a weak post —
+    a forced spotlight is worse than skipping. A skip still completes the
+    exploration task (no draft materialized, no feature marked seen) and
+    counts as this cycle's activity for the engine's cadence, so it won't just
+    re-fire daily into the same quiet period.
+
     Args:
         feature_slug: Stable slug identifying the feature (the dedup key).
-        feature_title: Short human title of the feature.
-        body: The tweet text (plain, <=280 chars, no invented facts).
+            Ignored when skip=True.
+        feature_title: Short human title of the feature. Ignored when
+            skip=True.
+        body: The tweet text (plain, <=280 chars, no invented facts). Ignored
+            when skip=True.
         wants_video: Also request a companion video (held separately for CEO
             approval, when the video engine is armed for spotlights).
         video_script: Optional script for that video; falls back to the
             feature title/body when omitted.
+        skip: True to declare "nothing worth spotlighting this cycle" instead
+            of authoring a draft.
+        skip_reason: Required (non-empty, >=8 chars) explanation when
+            skip=True.
     """
     return _post(
         "/api/v1/do/propose_feature_spotlight",
@@ -616,6 +632,8 @@ def propose_feature_spotlight(
             "body": body,
             "wants_video": wants_video,
             "video_script": video_script,
+            "skip": skip,
+            "skip_reason": skip_reason,
         },
     )
 

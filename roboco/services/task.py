@@ -1588,6 +1588,23 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_open_feature_spotlight_drafts(self) -> list[TaskTable]:
+        """Non-terminal MATERIALIZED spotlight drafts only (source=x_feature,
+        excludes the exploration source) — the "never stack a second draft"
+        basis for XEngine.open_feature_spotlight_exploration. Distinct from
+        list_open_x_posts' shared numeric cap: this is a one-open-draft rule
+        specific to the spotlight source, mirroring list_open_video_post_drafts'
+        narrower filter over list_open_video_posts. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == X_FEATURE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
         """Completed external-PR reviews still awaiting the CEO's decision.
 

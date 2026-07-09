@@ -1297,21 +1297,66 @@ class ContentActions:
             )
         return None
 
+    async def _propose_feature_spotlight_skip(
+        self, agent_id: UUID, skip_reason: str
+    ) -> Envelope:
+        """``skip=True`` branch of ``propose_feature_spotlight``: validate the
+        reason, find the caller's open exploration, and record the skip.
+        Split out to keep the caller's return-statement count under the
+        xenon/PLR0911 budget."""
+        if rej := self._reject_soup(skip_reason, field="skip_reason", min_chars=8):
+            return rej
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        explorations = await task_svc.list_open_feature_explorations()
+        task = next((t for t in explorations if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open feature-spotlight exploration task assigned to you",
+                remediate=(
+                    "propose_feature_spotlight only runs against an active "
+                    "exploration spawned by the X engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        await engine.skip_feature_spotlight(exploration_task=task, reason=skip_reason)
+        return Envelope.ok(
+            status="feature_spotlight_skipped",
+            task_id=str(task.id),
+            next="i_am_idle() — no draft was materialized this cycle",
+            context_briefing={"skip_reason": skip_reason},
+        )
+
     async def propose_feature_spotlight(
         self,
         *,
         agent_id: UUID,
-        feature_slug: str,
-        feature_title: str,
-        body: str,
+        feature_slug: str = "",
+        feature_title: str = "",
+        body: str = "",
         wants_video: bool = False,
         video_script: str = "",
+        skip: bool = False,
+        skip_reason: str = "",
     ) -> Envelope:
-        """Head of Marketing authors ONE feature-spotlight draft.
+        """Head of Marketing authors ONE feature-spotlight draft, or skips.
 
         Validates role, field lengths, the 280-char tweet limit, and that the
         feature hasn't already been covered, then materializes the held X-queue
         draft and completes the caller's exploration task. One call per cycle.
+
+        ``skip=True`` is the "nothing worth spotlighting this cycle" exit — a
+        forced, weak spotlight is worse than skipping one. It requires a
+        substantive ``skip_reason`` and ignores ``feature_slug``/
+        ``feature_title``/``body``/``wants_video``/``video_script`` entirely:
+        no draft is materialized, no feature is marked seen, but the
+        exploration task still completes (``XEngine.skip_feature_spotlight``)
+        so the skip counts as this cycle's activity for the engine's
+        smart-cadence guard.
 
         ``wants_video`` optionally requests a companion video. The video
         authoring task no longer opens here — it opens later, at CEO-approve
@@ -1332,6 +1377,8 @@ class ContentActions:
                 remediate="this verb is Head-of-Marketing-only",
                 context_briefing={},
             )
+        if skip:
+            return await self._propose_feature_spotlight_skip(agent_id, skip_reason)
         if rej := self._reject_feature_spotlight_fields(
             feature_slug, feature_title, body
         ):

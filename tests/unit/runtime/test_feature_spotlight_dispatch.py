@@ -142,3 +142,50 @@ def test_feature_spotlight_prompt_names_real_verbs_and_seen_features() -> None:
 
     empty_prompt = orch._build_feature_spotlight_prompt(_feature_task())
     assert "none yet" in empty_prompt.lower()
+
+
+def test_feature_spotlight_prompt_names_the_skip_exit() -> None:
+    """The HoM must know the skip=True exit exists and that it beats a weak
+    forced spotlight — otherwise the smart-cadence work is pointless."""
+    orch = _make_orch()
+    prompt = orch._build_feature_spotlight_prompt(_feature_task())
+    assert "skip=True" in prompt
+    assert "skip_reason=" in prompt
+
+
+def test_feature_spotlight_prompt_renders_enriched_brief_sections() -> None:
+    """The x_spotlight_brief marker's seen-dates, shipped-since, and rejected
+    sections must reach the spawn prompt HoM actually sees."""
+    orch = _make_orch()
+    markers_dict = {
+        "x_seen_features": ["org-memory"],
+        "x_spotlight_brief": {
+            "seen": [{"slug": "org-memory", "seen_at": "2026-07-01T00:00:00+00:00"}],
+            "shipped_since": [
+                {
+                    "version": "0.21.0",
+                    "date": "2026-07-09",
+                    "titles": ["Added", "Fixed"],
+                }
+            ],
+            "rejected": [
+                {"slug": "old-one", "title": "Old Feature", "reason": "too niche"}
+            ],
+        },
+    }
+    prompt = orch._build_feature_spotlight_prompt(
+        _feature_task(orchestration_markers=markers_dict)
+    )
+    assert "org-memory (seen 2026-07-01)" in prompt
+    assert "0.21.0" in prompt
+    assert "Added, Fixed" in prompt
+    assert "too niche" in prompt
+
+
+def test_feature_spotlight_prompt_brief_fallbacks_when_marker_missing() -> None:
+    """No x_spotlight_brief marker (a pre-brief exploration) must never break
+    prompt rendering — every section falls back to a friendly placeholder."""
+    orch = _make_orch()
+    prompt = orch._build_feature_spotlight_prompt(_feature_task())
+    assert "nothing new since the last cycle" in prompt
+    assert "(none)" in prompt
