@@ -40,7 +40,7 @@ describe("release-recap composition", () => {
     // HyperFrames render params.
     expect(html).toContain('data-width="1080"');
     expect(html).toContain(`data-height="${height}"`);
-    expect(html).toMatch(/data-duration="20"/);
+    expect(html).toMatch(/data-duration="15"/);
     expect(html).toMatch(/data-fps="30"/);
 
     // props.js loaded before the kit helper and before any inline script
@@ -67,7 +67,7 @@ describe("release-recap composition", () => {
     // Typing reveal into intake.
     expect(html).toContain('id="typeIntro"');
     expect(html).toContain("pk-caret");
-    expect(html).toContain("PanelKit.typeText");
+    expect(html).toContain("typeReveal");
 
     // Three release beats: a card + version chip + a progress -> completed
     // pill flip each ("status pills flipping", plural).

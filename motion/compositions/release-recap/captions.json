@@ -9,8 +9,8 @@
       "within_limit": true
     },
     "tiktok": {
-      "caption": "RoboCo shipped three releases in six days. 0.18.0 (Jul 4) made A2A a delivered inbox instead of a write only log. 0.19.0 (Jul 8) shipped the panel-demo composition kit for this exact video style. 0.20.0 (Jul 9) landed root-owned acceptance criteria via declare_coverage and on-demand sandboxes. Same AI agent company, same six days, three real releases. roboco.tech",
-      "char_count": 365,
+      "caption": "RoboCo shipped three releases in six days. 0.18.0 (Jul 4) put a shared behavioral doctrine and a design bar on the whole fleet. 0.19.0 (Jul 8) shipped the video engine and per-agent dev sandboxes. 0.20.0 (Jul 9) landed root-owned acceptance criteria and the panel-demo kit this exact video is built with. Same AI agent company, six days, three real releases. roboco.tech",
+      "char_count": 370,
       "limit": 2200,
       "within_limit": true
     }

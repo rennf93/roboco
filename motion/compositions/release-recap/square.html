@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-composition-id="release-recap" data-composition-duration="20" data-fps="30">
+<html lang="en" data-composition-id="release-recap" data-composition-duration="15" data-fps="30">
   <head>
     <meta charset="utf-8" />
     <title>Release Recap - square (1080×1080)</title>
@@ -8,21 +8,24 @@
     <script src="../../kit/kit.js"></script>
     <style>
       /* Orientation-specific placement only - component look lives in
-         kit.css. Timing is identical between orientations (set inline on
-         the elements below); only these positions change with the stage,
-         since the square cut's content area is far shorter than vertical's.
-         Values match compositions/panel-demo/square.html exactly: this clip
-         reuses the same single-card slot geometry, just cycling three
-         releases through it instead of one task. */
-      .pk-intake { --pk-intake-top: 16px; }
-      .pk-column { --pk-column-top: 130px; }
-      .pk-toast { --pk-toast-bottom: 384px; }
-      .pk-outro { --pk-outro-bottom: 40px; }
+         kit.css. The three release cards stack and ACCUMULATE (normal flow,
+         not one absolute slot) so the recap literally piles up on screen. */
+      .pk-intake { --pk-intake-top: 24px; }
+      .pk-column { --pk-column-top: 200px; width: 640px; }
+      .pk-column .pk-card { position: static; margin-bottom: 16px; }
+      .pk-toast { --pk-toast-bottom: 90px; }
+      .pk-outro { --pk-outro-bottom: 36px; }
+      /* Single-animation typewriter: the mono face makes ch-widths exact, so
+         a width reveal in steps(n) reads as typing and cannot partially
+         freeze the way per-char reveals can. */
+      .pk-intake__field { font-family: var(--pk-font-display); letter-spacing: 0.5px; }
+      #typeIntro { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; width: 0; }
+      @keyframes type-reveal { to { width: var(--type-ch, 20ch); } }
     </style>
   </head>
   <body>
-    <div id="stage" data-composition-id="release-recap" data-width="1080" data-height="1080" data-start="0" data-duration="20" data-fps="30">
-      <div class="pk-frame clip" data-start="0" data-duration="20" data-track-index="1">
+    <div id="stage" data-composition-id="release-recap" data-width="1080" data-height="1080" data-start="0" data-duration="15" data-fps="30">
+      <div class="pk-frame clip" data-start="0" data-duration="15" data-track-index="1">
         <aside class="pk-frame__sidebar">
           <div class="pk-frame__logo"></div>
           <div class="pk-frame__navitem"></div>
@@ -34,7 +37,7 @@
 
         <header class="pk-frame__topbar">
           <div class="pk-frame__search">Search tasks, agents...</div>
-          <div class="pk-frame__status clip" data-start="0" data-duration="20" data-track-index="0">
+          <div class="pk-frame__status clip" data-start="0" data-duration="15" data-track-index="0">
             <span class="pk-frame__statusdot"></span>
             <span>Live</span>
           </div>
@@ -42,71 +45,63 @@
 
         <div class="pk-frame__content">
           <!-- Cold open: the recap line types into intake before the first beat. -->
-          <div class="pk-intake clip" data-start="0.2" data-duration="19.6" data-track-index="2" style="animation-delay: 0.2s;">
+          <div class="pk-intake clip" data-start="0.2" data-duration="14.8" data-track-index="2" style="animation-delay: 0.2s;">
             <div class="pk-intake__label">New task</div>
             <div class="pk-intake__field"><span id="typeIntro">3 releases in 6 days</span><span class="pk-caret"></span></div>
           </div>
 
-          <!-- One kanban slot, reused for all three beats: each release's card
-               is absolutely positioned at the same spot inside the column and
-               painted after the previous, so the later card's solid
-               background fully covers the one before it - a beat swap
-               without duplicating the frame/cursor geometry per release. -->
+          <!-- Three release beats, stacked and accumulating: each card enters
+               in progress and flips to completed as the next one ships; the
+               newest (0.20.0) is flipped by the cursor click. -->
           <div class="pk-column">
-            <div class="pk-column__header">Tasks</div>
+            <div class="pk-column__header">Shipped</div>
 
-            <div class="pk-card clip" data-start="2" data-duration="18" data-track-index="3" style="position: absolute; top: 0; left: 0; right: 0; animation-delay: 2s;">
-              <div class="pk-card__title">A2A becomes a real inbox</div>
+            <div class="pk-card clip" data-start="2" data-duration="13" data-track-index="3" style="animation-delay: 2s;">
+              <div class="pk-card__title">Fleet doctrine and the design bar</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">v0.18.0</span>
+                <span class="pk-card__assignee">Jul 4</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="2" data-duration="1.6" data-track-index="4" style="--pk-pill-enter-delay: 2s; --pk-pill-exit-delay: 3.6s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="4" data-duration="16" data-track-index="5" style="--pk-pill-enter-delay: 4s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="2" data-duration="2" data-track-index="4" style="--pk-pill-enter-delay: 2s; --pk-pill-exit-delay: 3.8s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="4" data-duration="11" data-track-index="5" style="--pk-pill-enter-delay: 4s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="6" data-duration="14" data-track-index="6" style="position: absolute; top: 0; left: 0; right: 0; animation-delay: 6s;">
-              <div class="pk-card__title">Panel-demo kit ships</div>
+            <div class="pk-card clip" data-start="4.5" data-duration="10.5" data-track-index="6" style="animation-delay: 4.5s;">
+              <div class="pk-card__title">Video engine and agent sandboxes</div>
               <div class="pk-card__meta">
-                <span class="pk-chip pk-chip--blue">v0.19.0</span>
+                <span class="pk-chip pk-chip--gray">v0.19.0</span>
+                <span class="pk-card__assignee">Jul 8</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="6" data-duration="1.6" data-track-index="7" style="--pk-pill-enter-delay: 6s; --pk-pill-exit-delay: 7.6s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="8" data-duration="12" data-track-index="8" style="--pk-pill-enter-delay: 8s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="4.5" data-duration="2.2" data-track-index="7" style="--pk-pill-enter-delay: 4.5s; --pk-pill-exit-delay: 6.3s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="6.5" data-duration="8.5" data-track-index="8" style="--pk-pill-enter-delay: 6.5s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="10" data-duration="10" data-track-index="9" style="position: absolute; top: 0; left: 0; right: 0; animation-delay: 10s;">
-              <div class="pk-card__title">Root-owned coverage lands</div>
+            <div class="pk-card clip" data-start="7" data-duration="8" data-track-index="9" style="animation-delay: 7s;">
+              <div class="pk-card__title">Root-owned coverage and the panel-demo kit</div>
               <div class="pk-card__meta">
-                <span class="pk-chip pk-chip--orange">v0.20.0</span>
+                <span class="pk-chip pk-chip--gray">v0.20.0</span>
+                <span class="pk-card__assignee">Jul 9</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="10" data-duration="1.6" data-track-index="10" style="--pk-pill-enter-delay: 10s; --pk-pill-exit-delay: 11.6s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="12" data-duration="8" data-track-index="11" style="--pk-pill-enter-delay: 12s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="7" data-duration="2.8" data-track-index="10" style="--pk-pill-enter-delay: 7s; --pk-pill-exit-delay: 9.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="9.6" data-duration="5.4" data-track-index="11" style="--pk-pill-enter-delay: 9.6s;">completed</span>
               </div>
             </div>
           </div>
 
-          <!-- Cursor glides in once and parks over the shared card slot's
-               pill; two more click pulses fire in place (x0==x1, y0==y1, so
-               no second glide) so each beat's pill flip gets its own click. -->
-          <div class="pk-cursor clip" data-start="2.8" data-duration="17.2" data-track-index="12" style="--pk-cursor-delay: 2.8s; --pk-cursor-x0: 620px; --pk-cursor-y0: 140px; --pk-cursor-x1: 145px; --pk-cursor-y1: 300px;">
+          <!-- One cursor, one glide, one click: it lands at the newest card's
+               pill edge (never covering the pill text) and fires the flip. -->
+          <div class="pk-cursor clip" data-start="8" data-duration="7" data-track-index="12" style="--pk-cursor-delay: 8s; --pk-cursor-x0: 720px; --pk-cursor-y0: 300px; --pk-cursor-x1: 262px; --pk-cursor-y1: 790px;">
             <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring" style="--pk-click-delay: 4s;"></div>
-          </div>
-          <div class="pk-cursor clip" data-start="8" data-duration="0.6" data-track-index="13" style="--pk-cursor-delay: 8s; --pk-cursor-x0: 145px; --pk-cursor-y0: 300px; --pk-cursor-x1: 145px; --pk-cursor-y1: 300px;">
-            <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring" style="--pk-click-delay: 8s;"></div>
-          </div>
-          <div class="pk-cursor clip" data-start="12" data-duration="0.6" data-track-index="14" style="--pk-cursor-delay: 12s; --pk-cursor-x0: 145px; --pk-cursor-y0: 300px; --pk-cursor-x1: 145px; --pk-cursor-y1: 300px;">
-            <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring" style="--pk-click-delay: 12s;"></div>
+            <div class="pk-cursor__ring" style="--pk-click-delay: 9.4s;"></div>
           </div>
 
           <!-- Toast: the recap confirmation, once the third beat lands. -->
-          <div class="pk-toast clip" data-start="14" data-duration="6" data-track-index="15" style="animation-delay: 14s;">
+          <div class="pk-toast clip" data-start="11" data-duration="4" data-track-index="13" style="animation-delay: 11s;">
             <div class="pk-toast__icon"></div>
             <div class="pk-toast__body">
               <div class="pk-toast__title" id="toastTitle">3 releases shipped</div>
@@ -115,7 +110,7 @@
           </div>
 
           <!-- Outro headline moment. -->
-          <div class="pk-outro clip" data-start="16" data-duration="4" data-track-index="16" style="animation-delay: 16s;">roboco.tech</div>
+          <div class="pk-outro clip" data-start="12.5" data-duration="2.5" data-track-index="14" style="animation-delay: 12.5s;">roboco.tech</div>
         </div>
       </div>
     </div>
@@ -127,7 +122,7 @@
       window.__timelines = window.__timelines || {};
       window.__timelines["release-recap"] = {
         id: "release-recap",
-        duration: 20,
+        duration: 15,
         fps: 30,
         animations: []
       };
@@ -147,12 +142,19 @@
         setText("toastTitle", props.toastTitle);
         setText("toastBody", props.toastBody);
 
+        // typeReveal: width-steps typewriter sized to the actual text so a
+        // sidecar-supplied introText of any length types out fully.
+        function typeReveal(el) {
+          var n = (el.textContent || "").length || 1;
+          el.style.setProperty("--type-ch", (n + 1) + "ch");
+          el.style.animation = "type-reveal " + (n * 0.07).toFixed(2) + "s steps(" + n + ", end) 0.6s forwards";
+        }
         var typeEl = document.getElementById("typeIntro");
         if (typeEl) {
           if (typeof props.introText === "string" && props.introText) {
             typeEl.textContent = props.introText;
           }
-          window.PanelKit.typeText(typeEl, { delay: 0.6 });
+          typeReveal(typeEl);
         }
       })();
     </script>
