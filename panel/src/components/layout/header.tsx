@@ -24,7 +24,7 @@ import { usePageRefresh } from "@/hooks";
 
 export function Header() {
   const { setTheme } = useTheme();
-  const { refresh, loading } = usePageRefresh();
+  const { refresh, loading, disabled } = usePageRefresh();
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
@@ -60,7 +60,7 @@ export function Header() {
           variant="ghost"
           size="icon"
           onClick={() => void refresh()}
-          disabled={loading}
+          disabled={disabled || loading}
           aria-label="Refresh only the current page"
           title="Refresh only the current page"
         >
