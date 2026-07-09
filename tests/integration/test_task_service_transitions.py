@@ -1646,6 +1646,54 @@ async def test_add_parent_ac_refs_returns_none_for_missing_task(
     assert await svc.add_parent_ac_refs(uuid4(), ["id-a"]) is None
 
 
+@pytest.mark.asyncio
+async def test_add_parent_ac_refs_on_own_id_is_root_owned(task_setup: dict) -> None:
+    """declare_coverage's self-declare mode: stamping a task's OWN id (not a
+    child's) writes into ITS OWN parent_ac_refs -- root-owned, satisfied
+    unconditionally without any child."""
+    svc = task_setup["svc"]
+    parent = await svc.create(
+        _req(task_setup, acceptance_criteria=["crit a", "crit b"])
+    )
+    ac_a, ac_b = parent.acceptance_criteria_ids
+
+    updated = await svc.add_parent_ac_refs(
+        parent.id, [ac_a], declared_by=task_setup["agent_id"]
+    )
+    assert updated is not None
+    assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == ["crit b"]
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
+    cov = await svc.parent_ac_coverage(parent.id)
+    assert cov[0]["claimed_by"] == "root"
+    assert cov[1]["claimed_by"] is None
+    _ = ac_b
+
+
+@pytest.mark.asyncio
+async def test_production_replay_root_with_child_and_root_owned_coverage(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The live pattern: a Main-PM root with 5 ACs -- 3 satisfied by a
+    completed cell subtask, 2 that only the root's own machinery satisfies
+    (PR-supersede, closing a contributor PR) and are declared root-owned.
+    Both the idle gate and the roll-up gate must pass."""
+    svc = task_setup["svc"]
+    parent = await svc.create(
+        _req(task_setup, acceptance_criteria=[f"crit {i}" for i in range(5)])
+    )
+    ids = parent.acceptance_criteria_ids
+    child = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=ids[:3])
+    )
+    child.status = TaskStatus.COMPLETED
+    await db_session.flush()
+
+    await svc.add_parent_ac_refs(parent.id, ids[3:], declared_by=task_setup["agent_id"])
+
+    assert await svc.unclaimed_parent_acceptance_criteria(parent.id) == []
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
+
+
 # ---------------------------------------------------------------------------
 # _unblock_dependents
 # ---------------------------------------------------------------------------

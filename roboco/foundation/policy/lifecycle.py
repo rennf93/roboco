@@ -1298,8 +1298,11 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         description=(
             "Stamp parent acceptance criteria onto an existing child's"
             " parent_ac_refs after the fact — for a replacement child whose"
-            " delegate omitted covers_parent_criteria. No status change; the"
-            " verb body owns ownership + criterion validation."
+            " delegate omitted covers_parent_criteria. Or, targeting your OWN"
+            " root/coordination task, declare criteria as root-owned (only"
+            " your own machinery satisfies them — never push these into a"
+            " cell). No status change; the verb body owns ownership +"
+            " criterion validation."
         ),
         composes=(),  # special — no transition, just an AC-ref write + audit
         extra_preconditions=(),

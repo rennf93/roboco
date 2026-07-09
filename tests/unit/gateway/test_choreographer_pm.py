@@ -1320,3 +1320,65 @@ async def test_declare_coverage_then_submit_up_gate_passes() -> None:
         pm_id, parent_id, context_phrase="bubbling up"
     )
     assert gate_env is None
+
+
+# ---------------------------------------------------------------------------
+# declare_coverage — root-owned self-declare
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_accepted_for_owning_pm() -> None:
+    """Root-owned mode: task_id is the PM's OWN root (assigned_to ==
+    pm_agent_id) — parent is child by identity (the self-declare signal), no
+    separate parent fetch, criteria validate against the root's own ACs."""
+    pm_id = uuid4()
+    root_id = uuid4()
+    root = MagicMock(
+        id=root_id,
+        assigned_to=pm_id,
+        parent_task_id=None,
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = root
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="board")
+    task_svc.unknown_ac_refs = MagicMock(return_value=[])
+    task_svc.add_parent_ac_refs.return_value = root
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, root_id, ["id-a"])
+    assert env.error is None, env.as_dict()
+    task_svc.add_parent_ac_refs.assert_awaited_once_with(
+        root_id, ["id-a"], declared_by=pm_id
+    )
+    # Self-declare targets its own uncovered-set, never a parent_task_id.
+    task_svc.uncovered_parent_acceptance_criteria.assert_awaited_once_with(root_id)
+
+
+@pytest.mark.asyncio
+async def test_declare_coverage_self_declare_rejected_for_non_owner() -> None:
+    """A PM who is not the assignee of the target root cannot self-declare on
+    it — falls through to the ordinary child-declare path, which requires a
+    parent_task_id; a root has none, so it is rejected."""
+    pm_id, owner_id = uuid4(), uuid4()
+    root_id = uuid4()
+    root = MagicMock(
+        id=root_id,
+        assigned_to=owner_id,
+        parent_task_id=None,
+        acceptance_criteria=["crit a"],
+        acceptance_criteria_ids=["id-a"],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = root
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="board")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.declare_coverage(pm_id, root_id, ["id-a"])
+    assert env.error == "invalid_state"
+    task_svc.add_parent_ac_refs.assert_not_awaited()

@@ -91,7 +91,7 @@
         "main_pm"
       ],
       "composes": [],
-      "description": "Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact \u2014 for a replacement child whose delegate omitted covers_parent_criteria. No status change; the verb body owns ownership + criterion validation.",
+      "description": "Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact \u2014 for a replacement child whose delegate omitted covers_parent_criteria. Or, targeting your OWN root/coordination task, declare criteria as root-owned (only your own machinery satisfies them \u2014 never push these into a cell). No status change; the verb body owns ownership + criterion validation.",
       "name": "declare_coverage",
       "pre_side_effects": [],
       "side_effects": []
