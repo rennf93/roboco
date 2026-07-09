@@ -28,7 +28,7 @@ i_will_plan(
 )
 ```
 
-After `i_will_plan`, the envelope's `next` field points you at `delegate` — create one subtask per unit of work:
+After `i_will_plan`, the envelope's `next` field points you at `delegate` — create one subtask per unit of work. **A "unit of work" is the LARGEST coherent piece one dev can own end-to-end, not the smallest step you can name (CEO doctrine: never over-separate).** Single-concern work — a dependency bump, a config change, one component — is one subtask covering the change, its verification, and the PR. Sequenced same-branch steps are one subtask, not siblings; split only for genuine parallelism across devs or different owners. The `sub_tasks` checklist above may hold more steps than you delegate — several checklist steps usually collapse into one delegated task:
 
 ```python
 delegate(
