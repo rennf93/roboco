@@ -33,6 +33,7 @@ __pycache__/
 *.egg
 
 # Virtual environments
+.venv/
 .venv
 venv/
 ENV/
@@ -113,7 +114,6 @@ video-renderer/node_modules/
 motion/compositions/*/index.html
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
-.pnpm-store/
 
 # MkDocs build output (published to gh-pages by CI; never committed to master)
 /site/

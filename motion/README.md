@@ -7,7 +7,7 @@ In-repo [HyperFrames](https://github.com/heygen-com/hyperframes) composition pac
 Compositions live under `compositions/<composition_id>/`. Each composition is one directory containing the HTML/CSS/JS for that clip; one HTML file per orientation (the sidecar points `inputPath` at a single HTML file, so per-orientation branching belongs in its own file, not inside one file).
 
 1. Create `compositions/<your_clip>/vertical.html` and `square.html` carrying the HyperFrames render params on `<html>`: `data-width`, `data-height`, `data-duration` (seconds), `data-fps`. Timed visible elements get `class="clip"` plus `data-start`, `data-duration`, and `data-track-index`.
-2. Add a shared `theme.css` with `@font-face` declarations (fonts are vendored under `public/fonts/*.woff2` — never load from a CDN, the render is offline) and the color/type tokens for the clip.
+2. Add a shared `theme.css` with `@font-face` declarations (fonts are vendored under `public/fonts/*.woff2` — never load from a CDN, the render is offline) and the color/type tokens for the clip. (Skip this if you're building in the panel-demo register below — `kit/kit.css` already owns the reset + fonts.)
 3. Ship a `props.js` with default `window.__PROPS__` + `window.__ORIENTATION__` values for local preview. The sidecar OVERWRITES this file at render time with the real per-release values — your HTML loads it via `<script src="props.js"></script>` before any inline script that reads the globals.
 4. Add `<your_clip>.test.js` (vitest) asserting the HTML-structure invariants — dimensions, props.js wiring, theme link, at least one `class="clip"` element, no CDN scripts. See `release-announcement.test.js` as a template.
 5. `pnpm preview` (alias for `hyperframes preview <file>`) opens the local preview server; `pnpm lint` runs `hyperframes lint` over both orientations; `pnpm test` runs the smoke gate that CI runs.
@@ -41,3 +41,33 @@ This composition is the library's reference point — match its restraint, don't
 `kit/` is a second register alongside the release-announcement's text-card style: reusable `pk-`-namespaced CSS/HTML that recreates the control panel's look (dark chrome, task cards, status pills, toasts, a typing reveal, a cursor) so a composition can simulate the product actually being used, instead of announcing it over a headline. Use the **text-card register** (release-announcement's pattern) for version/feature announcements with no product visuals; use the **demo register** (`kit/`) whenever the story is "watch this happen in the app" — a task moving through the panel, a feature being triggered, an agent doing something visible.
 
 `compositions/panel-demo/` is the reference composition: a task title types into an intake field, a card materializes in a column, a cursor clicks it done, a toast confirms, out on "roboco.tech". Start a new demo-register composition from its structure and `kit.css`'s classes rather than reinventing the panel's chrome per clip. See `kit/README.md` for the full piece-by-piece reference.
+
+## Release-specific example: `release-recap` (0.18.0 - 0.20.0)
+
+`compositions/release-recap/` is a demo-register clip built on `kit/`, not the release-announcement text-card style — the CEO rejected an earlier text-card cut of this same occasion ("Build this in the panel-demo register... the video must show the product moving... Do not invent a new visual language"). It ships the same two orientations as every other composition — `vertical.html` (1080×1920) and `square.html` (1080×1080) — sharing `props.js` and the offline-render constraints, but no `theme.css` of its own since `kit/kit.css` owns the look.
+
+The story is "three releases shipped in six days": a single intake types "3 releases in 6 days", then three release cards (v0.18.0, v0.19.0, v0.20.0) cycle through **the same kanban slot** — each card is absolutely positioned at the same spot inside the column and painted after the previous, so the later card's solid background fully covers the one before it, a beat swap that reuses `panel-demo`'s exact single-card geometry per orientation instead of stacking three cards' worth of height (which would collide with the toast in the square cut). Each beat gets its own status-pill flip (`in progress` -> `completed`) and its own cursor click at the same parked position (only the first click glides in; the other two are click-only, `x0==x1`/`y0==y1`), then one toast and the "roboco.tech" outro once all three land.
+
+### Preview / test this composition
+
+```bash
+npx hyperframes preview compositions/release-recap/vertical.html
+npx hyperframes preview compositions/release-recap/square.html
+pnpm test   # runs vitest on all *.test.js under motion/
+```
+
+### `captions.json`
+
+Like every release composition, this one ships a tracked `captions.json` next to the HTML holding the X and TikTok captions the render pipeline proposes alongside the MP4, self-verifying character counts against each platform's limit:
+
+```json
+{
+  "composition_id": "release-recap",
+  "platforms": {
+    "x":      { "caption": "...", "char_count": 136, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "...", "char_count": 365, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+The smoke test (`release-recap.test.js`) asserts this schema, checks the counts, and regression-guards no em dashes in on-screen copy or captions (the design-bar violation QA caught on the prior text-card cut of this task).

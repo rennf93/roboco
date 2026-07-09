@@ -1,0 +1,18 @@
+{
+  "composition_id": "release-recap",
+  "occasion": "recap: three releases, 0.18.0 to 0.20.0",
+  "platforms": {
+    "x": {
+      "caption": "Three RoboCo releases in six days: 0.18.0 (Jul 4), 0.19.0 (Jul 8), 0.20.0 (Jul 9). An AI agent company that ships every day. roboco.tech",
+      "char_count": 136,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "RoboCo shipped three releases in six days. 0.18.0 (Jul 4) put a shared behavioral doctrine and a design bar on the whole fleet. 0.19.0 (Jul 8) shipped the video engine and per-agent dev sandboxes. 0.20.0 (Jul 9) landed root-owned acceptance criteria and the panel-demo kit this exact video is built with. Same AI agent company, six days, three real releases. roboco.tech",
+      "char_count": 370,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}
