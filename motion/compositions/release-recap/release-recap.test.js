@@ -40,7 +40,7 @@ describe("release-recap composition", () => {
     // HyperFrames render params.
     expect(html).toContain('data-width="1080"');
     expect(html).toContain(`data-height="${height}"`);
-    expect(html).toMatch(/data-duration="15"/);
+    expect(html).toMatch(/data-duration="18"/);
     expect(html).toMatch(/data-fps="30"/);
 
     // props.js loaded before the kit helper and before any inline script
