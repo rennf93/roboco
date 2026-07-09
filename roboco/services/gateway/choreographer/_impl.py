@@ -3731,6 +3731,15 @@ class Choreographer:
         when ``rejection`` is ``None``. Ownership mirrors submit_up (the PM
         assigned to the parent coordination task), with a fallback for any
         PM on the child's own team — the minimum bar the spec asks for.
+
+        Root-owned self-declare: when the caller is the assignee of
+        ``child`` itself, ``task_id`` names the PM's OWN root/coordination
+        task, not a child — criteria only the root's own machinery can
+        satisfy (PR-supersede, closing a contributor PR, a root-level
+        merge) that must never be pushed into a cell's acceptance criteria.
+        ``parent`` is then ``child`` itself (caller-identity is the
+        signal — callers never target their own claimed task in the
+        ordinary child-declare flow, so this cannot misfire on it).
         """
         if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return (
@@ -3741,6 +3750,8 @@ class Choreographer:
                 ),
                 None,
             )
+        if child.assigned_to == pm_agent_id:
+            return None, child
         if not child.parent_task_id:
             return (
                 Envelope.invalid_state(
@@ -3796,6 +3807,12 @@ class Choreographer:
         resolves it at read time), so a PM can copy straight out of the
         gate's own uncovered-criteria listing. ``task_id`` is the CHILD
         (any non-cancelled status — the live case is a completed child).
+
+        Root-owned mode: ``task_id`` may instead be the PM's OWN root, for
+        criteria only the root itself satisfies (never delegable to a
+        cell — see ``_declare_coverage_guard``). The refs land in that
+        task's own ``parent_ac_refs`` and are read back against its own
+        criteria, satisfied unconditionally (no child/status to wait on).
         """
         child = await self.task.get(task_id)
         briefing = await self._briefing_for(pm_agent_id, task_id, task=child)
@@ -3837,11 +3854,14 @@ class Choreographer:
         updated = await self.task.add_parent_ac_refs(
             task_id, criteria, declared_by=pm_agent_id
         )
+        # Self-declare targets its own uncovered-set (parent is child by
+        # identity, see the guard); child-declare targets the real parent.
+        uncovered_target = task_id if parent is child else child.parent_task_id
         uncovered = await self.task.uncovered_parent_acceptance_criteria(
-            child.parent_task_id
+            uncovered_target
         )
         next_hint = (
-            "submit_up's roll-up gate will pass on the parent now"
+            "the roll-up gate will pass now"
             if not uncovered
             else f"{len(uncovered)} parent ACs still uncovered: {'; '.join(uncovered)}"
         )

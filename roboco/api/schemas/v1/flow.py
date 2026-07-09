@@ -146,10 +146,11 @@ class ReassignRequest(BaseModel):
 class DeclareCoverageRequest(BaseModel):
     """HTTP body for the cell_pm/main_pm `declare_coverage` verb.
 
-    ``task_id`` is the CHILD to stamp; ``criteria`` are parent acceptance
-    criteria (id or exact text — same representation as `delegate`'s
-    `covers_parent_criteria`). The choreographer validates ownership +
-    unknown criteria.
+    ``task_id`` is the CHILD to stamp (or the caller's OWN root/coordination
+    task, for root-owned criteria); ``criteria`` are that task's parent's
+    acceptance criteria — or its own, in root-owned mode — by id or exact
+    text (same representation as `delegate`'s `covers_parent_criteria`). The
+    choreographer validates ownership + unknown criteria.
     """
 
     task_id: UUID
