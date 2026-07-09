@@ -14,6 +14,12 @@ declare module "axios" {
 const RATE_LIMIT_MAX_RETRIES = 3;
 
 // Create axios instance with default config
+// axios ^1.16.0 audit (2026-07-09): every call in panel/src rides this
+// browser instance (no proxy option, no maxRedirects/adapter override, no
+// manual form-data upload). axios's node-only transitives that changed with
+// this bump — follow-redirects, proxy-from-env, form-data — are exercised
+// only by axios's Node http adapter, which the panel never invokes; no
+// compatibility fix is needed here.
 const api: AxiosInstance = axios.create({
   baseURL: API_URL,
   headers: {
