@@ -120,10 +120,11 @@ def test_session_uses_slug_role_when_id_maps(
 ) -> None:
     monkeypatch.delenv("ROBOCO_AGENT_ROLE", raising=False)
     monkeypatch.delenv("ROBOCO_GROK_REASONING_EFFORT", raising=False)
-    # intake-1 maps to the prompter role -> subagents allowed (not disallowed).
+    # intake-1 maps to the prompter role; the slug-derived role args must
+    # carry the fleet-wide subagent ban (Agent disallowed for every role).
     session = GrokCliSession(cwd="/ws", agent_id="intake-1")
     dis = session._role_args[session._role_args.index("--disallowed-tools") + 1]
-    assert "Agent" not in dis
+    assert "Agent" in dis
 
 
 def test_turn_timeout_seconds_env_and_default(
