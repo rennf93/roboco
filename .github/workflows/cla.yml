@@ -35,5 +35,10 @@ jobs:
           path-to-signatures: "signatures/version1/cla.json"
           path-to-document: "https://github.com/rennf93/roboco/blob/master/CLA.md"
           branch: "cla-signatures"
-          # Bots and the maintainer are exempt from signing.
-          allowlist: "dependabot[bot],rennf93"
+          # Bots, the maintainer, and the org's own agent identities are
+          # exempt from signing. Agent commits are authored as
+          # "<Display Name> <slug@roboco.tech>" (workspace.py _configure_git);
+          # the emails map to no GitHub account, so CLA Assistant identifies
+          # them by display name — allowlist those names, wildcarded per team
+          # family, mirroring roboco/seeds/initial_data.py's roster.
+          allowlist: "dependabot[bot],rennf93,Backend *,Frontend *,UX/UI *,Main PM,Product Owner,Head of Marketing,Auditor,Intake,Secretary,PR Reviewer,RoboCo Agent"
