@@ -1,0 +1,498 @@
+/* Panel kit — reusable building blocks that recreate the RoboCo control
+ * panel's look for HyperFrames compositions. This is a hand-rolled
+ * recreation (plain CSS/HTML), not a screenshot or a port of the panel's
+ * React/Tailwind components. Every class is namespaced `pk-` (panel kit).
+ *
+ * Tokens are lifted from panel/src/app/globals.css's dark theme (the panel
+ * always renders dark in product screenshots) and from the status-pill /
+ * type-chip color maps in panel/src/components/tasks/*-badge.tsx. See
+ * motion/kit/README.md for usage and motion/README.md for the design bar
+ * this kit still has to answer to (variance ~6, motion ~6, density ~4).
+ */
+
+@font-face {
+  font-family: "Share Tech Mono";
+  src: url("../public/fonts/ShareTechMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("../public/fonts/Inter-Variable.woff2") format("woff2-variations");
+  font-weight: 400 600;
+  font-style: normal;
+  font-display: block;
+}
+
+:root {
+  /* Surfaces — panel dark theme is achromatic (oklch chroma 0), not the
+   * warm-tinted ink used by release-announcement's theme.css. */
+  --pk-bg: #0a0a0a;              /* --background (dark) oklch(0.145 0 0) */
+  --pk-surface: #1a1a1a;         /* --card (dark) oklch(0.205 0 0) */
+  --pk-surface-raised: #262626;  /* --secondary/--muted (dark) oklch(0.269 0 0) */
+  --pk-border: rgba(255, 255, 255, 0.10);        /* --border (dark), exact */
+  --pk-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Text */
+  --pk-text: #fafafa;            /* --foreground (dark) oklch(0.985 0 0) */
+  --pk-text-muted: #a3a3a3;      /* --muted-foreground (dark) oklch(0.708 0 0) */
+  --pk-text-faint: #737373;
+
+  /* The one active-state inversion the panel uses (selected sidebar item):
+   * near-white bg, near-black text. */
+  --pk-active-bg: #e5e5e5;       /* --primary (dark) oklch(0.922 0 0) */
+  --pk-active-fg: #1a1a1a;       /* --primary-foreground (dark) oklch(0.205 0 0) */
+
+  /* One accent, used sparingly (cursor, caret, live dot) — shared with
+   * release-announcement's theme so multiple compositions still read as one
+   * library rather than each clip inventing its own brand color. */
+  --pk-accent: #ff5a1f;
+
+  /* Status pill palette — solid bg + white text, lifted from
+   * task-status-badge.tsx's Tailwind classes. */
+  --pk-pill-progress: #2563eb;   /* bg-blue-600 (IN_PROGRESS) */
+  --pk-pill-review: #7c3aed;     /* violet-600, echoes the violet PR chip */
+  --pk-pill-approved: #d97706;   /* bg-amber-600 (AWAITING_CEO_APPROVAL) */
+  --pk-pill-completed: #16a34a;  /* green-600 (COMPLETED family) */
+
+  --pk-radius: 16px;
+  --pk-radius-sm: 10px;
+  --pk-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --pk-font-display: "Share Tech Mono";
+  --pk-font-body: "Inter";
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: var(--pk-bg);
+  color: var(--pk-text);
+  font-family: var(--pk-font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#stage {
+  position: relative;
+  width: 1080px;
+  height: 100%;
+  overflow: hidden;
+  background: var(--pk-bg);
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-frame — panel chrome: a slim sidebar rail + top header bar around a
+ * content area. A stylized crop of the app (not a full screenshot), so the
+ * same fixed sidebar/topbar sizing works at both 1080x1920 and 1080x1080 —
+ * only the content area's available height changes with the stage.
+ * ---------------------------------------------------------------------- */
+.pk-frame {
+  position: absolute;
+  inset: 0;
+  background: var(--pk-bg);
+  opacity: 0;
+  animation: pk-enter-fade 0.6s var(--pk-ease) forwards;
+}
+
+.pk-frame__sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding-top: 32px;
+  background: var(--pk-surface);
+  border-right: 1px solid var(--pk-border);
+}
+
+.pk-frame__logo {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--pk-radius-sm);
+  background: var(--pk-accent);
+  margin-bottom: 10px;
+}
+
+.pk-frame__navitem {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--pk-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pk-frame__navitem::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--pk-text-muted);
+}
+.pk-frame__navitem--active {
+  background: var(--pk-active-bg);
+}
+.pk-frame__navitem--active::before {
+  background: var(--pk-active-fg);
+}
+
+.pk-frame__topbar {
+  position: absolute;
+  left: 168px;
+  right: 0;
+  top: 0;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 40px;
+  border-bottom: 1px solid var(--pk-border);
+}
+
+.pk-frame__search {
+  display: flex;
+  align-items: center;
+  width: 360px;
+  height: 48px;
+  padding: 0 20px;
+  border-radius: var(--pk-radius-sm);
+  border: 1px solid var(--pk-border);
+  background: var(--pk-surface);
+  color: var(--pk-text-faint);
+  font-size: 22px;
+}
+
+.pk-frame__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--pk-text-muted);
+  font-size: 20px;
+}
+.pk-frame__statusdot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pk-accent);
+  box-shadow: 0 0 12px var(--pk-accent);
+  animation: pk-pulse 2s ease-in-out infinite;
+}
+
+.pk-frame__content {
+  position: absolute;
+  left: 168px;
+  right: 0;
+  top: 96px;
+  bottom: 0;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-intake — a text-input style surface for the typing reveal.
+ * ---------------------------------------------------------------------- */
+.pk-intake {
+  position: absolute;
+  left: 56px;
+  right: 56px;
+  top: var(--pk-intake-top, 40px);
+  opacity: 0;
+  transform: translateY(14px);
+  animation: pk-enter-rise 0.6s var(--pk-ease) forwards;
+}
+.pk-intake__label {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--pk-text-faint);
+  margin-bottom: 12px;
+}
+.pk-intake__field {
+  display: flex;
+  align-items: center;
+  height: 72px;
+  padding: 0 24px;
+  border-radius: var(--pk-radius-sm);
+  border: 1px solid var(--pk-border-strong);
+  background: var(--pk-surface);
+  font-family: var(--pk-font-body);
+  font-size: 34px;
+  font-weight: 500;
+  color: var(--pk-text);
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-type — character-by-character typing reveal. kit.js splits the target
+ * element's text into one <span class="pk-type__char"> per character with a
+ * staggered animation-delay; this stylesheet only owns the reveal keyframe
+ * and the blinking caret, so it works with any font (no width bookkeeping).
+ * ---------------------------------------------------------------------- */
+.pk-type__char {
+  display: inline;
+  opacity: 0;
+  animation: pk-type-reveal 0.12s steps(1, end) forwards;
+}
+@keyframes pk-type-reveal {
+  to { opacity: 1; }
+}
+
+.pk-caret {
+  display: inline-block;
+  width: 4px;
+  height: 0.9em;
+  margin-left: 2px;
+  vertical-align: -0.1em;
+  background: var(--pk-accent);
+  animation: pk-caret-blink 1s steps(1, end) infinite;
+}
+@keyframes pk-caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-column — a kanban-ish list container to host cards.
+ * ---------------------------------------------------------------------- */
+.pk-column {
+  position: absolute;
+  left: 56px;
+  width: 560px;
+  top: var(--pk-column-top, 220px);
+}
+.pk-column__header {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--pk-text-muted);
+  margin-bottom: 16px;
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-card — task card: title, meta row (team/priority chips), status row.
+ * ---------------------------------------------------------------------- */
+.pk-card {
+  border-radius: var(--pk-radius);
+  border: 1px solid var(--pk-border);
+  background: var(--pk-surface);
+  padding: 32px 36px;
+  opacity: 0;
+  transform: translateY(20px) scale(0.97);
+  animation: pk-enter-rise-scale 0.5s var(--pk-ease) forwards;
+}
+.pk-card__title {
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--pk-text);
+}
+.pk-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.pk-card__assignee {
+  font-size: 20px;
+  color: var(--pk-text-muted);
+}
+.pk-card__status {
+  position: relative;
+  height: 44px;
+  margin-top: 20px;
+}
+.pk-card__status .pk-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-chip — small team/priority tag: soft bg + colored text, lifted from
+ * task-type-badge.tsx's dark-mode pairs.
+ * ---------------------------------------------------------------------- */
+.pk-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 20px;
+  font-weight: 500;
+}
+.pk-chip--purple { background: #581c87; color: #d8b4fe; }
+.pk-chip--blue   { background: #1e3a8a; color: #93c5fd; }
+.pk-chip--green  { background: #14532d; color: #86efac; }
+.pk-chip--orange { background: #7c2d12; color: #fdba74; }
+.pk-chip--pink   { background: #831843; color: #f9a8d4; }
+.pk-chip--gray   { background: #27272a; color: #d4d4d8; }
+
+/* ---------------------------------------------------------------------- *
+ * pk-pill — status pill: solid bg + white text, fully rounded (matches the
+ * panel's shared Badge component, which is rounded-full for every variant).
+ * Text mirrors the panel's own rendering of a status enum: lowercase, spaces
+ * instead of underscores (see TaskStatusBadge: status.replace(/_/g," ")).
+ * ---------------------------------------------------------------------- */
+.pk-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 10px 24px;
+  font-size: 22px;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+}
+.pk-pill--progress { background: var(--pk-pill-progress); }
+.pk-pill--review   { background: var(--pk-pill-review); }
+.pk-pill--approved { background: var(--pk-pill-approved); }
+.pk-pill--completed { background: var(--pk-pill-completed); }
+
+/* An enter+exit pair for a pill being swapped out (e.g. progress -> another
+ * status). Apply alongside a variant class; delays are set per-instance via
+ * --pk-pill-enter-delay / --pk-pill-exit-delay (composition-absolute
+ * seconds, same convention as every other animation-delay in this house). */
+.pk-pill--swap-out {
+  opacity: 0;
+  transform: translateY(6px);
+  animation:
+    pk-enter-rise 0.4s var(--pk-ease) var(--pk-pill-enter-delay, 0s) forwards,
+    pk-fade-out 0.4s var(--pk-ease) var(--pk-pill-exit-delay, 1s) forwards;
+}
+.pk-pill--swap-in {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: pk-enter-rise 0.4s var(--pk-ease) var(--pk-pill-enter-delay, 0s) forwards;
+}
+@keyframes pk-fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-cursor — a small cursor sprite moved along a keyframed path (a pure CSS
+ * shape, no image asset), with a click-pulse ring. Start/end coordinates are
+ * content-box-relative pixels supplied per composition/orientation via
+ * --pk-cursor-x0/y0/x1/y1; the click delay via --pk-click-delay.
+ * ---------------------------------------------------------------------- */
+.pk-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 34px;
+  height: 34px;
+  transform: translate(var(--pk-cursor-x0, 0px), var(--pk-cursor-y0, 0px));
+  animation: pk-cursor-glide 1.2s var(--pk-ease) var(--pk-cursor-delay, 0s) forwards;
+}
+@keyframes pk-cursor-glide {
+  from { transform: translate(var(--pk-cursor-x0, 0px), var(--pk-cursor-y0, 0px)); }
+  to   { transform: translate(var(--pk-cursor-x1, 0px), var(--pk-cursor-y1, 0px)); }
+}
+.pk-cursor__glyph {
+  width: 34px;
+  height: 34px;
+  background: var(--pk-text);
+  clip-path: polygon(0 0, 0 70%, 22% 55%, 38% 88%, 52% 82%, 36% 50%, 62% 50%);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+}
+.pk-cursor__ring {
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: 3px solid var(--pk-accent);
+  opacity: 0;
+  animation: pk-cursor-click 0.6s var(--pk-ease) var(--pk-click-delay, 0s) forwards;
+}
+@keyframes pk-cursor-click {
+  0%   { opacity: 0.9; transform: scale(0.4); }
+  60%  { opacity: 0.55; }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-toast — notification toast, slides in from a corner (right-anchored;
+ * --pk-toast-bottom sets the vertical offset per orientation).
+ * ---------------------------------------------------------------------- */
+.pk-toast {
+  position: absolute;
+  right: 56px;
+  bottom: var(--pk-toast-bottom, 120px);
+  width: 560px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 24px 28px;
+  border-radius: var(--pk-radius);
+  border: 1px solid var(--pk-border);
+  background: var(--pk-surface-raised);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translateX(40px);
+  animation: pk-enter-slide 0.6s var(--pk-ease) forwards;
+}
+.pk-toast__icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--pk-pill-completed);
+}
+.pk-toast__title {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--pk-text);
+  margin-bottom: 6px;
+}
+.pk-toast__text {
+  font-size: 20px;
+  line-height: 1.3;
+  color: var(--pk-text-muted);
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-outro — a headline moment set in the display face, matching the
+ * release-announcement composition's outro treatment.
+ * ---------------------------------------------------------------------- */
+.pk-outro {
+  position: absolute;
+  left: 56px;
+  bottom: var(--pk-outro-bottom, 56px);
+  font-family: var(--pk-font-display);
+  font-size: 56px;
+  color: var(--pk-text);
+  opacity: 0;
+  transform: translateY(14px);
+  animation: pk-enter-rise 0.8s var(--pk-ease) forwards;
+}
+
+/* ---------------------------------------------------------------------- *
+ * Shared entrance keyframes.
+ * ---------------------------------------------------------------------- */
+@keyframes pk-enter-fade {
+  to { opacity: 1; }
+}
+@keyframes pk-enter-rise {
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pk-enter-rise-scale {
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes pk-enter-slide {
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes pk-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
