@@ -228,8 +228,17 @@ def set_roadmap_cycle(task: HasMarkers, payload: dict[str, Any]) -> None:
 # The video engine's working payload, carried on both the UX/UI authoring task
 # (source=video) and the held post draft it later produces (source=video_post):
 # {occasion, script, composition_id, input_props, mp4_paths, x_caption,
-# tiktok_caption, platforms, render_status}. Set once at authoring-open time
-# and extended (not replaced) once rendering fills in the mp4/caption fields.
+# tiktok_caption, platforms, render_status, render_attempts, render_error,
+# source_task_id}. Set once at authoring-open time and extended (not replaced)
+# once rendering fills in the mp4/caption fields.
+
+# Bounded retry for the video render loop: a failed render (read-clone not yet
+# synced to the just-merged composition, or a transient sidecar blip) retries
+# on a later cycle; only after this many attempts is a task marked terminally
+# failed, so a genuinely broken composition can't re-render forever. Single
+# source of truth for the orchestrator's render loop AND the pipeline-strip
+# API — importable from both without the API importing the orchestrator.
+MAX_VIDEO_RENDER_ATTEMPTS = 5
 
 
 def get_video_draft(task: HasMarkers) -> dict[str, Any] | None:

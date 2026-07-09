@@ -2,51 +2,68 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { VideoPost } from "@/lib/api/video";
+import type { VideoPipelineItem, VideoPost } from "@/lib/api/video";
 
 const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
-const { listPosts, approve, reject, requestVideo, getMediaBlob } = vi.hoisted(
-  () => ({
-    listPosts: vi.fn(
-      async () =>
-        [
-          {
-            task_id: "v-1",
-            source: "video_post",
-            title: "Video: release v0.19.0",
-            status: "pending",
-            occasion: "release",
-            script: "RoboCo v0.19.0 just shipped!",
-            platforms: ["x", "tiktok"],
-            x_caption: "RoboCo v0.19.0 is here!",
-            tiktok_caption: "New RoboCo drop!",
+const {
+  listPosts,
+  listPipeline,
+  approve,
+  reject,
+  requestVideo,
+  getMediaBlob,
+} = vi.hoisted(() => ({
+  listPosts: vi.fn(
+    async () =>
+      [
+        {
+          task_id: "v-1",
+          source: "video_post",
+          title: "Video: release v0.19.0",
+          status: "pending",
+          occasion: "release",
+          script: "RoboCo v0.19.0 just shipped!",
+          platforms: ["x", "tiktok"],
+          x_caption: "RoboCo v0.19.0 is here!",
+          tiktok_caption: "New RoboCo drop!",
+          mp4_paths: {
+            vertical: "/fake/vertical.mp4",
+            square: "/fake/square.mp4",
           },
-        ] as VideoPost[],
-    ),
-    // Deferred so the test can freeze the approve mid-flight.
-    approve: vi.fn(
-      () =>
-        new Promise((r) => {
-          resolveApproveRef.current = r as (v: unknown) => void;
-        }),
-    ),
-    reject: vi.fn(async () => ({})),
-    requestVideo: vi.fn(async () => ({
-      status: "opened",
-      task_id: "v-2",
-      detail: "Video-authoring task opened.",
-    })),
-    getMediaBlob: vi.fn(
-      async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
-    ),
-  }),
-);
+        },
+      ] as VideoPost[],
+  ),
+  listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
+  // Deferred so the test can freeze the approve mid-flight.
+  approve: vi.fn(
+    () =>
+      new Promise((r) => {
+        resolveApproveRef.current = r as (v: unknown) => void;
+      }),
+  ),
+  reject: vi.fn(async () => ({})),
+  requestVideo: vi.fn(async () => ({
+    status: "opened",
+    task_id: "v-2",
+    detail: "Video-authoring task opened.",
+  })),
+  getMediaBlob: vi.fn(
+    async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
+  ),
+}));
 
 vi.mock("@/lib/api", () => ({
-  videoApi: { listPosts, approve, reject, requestVideo, getMediaBlob },
+  videoApi: {
+    listPosts,
+    listPipeline,
+    approve,
+    reject,
+    requestVideo,
+    getMediaBlob,
+  },
 }));
 
 import { VideoPostQueue } from "../video-post-queue";
@@ -61,6 +78,7 @@ function withQueryClient(ui: ReactNode) {
 describe("VideoPostQueue", () => {
   beforeEach(() => {
     listPosts.mockClear();
+    listPipeline.mockClear();
     approve.mockClear();
     reject.mockClear();
     requestVideo.mockClear();
@@ -85,6 +103,46 @@ describe("VideoPostQueue", () => {
       screen.getByDisplayValue("RoboCo v0.19.0 is here!"),
     ).toBeInTheDocument();
     expect(screen.getByDisplayValue("New RoboCo drop!")).toBeInTheDocument();
+  });
+
+  it("shows the fetched title and script instead of dropping them", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    expect(
+      await screen.findByText("Video: release v0.19.0"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("RoboCo v0.19.0 just shipped!"),
+    ).toBeInTheDocument();
+  });
+
+  it("flags a missing cut as disabled instead of silently blanking the player", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" }, // square never rendered
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    const squareButton = screen.getByRole("button", { name: /1:1/ });
+    expect(squareButton).toHaveTextContent("(missing)");
+    expect(squareButton).toBeDisabled();
+    // The present cut is unaffected — no "(missing)" suffix, not disabled.
+    const verticalButton = screen.getByRole("button", { name: /9:16/ });
+    expect(verticalButton).not.toHaveTextContent("(missing)");
+    expect(verticalButton).not.toBeDisabled();
+    await waitFor(() =>
+      expect(getMediaBlob).toHaveBeenCalledWith("v-1", "vertical"),
+    );
   });
 
   // H15: the 30s refetchInterval produces a new `post` prop, but useState
@@ -242,12 +300,36 @@ describe("VideoPostQueue", () => {
     );
   });
 
-  it("shows an empty-state card (with the request action) when there are no drafts", async () => {
+  it("shows the keys/engine empty copy when nothing is in the pipeline either", async () => {
     listPosts.mockResolvedValueOnce([]);
+    listPipeline.mockResolvedValueOnce([]);
     render(withQueryClient(<VideoPostQueue />));
     expect(await screen.findByText(/No drafts yet/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Request a video/ }),
     ).toBeInTheDocument();
+  });
+
+  it("shows an in-flight count instead of the keys/engine copy when the pipeline is non-empty", async () => {
+    listPosts.mockResolvedValueOnce([]);
+    listPipeline.mockResolvedValueOnce([
+      {
+        task_id: "vp-1",
+        title: "Video: launch teaser",
+        occasion: "launch",
+        status: "in_progress",
+        pr_number: null,
+        composition_id: null,
+        render_status: null,
+        render_attempts: 0,
+        max_attempts: 5,
+        render_error: null,
+      },
+    ] as VideoPipelineItem[]);
+    render(withQueryClient(<VideoPostQueue />));
+    expect(
+      await screen.findByText(/1 video in flight — nothing rendered yet/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No drafts yet/)).not.toBeInTheDocument();
   });
 });

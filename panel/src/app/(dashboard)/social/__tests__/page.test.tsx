@@ -10,6 +10,9 @@ import type { VideoPostHistoryEntry } from "@/lib/api/video";
 vi.mock("@/components/dashboard/x-post-queue", () => ({
   XPostQueue: () => <div>XPostQueueStub</div>,
 }));
+vi.mock("@/components/dashboard/video-pipeline-strip", () => ({
+  VideoPipelineStrip: () => <div>VideoPipelineStripStub</div>,
+}));
 vi.mock("@/components/dashboard/video-post-queue", () => ({
   VideoPostQueue: () => <div>VideoPostQueueStub</div>,
 }));
@@ -82,6 +85,7 @@ describe("SocialPage", () => {
     );
     expect(screen.getByRole("heading", { name: "Social" })).toBeInTheDocument();
     expect(screen.getByText("XPostQueueStub")).toBeInTheDocument();
+    expect(screen.getByText("VideoPipelineStripStub")).toBeInTheDocument();
     expect(screen.getByText("VideoPostQueueStub")).toBeInTheDocument();
   });
 
