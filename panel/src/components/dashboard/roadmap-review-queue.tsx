@@ -175,7 +175,10 @@ export function RoadmapReviewQueue({ className }: { className?: string }) {
       roadmapApi.approveItem(taskId, itemId),
     onSuccess: (result) => {
       invalidate();
-      if (result.status === "approved" || result.status === "already_approved") {
+      if (
+        result.status === "approved" ||
+        result.status === "already_approved"
+      ) {
         toast.success("Item approved — added to the backlog");
       } else {
         toast.warning(result.detail);
@@ -251,8 +254,8 @@ export function RoadmapReviewQueue({ className }: { className?: string }) {
           <DialogHeader>
             <DialogTitle>Reject roadmap item</DialogTitle>
             <DialogDescription>
-              This records your reason and feeds the next cycle&apos;s prompt
-              — it is not added to the backlog.
+              This records your reason and feeds the next cycle&apos;s prompt —
+              it is not added to the backlog.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { PageRefreshProvider } from "@/components/providers";
 import type { ReactNode } from "react";
 
 const { list } = vi.hoisted(() => ({
@@ -40,6 +41,10 @@ function withQueryClient(ui: ReactNode) {
   return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
 }
 
+function wrapper(ui: ReactNode) {
+  return withQueryClient(<PageRefreshProvider>{ui}</PageRefreshProvider>);
+}
+
 describe("TasksPage — passes status/team/limit server-side (H17)", () => {
   beforeEach(() => {
     list.mockReset();
@@ -47,7 +52,7 @@ describe("TasksPage — passes status/team/limit server-side (H17)", () => {
   });
 
   it("forwards single status + team + limit=500 to tasksApi.list", async () => {
-    render(withQueryClient(<TasksPage />));
+    render(wrapper(<TasksPage />));
     await waitFor(() => expect(list).toHaveBeenCalled());
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({

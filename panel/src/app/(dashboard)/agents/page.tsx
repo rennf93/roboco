@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import {
   useOrchestratorStatus,
   useWaitingAgents,
@@ -8,9 +8,8 @@ import {
 } from "@/hooks/use-agents";
 import { useAgentUsage } from "@/hooks/use-usage";
 import { AgentStatusResponse, AgentUsageRow } from "@/types";
-import { Button } from "@/components/ui/button";
-import { RefreshCw } from "lucide-react";
 import { OfflineState } from "@/components/ui/offline-state";
+import { usePageRefresh } from "@/hooks";
 import {
   getBoardAgents,
   getMainPm,
@@ -30,6 +29,16 @@ export default function AgentsPage() {
   const { data: status, isLoading, error, refetch } = useOrchestratorStatus();
   const { data: waitingAgents } = useWaitingAgents();
   const { data: usageRows } = useAgentUsage();
+
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
 
   // Check if it's a connection error (backend not running)
   const isOffline =
@@ -68,17 +77,13 @@ export default function AgentsPage() {
             Monitor and control your AI workforce
           </p>
         </div>
-        <Button variant="outline" onClick={() => refetch()}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {isOffline ? (
         <OfflineState
           title="Orchestrator Not Running"
           description="Start the RoboCo orchestrator to spawn and monitor agents. The agent roster is shown below for reference."
-          onRetry={() => refetch()}
+          onRetry={() => void refresh()}
         />
       ) : (
         <>

@@ -9,7 +9,9 @@ import {
   SECTION_LABELS,
 } from "../a2a-switchboard-utils";
 
-function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary {
+function buildPair(
+  overrides: Partial<AdminPairSummary> = {},
+): AdminPairSummary {
   return {
     agent_a: "be-dev-1",
     role_a: "developer",
@@ -55,9 +57,7 @@ describe("pairMatchesFrame", () => {
     expect(pairMatchesFrame("be-dev-1", "be-qa", undefined, "be-qa")).toBe(
       false,
     );
-    expect(pairMatchesFrame("be-dev-1", "be-qa", "be-dev-1", null)).toBe(
-      false,
-    );
+    expect(pairMatchesFrame("be-dev-1", "be-qa", "be-dev-1", null)).toBe(false);
   });
 });
 

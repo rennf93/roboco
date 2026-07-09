@@ -12,6 +12,16 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ back: vi.fn() }),
 }));
 
+vi.mock("@/hooks/use-page-refresh", () => ({
+  usePageRefresh: () => ({
+    register: vi.fn(),
+    unregister: vi.fn(),
+    refresh: vi.fn(),
+    loading: false,
+    disabled: false,
+  }),
+}));
+
 vi.mock("@/hooks/use-agents", () => ({
   useAgentStatus: vi.fn(),
   useAgentDefinition: vi.fn(() => ({ data: undefined })),

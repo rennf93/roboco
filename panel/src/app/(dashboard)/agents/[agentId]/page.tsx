@@ -1,12 +1,14 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   useAgentStatus,
   useStopAgent,
   useAgentDefinition,
 } from "@/hooks/use-agents";
+import { usePageRefresh } from "@/hooks";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -23,7 +25,6 @@ import {
   Square,
   AlertTriangle,
   Clock,
-  RefreshCw,
   User,
   Users,
 } from "lucide-react";
@@ -65,6 +66,17 @@ export default function AgentDetailPage() {
 
   const { data: agent, isLoading, error, refetch } = useAgentStatus(agentId);
   const { data: definition } = useAgentDefinition(agentId);
+
+  const { register, unregister } = usePageRefresh();
+
+  useEffect(() => {
+    const cb = () => {
+      void refetch();
+    };
+    register(cb);
+    return () => unregister(cb);
+  }, [register, unregister, refetch]);
+
   const stopAgent = useStopAgent();
 
   // Get display values from definition or fallback
@@ -157,10 +169,6 @@ export default function AgentDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
-          </Button>
           {isWaiting && <ResolveWaitDialog agentId={agentId} />}
           {isActive ? (
             <>
