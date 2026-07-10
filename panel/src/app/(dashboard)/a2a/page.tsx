@@ -30,9 +30,11 @@ import {
 } from "@/components/a2a/a2a-connection-badge";
 import { latestPulseTimestamps } from "@/components/a2a/a2a-switchboard-utils";
 import {
+  distinctA2AAgents,
   filterConversations,
   filterPairs,
-  type A2AStatusFilter,
+  EMPTY_A2A_FILTERS,
+  type A2AFilters,
 } from "@/components/a2a/a2a-filter-utils";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,10 +79,10 @@ function A2APageContent() {
   // shown as an explicit "no A2A yet" state in the drill-in panel.
   const [peekedPair, setPeekedPair] = useState<PeekedPair | null>(null);
 
-  // Filter bar: status (active/all) + free-text search over agent name/topic
-  // — narrows both the switchboard's pairs and the list's conversations.
-  const [statusFilter, setStatusFilter] = useState<A2AStatusFilter>("all");
-  const [search, setSearch] = useState("");
+  // Filter panel: Agent, Task (id fragment + no-linked-task), Status, Date
+  // range — narrows both the switchboard's pairs (Agent only) and the
+  // list's conversations (all four), per the design doc's per-view rules.
+  const [filters, setFilters] = useState<A2AFilters>(EMPTY_A2A_FILTERS);
 
   // xl:+ context pane collapse, persisted via the shared UI store — same
   // idiom as sidebar/theme preferences (design doc §1).
@@ -193,8 +195,8 @@ function A2APageContent() {
     [a2aMessages, pairs],
   );
   const filteredPairs = useMemo(
-    () => filterPairs(pairs, statusFilter, search),
-    [pairs, statusFilter, search],
+    () => filterPairs(pairs, filters),
+    [pairs, filters],
   );
 
   const handleSelect = useCallback(
@@ -229,8 +231,12 @@ function A2APageContent() {
     [conversationData],
   );
   const filteredConversations = useMemo(
-    () => filterConversations(conversations, statusFilter, search),
-    [conversations, statusFilter, search],
+    () => filterConversations(conversations, filters),
+    [conversations, filters],
+  );
+  const agentOptions = useMemo(
+    () => distinctA2AAgents(conversations, pairs),
+    [conversations, pairs],
   );
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
   const messages = messagesData?.items ?? [];
@@ -348,10 +354,10 @@ function A2APageContent() {
                   </div>
                 </div>
                 <A2AFilterBar
-                  status={statusFilter}
-                  onStatusChange={setStatusFilter}
-                  search={search}
-                  onSearchChange={setSearch}
+                  filters={filters}
+                  onFiltersChange={setFilters}
+                  agentOptions={agentOptions}
+                  view={view}
                 />
                 <div className="flex-1 overflow-hidden -mx-3">
                   {view === "switchboard" ? (
