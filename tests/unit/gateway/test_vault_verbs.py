@@ -98,6 +98,7 @@ async def test_curate_vault_writes_narrative_for_auditor(
     assert env.error is None
     assert env.status == "vault_curated"
     assemble.assert_awaited_once()
+    assert assemble.await_args is not None
     assert assemble.await_args.kwargs["narrative"] == "Shipped after one rework."
     writer.write_task.assert_called_once_with(data)
 

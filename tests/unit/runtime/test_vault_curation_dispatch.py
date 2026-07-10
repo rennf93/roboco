@@ -42,6 +42,7 @@ async def test_maybe_spawn_vault_curation_spawns_auditor_without_task_id() -> No
     ):
         await orch._maybe_spawn_vault_curation(task_id, "A completed root")
     spawn.assert_awaited_once()
+    assert spawn.await_args is not None
     assert spawn.await_args.kwargs["agent_id"] == "auditor"
     assert "task_id" not in spawn.await_args.kwargs
     assert task_id in spawn.await_args.kwargs["initial_prompt"]

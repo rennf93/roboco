@@ -6,7 +6,7 @@ never reprocesses, but an edited note (new hash) is eligible again. Mirrors
 is off.
 
 Revision ID: 070_vault_seen_notes
-Revises: 068_tasks_constraints_column
+Revises: 069_tasks_parent_task_id_idx
 Create Date: 2026-07-11
 """
 
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "070_vault_seen_notes"
-down_revision = "068_tasks_constraints_column"
+down_revision = "069_tasks_parent_task_id_idx"
 branch_labels: dict[str, str] | None = None
 depends_on: dict[str, str] | None = None
 

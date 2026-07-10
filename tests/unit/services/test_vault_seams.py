@@ -37,7 +37,7 @@ def _entry_row(*, is_private: bool = False, task_id: object | None = None) -> Ma
 async def test_journal_seam_noop_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "obsidian_vault_enabled", False)
     svc = JournalService(MagicMock())
-    svc.get_agent_slug = AsyncMock(return_value="be-dev-1")
+    monkeypatch.setattr(svc, "get_agent_slug", AsyncMock(return_value="be-dev-1"))
     with patch("roboco.services.vault_writer.get_vault_writer") as get_writer:
         await svc._materialize_vault_note(_entry_row(), uuid4(), is_private=False)
     get_writer.assert_not_called()
@@ -50,7 +50,7 @@ async def test_journal_seam_excludes_private_entries(
     """Mirrors the RAG-index exclusion: a private entry never reaches the vault."""
     monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
     svc = JournalService(MagicMock())
-    svc.get_agent_slug = AsyncMock(return_value="be-dev-1")
+    monkeypatch.setattr(svc, "get_agent_slug", AsyncMock(return_value="be-dev-1"))
     with patch("roboco.services.vault_writer.get_vault_writer") as get_writer:
         await svc._materialize_vault_note(
             _entry_row(is_private=True), uuid4(), is_private=True
@@ -64,7 +64,7 @@ async def test_journal_seam_writer_failure_does_not_raise(
 ) -> None:
     monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
     svc = JournalService(MagicMock())
-    svc.get_agent_slug = AsyncMock(return_value="be-dev-1")
+    monkeypatch.setattr(svc, "get_agent_slug", AsyncMock(return_value="be-dev-1"))
     writer = MagicMock()
     writer.write_journal_entry.side_effect = OSError("disk full")
     with patch("roboco.services.vault_writer.get_vault_writer", return_value=writer):
@@ -78,7 +78,7 @@ async def test_journal_seam_writes_when_enabled_and_public(
 ) -> None:
     monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
     svc = JournalService(MagicMock())
-    svc.get_agent_slug = AsyncMock(return_value="be-dev-1")
+    monkeypatch.setattr(svc, "get_agent_slug", AsyncMock(return_value="be-dev-1"))
     writer = MagicMock()
     with patch("roboco.services.vault_writer.get_vault_writer", return_value=writer):
         await svc._materialize_vault_note(_entry_row(), uuid4(), is_private=False)
