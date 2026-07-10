@@ -1330,6 +1330,30 @@ async def test_claim_pending_task_with_existing_branch(
 
 
 @pytest.mark.asyncio
+async def test_claim_pending_with_unmet_dependency_returns_none(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Sequence guardrail: a PENDING task with a non-terminal dependency cannot
+    be claimed — even via the raw claim path the orchestrator dispatcher uses.
+    Regression for the MegaTask "Main PM claimed every wave at once" bug."""
+    svc = task_setup["svc"]
+    dep = await svc.create(_req(task_setup, title="wave-0 dependency"))
+    task = await svc.create(_req(task_setup, title="wave-1 dependent"))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.add_dependency(task.id, dep.id)  # task depends_on dep (still PENDING)
+
+    assert await svc.claim(task.id, task_setup["agent_id"]) is None
+
+    # Once the dependency reaches a terminal state, the claim goes through.
+    dep.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    claimed = await svc.claim(task.id, task_setup["agent_id"])
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
 async def test_claim_already_claimed_by_other_returns_none(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
