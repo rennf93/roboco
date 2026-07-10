@@ -398,8 +398,7 @@ export function TaskTable({
         title: node.task.title,
       })),
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flattenedTasks]);
+  }, [flattenedTasks, onVisibleOrderChange]);
 
   // Pagination on flattened list
   const totalItems = flattenedTasks.length;
