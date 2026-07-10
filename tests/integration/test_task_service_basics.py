@@ -1548,6 +1548,146 @@ async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
 
 
 @pytest.mark.asyncio
+async def test_needs_revision_reclaim_blocked_by_lower_sequence_sibling(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A needs_revision reclaim is sequence-gated too: a lower-sequence
+    sibling delegated AFTER the first claim must hold the reclaim (the gap a
+    PENDING-only scope left open). The dep guard's identical needs_revision
+    gap is pre-existing and deliberately untouched."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    low = await svc.create(
+        _req(task_setup, title="late-delegated seq-0", parent_task_id=parent.id)
+    )
+    high = await svc.create(
+        _req(
+            task_setup, title="seq-1 in revision", parent_task_id=parent.id, sequence=1
+        )
+    )
+    high.status = TaskStatus.NEEDS_REVISION
+    high.branch_name = "feature/backend/9999aaaa"
+    low.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc.claim(high.id, task_setup["agent_id"]) is None
+
+    low.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.claim(high.id, task_setup["agent_id"]) is not None
+
+
+# ---------------------------------------------------------------------------
+# Wave stamping at delegation (stamp_wave_sequence) — sequences derive from
+# the wired collision DAG, not a per-sibling ordinal.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_independent_siblings_tie_and_claim_parallel(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Independent siblings (no edges) share wave 0 — both claimable in
+    parallel. The raw ordinal gave them 0/1 and the claim gate then
+    serialized ALL delegated work fleet-wide."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    a = await svc.create(_req(task_setup, title="indep-a", parent_task_id=parent.id))
+    b = await svc.create(_req(task_setup, title="indep-b", parent_task_id=parent.id))
+    await svc.stamp_wave_sequence(a.id)
+    await svc.stamp_wave_sequence(b.id)
+    assert (a.sequence, b.sequence) == (0, 0)
+
+    a.branch_name = "feature/backend/aaaa0001"
+    b.branch_name = "feature/backend/bbbb0002"
+    await db_session.flush()
+    assert await svc.claim(a.id, task_setup["agent_id"]) is not None
+    assert await svc.claim(b.id, task_setup["agent_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_ascends_for_dependent_siblings(
+    task_setup: dict,
+) -> None:
+    """Colliding / ordered siblings ascend: each dependent stamps one wave
+    above the max of its same-parent dependency targets, and the claim gate
+    blocks the later wave while the earlier is open."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    t0 = await svc.create(_req(task_setup, title="wave-0", parent_task_id=parent.id))
+    t1 = await svc.create(_req(task_setup, title="wave-1", parent_task_id=parent.id))
+    t2 = await svc.create(_req(task_setup, title="wave-2", parent_task_id=parent.id))
+    await svc.stamp_wave_sequence(t0.id)
+    await svc.add_dependency(t1.id, t0.id)
+    await svc.stamp_wave_sequence(t1.id)
+    await svc.add_dependency(t2.id, t1.id)
+    await svc.stamp_wave_sequence(t2.id)
+    assert (t0.sequence, t1.sequence, t2.sequence) == (0, 1, 2)
+
+    assert await svc._claim_blocked_by_sequence(t1) is not None
+    assert await svc.claim(t1.id, task_setup["agent_id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_preserves_stamps_and_ignores_nonsibling_deps(
+    task_setup: dict,
+) -> None:
+    """Only the NEW task is stamped — an explicitly authored sibling sequence
+    (API create / prompter batch wave) is never rewritten — and a dependency
+    on a task under a DIFFERENT parent contributes no wave."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    authored = await svc.create(
+        _req(task_setup, title="authored seq-3", parent_task_id=parent.id, sequence=3)
+    )
+    outside = await svc.create(_req(task_setup, title="other-parent task"))
+    new = await svc.create(
+        _req(
+            task_setup,
+            title="new sibling",
+            parent_task_id=parent.id,
+            dependency_ids=[outside.id],
+        )
+    )
+    await svc.stamp_wave_sequence(new.id)
+    authored_stamp = 3
+    assert new.sequence == 0  # non-sibling dep excluded from the wave
+    assert authored.sequence == authored_stamp  # PM-authored stamp untouched
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_after_collision_wiring_matches_delegate_flow(
+    task_setup: dict,
+) -> None:
+    """The delegate-flow composition end to end: create → wire the collision
+    DAG → stamp. Disjoint-surface siblings tie at wave 0; a file-overlap
+    sibling lands one wave above the sibling it collides with."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+
+    async def _delegate(title: str, surface: list[str]) -> Any:
+        t = await svc.create(
+            _req(
+                task_setup,
+                title=title,
+                parent_task_id=parent.id,
+                intends_to_touch=surface,
+            )
+        )
+        await svc.wire_sibling_collision_dag(parent.id)
+        await svc.stamp_wave_sequence(t.id)
+        return t
+
+    a = await _delegate("touches a.py", ["roboco/api/a.py"])
+    b = await _delegate("touches b.py", ["roboco/api/b.py"])
+    c = await _delegate("touches a.py too", ["roboco/api/a.py"])
+
+    assert (a.sequence, b.sequence) == (0, 0)  # disjoint → parallel
+    assert c.sequence == 1  # collides with a → next wave
+    assert await svc._claim_blocked_by_sequence(c) is not None
+
+
+@pytest.mark.asyncio
 async def test_claim_already_claimed_by_other_returns_none(
     task_setup: dict, db_session: AsyncSession
 ) -> None:

@@ -5616,7 +5616,13 @@ class Choreographer:
             )
 
     async def _depend_frontend_on_ux(self, fe_task: Any, parent_id: Any) -> None:
-        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling.
+
+        The wire is followed by a wave restamp (not a hand-rolled ``ux+1``
+        write) so the sequence reflects EVERY same-parent dependency the task
+        carries — a relative write could undercut a collision-derived stamp
+        and invert the claim gate's order against a wired edge.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5634,12 +5640,13 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(fe_task.id, ux.id)
-            await self.task.set_sequence(
-                fe_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(fe_task.id)
 
     async def _depend_backend_on_ux(self, be_task: Any, parent_id: Any) -> None:
-        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling.
+
+        Wire + wave restamp, mirroring :meth:`_depend_frontend_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5657,19 +5664,22 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(be_task.id, ux.id)
-            await self.task.set_sequence(
-                be_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(be_task.id)
 
     async def _depend_pending_frontends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task.
+
+        Each retro-wired sibling is wave-restamped so it lands above the UX
+        task's OWN stamped wave (the new task is stamped before this runs) —
+        a relative ``ux+1`` write here read the pre-stamp sequence and could
+        invert the order.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for fe in siblings:
             if (
@@ -5678,17 +5688,20 @@ class Choreographer:
                 and fe.status in not_started
             ):
                 await self.task.add_dependency(fe.id, ux_task.id)
-                await self.task.set_sequence(fe.id, ux_sequence)
+                await self.task.stamp_wave_sequence(fe.id)
 
     async def _depend_pending_backends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task.
+
+        Wire + wave restamp per sibling, mirroring
+        :meth:`_depend_pending_frontends_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for be in siblings:
             if (
@@ -5697,7 +5710,7 @@ class Choreographer:
                 and be.status in not_started
             ):
                 await self.task.add_dependency(be.id, ux_task.id)
-                await self.task.set_sequence(be.id, ux_sequence)
+                await self.task.stamp_wave_sequence(be.id)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs
@@ -5836,14 +5849,6 @@ class Choreographer:
             dependency_ids=list(inputs.depends_on) if inputs.depends_on else [],
         )
         new_task = await self.task.create_subtask(req)
-        # Assign a distinct ordinal within the parent's siblings so the merge
-        # order is deterministic. Within-cell siblings were all left at the
-        # default sequence 0 — which is why two leaf PRs raced into the same
-        # cell branch and the second wedged. Each new sibling takes the next
-        # ordinal (the count of pre-existing siblings).
-        siblings = await self.task.get_subtasks(parent_task_id)
-        next_seq = len([s for s in siblings if s.id != new_task.id])
-        await self.task.set_sequence(new_task.id, next_seq)
         # Wire the dev-task collision DAG (multi-level sequencing edge kind 3):
         # run the deterministic analyzer over the parent's surfaced siblings
         # and add_dependency each collision edge so a later dev task stays
@@ -5873,6 +5878,16 @@ class Choreographer:
             Team.UX_UI.value,
         ):
             await self.task.wire_by_osmosis_edge(new_task.id)
+        # Post-wiring wave stamp: sequence = 1 + max(same-parent dependency
+        # sequences), 0 when independent — so independent siblings tie (and
+        # run in parallel under the sequence claim gate) while colliding /
+        # ordered ones ascend. Replaces the raw per-sibling ordinal, which
+        # gave independent siblings distinct sequences and serialized ALL
+        # delegated work fleet-wide. The cross-cell UX wiring (in the caller)
+        # restamps any task it re-wires, so every sequence write in the
+        # delegate flow is this one wave computation; merge order for wave
+        # ties falls back to created_at in the merge/lane dispatch barriers.
+        await self.task.stamp_wave_sequence(new_task.id)
         return new_task
 
     @staticmethod
