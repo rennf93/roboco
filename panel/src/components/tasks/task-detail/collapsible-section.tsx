@@ -9,6 +9,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 
 interface CollapsibleSectionProps {
   /** Card title content (icon + text + badges as needed) */
@@ -17,8 +18,18 @@ interface CollapsibleSectionProps {
   actions?: ReactNode;
   /** Controlled open state (e.g. force-open while a section is mid-edit). Omit for uncontrolled. */
   open?: boolean;
-  /** Whether the (uncontrolled) section starts expanded. Defaults to open so nothing visible today disappears. */
+  /**
+   * Whether the (uncontrolled) section starts expanded. Takes precedence
+   * over `content`-derived collapsing. Omit to let `content` decide, or to
+   * default open when neither is given (so nothing visible today disappears).
+   */
   defaultOpen?: boolean;
+  /**
+   * Plain-text representation of the section's body, used to derive
+   * `defaultOpen` per the content-readability spec (~10 lines / ~640 chars)
+   * when `defaultOpen` is not explicitly set. Ignored otherwise.
+   */
+  content?: string;
   onOpenChange?: (open: boolean) => void;
   className?: string;
   headerClassName?: string;
@@ -31,18 +42,31 @@ interface CollapsibleSectionProps {
  * scrolling. Collapse/expand is fade + slide (opacity/transform only, via
  * tw-animate-css's animate-in/out) — no height/width property is animated,
  * and prefers-reduced-motion is handled globally in globals.css.
+ *
+ * Auto-collapse logic (content-readability-spec):
+ * - If `defaultOpen` is explicitly set, it takes precedence (e.g., force-open while editing)
+ * - Otherwise, if `content` is provided, starts collapsed if content exceeds ~10 lines or ~640 chars
+ * - If neither is set, defaults to true (visible by default, safe for new sections)
+ *
+ * This ensures a task with a long acceptance-criteria list or verbose description
+ * doesn't open fully expanded, keeping the page navigable.
  */
 export function CollapsibleSection({
   title,
   actions,
   open: openProp,
-  defaultOpen = true,
+  defaultOpen,
+  content,
   onOpenChange,
   className,
   headerClassName,
   children,
 }: CollapsibleSectionProps) {
-  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  // Resolve the starting state: explicit defaultOpen > content-derived > default to true
+  const resolvedDefaultOpen =
+    defaultOpen ??
+    (content !== undefined ? !exceedsReadabilityThreshold(content) : true);
+  const [internalOpen, setInternalOpen] = useState(resolvedDefaultOpen);
   const open = openProp ?? internalOpen;
   const setOpen = (next: boolean) => {
     onOpenChange?.(next);

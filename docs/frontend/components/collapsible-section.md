@@ -31,8 +31,19 @@ interface CollapsibleSectionProps {
   /** Controlled open state (e.g. force-open while a section is mid-edit). Omit for uncontrolled. */
   open?: boolean;
   
-  /** Whether the (uncontrolled) section starts expanded. Defaults to true so nothing visible today disappears. */
+  /**
+   * Whether the (uncontrolled) section starts expanded. Takes precedence
+   * over `content`-derived collapsing. Omit to let `content` decide, or to
+   * default open when neither is given (so nothing visible today disappears).
+   */
   defaultOpen?: boolean;
+  
+  /**
+   * Plain-text representation of the section's body, used to derive
+   * `defaultOpen` per the content-readability spec (~10 lines / ~640 chars)
+   * when `defaultOpen` is not explicitly set. Ignored otherwise.
+   */
+  content?: string;
   
   /** Callback when the user toggles the section open/closed. */
   onOpenChange?: (open: boolean) => void;
@@ -50,8 +61,9 @@ interface CollapsibleSectionProps {
 
 ### Component behavior
 
-- **Uncontrolled mode** (omit `open` prop): component manages its own open state. `defaultOpen` determines initial state (defaults to `true`). `onOpenChange` is called when the user clicks the toggle; internal state updates automatically.
+- **Uncontrolled mode** (omit `open` prop): component manages its own open state. `defaultOpen` determines initial state; if `defaultOpen` is omitted, the component uses `content`-derived collapsing (if `content` is provided), or defaults to `true` if neither is set. `onOpenChange` is called when the user clicks the toggle; internal state updates automatically.
 - **Controlled mode** (`open` prop set): `onOpenChange` is called on toggle, but internal state is not updated; parent must update the `open` prop. Useful to force a section open while a user is editing (e.g., `open={isEditing || sectionOpen}`).
+- **Content-driven defaultOpen** (new): when `content` is provided without an explicit `defaultOpen`, the component checks if the content exceeds the readability thresholds (~10 lines / ~640 characters, per `content-readability.ts`). If it does, the section defaults collapsed; otherwise, it defaults open. This keeps long lists/sections from forcing continuous scrolling. An explicit `defaultOpen` prop always takes precedence over this logic, maintaining backward compatibility with existing callers.
 - **Title and actions**: title is always visible in the header; actions (right side) are also always visible, never collapsed away. This allows edit/preview toggles, save/cancel buttons, etc. to remain accessible.
 - **ChevronDown icon**: rotates -90° when closed, 0° when open. Uses `transition-transform duration-200` so the rotation animates smoothly.
 
@@ -83,6 +95,7 @@ import { FileText, Edit3 } from "lucide-react";
 export function MySection() {
   const [sectionOpen, setSectionOpen] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
+  const sectionText = "Section content here."; // Plain-text representation
 
   return (
     <CollapsibleSection
@@ -98,14 +111,36 @@ export function MySection() {
           Edit
         </Button>
       }
+      content={sectionText}  // Optional: drive defaultOpen based on content length
       open={isEditing || sectionOpen}
       onOpenChange={setSectionOpen}
     >
-      <p>Section content here.</p>
+      <p>{sectionText}</p>
     </CollapsibleSection>
   );
 }
 ```
+
+### Using content-driven defaultOpen
+
+To automatically collapse long sections without explicit `defaultOpen`:
+
+```tsx
+const listText = items.map(item => item.title).join("\n");
+
+<CollapsibleSection
+  title="Long List"
+  content={listText}  // Checked against ~10 lines / ~640 chars thresholds
+>
+  <ul>
+    {items.map(item => (
+      <li key={item.id}>{item.title}</li>
+    ))}
+  </ul>
+</CollapsibleSection>
+```
+
+If `listText` exceeds the readability thresholds, the section defaults collapsed; otherwise, it defaults open. No explicit `defaultOpen` prop needed.
 
 ### Controlled vs. uncontrolled
 
@@ -145,8 +180,12 @@ The component is now applied across task-detail pages:
 | `task-description.tsx` | Description, Constraints | Constraints section styled with amber border/background + ShieldAlert icon for visual distinction from authored content. |
 | `tab-notes.tsx` | Each editable note field (Description, Notes, Plan) | Edit/preview toggle forced open while editing via `open={isEditing \|\| sectionOpen}`. |
 | `tab-plan.tsx` | Approach, Sub-Tasks, Technical Considerations, Risks, Open Questions | Each sub-section independently collapsible. |
+| `acceptance-criteria.tsx` | Full acceptance criteria list | Wrapped in CollapsibleSection with `content={criteriaText}`, so a long AC list defaults collapsed per content-readability spec. Forced open while adding/editing via controlled `open` prop. |
+| `tab-progress.tsx` | Individual progress updates and checkpoints (via internal Radix Collapsible wrapper) | Each entry wrapped in a collapsible section; only the 2 most recent entries default open (gated by content length as well). Older entries default collapsed even if short, keeping task detail navigable without endless scrolling. |
 
 ## Design decisions
+
+- **Content-driven defaultOpen (new)**: instead of always defaulting open (which forced tasks with long histories to be fully expanded), the component now checks content length against readability thresholds (~10 lines / ~640 characters) when `defaultOpen` is not explicitly set. Long content defaults collapsed, keeping task-detail pages navigable. The explicit `defaultOpen` prop always takes precedence, so existing callers (task-description, tab-notes, tab-plan) that pass `open={...}` are unaffected — the content-length check only applies to uncontrolled sections. This is the "content-readability spec" driving progress and AC collapse in tab-progress and acceptance-criteria.
 
 - **Fade + slide animation only**: opacity and transform are GPU-accelerated and don't trigger layout reflow. Height/width animations are avoided because they force the browser to recalculate layout mid-animation, causing jank on slower devices and making the motion distracting.
 
@@ -189,20 +228,39 @@ For developers adding a new collapsible section to task-detail or other pages:
 1. Import `CollapsibleSection` from `./collapsible-section` (adjust path as needed).
 2. Wrap the section content, provide a `title` (can include icons, badges).
 3. Optionally provide `actions` (buttons, toggles that should stay visible).
-4. For editable content, use the controlled pattern: `open={isEditing || sectionOpen}` to force-open while editing.
-5. No extra state management is needed for read-only sections; the component handles it.
+4. **For sections with potentially long content** (lists, histories): pass a plain-text `content` prop so the section automatically collapses if the content is long. This defers to the content-readability spec thresholds (~10 lines / ~640 chars).
+5. For editable content, use the controlled pattern: `open={isEditing || sectionOpen}` to force-open while editing. The controlled `open` prop takes precedence over content-driven collapse.
+6. No extra state management is needed for read-only sections; the component handles it internally.
 
-Example:
+Example (uncontrolled with content-driven collapse):
+
+```tsx
+const listText = items.map(item => item.name).join("\n");
+
+<CollapsibleSection
+  title="My List"
+  content={listText}  // Drives defaultOpen based on length
+>
+  <ul>
+    {items.map(item => (
+      <li key={item.id}>{item.name}</li>
+    ))}
+  </ul>
+</CollapsibleSection>
+```
+
+Example (controlled, forcing open during edit):
 
 ```tsx
 const [sectionOpen, setSectionOpen] = useState(true);
+const [isEditing, setIsEditing] = useState(false);
 
 <CollapsibleSection
   title="My Section"
-  open={sectionOpen}
+  open={isEditing || sectionOpen}  // Controlled: explicit `open` wins over content
   onOpenChange={setSectionOpen}
 >
-  <p>Content here.</p>
+  {isEditing ? <textarea /> : <p>Content here.</p>}
 </CollapsibleSection>
 ```
 
