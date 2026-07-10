@@ -44,20 +44,6 @@ function formatTs(ts: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 // Objectives field — one text field per key derived from the first item.
 // Falls back to a single "value" field when array is empty.
-//
-// Renders a responsive grid of objective cards with the following layout:
-// - Mobile (< md): 1 column (grid-cols-1)
-// - Desktop (md+): 2 columns (md:grid-cols-2)
-// - The '+ Add objective' button sits below the grid as a full-width sibling
-//   (not as a grid item), maintaining consistent width across all breakpoints.
-//
-// Layout structure:
-//   <div className="space-y-3">
-//     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-//       {objective cards as grid items}
-//     </div>
-//     <Button className="w-full">{+ Add objective}</Button>
-//   </div>
 // ---------------------------------------------------------------------------
 
 interface ObjectivesEditorProps {
@@ -94,51 +80,48 @@ function ObjectivesEditor({
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {items.map((item, rowIdx) => (
-          <div key={rowIdx} className="rounded-lg border p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">
-                Objective #{rowIdx + 1}
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={disabled}
-                onClick={() => removeRow(rowIdx)}
-                className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-              >
-                Remove
-              </Button>
-            </div>
-            {keys.map((key) => (
-              <div key={key} className="space-y-1">
-                <Label
-                  htmlFor={`obj-${rowIdx}-${key}`}
-                  className="text-xs capitalize"
-                >
-                  {key.replace(/_/g, " ")}
-                </Label>
-                <Input
-                  id={`obj-${rowIdx}-${key}`}
-                  value={String(item[key] ?? "")}
-                  disabled={disabled}
-                  onChange={(e) => handleChange(rowIdx, key, e.target.value)}
-                  className="h-8 text-sm"
-                />
-              </div>
-            ))}
+      {items.map((item, rowIdx) => (
+        <div key={rowIdx} className="rounded-lg border p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">
+              Objective #{rowIdx + 1}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={disabled}
+              onClick={() => removeRow(rowIdx)}
+              className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+            >
+              Remove
+            </Button>
           </div>
-        ))}
-      </div>
+          {keys.map((key) => (
+            <div key={key} className="space-y-1">
+              <Label
+                htmlFor={`obj-${rowIdx}-${key}`}
+                className="text-xs capitalize"
+              >
+                {key.replace(/_/g, " ")}
+              </Label>
+              <Input
+                id={`obj-${rowIdx}-${key}`}
+                value={String(item[key] ?? "")}
+                disabled={disabled}
+                onChange={(e) => handleChange(rowIdx, key, e.target.value)}
+                className="h-8 text-sm"
+              />
+            </div>
+          ))}
+        </div>
+      ))}
       <Button
         type="button"
         variant="outline"
         size="sm"
         disabled={disabled}
         onClick={addRow}
-        className="w-full"
       >
         + Add objective
       </Button>
