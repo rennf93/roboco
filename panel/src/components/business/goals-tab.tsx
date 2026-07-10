@@ -80,48 +80,51 @@ function ObjectivesEditor({
 
   return (
     <div className="space-y-3">
-      {items.map((item, rowIdx) => (
-        <div key={rowIdx} className="rounded-lg border p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">
-              Objective #{rowIdx + 1}
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={disabled}
-              onClick={() => removeRow(rowIdx)}
-              className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-            >
-              Remove
-            </Button>
-          </div>
-          {keys.map((key) => (
-            <div key={key} className="space-y-1">
-              <Label
-                htmlFor={`obj-${rowIdx}-${key}`}
-                className="text-xs capitalize"
-              >
-                {key.replace(/_/g, " ")}
-              </Label>
-              <Input
-                id={`obj-${rowIdx}-${key}`}
-                value={String(item[key] ?? "")}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {items.map((item, rowIdx) => (
+          <div key={rowIdx} className="rounded-lg border p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                Objective #{rowIdx + 1}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
                 disabled={disabled}
-                onChange={(e) => handleChange(rowIdx, key, e.target.value)}
-                className="h-8 text-sm"
-              />
+                onClick={() => removeRow(rowIdx)}
+                className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+              >
+                Remove
+              </Button>
             </div>
-          ))}
-        </div>
-      ))}
+            {keys.map((key) => (
+              <div key={key} className="space-y-1">
+                <Label
+                  htmlFor={`obj-${rowIdx}-${key}`}
+                  className="text-xs capitalize"
+                >
+                  {key.replace(/_/g, " ")}
+                </Label>
+                <Input
+                  id={`obj-${rowIdx}-${key}`}
+                  value={String(item[key] ?? "")}
+                  disabled={disabled}
+                  onChange={(e) => handleChange(rowIdx, key, e.target.value)}
+                  className="h-8 text-sm"
+                />
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
       <Button
         type="button"
         variant="outline"
         size="sm"
         disabled={disabled}
         onClick={addRow}
+        className="w-full"
       >
         + Add objective
       </Button>
