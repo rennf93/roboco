@@ -35,7 +35,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  ArrowLeft,
   MoreVertical,
   Play,
   Pause,
@@ -52,7 +51,6 @@ import {
   ThumbsDown,
 } from "lucide-react";
 import { toast } from "sonner";
-import Link from "next/link";
 import { TaskTypeBadge } from "../task-type-badge";
 import { CopyButton } from "@/components/ui/copy-button";
 
@@ -468,15 +466,10 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
   return (
     <div className="border-b pb-4">
       <div className="flex items-start justify-between gap-4">
-        {/* Left: back arrow + title + metadata. This column SHRINKS and the
-            title truncates, so a long title never pushes the controls or the
+        {/* Left: title + metadata. This column SHRINKS and the title
+            truncates, so a long title never pushes the controls or the
             Actions menu out of place. */}
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          <Link href="/tasks" prefetch={false}>
-            <Button variant="ghost" size="icon" className="shrink-0">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          </Link>
           <div className="min-w-0 flex-1">
             {/* Row 1: title only — editable, no UUID. Truncates on overflow. */}
             {editingTitle ? (
