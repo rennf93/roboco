@@ -827,12 +827,7 @@ class PrompterService:
         #    sequence = its wave index and the umbrella as parent.
         task_of: dict[int, UUID] = {}
         for idx, draft in enumerate(drafts):
-            # Root-subtasks are coordination roots: assignment is the
-            # PM-activation flow's call, not a draft-carried field. Strip a
-            # hallucinated/injected assigned_to so a board-role uuid can't
-            # deadlock the umbrella (board roles have no dev delivery verbs).
-            sub_draft = dict(draft)
-            sub_draft.pop("assigned_to", None)
+            sub_draft = _batch_subtask_draft(draft)
             sub = await self.create_task_from_draft(
                 sub_draft,
                 agent_id,
@@ -1085,6 +1080,30 @@ def _cell_teams(the_work: list[Any]) -> list[str]:
         if team in cell_values and team not in seen:
             seen.append(team)
     return seen
+
+
+def _batch_subtask_draft(draft: dict[str, Any]) -> dict[str, Any]:
+    """A batch root-subtask's draft: a copy with the non-targeting fields dropped.
+
+    ``assigned_to`` is stripped — assignment is the PM-activation flow's call, not
+    a draft-carried field, and a hallucinated/injected board-role uuid would
+    deadlock the umbrella (board roles have no dev delivery verbs). The top-level
+    ``project_id``/``product_id`` is stripped when the ``the_work`` per-cell map
+    carries the real target: the intake agent authors the top-level as the repo
+    SLUG it read (e.g. ``"roboco-api"``), which the panel only clears on a manual
+    picker toggle, so an untouched draft would reach ``create_task_from_draft``'s
+    UUID parse and 400 the whole batch. A legacy no-``the_work`` draft keeps its
+    panel-filled top-level target.
+    """
+    out = dict(draft)
+    out.pop("assigned_to", None)
+    if any(
+        isinstance(cell, dict) and cell.get("project_id")
+        for cell in (out.get("the_work") or [])
+    ):
+        out.pop("project_id", None)
+        out.pop("product_id", None)
+    return out
 
 
 def _draft_cell_map(draft: dict[str, Any]) -> list[tuple[Team, UUID]]:
