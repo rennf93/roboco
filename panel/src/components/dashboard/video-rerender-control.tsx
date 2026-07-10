@@ -15,20 +15,59 @@ import {
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-// Shared re-render control — video-post-queue.tsx (a rendered draft) and
-// video-pipeline-strip.tsx (a still-in-flight authoring task) both render
-// this for any composition-bearing task, regardless of its current
-// render_status: the backend's rerender endpoint only requires a completed
-// authoring task with a proposed composition, not a failed render, so a
-// healthy render can be deliberately redone too. A confirm dialog guards the
-// action since it discards whatever already rendered. Three visual states on
-// the trigger button: idle (ready to click), loading (mutation in-flight),
-// error (the retry itself failed — button re-enables so the CEO can try
-// again). Mirrors the pipeline strip's render_failed derivation in
-// video-pipeline-utils.ts.
+/**
+ * Shared re-render control — renders a button + confirm dialog for re-triggering
+ * video render operations. Used by both video-post-queue.tsx (a rendered draft)
+ * and video-pipeline-strip.tsx (a still-in-flight authoring task).
+ *
+ * @component
+ *
+ * Gating Logic:
+ * - Shows for any task with source_task_id + composition_id, regardless of
+ *   render_status. The backend's rerender endpoint only requires a completed
+ *   authoring task with a proposed composition, not a failed render, so a
+ *   healthy render can be deliberately redone too.
+ *
+ * Behavior:
+ * - Trigger button opens a Dialog with Cancel and Re-render buttons (guards
+ *   against accidental clicks, since re-rendering discards whatever already
+ *   rendered).
+ * - Only the confirm click calls videoApi.rerender(authoringTaskId).
+ * - Three visual states on the trigger button:
+ *   1. Idle: "Re-render" (ready to click)
+ *   2. Loading: "Re-rendering..." with spinning icon (mutation in-flight)
+ *   3. Error: "Retry re-render" in red (the retry itself failed; button stays
+ *      enabled so the CEO can try again).
+ *
+ * @example
+ * ```tsx
+ * // Usage in video-post-queue for a rendered draft:
+ * {canRerender && (
+ *   <div className="ml-auto">
+ *     <RerenderControl authoringTaskId={post.source_task_id as string} />
+ *   </div>
+ * )}
+ * ```
+ *
+ * @example
+ * ```tsx
+ * // Usage in video-pipeline-strip for an in-flight authoring task:
+ * {canRerender && (
+ *   <div className="ml-auto">
+ *     <RerenderControl authoringTaskId={item.task_id} />
+ *   </div>
+ * )}
+ * ```
+ */
 export function RerenderControl({
   authoringTaskId,
 }: {
+  /**
+   * The authoring task ID to re-render. Passed to videoApi.rerender(authoringTaskId).
+   * For video-post-queue: the post's source_task_id.
+   * For video-pipeline-strip: the pipeline item's own task_id (a pipeline item IS
+   * the authoring task).
+   */
   authoringTaskId: string;
 }) {
   const queryClient = useQueryClient();
