@@ -2215,7 +2215,11 @@ class Choreographer:
             )
 
     async def _conventions_guard(
-        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+        self,
+        agent_id: UUID,
+        task: Any,
+        briefing: dict[str, Any],
+        preferred_parent: str | None = None,
     ) -> Envelope | None:
         """Run the conventions validator on the actor's changed files (gated).
 
@@ -2225,12 +2229,19 @@ class Choreographer:
         flag is off. This is the pr_pass (reviewer) path — the remediation is
         reviewer-aware (``pr_fail``, not ``i_am_blocked`` which a reviewer
         lacks) via ``_conventions_rejection(..., reviewer=True)``.
+
+        ``preferred_parent`` is the assembled task's real parent branch (see
+        ``PRGateMixin._gate_diff_parent``) — the same cross-team-correct base
+        the gate's own diff evidence uses, so a misplaced-definition finding
+        can't be raised against inherited base-branch content.
         """
         from roboco.config import settings as _settings
 
         if not _settings.conventions_enabled:
             return None
-        result = await self.git.conventions_check_for_task(agent_id, task)
+        result = await self.git.conventions_check_for_task(
+            agent_id, task, preferred_parent=preferred_parent
+        )
         return self._conventions_rejection(result, briefing, reviewer=True)
 
     @staticmethod

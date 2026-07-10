@@ -62,7 +62,11 @@ class ChoreographerHelpers:
         raise NotImplementedError
 
     async def _conventions_guard(
-        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+        self,
+        agent_id: UUID,
+        task: Any,
+        briefing: dict[str, Any],
+        preferred_parent: str | None = None,
     ) -> Envelope | None:
         raise NotImplementedError
 
