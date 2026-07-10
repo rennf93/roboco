@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   ListTodo,
   Kanban,
+  Bell,
   Activity,
   ChevronLeft,
   Settings,
@@ -26,32 +27,39 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { useUIStore } from "@/store";
 
-// Flat list, in the exact order product wants the sidebar to read top to
-// bottom. Notifications lives only in the header's NotificationBell now.
 export const navItems = [
+  // Dashboard
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
-  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
+  { title: "Business", href: "/business", icon: Building2 },
+
+  // Work Management
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Kanban", href: "/kanban", icon: Kanban },
-  { title: "Git", href: "/git", icon: GitBranch },
+  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
+
+  // Development
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Products", href: "/products", icon: Boxes },
+  { title: "Git", href: "/git", icon: GitBranch },
   { title: "Social", href: "/social", icon: Share2 },
-  { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
-  { title: "A2A", href: "/a2a", icon: Radio },
+
+  // Team & Reference
   { title: "Agents", href: "/agents", icon: Bot },
-  { title: "Journals", href: "/journals", icon: BookOpen },
+  { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
   { title: "Auditor", href: "/auditor", icon: Shield },
+
+  // History
+  { title: "A2A Live", href: "/a2a", icon: Radio },
+  { title: "Journals", href: "/journals", icon: BookOpen },
+
+  // System
+  { title: "Notifications", href: "/notifications", icon: Bell },
   { title: "Metrics", href: "/metrics", icon: Activity },
 ];
 
-// Business moved out of the main nav — it lives with the settings-adjacent
-// links, separated from navItems by a single Separator (see SidebarFooter).
 const footerItems = [
-  { title: "Business", href: "/business", icon: Building2 },
   { title: "AI Providers", href: "/settings/ai-providers", icon: Cpu },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
@@ -106,26 +114,23 @@ export function SidebarFooter({
   onNavigate?: () => void;
 }) {
   return (
-    <div className="space-y-2">
-      <Separator />
-      <div className="space-y-1">
-        {footerItems.map((item) => (
-          <Link
-            prefetch={false}
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-              collapsed && "justify-center px-2",
-            )}
-            title={collapsed ? item.title : undefined}
-          >
-            <item.icon className="h-5 w-5" />
-            {!collapsed && <span>{item.title}</span>}
-          </Link>
-        ))}
-      </div>
+    <div className="space-y-1">
+      {footerItems.map((item) => (
+        <Link
+          prefetch={false}
+          key={item.href}
+          href={item.href}
+          onClick={onNavigate}
+          className={cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            collapsed && "justify-center px-2",
+          )}
+          title={collapsed ? item.title : undefined}
+        >
+          <item.icon className="h-5 w-5" />
+          {!collapsed && <span>{item.title}</span>}
+        </Link>
+      ))}
     </div>
   );
 }
