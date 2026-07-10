@@ -173,7 +173,6 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
         )}
       </CardHeader>
       <CardContent>
-        {/* Add new update form */}
         {isAdding && (
           <div className="border rounded-lg p-4 mb-4 space-y-3">
             <Textarea
@@ -226,13 +225,11 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
           </p>
         ) : (
           <div className="relative">
-            {/* Timeline line */}
             <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-border" />
 
             <ul className="space-y-4">
               {sortedUpdates.map((update, idx) => (
                 <li key={idx} className="relative pl-8 group">
-                  {/* Timeline dot */}
                   <div className="absolute left-0 top-1.5 w-6 h-6 rounded-full bg-background border-2 border-primary flex items-center justify-center">
                     <MessageSquare className="h-3 w-3 text-primary" />
                   </div>
@@ -393,7 +390,6 @@ function CheckpointsSection({ task }: { task: Task }) {
         </div>
       </CardHeader>
       <CardContent>
-        {/* Add new checkpoint form */}
         {isAdding && (
           <div className="border rounded-lg p-4 mb-4 space-y-3">
             <div>
@@ -514,7 +510,6 @@ function CheckpointsSection({ task }: { task: Task }) {
                     </div>
                     <CollapsibleContent>
                       <CardContent className="py-4">
-                        {/* Agent */}
                         <div className="flex items-center gap-2 text-sm text-muted-foreground mb-3">
                           <User className="h-4 w-4" />
                           <span>
@@ -522,7 +517,6 @@ function CheckpointsSection({ task }: { task: Task }) {
                           </span>
                         </div>
 
-                        {/* State Summary */}
                         <div className="mb-4">
                           <h4 className="text-sm font-medium mb-1">
                             State Summary
@@ -532,7 +526,6 @@ function CheckpointsSection({ task }: { task: Task }) {
                           </p>
                         </div>
 
-                        {/* Remaining Work */}
                         {checkpoint.remaining_work.length > 0 && (
                           <div className="mb-4">
                             <div className="flex items-center gap-2 mb-2">
@@ -551,7 +544,6 @@ function CheckpointsSection({ task }: { task: Task }) {
                           </div>
                         )}
 
-                        {/* Notes */}
                         {checkpoint.notes && (
                           <div>
                             <div className="flex items-center gap-2 mb-2">
@@ -582,12 +574,10 @@ function CheckpointsSection({ task }: { task: Task }) {
 export function TabProgress({ task }: TabProgressProps) {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* Progress Updates Column */}
       <div>
         <ProgressUpdatesSection task={task} />
       </div>
 
-      {/* Checkpoints Column */}
       <div>
         <CheckpointsSection task={task} />
       </div>

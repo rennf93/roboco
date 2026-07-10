@@ -279,7 +279,6 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
             );
           })}
 
-          {/* Add new criterion input */}
           {isAdding && (
             <li className="flex items-center gap-2">
               <Checkbox checked={false} disabled className="shrink-0" />
