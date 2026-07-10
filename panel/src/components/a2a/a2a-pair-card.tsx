@@ -1,7 +1,12 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { getAgentDisplayName, getAgentInitials } from "@/lib/agent-utils";
+import {
+  getAgentDisplayName,
+  getAgentInitials,
+  getAgentTeamColor,
+  TEAM_COLOR_CLASSES,
+} from "@/lib/agent-utils";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { cn } from "@/lib/utils";
 import { usePulseFlash } from "@/hooks/use-pulse-flash";
@@ -23,7 +28,10 @@ interface A2APairCardProps {
 export function PairAvatar({ slug }: { slug: string }) {
   return (
     <div
-      className="h-7 w-7 rounded-full bg-primary/10 border flex items-center justify-center shrink-0"
+      className={cn(
+        "h-7 w-7 rounded-full border flex items-center justify-center shrink-0",
+        TEAM_COLOR_CLASSES[getAgentTeamColor(slug)],
+      )}
       title={getAgentDisplayName(slug)}
     >
       <span className="text-[9px] font-bold tracking-tight">

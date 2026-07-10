@@ -4,10 +4,7 @@
  * inputs narrow both views to the matching subset.
  */
 
-import type {
-  AdminConversationSummary,
-  AdminPairSummary,
-} from "@/lib/api/a2a";
+import type { AdminConversationSummary, AdminPairSummary } from "@/lib/api/a2a";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 
 /** "active" narrows to items with a live/talked conversation; "all" is no

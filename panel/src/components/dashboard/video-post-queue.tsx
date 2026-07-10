@@ -176,7 +176,9 @@ function VideoPostRow({
             size="sm"
             variant={cut === "square" ? "default" : "outline"}
             disabled={!post.mp4_paths?.square}
-            title={post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"}
+            title={
+              post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"
+            }
             onClick={() => setCut("square")}
           >
             1:1{!post.mp4_paths?.square && " (missing)"}

@@ -109,9 +109,7 @@ function ConversationRow({
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
           <Badge
-            variant={
-              conversation.status === "active" ? "default" : "secondary"
-            }
+            variant={conversation.status === "active" ? "default" : "secondary"}
             className="text-xs"
           >
             {conversation.status}
