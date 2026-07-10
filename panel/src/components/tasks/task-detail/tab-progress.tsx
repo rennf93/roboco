@@ -31,11 +31,25 @@ import { getAgentDisplayName } from "@/lib/agent-utils";
 import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 
-// Only the 2 most recent entries default to expanded; older entries (and
-// any entry whose own content is long, per the content-readability spec)
-// default to collapsed so a task with a long history stays navigable.
+/**
+ * Only the 2 most recent entries default to expanded; older entries (and
+ * any entry whose own content is long, per the content-readability spec)
+ * default to collapsed so a task with a long history stays navigable.
+ *
+ * Rationale: A task with 30+ progress updates would fill the entire viewport
+ * if all were expanded. This dual-threshold approach keeps the latest work
+ * visible (recent 2) while collapsing older/verbose entries, so a user can
+ * focus on current progress without continuous scrolling through historical details.
+ */
 const RECENT_OPEN_COUNT = 2;
 
+/**
+ * Determine if a progress/checkpoint entry should start expanded.
+ * Applies two thresholds:
+ * 1. Recency: only the 2 most recent entries start open
+ * 2. Content length: an entry starting at index 0 or 1 still collapses if its
+ *    own content exceeds ~10 lines or ~640 chars (see content-readability.ts)
+ */
 function defaultEntryOpen(idx: number, content: string): boolean {
   if (idx >= RECENT_OPEN_COUNT) return false;
   return !exceedsReadabilityThreshold(content);
