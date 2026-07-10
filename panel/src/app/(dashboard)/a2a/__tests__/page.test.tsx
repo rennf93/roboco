@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { PageRefreshProvider } from "@/components/providers";
 import type {
@@ -321,7 +322,7 @@ describe("A2APage", () => {
     });
   });
 
-  it("renders the filter bar above the switchboard/list content", () => {
+  it("renders the filter trigger above the switchboard/list content", () => {
     useA2AAdminPairs.mockReturnValue({
       data: { items: [buildPair()], total: 1 },
       isLoading: false,
@@ -329,13 +330,12 @@ describe("A2APage", () => {
     });
     render(withPageRefresh(<A2APage />));
     expect(
-      screen.getByPlaceholderText("Search agent or topic..."),
+      screen.getByRole("button", { name: /^Filters$/ }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Active" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
   });
 
-  it("narrows the switchboard's pairs by search", () => {
+  it("narrows the switchboard's pairs by a selected agent", async () => {
+    const user = userEvent.setup();
     useA2AAdminPairs.mockReturnValue({
       data: {
         items: [
@@ -358,14 +358,15 @@ describe("A2APage", () => {
     expect(screen.getByText(/Backend Cell/)).toBeInTheDocument();
     expect(screen.getByText(/^Board$/)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText("Search agent or topic..."), {
-      target: { value: "auditor" },
-    });
+    await user.click(screen.getByRole("button", { name: /^Filters$/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Auditor" }));
+
     expect(screen.queryByText(/Backend Cell/)).not.toBeInTheDocument();
     expect(screen.getByText(/^Board$/)).toBeInTheDocument();
   });
 
-  it("narrows the classic list's conversations by search", () => {
+  it("narrows the classic list's conversations by a selected agent", async () => {
+    const user = userEvent.setup();
     useA2AConversations.mockReturnValue({
       data: {
         items: [
@@ -388,10 +389,42 @@ describe("A2APage", () => {
     expect(screen.getByText("QA handoff")).toBeInTheDocument();
     expect(screen.getByText("Design review")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText("Search agent or topic..."), {
-      target: { value: "design review" },
-    });
+    await user.click(screen.getByRole("button", { name: /^Filters$/ }));
+    await user.click(screen.getByRole("checkbox", { name: "UX/UI Dev 1" }));
+
     expect(screen.queryByText("QA handoff")).not.toBeInTheDocument();
     expect(screen.getByText("Design review")).toBeInTheDocument();
+  });
+
+  it("narrows the classic list's conversations by task id fragment", async () => {
+    const user = userEvent.setup();
+    useA2AConversations.mockReturnValue({
+      data: {
+        items: [
+          buildConversation({
+            task_id: "11111111-2222-3333-4444-555555555555",
+          }),
+          buildConversation({
+            id: "conv-2",
+            topic: "Design review",
+            task_id: "99999999-8888-7777-6666-555555555555",
+          }),
+        ],
+        total: 2,
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(withPageRefresh(<A2APage />));
+    fireEvent.click(screen.getByTitle("Classic conversation list"));
+    expect(screen.getByText("QA handoff")).toBeInTheDocument();
+    expect(screen.getByText("Design review")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Filters$/ }));
+    await user.type(screen.getByLabelText("Task id fragment"), "11111111");
+
+    expect(screen.getByText("QA handoff")).toBeInTheDocument();
+    expect(screen.queryByText("Design review")).not.toBeInTheDocument();
   });
 });
