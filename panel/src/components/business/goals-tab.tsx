@@ -52,6 +52,19 @@ interface ObjectivesEditorProps {
   disabled: boolean;
 }
 
+/**
+ * ObjectivesEditor renders a responsive 2-column grid of objective cards.
+ *
+ * Layout:
+ * - Desktop (md+): 2-column grid with 3px gap
+ * - Mobile: 1-column stack (full width)
+ *
+ * Each card shows a set of editable fields derived from the first objective
+ * (metric, target, status, etc.) with add/remove controls. The outer container
+ * maintains space-y-3 gap to separate the grid from the "Add objective" button.
+ *
+ * Tests: `goals-tab.test.tsx` asserts the grid classes and add/remove/edit behavior.
+ */
 function ObjectivesEditor({
   items,
   onChange,
