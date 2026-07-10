@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProjectSelector } from "@/components/projects/project-selector";
+import { useProjects } from "@/hooks/use-projects";
 import { CheckCircle2, Film, RefreshCw, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -402,7 +403,14 @@ function RequestVideoDialog({
   const [occasion, setOccasion] = useState("");
   const [brief, setBrief] = useState("");
   const [platforms, setPlatforms] = useState<string[]>(["x", "tiktok"]);
+  // null means "no explicit pick yet" — derived below to the current (first)
+  // video-enabled project, mirroring the caption-tracking pattern elsewhere
+  // in this file (`editedX ?? post.x_caption`) rather than syncing via effect.
   const [projectId, setProjectId] = useState<string | null>(null);
+  const { data: allProjects = [] } = useProjects();
+  const videoProjects = allProjects.filter((p) => p.video_engine_enabled);
+  const hasVideoProjects = videoProjects.length > 0;
+  const effectiveProjectId = projectId ?? videoProjects[0]?.id ?? null;
 
   const requestMutation = useMutation({
     mutationFn: () =>
@@ -410,7 +418,7 @@ function RequestVideoDialog({
         occasion: occasion.trim(),
         brief: brief.trim(),
         platforms,
-        project_id: projectId as string,
+        project_id: effectiveProjectId as string,
       }),
     onSuccess: (result) => {
       if (result.status === "opened") {
@@ -439,7 +447,7 @@ function RequestVideoDialog({
   };
 
   const canSubmit =
-    !!projectId &&
+    !!effectiveProjectId &&
     occasion.trim().length > 0 &&
     brief.trim().length > 0 &&
     platforms.length > 0;
@@ -455,67 +463,85 @@ function RequestVideoDialog({
             rendering finishes.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label>Project</Label>
-            <ProjectSelector
-              value={projectId}
-              onChange={setProjectId}
-              placeholder="Select the project this video is about..."
-              allowClear={false}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="video-request-occasion">Occasion</Label>
-            <Input
-              id="video-request-occasion"
-              placeholder="e.g. v0.19.0 launch, Founder's Day..."
-              value={occasion}
-              onChange={(e) => setOccasion(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="video-request-brief">Brief</Label>
-            <Textarea
-              id="video-request-brief"
-              placeholder="What should this video cover?"
-              value={brief}
-              onChange={(e) => setBrief(e.target.value)}
-              rows={4}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Platforms</Label>
-            <div className="flex gap-4">
-              {REQUEST_PLATFORMS.map((platform) => (
-                <div key={platform} className="flex items-center gap-2">
-                  <Checkbox
-                    id={`video-request-${platform}`}
-                    checked={platforms.includes(platform)}
-                    onCheckedChange={() => togglePlatform(platform)}
-                  />
-                  <Label
-                    htmlFor={`video-request-${platform}`}
-                    className="text-sm font-normal"
-                  >
-                    {PLATFORM_LABELS[platform]}
-                  </Label>
+        {hasVideoProjects ? (
+          <>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Project</Label>
+                <ProjectSelector
+                  value={effectiveProjectId}
+                  onChange={setProjectId}
+                  placeholder="Select the project this video is about..."
+                  allowClear={false}
+                  videoEngineOnly
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="video-request-occasion">Occasion</Label>
+                <Input
+                  id="video-request-occasion"
+                  placeholder="e.g. v0.19.0 launch, Founder's Day..."
+                  value={occasion}
+                  onChange={(e) => setOccasion(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="video-request-brief">Brief</Label>
+                <Textarea
+                  id="video-request-brief"
+                  placeholder="What should this video cover?"
+                  value={brief}
+                  onChange={(e) => setBrief(e.target.value)}
+                  rows={4}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Platforms</Label>
+                <div className="flex gap-4">
+                  {REQUEST_PLATFORMS.map((platform) => (
+                    <div key={platform} className="flex items-center gap-2">
+                      <Checkbox
+                        id={`video-request-${platform}`}
+                        checked={platforms.includes(platform)}
+                        onCheckedChange={() => togglePlatform(platform)}
+                      />
+                      <Label
+                        htmlFor={`video-request-${platform}`}
+                        className="text-sm font-normal"
+                      >
+                        {PLATFORM_LABELS[platform]}
+                      </Label>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => requestMutation.mutate()}
-            disabled={!canSubmit || requestMutation.isPending}
-          >
-            {requestMutation.isPending ? "Requesting..." : "Request"}
-          </Button>
-        </DialogFooter>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => requestMutation.mutate()}
+                disabled={!canSubmit || requestMutation.isPending}
+              >
+                {requestMutation.isPending ? "Requesting..." : "Request"}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground">
+              No projects have the video engine enabled yet. Turn it on for a
+              project in its edit dialog (Projects → Edit) before requesting a
+              video.
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

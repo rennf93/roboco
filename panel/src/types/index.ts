@@ -1087,6 +1087,7 @@ export interface ProjectSummary {
   is_active: boolean;
   has_workspace: boolean;
   has_git_token: boolean;
+  video_engine_enabled: boolean;
 }
 
 export interface ProductCellMapping {

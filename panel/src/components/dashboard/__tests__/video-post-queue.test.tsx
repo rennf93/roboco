@@ -8,6 +8,30 @@ const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
+const { useProjects } = vi.hoisted(() => ({
+  // One video-enabled project by default ("p-1", matching the mocked
+  // ProjectSelector's onChange value below) so the dialog can default-select
+  // it — tests that need the empty-state override this per-test.
+  useProjects: vi.fn(() => ({
+    data: [
+      {
+        id: "p-1",
+        name: "roboco-panel",
+        slug: "roboco-panel",
+        git_url: "https://example.com/roboco-panel.git",
+        assigned_cell: "frontend",
+        is_active: true,
+        has_workspace: true,
+        has_git_token: true,
+        video_engine_enabled: true,
+      },
+    ],
+    isLoading: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-projects", () => ({ useProjects }));
+
 const {
   listPosts,
   listPipeline,
@@ -314,21 +338,63 @@ describe("VideoPostQueue", () => {
     );
   });
 
-  it("keeps Request disabled until a project is picked", async () => {
+  it("defaults the project to the current (first) video-enabled project so Request enables without an explicit pick", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
 
     fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    // Request still needs occasion/brief filled...
+    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Occasion"), {
       target: { value: "Founder's Day" },
     });
     fireEvent.change(screen.getByLabelText("Brief"), {
       target: { value: "Celebrate the founding." },
     });
-    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    // ...but never a manual "Set Project" click — the picker already
+    // defaulted to the sole video-enabled project.
     expect(screen.getByRole("button", { name: "Request" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Request" }));
+    await waitFor(() =>
+      expect(requestVideo).toHaveBeenCalledWith(
+        expect.objectContaining({ project_id: "p-1" }),
+      ),
+    );
+  });
+
+  it("shows a friendly empty-state when no project has the video engine enabled", async () => {
+    // mockReturnValue (not -Once): RequestVideoDialog re-renders more than
+    // once before the assertions run, and a -Once override would only cover
+    // the first of those renders.
+    useProjects.mockReturnValue({
+      data: [
+        {
+          id: "p-2",
+          name: "not-opted-in",
+          slug: "not-opted-in",
+          git_url: "https://example.com/not-opted-in.git",
+          assigned_cell: "backend",
+          is_active: true,
+          has_workspace: true,
+          has_git_token: true,
+          video_engine_enabled: false,
+        },
+      ],
+      isLoading: false,
+    });
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    expect(
+      screen.getByText(/No projects have the video engine enabled/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Occasion")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Request" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
   it("shows the keys/engine empty copy when nothing is in the pipeline either", async () => {
