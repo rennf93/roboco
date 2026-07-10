@@ -2633,6 +2633,65 @@ class TaskService(BaseService):
         )
         return True
 
+    async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None:
+        """Non-None (naming the blocking sibling) when a same-parent sibling
+        with a strictly lower effective sequence is still non-terminal.
+
+        CEO directive: sequence is the bar, independent of ``dependency_ids``
+        — a PM can delegate siblings with ``sequence`` 0..N and wire no
+        dependency edges between them, and claim order must still hold (the
+        4-revision-subtask live failure this guards). STRICTER than
+        dependency edges where both exist: a wave-N sibling waits for EVERY
+        wave-(N-1) sibling, not just its edge targets — no edges-exist
+        exemption. Effective sequence is ``COALESCE(sequence, 0)`` on both
+        sides; ties run in parallel. Effective sequence 0 or no parent is
+        unaffected. Scoped to PENDING and NEEDS_REVISION claims — wider than
+        ``_claim_blocked_by_dependencies`` (PENDING only), deliberately: a
+        lower-sequence sibling delegated AFTER the first claim must still
+        hold a needs_revision reclaim; the dep guard's identical
+        needs_revision gap is pre-existing and left as-is.
+        """
+        if (
+            task.status not in (TaskStatus.PENDING, TaskStatus.NEEDS_REVISION)
+            or task.parent_task_id is None
+        ):
+            return None
+        seq = task.sequence or 0
+        if seq == 0:
+            return None
+        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        result = await self.session.execute(
+            select(TaskTable.title, TaskTable.sequence)
+            .where(
+                TaskTable.parent_task_id == task.parent_task_id,
+                TaskTable.id != task.id,
+                func.coalesce(TaskTable.sequence, 0) < seq,
+                TaskTable.status.notin_(terminal),
+            )
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        blocker = f"{row.title!r} (sequence {row.sequence or 0})"
+        self.log.warning(
+            "Cannot claim task - sequence_held",
+            task_id=str(task.id),
+            blocked_by=blocker,
+        )
+        return blocker
+
+    async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
+        """True when either sequencing guard blocks this PENDING claim.
+
+        One call site for both `_claim_blocked_by_dependencies` (edges) and
+        `_claim_blocked_by_sequence` (sibling order) — keeps
+        `_validate_claim_preconditions` under the return-statement budget.
+        """
+        if await self._claim_blocked_by_dependencies(task):
+            return True
+        return await self._claim_blocked_by_sequence(task) is not None
+
     async def _validate_claim_preconditions(
         self,
         task: TaskTable,
@@ -2647,7 +2706,7 @@ class TaskService(BaseService):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
             return False
 
-        if await self._claim_blocked_by_dependencies(task):
+        if await self._claim_blocked_by_sequencing(task):
             return False
 
         if error := self._validate_claim_team(task, agent):
@@ -7159,12 +7218,13 @@ class TaskService(BaseService):
     async def set_sequence(self, task_id: UUID, sequence: int) -> None:
         """Set a task's sibling-ordering sequence (lower = first).
 
-        `sequence` is a display / dispatch-priority field only — it orders
-        siblings in `list_pending`, `list_for_team`, and the panel and carries
-        no claim-gating semantics (dependencies gate claims). Cross-cell
-        fan-out uses it so an upstream design task sorts ahead of the
-        implementation tasks that depend on it. No-op if the task is gone or
-        already at `sequence`.
+        `sequence` orders siblings in `list_pending`, `list_for_team`, and the
+        panel, AND is claim-gated: `_claim_blocked_by_sequence` refuses to
+        claim a PENDING task while a same-parent sibling with a strictly
+        lower effective sequence is still non-terminal — independent of, and
+        stricter than, `dependency_ids`. Cross-cell fan-out uses it so an
+        upstream design task sorts ahead of the implementation tasks that
+        depend on it. No-op if the task is gone or already at `sequence`.
         """
         task = await self.get(task_id)
         if task is None:
@@ -7172,6 +7232,36 @@ class TaskService(BaseService):
         if task.sequence != sequence:
             task.sequence = sequence
             await self.session.flush()
+
+    async def stamp_wave_sequence(self, task_id: UUID) -> None:
+        """Stamp a freshly delegated subtask's sequence as its collision-DAG wave.
+
+        sequence = 1 + max(sequence of each SAME-PARENT dependency target), or
+        0 when the task depends on no sibling — so independent siblings tie
+        (parallel under `_claim_blocked_by_sequence`) and colliding / ordered
+        ones ascend. Replaces the raw per-sibling ordinal, which serialized
+        even fully independent siblings fleet-wide under the claim gate. Must
+        run POST-WIRING (after the collision DAG / explicit depends_on /
+        cross-cell edges land) so every edge source is reflected. Only the new
+        task is stamped — existing siblings' sequences (prompter batch waves,
+        API-authored values) are never rewritten here.
+        """
+        task = await self.get(task_id)
+        if task is None or task.parent_task_id is None:
+            return
+        wave = 0
+        dep_ids = list(task.dependency_ids or [])
+        if dep_ids:
+            result = await self.session.execute(
+                select(func.max(func.coalesce(TaskTable.sequence, 0))).where(
+                    TaskTable.id.in_(dep_ids),
+                    TaskTable.parent_task_id == task.parent_task_id,
+                )
+            )
+            max_seq = result.scalar()
+            if max_seq is not None:
+                wave = int(max_seq) + 1
+        await self.set_sequence(task_id, wave)
 
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
         """Return the subset of dependency IDs whose status is non-terminal.
@@ -7253,6 +7343,10 @@ class TaskService(BaseService):
         lane should NOT pin the dev — the orchestrator spawns it once the lane
         clears. Without this the dev can neither idle nor proceed without jumping
         its own queue order. Only ``code`` queues sequence this way.
+
+        Equal sequences (wave ties) tie-break by ``created_at`` so a dev's
+        lane keeps a deterministic order now that independent siblings share
+        a wave instead of taking distinct ordinals.
         """
         if str(getattr(task, "task_type", "")) != TaskType.CODE.value:
             return False
@@ -7262,7 +7356,7 @@ class TaskService(BaseService):
         if parent_id is None or owner is None or seq is None:
             return False
         result = await self.session.execute(
-            select(TaskTable.status, TaskTable.sequence).where(
+            select(TaskTable.status, TaskTable.sequence, TaskTable.created_at).where(
                 TaskTable.parent_task_id == parent_id,
                 TaskTable.assigned_to == owner,
                 TaskTable.task_type == TaskType.CODE,
@@ -7271,8 +7365,9 @@ class TaskService(BaseService):
         )
         terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
         return any(
-            (sib_seq or 0) < seq and status not in terminal
-            for status, sib_seq in result.all()
+            ((sib_seq or 0), sib_created) < (seq, task.created_at)
+            and status not in terminal
+            for status, sib_seq, sib_created in result.all()
         )
 
     async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
