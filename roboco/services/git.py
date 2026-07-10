@@ -334,6 +334,10 @@ _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
 _FAILING_CHECK_CONCLUSIONS = frozenset(
     {"failure", "cancelled", "timed_out", "action_required"}
 )
+# A 404 resolving a PR's head SHA means the repo/PR is unreachable or doesn't
+# exist — classified as no_ci_configured, distinct from any other non-2xx
+# (a genuine API failure on a real, reachable repo) which is `error`.
+_HTTP_NOT_FOUND = 404
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2675,24 +2679,40 @@ class GitService(BaseService):
         has not completed yet), ``pending_not_scheduled`` (zero check-runs
         exist for this commit but the repo has workflows configured — CI
         just hasn't started), ``no_ci_configured`` (zero check-runs AND the
-        repo has no workflows at all), or ``error`` (a genuine GitHub API
-        failure fetching either signal).
+        repo has no workflows at all — or the project/git_url/token is
+        missing, or the repo/PR is unreachable/nonexistent), or ``error`` (a
+        genuine GitHub API failure on a real, reachable repo).
 
-        Returns ``None`` — fail-open, the caller skips the guard entirely —
-        when the project, its git_url, a git token, or the PR's head SHA
-        cannot be resolved. Those are configuration gaps, not a CI signal,
-        and must never masquerade as a failing/pending gate (mirrors
-        ``get_pr_head_sha`` / ``_capture_pr_head_sha``).
+        Every unresolvable case is now classified explicitly rather than
+        returning ``None``: a missing project/git_url/git-token, or an
+        unreachable/nonexistent repo or PR (a network failure or a 404
+        resolving the PR's head SHA) all classify as ``no_ci_configured`` —
+        ``pr_pass`` passes through cleanly and still stamps the evidence
+        note, instead of silently skipping the guard. A genuine GitHub API
+        failure on a real, reachable repo (any other non-2xx, or an
+        unparseable response) classifies as ``error`` so ``pr_pass`` stays
+        fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
+        ``_capture_pr_head_sha`` in spirit (never mistake a configuration gap
+        for a CI signal) but resolves head-sha lookups via a dedicated helper
+        so the two failure classes above stay distinguishable — the shared
+        ``get_pr_head_sha`` (used by the unrelated pr_fail head-sha capture)
+        is untouched.
 
         ponytail: reads GitHub check-runs only (the project's own CI is
         GitHub Actions). A repo whose only signal is the legacy commit-status
         API would show zero check-runs here; add a statuses fallback if that
         ever becomes a real CI provider for a project.
         """
-        prereqs = await self._ci_status_prereqs(project_slug, pr_number)
-        if prereqs is None:
-            return None
-        owner, repo, headers, head_sha = prereqs
+        config = await self._ci_status_config(project_slug)
+        if isinstance(config, dict):
+            return config
+        owner, repo, headers = config
+        head_sha_or_gap = await self._resolve_ci_head_sha(
+            project_slug, pr_number, owner, repo, headers
+        )
+        if isinstance(head_sha_or_gap, dict):
+            return head_sha_or_gap
+        head_sha = head_sha_or_gap
         check_runs = await self._fetch_check_runs(
             project_slug, owner, repo, head_sha, headers
         )
@@ -2704,32 +2724,79 @@ class GitService(BaseService):
             project_slug, owner, repo, head_sha, headers
         )
 
-    async def _ci_status_prereqs(
-        self, project_slug: str, pr_number: int
-    ) -> tuple[str, str, dict[str, str], str] | None:
-        """Resolve ``(owner, repo, auth headers, head_sha)`` for a CI-status
-        lookup, or ``None`` on any unresolvable configuration gap (missing
-        project/git_url, an unparseable remote, a missing token, or a
-        PR/head-sha the GitHub API won't return)."""
+    async def _ci_status_config(
+        self, project_slug: str
+    ) -> tuple[str, str, dict[str, str]] | dict[str, Any]:
+        """Resolve ``(owner, repo, auth headers)`` for a CI-status lookup, or
+        a terminal ``no_ci_configured`` gap dict when the project, its
+        git_url, or a git token is missing, or the git_url doesn't parse."""
         project = await get_project_service(self.session).get_by_slug(project_slug)
         if project is None or not project.git_url:
-            return None
+            return {"state": "no_ci_configured", "head_sha": None}
         try:
             owner, repo = self._parse_git_url(project.git_url)
         except GitError:
-            return None
+            return {"state": "no_ci_configured", "head_sha": None}
         git_token = await self._token_for_project(project_slug)
         if not git_token:
-            return None
-        head_sha = await self.get_pr_head_sha(project_slug, pr_number)
-        if not head_sha:
-            return None
+            return {"state": "no_ci_configured", "head_sha": None}
         headers = {
             "Authorization": f"Bearer {git_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        return owner, repo, headers, head_sha
+        return owner, repo, headers
+
+    async def _resolve_ci_head_sha(
+        self,
+        project_slug: str,
+        pr_number: int,
+        owner: str,
+        repo: str,
+        headers: dict[str, str],
+    ) -> str | dict[str, Any]:
+        """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
+
+        Returns the head SHA (``str``) on success, or a terminal gap-state
+        dict to return directly from the caller on failure. A network error
+        or a 404 (the repo or PR doesn't exist / isn't reachable) is
+        ``no_ci_configured`` — there is no way to determine a CI signal, so
+        the guard should pass through, not block. Any other non-2xx or an
+        unparseable response is a real, reachable repo whose API call itself
+        failed, so it is ``error`` — a retryable signal the guard must not
+        treat as green.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup unreachable",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "no_ci_configured", "head_sha": None}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": None}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status pr lookup non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": None}
+        try:
+            return str(resp.json()["head"]["sha"])
+        except (ValueError, KeyError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": None}
 
     async def _fetch_check_runs(
         self,
