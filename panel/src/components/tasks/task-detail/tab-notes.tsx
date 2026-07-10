@@ -96,13 +96,17 @@ const FIELD_TO_SECTION: Record<NoteField, string> = {
   doc_notes: "doc",
 };
 
-// When the section was last written (apply_structured_note stamps it).
+// When the section was last written (apply_structured_note stamps it). Falls
+// back to the task's creation time when content exists but predates the stamp
+// (older notes written before apply_structured_note started stamping) so a
+// populated field never renders with no timestamp at all.
 function writtenAt(task: Task, field: NoteField): string | null {
   const sections = task.notes_structured as
     | Record<string, { written_at?: string }>
     | null
     | undefined;
-  const stamp = sections?.[FIELD_TO_SECTION[field]]?.written_at;
+  const stamp =
+    sections?.[FIELD_TO_SECTION[field]]?.written_at ?? task.created_at;
   if (!stamp) return null;
   const date = new Date(stamp);
   if (Number.isNaN(date.getTime())) return null;
