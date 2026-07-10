@@ -97,7 +97,12 @@ jobs:
           done
 
       - name: Post results as a PR comment
-        if: github.event_name == 'pull_request'
+        # always() so the PR comment (the only evidence-delivery path QA/PM
+        # has, since no agent role can read the Checks tab directly) still
+        # posts a partial report even if an earlier build/smoke step failed —
+        # an `if:` that doesn't call a status function is otherwise
+        # implicitly ANDed with success(), silently swallowing the report.
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
