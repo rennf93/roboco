@@ -8,6 +8,7 @@ import time
 
 import httpx
 import pytest
+import roboco.services.prompter_live as pl
 from roboco.services.prompter_live import (
     PrompterLiveRegistry,
     get_live_registry,
@@ -149,6 +150,35 @@ async def test_stream_yields_queued_events_then_ends_on_close() -> None:
         {"event": "text", "data": "hel"},
         {"event": "turn_end", "data": "{}"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_keepalive_keeps_watched_chat_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An open SSE stream refreshes last_activity even with no events, so a
+    human reading a proposal (tab open, not typing) is not idle-reaped. Without
+    this the chat "drops after a while" mid-review."""
+    monkeypatch.setattr(pl, "_STREAM_KEEPALIVE_SECONDS", 0.01)
+    reg = PrompterLiveRegistry()
+    session = reg.open("s1", "intake-1")
+    session.last_activity = time.monotonic() - 4000  # silent for >1h
+
+    # Before anyone connects, the abandoned-looking chat IS idle-reapable.
+    assert ("s1", "intake-1") in reg.idle_session_ids(1800)
+
+    async def watch() -> None:
+        async for _ in reg.stream("s1"):
+            pass
+
+    task = asyncio.create_task(watch())
+    try:
+        await asyncio.sleep(0.05)  # let a keepalive tick fire on the open stream
+        # The connected stream refreshed activity → no longer idle.
+        assert reg.idle_session_ids(1800) == []
+    finally:
+        reg.close("s1")
+        await asyncio.wait_for(task, timeout=1.0)
 
 
 @pytest.mark.asyncio
