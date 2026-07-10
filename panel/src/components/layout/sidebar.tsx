@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   ListTodo,
   Kanban,
-  Bell,
   Activity,
   ChevronLeft,
   Settings,
@@ -27,37 +26,48 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { useUIStore } from "@/store";
 
-export const navItems = [
-  // Dashboard
-  { title: "Overview", href: "/overview", icon: LayoutDashboard },
-  { title: "Business", href: "/business", icon: Building2 },
-  { title: "Social", href: "/social", icon: Share2 },
-
-  // Work Management
-  { title: "Tasks", href: "/tasks", icon: ListTodo },
-  { title: "Kanban", href: "/kanban", icon: Kanban },
-  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
-
-  // Development
-  { title: "Projects", href: "/projects", icon: FolderGit2 },
-  { title: "Products", href: "/products", icon: Boxes },
-  { title: "Git", href: "/git", icon: GitBranch },
-
-  // Team & Reference
-  { title: "Agents", href: "/agents", icon: Bot },
-  { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
-  { title: "Auditor", href: "/auditor", icon: Shield },
-
-  // History
-  { title: "A2A Live", href: "/a2a", icon: Radio },
-  { title: "Journals", href: "/journals", icon: BookOpen },
-
-  // System
-  { title: "Notifications", href: "/notifications", icon: Bell },
-  { title: "Metrics", href: "/metrics", icon: Activity },
+// Grouped by section — a divider renders between each group in SidebarNav.
+// Keep item order within/across groups stable; it's part of the AC.
+const navGroups = [
+  [
+    // Dashboard
+    { title: "Overview", href: "/overview", icon: LayoutDashboard },
+    { title: "Business", href: "/business", icon: Building2 },
+    { title: "Social", href: "/social", icon: Share2 },
+  ],
+  [
+    // Work Management
+    { title: "Tasks", href: "/tasks", icon: ListTodo },
+    { title: "Kanban", href: "/kanban", icon: Kanban },
+    { title: "Task Assistant", href: "/prompter", icon: Sparkles },
+  ],
+  [
+    // Development
+    { title: "Projects", href: "/projects", icon: FolderGit2 },
+    { title: "Products", href: "/products", icon: Boxes },
+    { title: "Git", href: "/git", icon: GitBranch },
+  ],
+  [
+    // Team & Reference
+    { title: "Agents", href: "/agents", icon: Bot },
+    { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
+    { title: "Auditor", href: "/auditor", icon: Shield },
+  ],
+  [
+    // History
+    { title: "A2A", href: "/a2a", icon: Radio },
+    { title: "Journals", href: "/journals", icon: BookOpen },
+  ],
+  [
+    // System (Notifications lives only in the header's NotificationBell now)
+    { title: "Metrics", href: "/metrics", icon: Activity },
+  ],
 ];
+
+export const navItems = navGroups.flat();
 
 const footerItems = [
   { title: "AI Providers", href: "/settings/ai-providers", icon: Cpu },
@@ -79,28 +89,33 @@ export function SidebarNav({
   const pathname = usePathname();
   return (
     <nav className="space-y-1 px-2">
-      {navItems.map((item) => {
-        const isActive = pathname.startsWith(item.href);
-        return (
-          <Link
-            prefetch={false}
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-              isActive
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              collapsed && "justify-center px-2",
-            )}
-            title={collapsed ? item.title : undefined}
-          >
-            <item.icon className="h-5 w-5 shrink-0" />
-            {!collapsed && <span>{item.title}</span>}
-          </Link>
-        );
-      })}
+      {navGroups.map((group, groupIndex) => (
+        <div key={group[0]!.href} className="space-y-1">
+          {groupIndex > 0 && <Separator className="my-2" />}
+          {group.map((item) => {
+            const isActive = pathname.startsWith(item.href);
+            return (
+              <Link
+                prefetch={false}
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  collapsed && "justify-center px-2",
+                )}
+                title={collapsed ? item.title : undefined}
+              >
+                <item.icon className="h-5 w-5 shrink-0" />
+                {!collapsed && <span>{item.title}</span>}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
