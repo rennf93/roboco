@@ -67,51 +67,6 @@ function describeExecuteResult(result: VideoPostExecuteResult): string {
   return `${result.status}: ${result.detail}`;
 }
 
-// Re-render retry control — only rendered by the caller when the draft's
-// render is stale (render_status === "failed"; see VideoPostRow). Three
-// visual states: idle (button, ready to click), loading (mutation
-// in-flight), error (the retry itself failed — button re-enables so the CEO
-// can try again). Mirrors the pipeline strip's render_failed derivation in
-// video-pipeline-utils.ts.
-function RerenderControl({ authoringTaskId }: { authoringTaskId: string }) {
-  const queryClient = useQueryClient();
-  const rerenderMutation = useMutation({
-    mutationFn: () => videoApi.rerender(authoringTaskId),
-    onSuccess: () => {
-      toast.success("Re-render queued — it will re-pick up on the next cycle.");
-      queryClient.invalidateQueries({ queryKey: ["video", "pipeline"] });
-    },
-    onError: (e) =>
-      toast.error(
-        `Re-render failed: ${e instanceof Error ? e.message : "error"}`,
-      ),
-  });
-
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      disabled={rerenderMutation.isPending}
-      onClick={() => rerenderMutation.mutate()}
-      className={
-        rerenderMutation.isError
-          ? "border-destructive text-destructive"
-          : undefined
-      }
-    >
-      <RefreshCw
-        className={`mr-1 h-4 w-4 ${rerenderMutation.isPending ? "animate-spin" : ""}`}
-      />
-      {rerenderMutation.isPending
-        ? "Re-rendering..."
-        : rerenderMutation.isError
-          ? "Retry re-render"
-          : "Re-render"}
-    </Button>
-  );
-}
-
 // Live composition preview: the authoring task's actual HyperFrames HTML for
 // the currently-selected cut, embedded via the backend's composition-HTML
 // proxy (iframe-permitting headers, so a direct <iframe src> works — no
@@ -229,11 +184,11 @@ function VideoPostRow({
   const tiktokOverLimit =
     editTiktok && tiktokCaption.length > MAX_TIKTOK_CAPTION_CHARS;
   const overLimit = xOverLimit || tiktokOverLimit;
-  // The re-render (CEO retry) endpoint's use case is retrying a render that
-  // hit a terminal failed state — mirrors video-pipeline-utils.ts's
-  // render_failed derivation. Undefined render_status (backend not yet
-  // exposing it on this response, or a healthy render) never shows the button.
-  const isStale = post.render_status === "failed" && !!post.source_task_id;
+  // The re-render endpoint only requires a completed authoring task with a
+  // proposed composition — it doesn't require a failed render, so the
+  // button shows for ANY draft that carries both, regardless of
+  // render_status (a healthy render can be deliberately redone too).
+  const canRerender = !!post.source_task_id && !!post.composition_id;
 
   const handleApprove = () => {
     onApprove(post.task_id, {
@@ -248,9 +203,9 @@ function VideoPostRow({
         <meta.icon className="h-4 w-4 text-muted-foreground" />
         <span className="font-medium">{meta.label}</span>
         {post.occasion && <Badge variant="outline">{post.occasion}</Badge>}
-        {isStale && post.source_task_id && (
+        {canRerender && (
           <div className="ml-auto">
-            <RerenderControl authoringTaskId={post.source_task_id} />
+            <RerenderControl authoringTaskId={post.source_task_id as string} />
           </div>
         )}
       </div>
