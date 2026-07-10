@@ -9,6 +9,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 
 interface CollapsibleSectionProps {
   /** Card title content (icon + text + badges as needed) */
@@ -17,8 +18,18 @@ interface CollapsibleSectionProps {
   actions?: ReactNode;
   /** Controlled open state (e.g. force-open while a section is mid-edit). Omit for uncontrolled. */
   open?: boolean;
-  /** Whether the (uncontrolled) section starts expanded. Defaults to open so nothing visible today disappears. */
+  /**
+   * Whether the (uncontrolled) section starts expanded. Takes precedence
+   * over `content`-derived collapsing. Omit to let `content` decide, or to
+   * default open when neither is given (so nothing visible today disappears).
+   */
   defaultOpen?: boolean;
+  /**
+   * Plain-text representation of the section's body, used to derive
+   * `defaultOpen` per the content-readability spec (~10 lines / ~640 chars)
+   * when `defaultOpen` is not explicitly set. Ignored otherwise.
+   */
+  content?: string;
   onOpenChange?: (open: boolean) => void;
   className?: string;
   headerClassName?: string;
@@ -36,13 +47,17 @@ export function CollapsibleSection({
   title,
   actions,
   open: openProp,
-  defaultOpen = true,
+  defaultOpen,
+  content,
   onOpenChange,
   className,
   headerClassName,
   children,
 }: CollapsibleSectionProps) {
-  const [internalOpen, setInternalOpen] = useState(defaultOpen);
+  const resolvedDefaultOpen =
+    defaultOpen ??
+    (content !== undefined ? !exceedsReadabilityThreshold(content) : true);
+  const [internalOpen, setInternalOpen] = useState(resolvedDefaultOpen);
   const open = openProp ?? internalOpen;
   const setOpen = (next: boolean) => {
     onOpenChange?.(next);
