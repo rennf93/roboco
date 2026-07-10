@@ -125,3 +125,18 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Collapse/expand and other transform/opacity transitions (animate-in,
+   animate-out, transition-transform, ...) become instant for users who
+   asked the OS for reduced motion — the content still opens/closes, it
+   just doesn't animate. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

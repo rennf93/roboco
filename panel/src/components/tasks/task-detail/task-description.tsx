@@ -3,12 +3,12 @@
 import { useState } from "react";
 import { Task } from "@/types";
 import { useUpdateTask } from "@/hooks/use-tasks";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
-import { Edit3, Eye, Check, X } from "lucide-react";
+import { CollapsibleSection } from "./collapsible-section";
+import { Edit3, Eye, Check, X, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 
 interface TaskDescriptionProps {
@@ -20,6 +20,7 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
+  const [sectionOpen, setSectionOpen] = useState(true);
 
   // Display prop value when not editing, local value when editing
   const editValue = isEditing ? localEditValue : task.description;
@@ -79,12 +80,13 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
 
   return (
     <>
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Description</CardTitle>
-          {isEditing ? (
-            <div className="flex items-center gap-2">
+      <CollapsibleSection
+        title="Description"
+        open={isEditing || sectionOpen}
+        onOpenChange={setSectionOpen}
+        actions={
+          isEditing ? (
+            <>
               <Tabs
                 value={editMode}
                 onValueChange={(v) => setEditMode(v as "write" | "preview")}
@@ -116,16 +118,15 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
                 <Check className="h-4 w-4 mr-1" />
                 Save
               </Button>
-            </div>
+            </>
           ) : (
             <Button size="sm" variant="ghost" onClick={startEditing}>
               <Edit3 className="h-4 w-4 mr-1" />
               Edit
             </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
+          )
+        }
+      >
         {isEditing ? (
           <div className="space-y-2">
             {editMode === "write" ? (
@@ -176,24 +177,26 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
             No description provided. Click to add one.
           </p>
         )}
-      </CardContent>
-    </Card>
-    {task.constraints ? (
-      <Card className="border-dashed">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base text-muted-foreground">
-            Constraints
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      </CollapsibleSection>
+      {task.constraints ? (
+        <CollapsibleSection
+          title={
+            <>
+              <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <span className="text-amber-800 dark:text-amber-300">
+                Constraints
+              </span>
+            </>
+          }
+          className="border-amber-300 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/20"
+        >
           <p className="text-xs text-muted-foreground mb-3">
             Architectural standard derived from the project conventions —
             read-only. Applies to every task in this project.
           </p>
           <Markdown>{task.constraints}</Markdown>
-        </CardContent>
-      </Card>
-    ) : null}
+        </CollapsibleSection>
+      ) : null}
     </>
   );
 }
