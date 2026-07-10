@@ -1,4 +1,6 @@
 export { TaskHeader } from "./task-header";
+export { TaskBreadcrumb } from "./task-breadcrumb";
+export { TaskListNav } from "./task-list-nav";
 export { TaskMetadata } from "./task-metadata";
 export { TaskDescription } from "./task-description";
 export { TaskTabs } from "./task-tabs";
