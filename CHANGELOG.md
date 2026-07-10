@@ -4,6 +4,12 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Playwright chromium headless verification for QA images.** `agent-qa-fe` and `agent-ux` (the shared UX/QA image) now ship Playwright with `chromium-headless-shell` pre-installed for browser-based QA verification — fe-qa and ux-qa agents can now launch headless chromium to verify rendered output, computed styles, a11y trees, and visual design when reading the diff alone cannot settle an acceptance criterion. A new CI workflow (`agent-image-smoke.yml`) builds real before/after images, runs a headless-launch smoke check inside each, and reports the real `docker inspect` size delta as a PR comment — the only non-estimated verification source available since agent sandboxes have no Docker daemon. See `docs/backend/qa/browser-verification.md` for examples and `fe-qa.md` / `ux-qa.md` identity prompts for the built-in guidance.
+
 ## [0.21.0] - 2026-07-09
 
 ### Added
