@@ -10,6 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Playwright chromium headless verification for QA images.** `agent-qa-fe` and `agent-ux` (the shared UX/QA image) now ship Playwright with `chromium-headless-shell` pre-installed for browser-based QA verification — fe-qa and ux-qa agents can now launch headless chromium to verify rendered output, computed styles, a11y trees, and visual design when reading the diff alone cannot settle an acceptance criterion. A new CI workflow (`agent-image-smoke.yml`) builds real before/after images, runs a headless-launch smoke check inside each, and reports the real `docker inspect` size delta as a PR comment — the only non-estimated verification source available since agent sandboxes have no Docker daemon. See `docs/backend/qa/browser-verification.md` for examples and `fe-qa.md` / `ux-qa.md` identity prompts for the built-in guidance.
 
+## [0.22.0] - 2026-07-10
+
+### Added
+
+- **Board-review → redraft loop for MegaTask batches.** Sending a MegaTask for "Board review & Start" now keeps the intake chat alive (parked against the umbrella) instead of ending it: when the Product Owner and Head of Marketing finish, their feedback is injected into the still-live chat as a batch-aware brief — every root-subtask's current title/description/AC plus the board's decision notes and an instruction to re-propose the whole batch in one `propose_batch` call. Confirming the revised batch updates the existing umbrella and root-subtasks in place (positional patching, cancel+recreate only when an item's project scope moved, dependency waves rewired, the same multi-project scope validation as creation), and the board route can loop for another review round. The cold path works too: the task-detail "Re-draft with board feedback" button now handles a branchless umbrella by recovering its multi-repo scope from the live root-subtasks — previously a hard 400. Multi-round redrafts survive earlier cancels via a cancelled-excluding child view.
+- **Smart spotlight cadence.** The X feature-spotlight loop drafts daily when there is fresh news to talk about and stays quiet when there isn't, instead of a fixed 3-day metronome.
+
+### Fixed
+
+- **MegaTask wave sequencing is enforced at the service chokepoint.** The dependency gate lived only on the gateway claim verbs while the orchestrator dispatched root tasks through a raw claim call, so later-wave roots could start before their upstream waves finished — hit live on the first big batch. The guard now sits in `TaskService` where every claim path crosses it, and the cross-cell UX→frontend dependency wiring no longer skips MegaTask roots (it was keyed on a product id batches don't carry).
+- **MegaTask intake papercuts from the same live batch.** The review card gets its own scroll region so a tall batch can't clip the launch buttons off-screen; a failed confirm releases its Redis idempotency guard instead of wedging every retry behind "already in progress" for an hour; a vestigial top-level repo slug in cell-mapped drafts no longer 400s the whole batch; and the idle reaper no longer kills an intake chat the CEO is actively reading (the open stream now keeps the session alive).
+- **Subagent spawning is blocked at the Claude Code level.** The `Task` tool is a default-permitted built-in, so omitting it from an allowlist never removed it — under `bypassPermissions` agents could still spawn subagents. It is now explicitly disallowed on the intake/secretary SDK options and in the fleet's base deny list.
+- **Security backlog cleared.** All 104 open code-scanning and Dependabot alerts dispositioned: four real CodeQL findings fixed (path containment around the conventions-PR scaffold), 24 dependency bumps applied, and the remaining false positives dismissed with written justifications.
+- **Release-recap video hero logo renders correctly in dark mode.**
+
 ## [0.21.0] - 2026-07-09
 
 ### Added
