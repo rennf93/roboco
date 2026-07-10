@@ -308,4 +308,78 @@ describe("A2APage", () => {
       queryKey: a2aLiveKeys.all,
     });
   });
+
+  it("renders the filter bar above the switchboard/list content", () => {
+    useA2AAdminPairs.mockReturnValue({
+      data: { items: [buildPair()], total: 1 },
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    render(withPageRefresh(<A2APage />));
+    expect(
+      screen.getByPlaceholderText("Search agent or topic..."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Active" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
+  });
+
+  it("narrows the switchboard's pairs by search", () => {
+    useA2AAdminPairs.mockReturnValue({
+      data: {
+        items: [
+          buildPair(),
+          buildPair({
+            agent_a: "auditor",
+            agent_b: "product-owner",
+            group_key: "board",
+            conversation_id: null,
+            last_message_at: null,
+            message_count: 0,
+          }),
+        ],
+        total: 2,
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    render(withPageRefresh(<A2APage />));
+    expect(screen.getByText(/Backend Cell/)).toBeInTheDocument();
+    expect(screen.getByText(/^Board$/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search agent or topic..."), {
+      target: { value: "auditor" },
+    });
+    expect(screen.queryByText(/Backend Cell/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^Board$/)).toBeInTheDocument();
+  });
+
+  it("narrows the classic list's conversations by search", () => {
+    useA2AConversations.mockReturnValue({
+      data: {
+        items: [
+          buildConversation(),
+          buildConversation({
+            id: "conv-2",
+            agent_a: "ux-dev-1",
+            agent_b: "ux-qa",
+            topic: "Design review",
+          }),
+        ],
+        total: 2,
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(withPageRefresh(<A2APage />));
+    fireEvent.click(screen.getByTitle("Classic conversation list"));
+    expect(screen.getByText("QA handoff")).toBeInTheDocument();
+    expect(screen.getByText("Design review")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search agent or topic..."), {
+      target: { value: "design review" },
+    });
+    expect(screen.queryByText("QA handoff")).not.toBeInTheDocument();
+    expect(screen.getByText("Design review")).toBeInTheDocument();
+  });
 });
