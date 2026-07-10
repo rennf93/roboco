@@ -8,9 +8,9 @@ Secretary-owned and held for the CEO. Asserted against a real Postgres DB.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
@@ -342,7 +342,7 @@ async def test_open_video_task_with_explicit_project_id_ignores_self_heal_slug(
         script="s",
         platforms=["x"],
         brief="b",
-        project_id=other.id,
+        project_id=cast("UUID", other.id),
     )
     assert task is not None
     assert task.project_id == other.id
@@ -373,7 +373,7 @@ async def test_open_video_task_explicit_project_id_not_opted_in_opens_nothing(
         script="s",
         platforms=["x"],
         brief="b",
-        project_id=other.id,
+        project_id=cast("UUID", other.id),
     )
     assert task is None
 
@@ -764,7 +764,7 @@ async def test_rerender_clears_render_state_keeps_the_rest(
     task.status = TS.COMPLETED
     await db_session.flush()
 
-    result = await engine.rerender(task.id)
+    result = await engine.rerender(cast("UUID", task.id))
     assert result is not None
     cleared = markers.get_video_draft(result)
     assert cleared is not None
@@ -789,7 +789,7 @@ async def test_rerender_none_for_non_completed_task(
     markers.set_video_draft(task, {**draft, "composition_id": "Intro"})
     await db_session.flush()  # still PENDING, not COMPLETED
 
-    result = await engine.rerender(task.id)
+    result = await engine.rerender(cast("UUID", task.id))
     assert result is None
 
 
@@ -807,7 +807,7 @@ async def test_rerender_none_without_composition_id(
     task.status = TS.COMPLETED
     await db_session.flush()  # no propose_video call yet -> no composition_id
 
-    result = await engine.rerender(task.id)
+    result = await engine.rerender(cast("UUID", task.id))
     assert result is None
 
 
