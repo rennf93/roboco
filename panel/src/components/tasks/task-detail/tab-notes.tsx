@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
 import { CollapsibleSection } from "./collapsible-section";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 import {
   FileText,
   Code,
@@ -149,12 +150,14 @@ function EditableNoteCard({
   bgClass,
 }: NoteCardProps) {
   const updateTask = useUpdateTask();
+  const currentValue = task[field];
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
-  const [sectionOpen, setSectionOpen] = useState(true);
-
-  const currentValue = task[field];
+  // Long content starts collapsed; short content starts expanded.
+  const [sectionOpen, setSectionOpen] = useState(() =>
+    !exceedsReadabilityThreshold(currentValue ?? ""),
+  );
 
   // Display prop value when not editing, local value when editing
   const editValue = isEditing ? localEditValue : (currentValue ?? "");
@@ -244,6 +247,7 @@ function EditableNoteCard({
       }
       open={isEditing || sectionOpen}
       onOpenChange={setSectionOpen}
+      content={currentValue ?? undefined}
       actions={
         isEditing ? (
           <>
