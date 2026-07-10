@@ -171,6 +171,33 @@ const [isEditing, setIsEditing] = useState(false);
 
 When `isEditing` is `true`, the section is forced open even if the user clicked to close it. This prevents an edit form from being hidden mid-interaction.
 
+### Combined: controlled mode + content-driven initialization
+
+For components that edit long content (like task notes), seed the initial collapsed/expanded state from content length, but use controlled mode to force-open during edit:
+
+```tsx
+const currentValue = task.dev_notes;
+const [isEditing, setIsEditing] = useState(false);
+const [sectionOpen, setSectionOpen] = useState(() =>
+  !exceedsReadabilityThreshold(currentValue ?? ""),
+);
+
+<CollapsibleSection
+  title="Developer Notes"
+  content={currentValue ?? undefined}  // Drives content-readability check
+  open={isEditing || sectionOpen}       // Controlled: force-open while editing
+  onOpenChange={setSectionOpen}
+>
+  {isEditing ? <textarea value={currentValue} /> : <p>{currentValue}</p>}
+</CollapsibleSection>
+```
+
+This pattern (used in `tab-notes.tsx`'s `EditableNoteCard`) ensures:
+- Long notes default collapsed with an expand affordance
+- Short notes default expanded (fully visible)
+- Edit forms are always visible when editing, even if the user had collapsed the section
+- User's collapse/expand choice persists across edit cycles (via `sectionOpen` state)
+
 ## Used in
 
 The component is now applied across task-detail pages:
@@ -178,7 +205,7 @@ The component is now applied across task-detail pages:
 | Page / Component | Sections wrapped | Notes |
 |---|---|---|
 | `task-description.tsx` | Description, Constraints | Constraints section styled with amber border/background + ShieldAlert icon for visual distinction from authored content. |
-| `tab-notes.tsx` | Each editable note field (Description, Notes, Plan) | Edit/preview toggle forced open while editing via `open={isEditing \|\| sectionOpen}`. |
+| `tab-notes.tsx` | Each editable note field (dev_notes, qa_notes, doc_notes, etc.) | `EditableNoteCard` seeds initial `sectionOpen` from content length via `exceedsReadabilityThreshold`, passes `content={currentValue}` to CollapsibleSection, and forces open while editing via controlled `open={isEditing \|\| sectionOpen}`. Long notes default collapsed with expand affordance; short notes default expanded. |
 | `tab-plan.tsx` | Approach, Sub-Tasks, Technical Considerations, Risks, Open Questions | Each sub-section independently collapsible. |
 | `acceptance-criteria.tsx` | Full acceptance criteria list | Wrapped in CollapsibleSection with `content={criteriaText}`, so a long AC list defaults collapsed per content-readability spec. Forced open while adding/editing via controlled `open` prop. |
 | `tab-progress.tsx` | Individual progress updates and checkpoints (via internal Radix Collapsible wrapper) | Each entry wrapped in a collapsible section; only the 2 most recent entries default open (gated by content length as well). Older entries default collapsed even if short, keeping task detail navigable without endless scrolling. |

@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
 import { CollapsibleSection } from "./collapsible-section";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 import {
   FileText,
   Code,
@@ -96,13 +97,17 @@ const FIELD_TO_SECTION: Record<NoteField, string> = {
   doc_notes: "doc",
 };
 
-// When the section was last written (apply_structured_note stamps it).
+// When the section was last written (apply_structured_note stamps it). Falls
+// back to the task's creation time when content exists but predates the stamp
+// (older notes written before apply_structured_note started stamping) so a
+// populated field never renders with no timestamp at all.
 function writtenAt(task: Task, field: NoteField): string | null {
   const sections = task.notes_structured as
     | Record<string, { written_at?: string }>
     | null
     | undefined;
-  const stamp = sections?.[FIELD_TO_SECTION[field]]?.written_at;
+  const stamp =
+    sections?.[FIELD_TO_SECTION[field]]?.written_at ?? task.created_at;
   if (!stamp) return null;
   const date = new Date(stamp);
   if (Number.isNaN(date.getTime())) return null;
@@ -145,12 +150,14 @@ function EditableNoteCard({
   bgClass,
 }: NoteCardProps) {
   const updateTask = useUpdateTask();
+  const currentValue = task[field];
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
-  const [sectionOpen, setSectionOpen] = useState(true);
-
-  const currentValue = task[field];
+  // Long content starts collapsed; short content starts expanded.
+  const [sectionOpen, setSectionOpen] = useState(() =>
+    !exceedsReadabilityThreshold(currentValue ?? ""),
+  );
 
   // Display prop value when not editing, local value when editing
   const editValue = isEditing ? localEditValue : (currentValue ?? "");
@@ -240,6 +247,7 @@ function EditableNoteCard({
       }
       open={isEditing || sectionOpen}
       onOpenChange={setSectionOpen}
+      content={currentValue ?? undefined}
       actions={
         isEditing ? (
           <>
