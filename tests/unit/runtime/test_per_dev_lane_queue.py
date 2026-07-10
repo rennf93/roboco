@@ -10,6 +10,7 @@ Keyed on the assignee (not the team like the merge barrier) and gates only
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -123,6 +124,27 @@ async def test_higher_sequence_same_dev_sibling_does_not_block() -> None:
     task = _task(0, "be-dev-1")
     siblings = [_sibling(1, "be-dev-1", TaskStatus.IN_PROGRESS)]
     p1, p2 = _patch_siblings(siblings)
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_equal_sequence_same_dev_tiebreaks_by_created_at() -> None:
+    """Wave ties in a dev's own lane order by created_at (mirroring the merge
+    barrier): the earlier-created tied sibling holds the later one; the
+    later-created one does not hold the earlier."""
+    orch = _new_orchestrator()
+    task = _task(0, "be-dev-1")
+    task["created_at"] = "2026-07-10T12:00:00+00:00"
+    earlier = _sibling(0, "be-dev-1", TaskStatus.IN_PROGRESS)
+    earlier.created_at = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([earlier])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is True
+
+    later = _sibling(0, "be-dev-1", TaskStatus.IN_PROGRESS)
+    later.created_at = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([later])
     with p1, p2:
         assert await orch._blocked_by_earlier_lane_sibling(task) is False
 

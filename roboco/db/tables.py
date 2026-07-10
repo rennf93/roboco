@@ -272,7 +272,10 @@ class TaskTable(Base):
 
     # Relationships
     parent_task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     dependency_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list

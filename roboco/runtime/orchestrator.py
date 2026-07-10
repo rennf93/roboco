@@ -504,6 +504,25 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     return str(inner) if inner else None
 
 
+def _created_before(sib_created: Any, task_created: Any) -> bool:
+    """True if ``sib_created`` (a datetime row value) precedes ``task_created``
+    (an ISO string from the API task payload, or a datetime).
+
+    The equal-sequence tiebreak for the merge / lane dispatch barriers: wave-
+    stamped independent siblings share a sequence, so creation order decides
+    who merges first. Fail-open (False) on any missing/unparseable value —
+    a tie that can't be ordered must not wedge dispatch.
+    """
+    if sib_created is None or not task_created:
+        return False
+    try:
+        if isinstance(task_created, str):
+            task_created = datetime.fromisoformat(task_created)
+        return bool(sib_created < task_created)
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_coordination_task(task: dict[str, Any]) -> bool:
     """True for a task that does no git of its own.
 
@@ -12685,7 +12704,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         a later sibling before an earlier one diverges the branch and wedges the
         loser. Hold a higher-sequence sibling's review/merge dispatch until the
         earlier ones land (or are cancelled). Loop-free: the task simply isn't
-        dispatched this tick — no reject, no respawn churn.
+        dispatched this tick — no reject, no respawn churn. Equal sequences
+        (wave-stamped independent siblings — parallel to CLAIM and build) tie-
+        break by ``created_at`` so the shared-branch merge stays serialized.
 
         Only same-team siblings block (they target the same branch). Terminal
         siblings (completed/cancelled) never block, so a cancelled sibling can't
@@ -12716,18 +12737,39 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 error=str(exc),
             )
             return False
-        for sib in siblings:
-            sib_seq = getattr(sib, "sequence", 0) or 0
-            sib_team = getattr(sib, "team", None)
-            sib_status = getattr(sib, "status", None)
-            sib_team_val = getattr(sib_team, "value", sib_team)
-            if (
-                str(sib_team_val) == str(team)
-                and sib_seq < seq
-                and sib_status not in terminal
-            ):
-                return True
-        return False
+        task_created = task.get("created_at")
+        return any(
+            self._is_earlier_live_team_sibling(
+                sib,
+                team=str(team),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
+            )
+            for sib in siblings
+        )
+
+    @staticmethod
+    def _is_earlier_live_team_sibling(
+        sib: Any, *, team: str, seq: int, terminal: set[Any], task_created: Any
+    ) -> bool:
+        """True if ``sib`` is an earlier non-terminal same-team sibling.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak that keeps the shared-branch merge serialized).
+        """
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        sib_team = getattr(sib, "team", None)
+        sib_team_val = getattr(sib_team, "value", sib_team)
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
+        return (
+            str(sib_team_val) == team
+            and earlier
+            and getattr(sib, "status", None) not in terminal
+        )
 
     async def _blocked_by_earlier_lane_sibling(self, task: dict[str, Any]) -> bool:
         """True if the SAME dev has an earlier non-terminal code sibling.
@@ -12743,6 +12785,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         keyed on team): this is keyed on the assignee and only gates ``code``.
         Loop-free (skip this tick — no reject, no respawn churn) and best-effort
         (any lookup failure falls through to dispatch so the check never wedges).
+        Equal sequences tie-break by ``created_at``, mirroring the merge
+        barrier, so a dev's wave-tied queue keeps a deterministic order.
         """
         if str(task.get("task_type") or "") != "code":
             return False
@@ -12771,26 +12815,47 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
             return False
         task_id = str(task.get("id"))
+        task_created = task.get("created_at")
         return any(
             self._is_earlier_live_lane_sibling(
-                sib, task_id=task_id, owner=str(owner), seq=seq, terminal=terminal
+                sib,
+                task_id=task_id,
+                owner=str(owner),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
             )
             for sib in siblings
         )
 
     @staticmethod
     def _is_earlier_live_lane_sibling(
-        sib: Any, *, task_id: str, owner: str, seq: int, terminal: set[Any]
+        sib: Any,
+        *,
+        task_id: str,
+        owner: str,
+        seq: int,
+        terminal: set[Any],
+        task_created: Any = None,
     ) -> bool:
-        """True if ``sib`` is a lower-sequence non-terminal code task for ``owner``."""
+        """True if ``sib`` is an earlier non-terminal code task for ``owner``.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak mirroring the merge barrier).
+        """
         if str(sib.id) == task_id:
             return False
         sib_type = getattr(sib, "task_type", None)
         sib_type_val = getattr(sib_type, "value", sib_type)
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
         return (
             str(getattr(sib, "assigned_to", None)) == owner
             and str(sib_type_val) == "code"
-            and (getattr(sib, "sequence", 0) or 0) < seq
+            and earlier
             and getattr(sib, "status", None) not in terminal
         )
 
