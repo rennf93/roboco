@@ -234,7 +234,13 @@ class PRGateMixin(_Base):
         return (t, agent, role_str, briefing, spec_ctx)
 
     async def _record_gate_verdict_for(
-        self, verb: str, t: Any, notes: str, *, issues: tuple[str, ...]
+        self,
+        verb: str,
+        t: Any,
+        notes: str,
+        *,
+        issues: tuple[str, ...],
+        ci_note: str | None = None,
     ) -> str | None:
         """Author the canonical pr_review verdict note before the transition.
 
@@ -242,6 +248,9 @@ class PRGateMixin(_Base):
         can structurally refuse to re-submit the unchanged root (the 2026-06-27
         infinite pr_fail re-submit loop). Best-effort: a capture failure leaves
         head_sha absent and submit_root fails open rather than wedging the PM.
+        On pr_pass, ``ci_note`` (set by ``_pr_pass_blocked`` when the CI-status
+        guard passed through a project with no CI configured) is stamped into
+        the verdict's ``ci_status`` field as evidence the guard actually ran.
 
         Returns the captured head_sha for pr_fail (None for pr_pass) so the caller
         can re-capture after the transition commits and re-stamp if the PR head
@@ -251,7 +260,7 @@ class PRGateMixin(_Base):
             head_sha = await self._capture_pr_head_sha(t)
             self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
             return head_sha
-        self._record_gate_verdict(t, verb, notes, issues=issues)
+        self._record_gate_verdict(t, verb, notes, issues=issues, ci_note=ci_note)
         return None
 
     async def _re_stamp_pr_fail_head_sha_if_advanced(
@@ -353,8 +362,9 @@ class PRGateMixin(_Base):
         )
         if gate is not None:
             return gate
+        ci_note: str | None = None
         if verb == "pr_pass":
-            blocked = await self._pr_pass_blocked(
+            blocked, ci_note = await self._pr_pass_blocked(
                 reviewer_agent_id, task_id, t, role_str, briefing
             )
             if blocked is not None:
@@ -362,7 +372,9 @@ class PRGateMixin(_Base):
         # Author the canonical pr_review verdict note BEFORE the transition so it
         # is persisted by the same commit (mirrors post_pr_review) and stays in
         # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
-        pre_sha = await self._record_gate_verdict_for(verb, t, notes, issues=issues)
+        pre_sha = await self._record_gate_verdict_for(
+            verb, t, notes, issues=issues, ci_note=ci_note
+        )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -432,13 +444,20 @@ class PRGateMixin(_Base):
         t: Any,
         role_str: str,
         briefing: dict[str, Any],
-    ) -> Envelope | None:
-        """Refuse pr_pass on a broken toolchain or a block-level violation.
+    ) -> tuple[Envelope | None, str | None]:
+        """Refuse pr_pass on a broken toolchain, a block-level violation, or
+        non-green CI on the assembled PR's head commit.
 
         A reviewer must not PASS an assembled PR whose suite can't run in the
-        workspace, or that carries unresolved architectural-convention
-        violations; pr_fail stays available. Returns the emitted rejection or
-        None to proceed. Both guards are inert when their flag is off.
+        workspace, that carries unresolved architectural-convention
+        violations, or whose CI is red/pending/unscheduled/unresolvable;
+        pr_fail stays available for all three. Returns ``(rejection, None)``
+        to block, or ``(None, ci_note)`` to proceed — ``ci_note`` is a
+        non-None evidence stamp only when the CI guard passed through a
+        project with no CI configured at all. The toolchain/conventions
+        guards are inert when their flag is off; the CI guard fails open
+        (``None`` from ``get_pr_ci_status``) on any unresolvable project/PR
+        configuration.
         """
         guards = (
             lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
@@ -447,13 +466,119 @@ class PRGateMixin(_Base):
         for guard in guards:
             rejection = await guard()
             if rejection is not None:
-                return await self._emit_rejection(
-                    rejection.with_introspection(task=t, role=role_str),
-                    agent_id=reviewer_agent_id,
-                    task_id=task_id,
-                    verb="pr_pass",
+                return (
+                    await self._emit_rejection(
+                        rejection.with_introspection(task=t, role=role_str),
+                        agent_id=reviewer_agent_id,
+                        task_id=task_id,
+                        verb="pr_pass",
+                    ),
+                    None,
                 )
-        return None
+        return await self._ci_status_guard(
+            reviewer_agent_id, task_id, t, role_str, briefing
+        )
+
+    async def _resolve_ci_status(self, task_id: UUID, t: Any) -> dict[str, Any] | None:
+        """Best-effort CI-status lookup for the assembled PR's head commit.
+
+        Returns ``None`` on ANY configuration gap or lookup failure (no
+        resolvable slug/PR number, a raised exception, or a caller returning
+        something other than the documented ``dict[str, Any]`` shape) so
+        ``_ci_status_guard`` fails open on every one of them uniformly.
+        """
+        pr_number = getattr(t, "pr_number", None)
+        try:
+            slug = await self._project_slug_for(t)
+        except Exception:
+            logger.exception(
+                "ci status guard: slug resolve failed", task_id=str(task_id)
+            )
+            return None
+        if not slug or not pr_number:
+            return None
+        try:
+            status = await self.git.get_pr_ci_status(slug, int(pr_number))
+        except Exception:
+            logger.exception(
+                "ci status guard: get_pr_ci_status raised", task_id=str(task_id)
+            )
+            return None
+        return status if isinstance(status, dict) else None
+
+    async def _ci_status_guard(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, str | None]:
+        """Refuse pr_pass unless CI on the assembled PR's head commit is green.
+
+        Failing, pending, unscheduled, or unresolvable-via-API CI states all
+        block with a reviewer-aware remediation pointing at ``pr_fail`` (a
+        reviewer has no ``i_am_blocked``) — pending/unscheduled/error are
+        framed as retryable (wait and call pr_pass again), never as a defect
+        to route back to the dev. A project with no CI configured at all
+        passes through cleanly, returning an evidence note so the caller can
+        stamp the verdict with why the guard did not block.
+        """
+        status = await self._resolve_ci_status(task_id, t)
+        if status is None:
+            # A configuration gap or lookup failure — never mistaken for a CI
+            # signal, so the guard fails open rather than blocking.
+            return None, None
+        state = status.get("state")
+        if state == "success":
+            return None, None
+        if state == "no_ci_configured":
+            return None, "no CI configured on this project"
+        if state == "failure":
+            names = (
+                ", ".join(status.get("failing_checks") or []) or "one or more checks"
+            )
+            message = f"CI is failing on the assembled PR's head commit — {names}"
+            remediate = (
+                f"call pr_fail(issues=['CI failing: {names}']) so the PR returns "
+                "to needs_revision and the dev fixes the failing check(s) — do "
+                "NOT pr_pass on red CI"
+            )
+        elif state == "pending":
+            message = "CI is still running on the assembled PR's head commit"
+            remediate = (
+                "wait for CI to finish and call pr_pass again once it's green "
+                "— do NOT pr_pass while checks are still running"
+            )
+        elif state == "pending_not_scheduled":
+            message = "CI has not started running on the assembled PR's head commit yet"
+            remediate = (
+                "wait for CI to be scheduled and call pr_pass again once it's "
+                "green — do NOT pr_pass before any check has run"
+            )
+        else:
+            # state == "error" (or an unrecognized value) — a genuine GitHub
+            # API failure resolving the signal; never treat this as green.
+            message = (
+                "could not determine CI status for the assembled PR (GitHub API error)"
+            )
+            remediate = (
+                "retry pr_pass shortly once the CI status can be resolved; "
+                "if it persists, pr_fail(issues=[...]) to unwedge the PR"
+            )
+        return (
+            await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=message,
+                    remediate=remediate,
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="pr_pass",
+            ),
+            None,
+        )
 
     def _record_gate_verdict(
         self,
@@ -463,6 +588,7 @@ class PRGateMixin(_Base):
         issues: tuple[str, ...] = (),
         *,
         head_sha: str | None = None,
+        ci_note: str | None = None,
     ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
@@ -483,6 +609,11 @@ class PRGateMixin(_Base):
         re-submit the unchanged root — the 2026-06-27 infinite ``pr_fail``
         re-submit loop. ``None`` (the default) leaves it absent, which the
         ``submit_root`` gate treats as fail-open.
+
+        On ``pr_pass``, ``ci_note`` (set only when the CI-status guard passed
+        through a project with no CI configured) is stamped into the slot's
+        ``ci_status`` field — the evidence that the guard ran and deliberately
+        did not block, rather than silently never having checked at all.
         """
         from roboco.foundation.policy.content import ContentValidationError
         from roboco.services.content_notes import apply_structured_note
@@ -511,6 +642,8 @@ class PRGateMixin(_Base):
             payload["issues"] = list(issues)
         if verb == "pr_fail" and head_sha:
             payload["head_sha"] = head_sha
+        if verb == "pr_pass" and ci_note:
+            payload["ci_status"] = ci_note
         try:
             apply_structured_note(t, "pr_review", payload)
         except ContentValidationError:
