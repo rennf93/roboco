@@ -9,6 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   Clock,
   Bookmark,
   Plus,
@@ -19,10 +24,22 @@ import {
   User,
   ListTodo,
   FileText,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { formatAbsoluteTimestamp } from "@/lib/utils";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
+
+// Only the 2 most recent entries default to expanded; older entries (and
+// any entry whose own content is long, per the content-readability spec)
+// default to collapsed so a task with a long history stays navigable.
+const RECENT_OPEN_COUNT = 2;
+
+function defaultEntryOpen(idx: number, content: string): boolean {
+  if (idx >= RECENT_OPEN_COUNT) return false;
+  return !exceedsReadabilityThreshold(content);
+}
 
 interface TabProgressProps {
   task: Task;
@@ -220,11 +237,22 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                     <MessageSquare className="h-3 w-3 text-primary" />
                   </div>
 
-                  <div className="bg-muted/50 rounded-lg p-3">
+                  <Collapsible
+                    defaultOpen={defaultEntryOpen(idx, update.message)}
+                    className="bg-muted/50 rounded-lg p-3"
+                  >
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-medium">
-                        {getAgentDisplayName(update.agent_id)}
-                      </span>
+                      <CollapsibleTrigger asChild>
+                        <button
+                          type="button"
+                          className="group/trigger flex min-w-0 items-center gap-1 text-left"
+                        >
+                          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90" />
+                          <span className="text-sm font-medium">
+                            {getAgentDisplayName(update.agent_id)}
+                          </span>
+                        </button>
+                      </CollapsibleTrigger>
                       <div className="flex items-center gap-2">
                         <span
                           className="text-xs text-muted-foreground flex items-center gap-1"
@@ -244,21 +272,23 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                         </Button>
                       </div>
                     </div>
-                    <p className="text-sm">{update.message}</p>
-                    {update.percentage !== null && (
-                      <div className="mt-2">
-                        <div className="flex items-center gap-2">
-                          <Progress
-                            value={update.percentage}
-                            className="h-1.5 flex-1"
-                          />
-                          <span className="text-xs text-muted-foreground w-10 text-right">
-                            {update.percentage}%
-                          </span>
+                    <CollapsibleContent>
+                      <p className="text-sm">{update.message}</p>
+                      {update.percentage !== null && (
+                        <div className="mt-2">
+                          <div className="flex items-center gap-2">
+                            <Progress
+                              value={update.percentage}
+                              className="h-1.5 flex-1"
+                            />
+                            <span className="text-xs text-muted-foreground w-10 text-right">
+                              {update.percentage}%
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </CollapsibleContent>
+                  </Collapsible>
                 </li>
               ))}
             </ul>
@@ -435,79 +465,110 @@ function CheckpointsSection({ task }: { task: Task }) {
           </p>
         ) : (
           <div className="space-y-4">
-            {sortedCheckpoints.map((checkpoint) => (
-              <Card key={checkpoint.id} className="overflow-hidden group">
-                <div className="bg-primary/10 px-4 py-2 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Bookmark className="h-4 w-4 text-primary" />
-                    <span className="font-medium text-sm">Checkpoint</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="text-xs text-muted-foreground flex items-center gap-1"
-                      title={formatAbsoluteTimestamp(checkpoint.timestamp)}
-                    >
-                      <Clock className="h-3 w-3" />
-                      {formatTime(checkpoint.timestamp)} ·{" "}
-                      {formatAbsoluteTimestamp(checkpoint.timestamp)}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleDelete(checkpoint.id)}
-                      className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                <CardContent className="pt-4">
-                  {/* Agent */}
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground mb-3">
-                    <User className="h-4 w-4" />
-                    <span>
-                      Saved by {getAgentDisplayName(checkpoint.agent_id)}
-                    </span>
-                  </div>
+            {sortedCheckpoints.map((checkpoint, idx) => {
+              const checkpointContent = [
+                checkpoint.state_summary,
+                ...checkpoint.remaining_work,
+                checkpoint.notes ?? "",
+              ].join("\n");
 
-                  {/* State Summary */}
-                  <div className="mb-4">
-                    <h4 className="text-sm font-medium mb-1">State Summary</h4>
-                    <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                      {checkpoint.state_summary}
-                    </p>
-                  </div>
-
-                  {/* Remaining Work */}
-                  {checkpoint.remaining_work.length > 0 && (
-                    <div className="mb-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <ListTodo className="h-4 w-4 text-muted-foreground" />
-                        <h4 className="text-sm font-medium">Remaining Work</h4>
+              return (
+                <Card
+                  key={checkpoint.id}
+                  className="overflow-hidden group py-0"
+                >
+                  <Collapsible
+                    defaultOpen={defaultEntryOpen(idx, checkpointContent)}
+                  >
+                    <div className="bg-primary/10 px-4 py-2 flex items-center justify-between">
+                      <CollapsibleTrigger asChild>
+                        <button
+                          type="button"
+                          className="group/trigger flex min-w-0 items-center gap-2"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90" />
+                          <Bookmark className="h-4 w-4 text-primary" />
+                          <span className="font-medium text-sm">
+                            Checkpoint
+                          </span>
+                        </button>
+                      </CollapsibleTrigger>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="text-xs text-muted-foreground flex items-center gap-1"
+                          title={formatAbsoluteTimestamp(checkpoint.timestamp)}
+                        >
+                          <Clock className="h-3 w-3" />
+                          {formatTime(checkpoint.timestamp)} ·{" "}
+                          {formatAbsoluteTimestamp(checkpoint.timestamp)}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleDelete(checkpoint.id)}
+                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
                       </div>
-                      <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
-                        {checkpoint.remaining_work.map((item, idx) => (
-                          <li key={idx}>{item}</li>
-                        ))}
-                      </ul>
                     </div>
-                  )}
+                    <CollapsibleContent>
+                      <CardContent className="py-4">
+                        {/* Agent */}
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground mb-3">
+                          <User className="h-4 w-4" />
+                          <span>
+                            Saved by {getAgentDisplayName(checkpoint.agent_id)}
+                          </span>
+                        </div>
 
-                  {/* Notes */}
-                  {checkpoint.notes && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <FileText className="h-4 w-4 text-muted-foreground" />
-                        <h4 className="text-sm font-medium">Notes</h4>
-                      </div>
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                        {checkpoint.notes}
-                      </p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
+                        {/* State Summary */}
+                        <div className="mb-4">
+                          <h4 className="text-sm font-medium mb-1">
+                            State Summary
+                          </h4>
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                            {checkpoint.state_summary}
+                          </p>
+                        </div>
+
+                        {/* Remaining Work */}
+                        {checkpoint.remaining_work.length > 0 && (
+                          <div className="mb-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <ListTodo className="h-4 w-4 text-muted-foreground" />
+                              <h4 className="text-sm font-medium">
+                                Remaining Work
+                              </h4>
+                            </div>
+                            <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                              {checkpoint.remaining_work.map(
+                                (item, itemIdx) => (
+                                  <li key={itemIdx}>{item}</li>
+                                ),
+                              )}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Notes */}
+                        {checkpoint.notes && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <FileText className="h-4 w-4 text-muted-foreground" />
+                              <h4 className="text-sm font-medium">Notes</h4>
+                            </div>
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {checkpoint.notes}
+                            </p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </CollapsibleContent>
+                  </Collapsible>
+                </Card>
+              );
+            })}
           </div>
         )}
       </CardContent>
