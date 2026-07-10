@@ -1,6 +1,7 @@
 # Browser Verification with Playwright
 
 **For:** Frontend QA (`fe-qa`) and UX QA (`ux-qa`) agents
+
 **Purpose:** Verify rendered output, computed styles, a11y trees, and visual design when code review and diff analysis cannot settle an acceptance criterion
 
 ## When to use browser verification
@@ -207,6 +208,18 @@ This documents what you checked and how for future reference.
 **"No screenshots appear"**
 - Screenshots are saved to the container's filesystem (e.g., `/tmp/review.png`), not your host. They're local to the QA agent's environment and cannot be downloaded directly.
 - If you need visual output for review, use `page.evaluate()` to extract element properties or accessibility snapshots instead.
+
+## Why an orchestrator.py Playwright allowance is a no-op
+
+QA and UX QA agents already run Playwright without any orchestrator-level "allowance" — there is no gate in `roboco/runtime/orchestrator.py` that could grant or withhold Playwright access, because none of the three places such a change would need to touch actually govern it. This section is the explicit written analysis for anyone who later proposes adding one.
+
+**1. `_get_role_permissions` only scopes Write/Edit, never Bash.** `_get_role_permissions` (`roboco/runtime/orchestrator.py:1472`) builds a per-role Claude Code allow/deny list, and every role's entries in that function are `Write(...)`/`Edit(...)` patterns — the `qa` role's own entry (`roboco/runtime/orchestrator.py:1504-1511`) only denies `Write(*)`/`Edit(*)`. Playwright is invoked as `/app/.venv/bin/python -c "..."`, a `Bash` tool call, and no role's config in `_get_role_permissions` ever adds a `Bash` allow or deny entry for it. There is therefore nothing in `_get_role_permissions` that "allows" or "blocks" Playwright either way — the invocation is already permitted by the same unrestricted-Bash default every other shell command gets.
+
+**2. The browser binary and its env var are baked into the image, not set by the orchestrator.** `chromium-headless-shell` and `PLAYWRIGHT_BROWSERS_PATH` are installed and exported at image build time in `docker/agent-qa-fe.Dockerfile` and `docker/agent-ux.Dockerfile` (`ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright`, followed by `RUN uv pip install --python /app/.venv/bin/python playwright && /app/.venv/bin/playwright install --with-deps chromium-headless-shell`). Neither `_generate_agent_settings` nor `_prepare_agent_spawn` in `roboco/runtime/orchestrator.py` sets this environment variable or mounts a browser at spawn time — whether the browser is reachable is decided once, when the image is built, not per-spawn by orchestrator code.
+
+**3. Playwright's sync API is a subprocess call, not an MCP tool, so no manifest entry is needed.** Every state-changing or gated capability an agent gets routes through the `mcp__roboco-flow__*`/`mcp__roboco-do__*` verbs listed in `role_config.py` and mounted as `/app/tool-manifest.json`. Playwright is called directly via its sync Python API inside a `Bash`-invoked subprocess (see the examples above) — it is never registered as an MCP tool, so there is no manifest entry to add, remove, or gate for a role to "get" Playwright access.
+
+Put together: an orchestrator.py change that tried to add a Playwright "allowance" would have no code path left to attach to — the browser is already installed, the env var is already set, and the invocation method (Bash plus the sync API) is already unrestricted for any role that isn't Write/Edit-denied on the invoking shell. That is why QA's own browser verification works today with zero orchestrator involvement, and why a dedicated allowance change is a no-op.
 
 ## Related documentation
 
