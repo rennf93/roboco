@@ -11381,6 +11381,35 @@ Start now: evidence(task_id="{task_id}")
         # in-context. Best-effort; the cold "Re-draft" path covers the rest.
         await self._inject_board_brief_into_parked_intake(task_id)
 
+    async def _compose_parked_intake_redraft(
+        self, db: "AsyncSession", task_id: str
+    ) -> str | None:
+        """The redraft seed message for a parked intake session, or None if the
+        task is gone. A MegaTask umbrella gets its batch-aware composer (every
+        LIVE root-subtask's snapshot); a normal task gets the single-task one.
+        """
+        from uuid import UUID
+
+        from roboco.foundation.policy.batch import is_batch_umbrella
+        from roboco.services.journal import get_journal_service
+        from roboco.services.prompter import (
+            compose_batch_redraft_message,
+            compose_redraft_message,
+        )
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(db)
+        task = await task_service.get(UUID(task_id))
+        if task is None:
+            return None
+        entries = await get_journal_service(db).board_review_brief(UUID(task_id))
+        if is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            children = await task_service.get_live_subtasks(UUID(task_id))
+            return compose_batch_redraft_message(task, children, entries)
+        return compose_redraft_message(task, entries)
+
     async def _inject_board_brief_into_parked_intake(self, task_id: str) -> None:
         """Inject the board's review into a parked intake session, if one exists.
 
@@ -11393,22 +11422,13 @@ Start now: evidence(task_id="{task_id}")
         session = get_live_registry().find_by_task(task_id)
         if session is None:
             return
-        from uuid import UUID
-
         from roboco.db.base import get_db_context
-        from roboco.services.journal import get_journal_service
-        from roboco.services.prompter import compose_redraft_message
-        from roboco.services.task import get_task_service
 
         try:
             async with get_db_context() as db:
-                task = await get_task_service(db).get(UUID(task_id))
-                if task is None:
-                    return
-                entries = await get_journal_service(db).board_review_brief(
-                    UUID(task_id)
-                )
-                message = compose_redraft_message(task, entries)
+                message = await self._compose_parked_intake_redraft(db, task_id)
+            if message is None:
+                return
             delivered = await get_live_registry().deliver(session.session_id, message)
             logger.info(
                 "Injected board feedback into parked intake",

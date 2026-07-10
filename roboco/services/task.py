@@ -2253,6 +2253,39 @@ class TaskService(BaseService):
             seen.setdefault(UUID(str(mapping.project_id)), None)
         return list(seen)
 
+    async def get_live_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
+        """Subtasks excluding CANCELLED, in ``created_at`` order.
+
+        The view every MegaTask-redraft reader uses (positional draft matching,
+        the backlog gate, the re-interview snapshot, batch scope recovery) — a
+        child cancelled by a prior redraft round (scope change / count shrink)
+        must neither refuse the next round nor mismatch its positional pairing.
+        """
+        return [
+            c
+            for c in await self.get_subtasks(parent_task_id)
+            if c.status != TaskStatus.CANCELLED
+        ]
+
+    async def distinct_projects_for_batch(self, umbrella_id: UUID) -> list[UUID]:
+        """The distinct project ids a MegaTask umbrella's LIVE root-subtasks target.
+
+        Each root-subtask carries a single project (``project_id``) or an
+        ad-hoc per-cell map (``cell_projects``) — union across every non-
+        cancelled child, de-duped, in ``created_at`` order (a repo dropped by a
+        redraft's cancel must not resurrect in a cold re-interview). Used by the
+        cold re-interview path to recover a batch's multi-repo intake scope when
+        no session is parked for it (mirrors ``_distinct_projects_for_task``,
+        which recovers a single coordination root's own product/cell-map scope).
+        """
+        seen: dict[UUID, None] = {}
+        for child in await self.get_live_subtasks(umbrella_id):
+            if child.project_id is not None:
+                seen.setdefault(UUID(str(child.project_id)), None)
+            for mapping in sorted(child.cell_projects, key=lambda m: m.team.value):
+                seen.setdefault(UUID(str(mapping.project_id)), None)
+        return list(seen)
+
     async def _ensure_coordination_root_branches(
         self,
         task: TaskTable,

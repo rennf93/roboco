@@ -24,10 +24,17 @@ from roboco.api import deps
 from roboco.api.deps import get_agent_context
 from roboco.api.routes.prompter_live import router
 from roboco.db.base import get_db
-from roboco.models.base import AgentRole
+from roboco.db.tables import ProjectTable, TaskTable
+from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.services import prompter_live
 from roboco.services.base import ValidationError
 from roboco.services.permissions import AgentContext
+
+from tests.unit.services.test_prompter import (
+    _confirm_board_batch,
+    _seed_project_and_ceo,
+    _seed_second_project,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -297,13 +304,20 @@ async def confirm_client(
 
     ceo = AgentContext(agent_id=uuid4(), role=AgentRole.CEO, team=None, slug="ceo")
 
+    # A real (un-mocked) registry so a board-route confirm can actually park —
+    # a test that wants park-success must first ``registry.open(session_id, …)``.
+    registry = prompter_live.PrompterLiveRegistry()
+    prompter_live._RegistryHolder.instance = registry
+
     app = FastAPI()
     app.include_router(router, prefix="/api/prompter")
     app.dependency_overrides[get_db] = _fake_db
     app.dependency_overrides[get_agent_context] = lambda: ceo
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield {"client": client, "orch": orch}
+        yield {"client": client, "orch": orch, "registry": registry}
+
+    prompter_live._RegistryHolder.instance = None
 
 
 @pytest.mark.asyncio
@@ -384,15 +398,22 @@ def _batch_body() -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
-async def test_confirm_batch_creates_and_reaps(confirm_client: dict) -> None:
-    client, orch = confirm_client["client"], confirm_client["orch"]
-    result = {
+def _batch_result(*, n: int = 2) -> dict[str, Any]:
+    return {
         "umbrella_task_id": str(uuid4()),
-        "root_subtask_ids": [str(uuid4()), str(uuid4())],
-        "waves": [[0], [1]],
+        "root_subtask_ids": [str(uuid4()) for _ in range(n)],
+        "waves": [[i] for i in range(n)],
         "warnings": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_main_pm_route_creates_and_reaps(
+    confirm_client: dict,
+) -> None:
+    """A fresh confirm on the "main_pm" route is always terminal → reap."""
+    client, orch = confirm_client["client"], confirm_client["orch"]
+    result = _batch_result()
 
     class _FakeService:
         async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
@@ -407,7 +428,70 @@ async def test_confirm_batch_creates_and_reaps(confirm_client: dict) -> None:
         )
     assert resp.status_code == HTTPStatus.CREATED
     assert resp.json() == result
-    assert orch.reaped == ["s1"]  # confirm-batch is terminal → reap
+    assert orch.reaped == ["s1"]  # confirm-batch main_pm route is terminal → reap
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_board_route_parks_session(confirm_client: dict) -> None:
+    """A fresh confirm on the "board" route keeps the intake agent alive,
+    parked against the umbrella — the batch-shape mirror of the single-draft
+    keep-alive re-draft loop."""
+    client, orch, registry = (
+        confirm_client["client"],
+        confirm_client["orch"],
+        confirm_client["registry"],
+    )
+    registry.open("s1", "intake-1")
+    result = _batch_result()
+
+    class _FakeService:
+        async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
+            return result
+
+    body = _batch_body()
+    body["route"] = "board"
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post("/api/prompter/live/s1/confirm-batch", json=body)
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json() == result
+    assert orch.reaped == []  # parked, not reaped
+    assert registry.get("s1") is not None
+    assert registry.get("s1").task_id == result["umbrella_task_id"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_redraft_always_reaps(confirm_client: dict) -> None:
+    """A redraft confirm (``task_id`` set) always reaps, even on the "board"
+    route — parity with a single-draft redraft confirm (never keeps the agent
+    alive a second time; the umbrella already exists)."""
+    client, orch, registry = (
+        confirm_client["client"],
+        confirm_client["orch"],
+        confirm_client["registry"],
+    )
+    registry.open("s1", "intake-1")
+    task_id = uuid4()
+    result = _batch_result(n=1)
+    result["umbrella_task_id"] = str(task_id)
+
+    class _FakeService:
+        async def update_live_batch(self, *_a: Any, **_kw: Any) -> Any:
+            return result
+
+    body = _batch_body()
+    body["route"] = "board"
+    body["task_id"] = str(task_id)
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post("/api/prompter/live/s1/confirm-batch", json=body)
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json() == result
+    assert orch.reaped == ["s1"]  # redraft confirm is always terminal → reap
 
 
 @pytest.mark.asyncio
@@ -461,6 +545,168 @@ async def test_preview_batch_returns_waves_and_does_not_reap(
     assert resp.status_code == HTTPStatus.OK
     assert resp.json() == {"waves": [[0, 1]], "warnings": []}
     assert orch.reaped == []  # preview creates nothing and leaves the chat alive
+
+
+# ---------------------------------------------------------------------------
+# re-interview — cold redraft: single-task scope vs. MegaTask umbrella recovery.
+# DB-backed (real task/journal services + composer) with a fake orchestrator,
+# so the umbrella branch's scope recovery runs for real.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def reinterview_client(
+    db_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[dict[str, Any]]:
+    orch = _FakeOrchestrator()
+    monkeypatch.setattr(deps._ServiceHolder, "orchestrator", orch)
+
+    async def _real_db() -> AsyncIterator[Any]:
+        yield db_session
+
+    ceo = AgentContext(agent_id=uuid4(), role=AgentRole.CEO, team=None, slug="ceo")
+    app = FastAPI()
+    app.include_router(router, prefix="/api/prompter")
+    app.dependency_overrides[get_db] = _real_db
+    app.dependency_overrides[get_agent_context] = lambda: ceo
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield {"client": client, "orch": orch, "db": db_session}
+
+
+def _plain_task(ceo_id: Any, **overrides: Any) -> TaskTable:
+    fields: dict[str, Any] = {
+        "id": uuid4(),
+        "title": "Solo task",
+        "description": "A task the board reviewed, up for a redraft round.",
+        "acceptance_criteria": ["done"],
+        "status": TaskStatus.PENDING,
+        "team": Team.BACKEND,
+        "created_by": ceo_id,
+        **overrides,
+    }
+    return TaskTable(**fields)
+
+
+@pytest.mark.asyncio
+async def test_re_interview_umbrella_recovers_scope_and_seeds_batch(
+    reinterview_client: dict,
+) -> None:
+    """An umbrella re-interview recovers the multi-repo scope from its
+    root-subtasks (single-project child + cell_projects union child), returns it
+    to the panel, and seeds the batch composer's redraft message."""
+    client, orch, db = (
+        reinterview_client["client"],
+        reinterview_client["orch"],
+        reinterview_client["db"],
+    )
+    project1, ceo_id = await _seed_project_and_ceo(db)
+    project2 = await _seed_second_project(db, ceo_id)
+    project3 = await _seed_second_project(db, ceo_id)
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "Single child",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+        {
+            "title": "Union child",
+            "acceptance_criteria": ["b"],
+            "the_work": [
+                {"team": "backend", "summary": "s", "project_id": str(project2)},
+                {"team": "frontend", "summary": "s", "project_id": str(project3)},
+            ],
+        },
+    ]
+    result = await _confirm_board_batch(
+        db, ceo_id, drafts, [project1, project2, project3]
+    )
+
+    resp = await client.post(
+        f"/api/prompter/live/re-interview/{result['umbrella_task_id']}", json={}
+    )
+
+    assert resp.status_code == HTTPStatus.CREATED
+    body = resp.json()
+    assert body["session_id"]
+    expected = {str(project1), str(project2), str(project3)}
+    assert set(body["project_ids"]) == expected
+    spawn = orch.spawned[0]
+    assert set(spawn["project_ids"]) == expected  # multi-project intake scope
+    assert spawn["project_slug"] is None
+    assert spawn["product_id"] is None
+    msg = spawn["initial_message"]
+    assert "propose_batch" in msg  # batch-aware seed, not the single-task one
+    assert "Single child" in msg
+    assert "Union child" in msg
+
+
+@pytest.mark.asyncio
+async def test_re_interview_umbrella_400_when_no_recoverable_projects(
+    reinterview_client: dict,
+) -> None:
+    """An umbrella with no live project-bearing children cannot re-interview."""
+    client, db = reinterview_client["client"], reinterview_client["db"]
+    _project1, ceo_id = await _seed_project_and_ceo(db)
+    umbrella = _plain_task(
+        ceo_id, title="MegaTask: empty", team=Team.BOARD, batch_id=uuid4()
+    )
+    db.add(umbrella)
+    await db.flush()
+
+    resp = await client.post(f"/api/prompter/live/re-interview/{umbrella.id}", json={})
+
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+    assert "no recoverable projects" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_re_interview_single_task_branch_unchanged(
+    reinterview_client: dict,
+) -> None:
+    """A non-batch task still takes the single-task path: project-slug scope and
+    the single-draft redraft seed."""
+    client, orch, db = (
+        reinterview_client["client"],
+        reinterview_client["orch"],
+        reinterview_client["db"],
+    )
+    project1, ceo_id = await _seed_project_and_ceo(db)
+    task = _plain_task(ceo_id, project_id=project1)
+    db.add(task)
+    await db.flush()
+    slug = (await db.get(ProjectTable, project1)).slug
+
+    resp = await client.post(f"/api/prompter/live/re-interview/{task.id}", json={})
+
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json()["project_ids"] is None  # single-task path: no batch scope
+    spawn = orch.spawned[0]
+    assert spawn["project_slug"] == slug
+    assert spawn["product_id"] is None
+    assert spawn["project_ids"] is None
+    msg = spawn["initial_message"]
+    assert "revising an existing task draft" in msg
+    assert "Solo task" in msg
+    assert "propose_batch" not in msg
+
+
+@pytest.mark.asyncio
+async def test_re_interview_single_task_400_without_scope(
+    reinterview_client: dict,
+) -> None:
+    """A non-batch task with neither project nor product still 400s."""
+    client, db = reinterview_client["client"], reinterview_client["db"]
+    _project1, ceo_id = await _seed_project_and_ceo(db)
+    task = _plain_task(ceo_id)  # no project_id / product_id / batch_id
+    db.add(task)
+    await db.flush()
+
+    resp = await client.post(f"/api/prompter/live/re-interview/{task.id}", json={})
+
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+    assert "no project/product scope" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

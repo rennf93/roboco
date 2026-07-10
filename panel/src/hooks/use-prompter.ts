@@ -404,6 +404,9 @@ interface PersistedChat {
   };
   editableDraft: EditableDraft;
   redraftTaskId?: string | null;
+  // Set when this batch chat is a board-informed MegaTask re-draft: mirrors
+  // redraftTaskId but for confirmBatch (the umbrella id, not a single task).
+  batchRedraftTaskId?: string | null;
   // MegaTask review state, so a reload mid-batch-review restores the batch.
   batch?: BatchProposal | null;
   batchWaves?: number[][] | null;
@@ -487,6 +490,10 @@ export function usePrompter() {
   // Set when this chat is a board-informed re-draft of an existing task: confirm
   // then updates that task in place instead of creating a new one.
   const redraftTaskIdRef = useRef<string | null>(null);
+  // Same idea, for a MegaTask: set once a batch is sent to the board (or a
+  // batch cold-redraft is opened), so confirmBatch updates the umbrella +
+  // root-subtasks in place instead of creating a new batch.
+  const batchRedraftTaskIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const streamingIdRef = useRef<string | null>(null);
   // Synchronous re-entry guard for launch — a double-click was creating two tasks.
@@ -740,6 +747,7 @@ export function usePrompter() {
         scope: scopeRef.current,
         editableDraft,
         redraftTaskId: redraftTaskIdRef.current,
+        batchRedraftTaskId: batchRedraftTaskIdRef.current,
         batch,
         batchWaves,
         savedAt: Date.now(),
@@ -779,6 +787,7 @@ export function usePrompter() {
         // so land in a stable state rather than "streaming".
         sessionIdRef.current = persisted.sessionId;
         redraftTaskIdRef.current = persisted.redraftTaskId ?? null;
+        batchRedraftTaskIdRef.current = persisted.batchRedraftTaskId ?? null;
         setSessionId(persisted.sessionId);
         setMessages(persisted.messages);
         setEditableDraft(persisted.editableDraft);
@@ -874,8 +883,11 @@ export function usePrompter() {
       setState("preparing");
       try {
         // Scope the chat to the task's product/project so launch has a target
-        // even if the re-drafted proposal omits it.
+        // even if the re-drafted proposal omits it. A MegaTask umbrella has
+        // neither (it's branchless) — that's how a batch redraft is detected.
         const task = await tasksApi.get(taskId);
+        const isBatchUmbrella =
+          !task.project_id && !task.product_id && !!task.batch_id;
         if (task.product_id) {
           setTargetKind("product");
           setProductId(task.product_id);
@@ -883,11 +895,20 @@ export function usePrompter() {
           setTargetKind("project");
           setProjectId(task.project_id);
         }
-        const { session_id } = await prompterLiveApi.reInterview(taskId);
-        redraftTaskIdRef.current = taskId;
-        sessionIdRef.current = session_id;
-        setSessionId(session_id);
-        openStream(session_id);
+        const response = await prompterLiveApi.reInterview(taskId);
+        if (isBatchUmbrella) {
+          // The umbrella carries no project scope of its own — seed the
+          // MegaTask's multi-project scope from the recovered response so
+          // confirmBatch's scope validation has something to check against.
+          setTargetKind("megatask");
+          setProjectIds(response.project_ids ?? []);
+          batchRedraftTaskIdRef.current = taskId;
+        } else {
+          redraftTaskIdRef.current = taskId;
+        }
+        sessionIdRef.current = response.session_id;
+        setSessionId(response.session_id);
+        openStream(response.session_id);
         setIsSending(true);
         setActivity("Re-opening intake with the board's feedback…");
         setState("streaming");
@@ -1157,17 +1178,46 @@ export function usePrompter() {
       launchingRef.current = true;
       setIsLaunching(true);
       setState("launching");
+      // A board-informed re-draft (either parked from a first pass or opened
+      // cold via startRedraft) updates the existing umbrella in place.
+      const redraftId = batchRedraftTaskIdRef.current;
       try {
         const result = await prompterLiveApi.confirmBatch(sid, {
           title: batch.title.trim() || "MegaTask",
           drafts: batch.drafts,
           project_ids: scopeRef.current.projectIds,
           route,
+          ...(redraftId ? { task_id: redraftId } : {}),
         });
+
+        // Board route, first pass (not a redraft re-confirm): the backend
+        // parks the intake agent so the board's feedback can be injected for
+        // an in-place batch re-draft. Keep the chat alive — mirrors
+        // launchTask's single-draft board branch.
+        if (route === "board" && !redraftId) {
+          batchRedraftTaskIdRef.current = result.umbrella_task_id;
+          setBatch(null);
+          setBatchWaves(null);
+          addMessage({
+            role: "assistant",
+            content:
+              "Sent to the board — the Product Owner and Head of Marketing are " +
+              "reviewing this MegaTask. Their feedback will arrive here as a " +
+              "revised batch you can approve. You can leave and come back; this " +
+              "chat stays open.",
+          });
+          setState("chatting");
+          return; // `finally` resets the launching guard
+        }
+
+        // Terminal: a straight Main-PM launch, or a redraft re-confirm of
+        // either route — the backend reaps the session once task_id is set,
+        // parity with the single-draft path.
         closeStream();
         void prompterLiveApi.stop(sid).catch(() => undefined);
         clearPersisted();
         sessionIdRef.current = null;
+        batchRedraftTaskIdRef.current = null;
         setBatchResult(result);
         setCreatedTaskId(result.umbrella_task_id);
         setCreatedTaskTitle(batch.title.trim() || "MegaTask");
@@ -1192,14 +1242,23 @@ export function usePrompter() {
         }
         setState("success");
       } catch (err) {
-        toast.error(`Failed to launch MegaTask: ${getErrorMessage(err)}`);
+        // fastapi-guard middleware rejections (rate-limit / content-type /
+        // honeypot) put `message` at the top level, not under `detail` —
+        // getErrorMessage only reads `detail`, so without this a guard
+        // rejection surfaces axios's generic "Request failed with status
+        // code N" instead of the real reason.
+        const guarded = (err as { response?: { data?: { message?: string } } })
+          .response?.data?.message;
+        toast.error(
+          `Failed to launch MegaTask: ${guarded ?? getErrorMessage(err)}`,
+        );
         setState("batch_preview");
       } finally {
         setIsLaunching(false);
         launchingRef.current = false;
       }
     },
-    [batch, closeStream],
+    [batch, closeStream, addMessage],
   );
 
   // -----------------------------------------------------------------------
@@ -1213,6 +1272,7 @@ export function usePrompter() {
     clearPersisted();
     sessionIdRef.current = null;
     streamingIdRef.current = null;
+    batchRedraftTaskIdRef.current = null;
     setMessages([]);
     setSessionId(null);
     setActivity(null);

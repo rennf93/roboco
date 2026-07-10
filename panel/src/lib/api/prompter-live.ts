@@ -32,6 +32,10 @@ export interface StartLivePayload {
 
 export interface StartLiveResponse {
   session_id: string;
+  // Present only from re-interview on a MegaTask umbrella: the recovered
+  // multi-project scope (the umbrella itself carries no project_id/product_id
+  // to seed the redraft chat from).
+  project_ids?: string[];
 }
 
 /** Event kinds the container relays — mirrors the backend driver.StreamChunk. */
@@ -78,7 +82,9 @@ export const prompterLiveApi = {
   },
 
   /** Re-open intake to re-draft a board-reviewed task with the board's feedback.
-   *  Spawns a fresh session seeded with the current draft + the board review. */
+   *  Spawns a fresh session seeded with the current draft + the board review.
+   *  For a MegaTask umbrella, the response's `project_ids` carries the batch's
+   *  recovered multi-project scope. */
   reInterview: async (taskId: string): Promise<StartLiveResponse> => {
     const { data } = await api.post<StartLiveResponse>(
       `/prompter/live/re-interview/${taskId}`,

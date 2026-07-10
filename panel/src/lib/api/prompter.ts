@@ -65,6 +65,9 @@ export interface BatchConfirmPayload {
   drafts: DraftProposal[];
   project_ids: string[];
   route?: "board" | "main_pm";
+  // Set on a board-informed MegaTask re-draft: confirm updates the existing
+  // umbrella + root-subtasks in place instead of creating a new batch.
+  task_id?: string;
 }
 
 /** The backend's MegaTask create result: the umbrella, its root-subtasks, and
