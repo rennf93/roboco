@@ -1,17 +1,25 @@
-"""VaultIntakeEngine — vault notes tagged ``#roboco`` become HELD intake drafts.
+"""VaultIntakeEngine — vault notes tagged ``#roboco`` become board-review drafts.
 
-The vexa-inspired input loop (V1 item 4). Mirrors the RoadmapEngine/XEngine
-"detect -> originate a CEO-gated artifact -> hold" shape:
+The vexa-inspired input loop (V1 item 4). Detection/dedup mirrors the
+XEngine mentions poll; the draft itself takes the intake **board-review
+path** (exactly what a chat-confirmed "Board review & Start" draft is), not
+the held-artifact pattern:
 
 * **Default OFF.** Both ``obsidian_vault_enabled`` AND ``vault_intake_enabled``
   must be on — the engine is inert if either is off.
-* **Never starts anything.** Every draft is HELD (``confirmed_by_human=False``,
-  owned by the Secretary, ``source=vault_note``) — skipped by every
-  dispatcher exactly like an X post (``_is_held_ceo_source``). The CEO
-  reviews it like any other backlog task before it can be worked.
+* **Never starts work.** Every draft is a PENDING, Product-Owner-assigned,
+  ``team=board`` task (``source=vault_note``): the PM dispatcher routes it
+  to the two-reviewer board review (PO + Head of Marketing), which ends in a
+  CEO notification — nothing enters delivery until the CEO's explicit
+  ``approve_and_start`` hands it to the Main PM. Board dispatch only ever
+  spawns the advisory REVIEW; board roles have no verb to claim, plan, or
+  delegate, so the CEO gate is structural.
 * **Local model only.** Extraction runs on the local LLM (MemoryDistiller
   posture) with a deterministic fallback (first heading / raw body /
-  checkbox lines) on any failure — never a cloud LLM in the hot path.
+  checkbox lines) on any failure — never a cloud LLM in the hot path. The
+  raw note body reaches the local model unsanitized — the same documented
+  prompt-injection surface x_engine accepts for mention text; the board +
+  CEO gates downstream are the containment, not the prompt.
 * **Dedup ledger.** ``vault_seen_notes`` keys on (vault-relative path,
   content hash) so an unchanged note is never reprocessed, but an edited one
   is eligible again. The hash excludes RoboCo's own feedback callout so
@@ -172,15 +180,15 @@ def _parse_extraction(raw: str) -> _NoteExtraction | None:
 
 
 class VaultIntakeEngine(BaseService):
-    """Turn ``#roboco``-tagged vault notes into HELD intake drafts."""
+    """Turn ``#roboco``-tagged vault notes into board-review intake drafts."""
 
     service_name = "vault_intake_engine"
 
     async def run_cycle(self) -> list[TaskTable]:
-        """One intake pass: scan, dedup, extract, hold. Empty list unless
-        both the vault AND intake flags are on, the intake dir exists, the
-        open-draft cap isn't already reached, and the RoboCo project
-        resolves."""
+        """One intake pass: scan, dedup, extract, draft for board review.
+        Empty list unless both the vault AND intake flags are on, the intake
+        dir exists, the open-draft cap isn't already reached, and the RoboCo
+        project resolves."""
         if not (settings.obsidian_vault_enabled and settings.vault_intake_enabled):
             return []
         intake_dir = Path(settings.vault_path) / settings.vault_intake_dir
@@ -288,23 +296,30 @@ class VaultIntakeEngine(BaseService):
         content_hash: str,
         extraction: _NoteExtraction,
     ) -> TaskTable:
-        """Open ONE PENDING, HELD draft owned by the Secretary."""
+        """Open ONE PENDING board-review draft (the intake "Board review &
+        Start" shape: Product-Owner-assigned, ``team=board``). The board
+        reviews it; delivery starts only at the CEO's ``approve_and_start``,
+        which flips team to MAIN_PM and hands it to the Main PM.
+        ``confirmed_by_human=True`` matches the intake path — the board
+        routing is the start gate, not the confirm flag. PLANNING-typed: the
+        post-approve owner is the Main PM, which never owns code (the type
+        ``approve_and_start`` would coerce to anyway)."""
         task_svc = get_task_service(self.session)
         task = await task_svc.create(
             TaskCreateRequest(
                 title=f"Vault note: {extraction.title}"[:_TITLE_MAX_CHARS],
                 description=extraction.description,
                 acceptance_criteria=extraction.action_items or [_DEFAULT_AC],
-                team=Team.MAIN_PM,
-                assigned_to=_foundation.AGENTS["secretary-1"].uuid,
+                team=Team.BOARD,
+                assigned_to=_foundation.AGENTS["product-owner"].uuid,
                 created_by=_foundation.AGENTS["system"].uuid,
-                task_type=TaskType.ADMINISTRATIVE,
-                nature=TaskNature.NON_TECHNICAL,
-                estimated_complexity=Complexity.LOW,
+                task_type=TaskType.PLANNING,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
                 project_id=project_id,
                 status=TaskStatus.PENDING,
                 source=VAULT_NOTE_SOURCE,
-                confirmed_by_human=False,  # HELD; never dispatched
+                confirmed_by_human=True,  # board-routed; approve_and_start is the gate
             )
         )
         markers.set_vault_note_ref(
@@ -317,7 +332,9 @@ class VaultIntakeEngine(BaseService):
         )
         await self.session.flush()
         self.log.info(
-            "vault-intake: held draft drafted", task_id=str(task.id), path=rel_path
+            "vault-intake: board-review draft opened",
+            task_id=str(task.id),
+            path=rel_path,
         )
         return task
 

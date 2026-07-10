@@ -76,7 +76,6 @@ from roboco.services.task import (
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
-    VAULT_NOTE_SOURCE,
     VIDEO_HELD_SOURCES,
     X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
@@ -784,12 +783,15 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     """True for sources the PM dispatcher must never route as delivery work.
 
     External-PR review (owned by the PR dispatcher), release proposals, X
-    posts/replies, video-post drafts, and vault-note drafts (all CEO-HELD,
-    acted on only by their own routes / the normal task-review flow), and a
-    self-heal fix task until the CEO's approve_and_start flips
-    ``confirmed_by_human``. Module-level (not a method) so the dispatcher's
-    unit tests, which drive it with a wholesale-mocked ``self``, exercise the
-    real skip logic rather than an auto-mocked stub.
+    posts/replies, and video-post drafts (all CEO-HELD, acted on only by
+    their own routes), and a self-heal fix task until the CEO's
+    approve_and_start flips ``confirmed_by_human``. A ``vault_note`` draft is
+    NOT held: it is a board-assigned intake draft, so this dispatcher's board
+    branch routes it to the board review (its start gate is the CEO's
+    approve_and_start, like any board-routed draft). Module-level (not a
+    method) so the dispatcher's unit tests, which drive it with a
+    wholesale-mocked ``self``, exercise the real skip logic rather than an
+    auto-mocked stub.
     """
     source = task.get("source")
     if source in PR_REVIEW_SOURCES:
@@ -799,8 +801,6 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     if source in X_SOURCES:
         return True
     if source in VIDEO_HELD_SOURCES:
-        return True
-    if source == VAULT_NOTE_SOURCE:
         return True
     return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
 

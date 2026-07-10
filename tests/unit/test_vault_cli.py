@@ -49,6 +49,52 @@ def test_relocate_moves_existing_tree(
     assert (new_root / "RoboCo" / "marker.md").read_text(encoding="utf-8") == "hi"
 
 
+def test_relocate_into_existing_vault_grafts_roboco_subtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing destination is a personal vault: only RoboCo/ moves into it
+    (never nesting the old dirname), the personal .obsidian is never
+    clobbered, and absent shipped assets are added."""
+    old_root = tmp_path / "old-vault"
+    (old_root / "RoboCo").mkdir(parents=True)
+    (old_root / "RoboCo" / "marker.md").write_text("hi", encoding="utf-8")
+    personal = tmp_path / "personal-vault"
+    (personal / ".obsidian").mkdir(parents=True)
+    (personal / ".obsidian" / "app.json").write_text("personal", encoding="utf-8")
+    (personal / "My Notes").mkdir()
+
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
+    monkeypatch.setattr(settings, "vault_path", str(old_root))
+    assert main(["relocate", str(personal)]) == 0
+
+    assert (personal / "RoboCo" / "marker.md").read_text(encoding="utf-8") == "hi"
+    assert not (personal / "old-vault").exists()  # no nested old dirname
+    assert not (old_root / "RoboCo").exists()  # subtree moved, not copied
+    # Personal config untouched; absent shipped assets materialized.
+    assert (personal / ".obsidian" / "app.json").read_text(
+        encoding="utf-8"
+    ) == "personal"
+    assert (personal / ".obsidian" / "community-plugins.json").exists()
+    assert (personal / "My Notes").exists()
+
+
+def test_relocate_refuses_when_destination_roboco_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_root = tmp_path / "old-vault"
+    (old_root / "RoboCo").mkdir(parents=True)
+    (old_root / "RoboCo" / "marker.md").write_text("hi", encoding="utf-8")
+    personal = tmp_path / "personal-vault"
+    (personal / "RoboCo").mkdir(parents=True)
+
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
+    monkeypatch.setattr(settings, "vault_path", str(old_root))
+    assert main(["relocate", str(personal)]) == 1
+
+    # Nothing moved on refusal.
+    assert (old_root / "RoboCo" / "marker.md").exists()
+
+
 def test_ensure_vault_assets_materializes_templates_idempotently(
     tmp_path: Path,
 ) -> None:

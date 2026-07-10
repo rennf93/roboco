@@ -8,7 +8,10 @@ templates (``roboco/vault_assets/``) if not already present. A task's
 from the existing note and preserved across the rebuild.
 
 ``relocate <new-path>``: move the vault tree to a new location. Notes use
-relative/alias-based wikilinks, so nothing inside them needs rewriting.
+relative/alias-based wikilinks, so nothing inside them needs rewriting. An
+already-existing destination (a personal vault) receives only the ``RoboCo/``
+subtree plus any absent shipped assets — its own ``.obsidian`` is never
+touched.
 
 Both are inert unless ``ROBOCO_OBSIDIAN_VAULT_ENABLED`` is on (rebuild would
 otherwise materialize a vault nobody reads).
@@ -173,17 +176,39 @@ async def _rebuild(vault_root: Path) -> None:
     ensure_vault_assets(vault_root)
 
 
-def _relocate(new_path: Path) -> None:
+def _relocate(new_path: Path) -> int:
+    """Move the vault to ``new_path``; 0 on success, 1 on refusal.
+
+    An EXISTING destination is a personal vault: graft only the ``RoboCo/``
+    subtree into it (``shutil.move`` of the whole root would nest the old
+    dirname inside it) and materialize the shipped ``.obsidian``/``_meta``
+    assets only where absent — never clobbering the vault's own config. An
+    absent destination gets the whole-tree move.
+    """
     old_root = Path(settings.vault_path)
-    new_path.parent.mkdir(parents=True, exist_ok=True)
-    if old_root.exists() and old_root != new_path:
-        shutil.move(str(old_root), str(new_path))
-    else:
+    if not old_root.exists() or old_root == new_path:
         new_path.mkdir(parents=True, exist_ok=True)
+    elif new_path.exists():
+        dest_tree = new_path / "RoboCo"
+        if dest_tree.exists():
+            print(
+                f"Refusing to relocate: {dest_tree} already exists. Move or "
+                "remove it first.",
+                file=sys.stderr,
+            )
+            return 1
+        old_tree = old_root / "RoboCo"
+        if old_tree.exists():
+            shutil.move(str(old_tree), str(dest_tree))
+        ensure_vault_assets(new_path)
+    else:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_root), str(new_path))
     print(
         f"Vault moved to {new_path}. Set ROBOCO_VAULT_PATH={new_path} in the "
         "environment for this to persist across restarts."
     )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -204,8 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(_rebuild(Path(settings.vault_path)))
         print(f"Vault rebuilt at {settings.vault_path}")
         return 0
-    _relocate(args.new_path)
-    return 0
+    return _relocate(args.new_path)
 
 
 if __name__ == "__main__":

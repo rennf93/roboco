@@ -610,11 +610,12 @@ ROADMAP_SOURCE = "board_roadmap"
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
 
-# Source tag for a held intake draft the vault-intake watcher originates from
-# a #roboco-tagged vault note. Like X_SOURCES/VIDEO_HELD_SOURCES this is NEVER
-# dispatched — held for the CEO (confirmed_by_human=False) like any other
-# backlog task; acted on only by the normal task-review flow (no dedicated
-# route — it is a plain Task).
+# Source tag for an intake draft the vault-intake watcher originates from a
+# #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
+# dispatched — it rides the intake board-review path (PENDING, Product-Owner-
+# assigned, team=board, confirmed_by_human=True, exactly the "Board review &
+# Start" shape): the board reviews, the CEO's approve_and_start hands it to
+# the Main PM. The board routing is the start gate; no held-source skip.
 VAULT_NOTE_SOURCE = "vault_note"
 
 
@@ -1645,12 +1646,17 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_vault_note_drafts(self) -> list[TaskTable]:
-        """Non-terminal held vault-note drafts — the vault-intake watcher's
-        open-cap basis. Ordered oldest-first."""
+        """Vault-note drafts still awaiting board review / CEO approval — the
+        vault-intake watcher's open-cap basis. Keys on ``team == BOARD``:
+        ``approve_and_start`` flips the team to MAIN_PM (draft leaves the cap)
+        and a cancelled/rejected draft goes terminal (leaves too), so the cap
+        counts only drafts actually pending a human decision — it can never
+        permanently brick the engine. Ordered oldest-first."""
         result = await self.session.execute(
             select(TaskTable)
             .where(
                 TaskTable.source == VAULT_NOTE_SOURCE,
+                TaskTable.team == Team.BOARD,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
@@ -8341,8 +8347,9 @@ class TaskService(BaseService):
         reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
         treatment; the video-authoring source (``video``) is NOT held — it is
         pre-assigned to a ux-dev and must still be offered like any other
-        delegated code task. ``VAULT_NOTE_SOURCE`` (``vault_note``) is held the
-        same way — a Secretary-owned held draft from the vault-intake watcher.
+        delegated code task. A ``vault_note`` draft is NOT held either — like a
+        prompter board draft, its board assignment IS the gate (board roles have
+        no ``give_me_work``), so no source exclusion is needed.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -8354,12 +8361,7 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.PENDING,
                 or_(
                     TaskTable.source.notin_(
-                        (
-                            SELF_HEAL_SOURCE,
-                            *X_SOURCES,
-                            *VIDEO_HELD_SOURCES,
-                            VAULT_NOTE_SOURCE,
-                        )
+                        (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
                     ),
                     TaskTable.confirmed_by_human.is_(True),
                 ),
