@@ -5568,17 +5568,33 @@ class Choreographer:
         return value.value if hasattr(value, "value") else str(value)
 
     async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
-        """Cross-cell sequencing: in a product fan-out the implementation cells
+        """Cross-cell sequencing: in a multi-cell fan-out the implementation cells
         (FRONTEND and BACKEND) depend on the UX/UI cell task — UX design defines
         the screens and API contracts both cells build against, so it is upstream
         of implementation. Wires the dependency in either delegation order. A
         dev/code subtask delegated under a cell task that is itself still waiting
         on that dependency inherits it, so the developer is held until UX is done
         instead of coding ahead of the design. Best-effort: never breaks delegate.
+
+        Fires for a product fan-out (``product_id`` set) AND a MegaTask
+        root-subtask (a batch item that fans out to its own cells via
+        ``cell_projects`` and carries no ``product_id``) — without the latter the
+        cross-cell edges were never wired for MegaTask cells, so they ran fully
+        in parallel and the sequence was ignored (divergent branches).
         """
-        if parent is None or getattr(parent, "product_id", None) is None:
+        if parent is None:
             return
         from roboco.foundation.identity import Team
+        from roboco.foundation.policy.batch import is_batch_root_subtask
+
+        is_fanout = getattr(
+            parent, "product_id", None
+        ) is not None or is_batch_root_subtask(
+            batch_id=getattr(parent, "batch_id", None),
+            parent_task_id=getattr(parent, "parent_task_id", None),
+        )
+        if not is_fanout:
+            return
 
         nt_team = self._team_value(new_task.team)
         try:
