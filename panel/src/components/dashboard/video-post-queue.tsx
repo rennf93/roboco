@@ -33,7 +33,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ProjectSelector } from "@/components/projects/project-selector";
 import { useProjects } from "@/hooks/use-projects";
-import { CheckCircle2, Film, RefreshCw, Sparkles, XCircle } from "lucide-react";
+import { RerenderControl } from "@/components/dashboard/video-rerender-control";
+import { CheckCircle2, Film, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 const MAX_X_CAPTION_CHARS = 280;
