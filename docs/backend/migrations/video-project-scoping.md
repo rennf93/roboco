@@ -1,9 +1,6 @@
 # Migration: Video Engine Project-Scoping
 
-**Date**: 2026-07-10  
-**PR**: #386  
-**Commits**: 88ab5c6d, f2a08702  
-**Breaking Change**: Yes
+**Date**: 2026-07-10 **PR**: #386 **Commits**: 88ab5c6d, f2a08702 **Breaking Change**: Yes
 
 ---
 
