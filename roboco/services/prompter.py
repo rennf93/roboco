@@ -833,6 +833,20 @@ class PrompterService:
             # deadlock the umbrella (board roles have no dev delivery verbs).
             sub_draft = dict(draft)
             sub_draft.pop("assigned_to", None)
+            # A batch root-subtask targets its repos via the the_work per-cell
+            # map (the panel fills each cell with a real project UUID). A
+            # top-level project_id/product_id is vestigial here — the intake
+            # agent authors it as the repo SLUG it read (e.g. "roboco-api"),
+            # which the panel only clears on a manual picker toggle, so an
+            # untouched draft would reach create_task_from_draft's UUID parse and
+            # 400 the whole batch. Drop it when a cell map carries the real
+            # target; a legacy no-the_work draft keeps its panel-filled top-level.
+            if any(
+                isinstance(cell, dict) and cell.get("project_id")
+                for cell in (sub_draft.get("the_work") or [])
+            ):
+                sub_draft.pop("project_id", None)
+                sub_draft.pop("product_id", None)
             sub = await self.create_task_from_draft(
                 sub_draft,
                 agent_id,

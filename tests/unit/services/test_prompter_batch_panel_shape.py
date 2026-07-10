@@ -74,6 +74,59 @@ async def test_confirm_live_batch_panel_the_work_shape(db_session: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirm_live_batch_ignores_vestigial_top_level_slug(
+    db_session: Any,
+) -> None:
+    """A batch draft whose the_work cell-map carries the real project UUID but
+    that also still has the intake agent's top-level project_id SLUG (the panel
+    only nulls it on a manual picker toggle) must NOT 400 the whole batch on the
+    UUID parse — the cell map is authoritative. Repro for the live 400
+    "Invalid project_id UUID: roboco-api"."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "A: backend work",
+            "acceptance_criteria": ["a"],
+            "project_id": "roboco-api",  # agent's slug, panel left it in place
+            "the_work": [
+                {
+                    "team": "backend",
+                    "summary": "s",
+                    "items": ["u"],
+                    "project_id": str(project1),
+                },
+            ],
+        },
+        {
+            "title": "B: frontend work",
+            "acceptance_criteria": ["b"],
+            "project_id": "roboco-panel",  # slug on the other draft too
+            "the_work": [
+                {
+                    "team": "frontend",
+                    "summary": "s",
+                    "items": ["u"],
+                    "project_id": str(project2),
+                },
+            ],
+        },
+    ]
+    with patch("roboco.services.prompter.redis.from_url", return_value=_FakeRedis()):
+        result = await service.confirm_live_batch(
+            "Slug batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id=f"sess-slug-{uuid4().hex[:8]}",
+        )
+    assert len(result["root_subtask_ids"]) == len(drafts)
+
+
+@pytest.mark.asyncio
 async def test_confirm_live_batch_panel_multicell_root_subtask(db_session: Any) -> None:
     """A batch draft that targets TWO cells (backend+frontend, one repo each) →
     the cell_projects persistence path on a batch root-subtask."""
