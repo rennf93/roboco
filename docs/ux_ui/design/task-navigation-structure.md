@@ -111,43 +111,47 @@ task detail page (`[taskId]/page.tsx`) alongside the breadcrumb —  two chevron
 icon buttons that move to adjacent tasks within the current Tasks list
 filter/sort context, or disabled when viewed outside the list context.
 
-**Data & ordering.** "Sibling" means another task sharing the same
-`parent_task_id`. Fetch with the existing `useSubtasks(task.parent_task_id)`
-hook (already used by `SubtasksList` for the reverse direction — children —
-so this is the same hook pointed at the parent instead of at `task.id`), sort
-the result by `sequence` ascending (the field `TaskMetadata` already surfaces
-as a read-only "Sequence" card), and locate the current task's index in that
-sorted list.
+**Data & ordering.** This diverged from the original sibling-order proposal
+during implementation (see `docs/guide/task-detail-navigation.md` for the
+full writeup) — "adjacent" means the previous/next row in the **Tasks list's
+last-visited filter/sort order**, not a `parent_task_id` sibling. The Tasks
+list page (`tasks/page.tsx`) reports its currently visible, filtered/sorted
+task order to `useScrollRestorationStore.setTaskListNav({ items, queryString
+})` whenever it changes; `TaskListNav` reads that `taskListNav` context, finds
+`task.id`'s index in `items`, and derives the prev/next item from
+`index - 1` / `index + 1`. The context is session-scoped (`sessionStorage`
+via the existing Zustand `persist` middleware), so it survives navigation
+within a session but doesn't persist across sessions. `useSubtasks` /
+`parent_task_id` / `sequence` are not part of this feature — sibling-order
+navigation, as originally proposed below, was not what shipped.
 
-**Controls.** Two `Button variant="ghost" size="icon"` (matching the
-existing `ArrowLeft` button's exact styling in `task-header.tsx`) using
-`ChevronLeft` / `ChevronRight` (`lucide-react`):
+**Controls.** Two `Button variant="outline" size="icon"` using `ChevronLeft` /
+`ChevronRight` (`lucide-react`), each wrapped in a `Tooltip`:
 
-- **Prev** navigates (`router.push` or `Link href="/tasks/{id}"`) to the
-  sibling at `index - 1`; **disabled** (not hidden — a disabled control at
-  the boundary communicates "this is the first one," an absent control
-  reads as "there is no prev/next feature here") when the current task is
-  first in sequence, or when `task.parent_task_id` is null (no parent, so
-  no sibling set — every button in the pair is disabled in that case, not
-  removed, since the feature applies uniformly across the task tree).
-- **Next** mirrors this at `index + 1`, disabled when current is last.
-- Each button carries a `title` tooltip naming the target: `"Previous:
-  {sibling.title}"` / `"Next: {sibling.title}"` (truncated to ~40 chars),
-  or `"No previous task"` / `"No next task"` when disabled — so hovering a
-  disabled button still explains why, rather than looking broken.
+- **Prev** links (`Link href="/tasks/{id}{queryString}"`) to `items[index -
+  1]`; **disabled** (not hidden — a disabled control at the boundary
+  communicates "this is the first one," an absent control reads as "there is
+  no prev/next feature here") when the current task is first in the captured
+  list order, or when no list context exists for this session, or when the
+  current task isn't part of the captured order (opened via a direct link,
+  search, or notification instead of from the list).
+- **Next** mirrors this at `index + 1`, disabled when current is last (or the
+  same no-context/not-in-list cases as Prev).
+- Each button's tooltip shows the target item's `title` when enabled, or the
+  fixed explanation "Open this task from the Tasks list to enable prev/next
+  navigation within that list's filter/sort order." when disabled — so
+  hovering a disabled button still explains why, rather than looking broken.
+- The href carries the captured `queryString` (the Tasks list's filters/sort
+  at the time it was visited), so navigating there preserves that view.
 
-**Keyboard.** `Alt+ArrowLeft` / `Alt+ArrowRight` trigger the same navigation
-when focus is not inside a text input, `Textarea`, or `contenteditable`
-element (guard on `document.activeElement.tagName`) — a plain
-`useEffect` + `window.addEventListener("keydown", ...)` in `TaskPrevNext`,
-cleaned up on unmount. `Alt+Arrow` (not the bare arrow key) avoids colliding
-with normal text-field cursor movement anywhere else on the page, so no
-existing input behavior changes.
+**Keyboard.** Not implemented. `Alt+Arrow` shortcuts were part of the
+original proposal below but were not built; see `docs/guide/task-detail-
+navigation.md`'s "Future Extensions" for the deferred idea.
 
-**Empty state.** When `useSubtasks` resolves to a single-item list (no
-siblings) or `task.parent_task_id` is null, both buttons render disabled with
-the "No previous/next task" tooltip rather than being omitted — consistent
-with the boundary-disabled treatment above, so the control's presence is
+**Empty state.** When no list context has been captured this session, or the
+current task isn't found in the captured `items`, both buttons render
+disabled with the fallback tooltip above rather than being omitted —
+consistent with the boundary-disabled treatment, so the control's presence is
 predictable regardless of which task the reader is on.
 
 ## 3. Constraints visual distinction
@@ -216,12 +220,13 @@ project-wide rule) is preserved; only the visual weight changes.
 - No new shadcn/ui primitive (no `breadcrumb.tsx` added to `components/ui`)
   — the breadcrumb composes existing `Link`, `DropdownMenu`, and
   `lucide-react` icons already in the tree, per the "fewest files" bar.
-- No change to how siblings/ancestors are fetched server-side — this reuses
-  `useTask` and `useSubtasks` exactly as they exist today; no new endpoint,
-  no new query param.
+- No change to how ancestors are fetched server-side — the breadcrumb reuses
+  `useTask` exactly as it exists today; no new endpoint, no new query param.
+  Prev/next reuses the Tasks list's already-fetched page data instead of a
+  dedicated sibling endpoint.
 - No persisted "last visited sibling" or breadcrumb history — this is a
   point-in-time structural view of the current task's position, not a
   session/browsing-history feature.
-- No global keyboard-shortcut registry — the `Alt+Arrow` binding is local to
-  `TaskPrevNext` and unregisters on unmount; a cross-page shortcut system is
-  out of scope for this pass.
+- No keyboard shortcut for prev/next shipped in this pass (the `Alt+Arrow`
+  idea from the original proposal was deferred — see
+  `docs/guide/task-detail-navigation.md`'s "Future Extensions").
