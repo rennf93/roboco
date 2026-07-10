@@ -3365,6 +3365,7 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
+        - playwright          browser tools (fe-qa/ux-qa only — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3508,6 +3509,22 @@ class AgentOrchestrator:
                     agent_uuid,
                 ],
                 "env": mcp_env,
+            }
+
+        # Playwright MCP — structured browser tools (navigate/click/snapshot/
+        # screenshot) for QA's browser verification, replacing hand-scripted
+        # Bash+Python. Scoped to fe-qa/ux-qa only (role-gated, not
+        # image-gated: ux-dev shares agent-ux's image but never gets this),
+        # per the CEO's round-3 note on the Playwright QA-image work. The
+        # binary + wrapper entrypoint are baked into agent-qa-fe/agent-ux
+        # only (docker/agent-qa-fe.Dockerfile, docker/agent-ux.Dockerfile),
+        # so registering it for any other role would reference a command
+        # that doesn't exist in that role's image.
+        playwright_mcp_teams = ("frontend", "ux_ui")
+        if agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams:
+            mcp_servers["playwright"] = {
+                "command": "/app/scripts/playwright-mcp-entrypoint.sh",
+                "args": [],
             }
 
         config: dict[str, Any] = {"mcpServers": mcp_servers}
