@@ -2576,6 +2576,30 @@ class TaskService(BaseService):
         TaskStatus.AWAITING_PM_REVIEW,
     }
 
+    async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
+        """True when a PENDING task can't be claimed yet — a ``depends_on`` task
+        is still non-terminal (the sequence guardrail).
+
+        The gateway claim verbs enforce this, but the orchestrator's dispatcher
+        system-claims via the raw ``/tasks/{id}/claim`` route (which skips the
+        gateway guards), so a MegaTask root-subtask in a later wave was claimed
+        out of order (the Main PM held every wave at once). Enforcing it at the
+        claim chokepoint guardrails every path. Scoped to a PENDING start-of-work
+        claim — a mid-lifecycle claim (QA/doc on an ``awaiting_*`` task) already
+        cleared its dependencies at the original claim.
+        """
+        if task.status != TaskStatus.PENDING or not task.dependency_ids:
+            return False
+        unmet = await self.unmet_dependency_ids(list(task.dependency_ids))
+        if not unmet:
+            return False
+        self.log.warning(
+            "Cannot claim task - unmet dependencies",
+            task_id=str(task.id),
+            unmet=[str(dep_id) for dep_id in unmet],
+        )
+        return True
+
     async def _validate_claim_preconditions(
         self,
         task: TaskTable,
@@ -2588,6 +2612,9 @@ class TaskService(BaseService):
 
         if error := self._validate_claim_status(task, agent, valid_statuses):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        if await self._claim_blocked_by_dependencies(task):
             return False
 
         if error := self._validate_claim_team(task, agent):
