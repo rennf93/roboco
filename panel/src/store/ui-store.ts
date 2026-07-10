@@ -13,11 +13,16 @@ interface UIState {
   // Current context
   currentTeam: Team | null;
 
+  // A2A live view: xl:+ context pane collapse (conversation-first layout
+  // design doc §1) — same persisted-preference idiom as sidebar/theme.
+  a2aContextOpen: boolean;
+
   // Actions
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setTheme: (theme: "light" | "dark" | "system") => void;
   setCurrentTeam: (team: Team | null) => void;
+  toggleA2AContext: () => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -27,12 +32,15 @@ export const useUIStore = create<UIState>()(
       sidebarCollapsed: false,
       theme: "system",
       currentTeam: null,
+      a2aContextOpen: true,
 
       toggleSidebar: () =>
         set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
       setTheme: (theme) => set({ theme }),
       setCurrentTeam: (team) => set({ currentTeam: team }),
+      toggleA2AContext: () =>
+        set((state) => ({ a2aContextOpen: !state.a2aContextOpen })),
     }),
     {
       name: "roboco-ui-storage",
@@ -40,6 +48,7 @@ export const useUIStore = create<UIState>()(
         sidebarCollapsed: state.sidebarCollapsed,
         theme: state.theme,
         currentTeam: state.currentTeam,
+        a2aContextOpen: state.a2aContextOpen,
       }),
     },
   ),

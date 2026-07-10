@@ -13,6 +13,7 @@ When you bump the `next` package, **always update `eslint-config-next` to match*
 ### Upgrade Procedure
 
 1. **Update package.json** with the new version(s):
+
    ```json
    {
      "dependencies": {
@@ -25,13 +26,16 @@ When you bump the `next` package, **always update `eslint-config-next` to match*
    ```
 
 2. **Regenerate the lockfile without deleting node_modules:**
+
    ```bash
    cd panel
    pnpm install
    ```
-This updates `pnpm-lock.yaml` while preserving `node_modules`, keeping the resolution deterministic.
+
+   This updates `pnpm-lock.yaml` while preserving `node_modules`, keeping the resolution deterministic.
 
 3. **Run the quality gate:**
+
    ```bash
    cd panel
    pnpm lint
@@ -39,7 +43,8 @@ This updates `pnpm-lock.yaml` while preserving `node_modules`, keeping the resol
    pnpm test
    pnpm build
    ```
-All must pass with no errors before committing.
+
+   All must pass with no errors before committing.
 
 4. **Commit the changes:**
    ```bash
@@ -50,6 +55,7 @@ All must pass with no errors before committing.
 ### What Changed in 16.1.1 → 16.2.6
 
 This bump included updates to:
+
 - `@babel/parser`, `@babel/types`, `@babel/template`, `@babel/traverse` — minor version improvements
 - `@babel/generator`, `@babel/helper-module-imports`, `@babel/helper-validator-identifier` — updated to handle edge cases
 - `tinyglobby` — dependency used by ESLint, upgraded from 0.2.15 to 0.2.17

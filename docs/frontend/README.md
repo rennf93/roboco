@@ -16,6 +16,8 @@ Documentation for the Frontend Cell team.
 
 ## Available docs
 
+- [`a2a-filtering.md`](./a2a-filtering.md) — A2A filter bar, conversation list, and pulse-flash hook
+- [`a2a-conversation-first-layout.md`](./a2a-conversation-first-layout.md) — Agent identity colors, connection states, context pane, transcript motion, and empty/error states
 - [`hooks.md`](./hooks.md) — `usePageRefresh` and `PageRefreshProvider` usage and API reference
 
 ## Contributing

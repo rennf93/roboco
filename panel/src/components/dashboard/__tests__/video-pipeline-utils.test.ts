@@ -91,9 +91,9 @@ describe("pipelineStageLabel", () => {
     expect(
       pipelineStageLabel({ kind: "rendering", attempt: 2, maxAttempts: 5 }),
     ).toBe("Rendering (attempt 2/5)");
-    expect(
-      pipelineStageLabel({ kind: "render_failed", reason: "boom" }),
-    ).toBe("Render failed: boom");
+    expect(pipelineStageLabel({ kind: "render_failed", reason: "boom" })).toBe(
+      "Render failed: boom",
+    );
     expect(pipelineStageLabel({ kind: "render_failed", reason: null })).toBe(
       "Render failed",
     );

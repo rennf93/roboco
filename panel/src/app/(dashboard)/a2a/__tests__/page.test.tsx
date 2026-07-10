@@ -47,6 +47,12 @@ vi.mock("@/hooks/use-websocket", () => ({
   useA2ALiveStream,
 }));
 
+// The xl:+ context pane's linked-task summary fetches via useTask — stub it
+// so this suite doesn't need a real QueryClientProvider.
+vi.mock("@/hooks/use-tasks", () => ({
+  useTask: () => ({ data: undefined, isLoading: false }),
+}));
+
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
@@ -144,6 +150,7 @@ describe("A2APage", () => {
       lastMessage: null,
       a2aMessages: [],
       isConnected: true,
+      state: "connected",
     });
   });
 
@@ -201,6 +208,7 @@ describe("A2APage", () => {
       },
       a2aMessages: [],
       isConnected: true,
+      state: "connected",
     });
     render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -223,6 +231,7 @@ describe("A2APage", () => {
       },
       a2aMessages: [],
       isConnected: false,
+      state: "disconnected",
     });
     render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).toHaveBeenCalledWith({
@@ -273,6 +282,7 @@ describe("A2APage", () => {
       lastMessage: null,
       a2aMessages: [],
       isConnected: false,
+      state: "disconnected",
     });
     const { rerender } = render(withPageRefresh(<A2APage />));
     // No invalidation while offline.
@@ -285,6 +295,7 @@ describe("A2APage", () => {
       lastMessage: null,
       a2aMessages: [],
       isConnected: true,
+      state: "connected",
     });
     act(() => {
       rerender(withPageRefresh(<A2APage />));
@@ -302,6 +313,7 @@ describe("A2APage", () => {
       lastMessage: null,
       a2aMessages: [],
       isConnected: true,
+      state: "connected",
     });
     render(withPageRefresh(<A2APage />));
     expect(invalidateQueries).not.toHaveBeenCalledWith({

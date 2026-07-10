@@ -79,121 +79,121 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
 
   return (
     <>
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Description</CardTitle>
-          {isEditing ? (
-            <div className="flex items-center gap-2">
-              <Tabs
-                value={editMode}
-                onValueChange={(v) => setEditMode(v as "write" | "preview")}
-              >
-                <TabsList className="h-8">
-                  <TabsTrigger value="write" className="text-xs px-2 h-6">
-                    <Edit3 className="h-3 w-3 mr-1" />
-                    Write
-                  </TabsTrigger>
-                  <TabsTrigger value="preview" className="text-xs px-2 h-6">
-                    <Eye className="h-3 w-3 mr-1" />
-                    Preview
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={handleCancel}
-                disabled={updateTask.isPending}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={updateTask.isPending}
-              >
-                <Check className="h-4 w-4 mr-1" />
-                Save
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={startEditing}>
-              <Edit3 className="h-4 w-4 mr-1" />
-              Edit
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {isEditing ? (
-          <div className="space-y-2">
-            {editMode === "write" ? (
-              <Textarea
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Add a description..."
-                className="min-h-[200px] font-mono text-sm"
-                disabled={updateTask.isPending}
-                autoFocus
-              />
-            ) : (
-              <div className="min-h-[200px] p-3 border rounded-md bg-muted/30">
-                {editValue ? (
-                  <Markdown>{editValue}</Markdown>
-                ) : (
-                  <p className="text-muted-foreground text-sm italic">
-                    Nothing to preview
-                  </p>
-                )}
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
-              cancel.
-            </p>
-          </div>
-        ) : task.description ? (
-          <div
-            className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
-            onClick={startEditing}
-            title="Click to edit"
-          >
-            <Markdown
-              onCheckboxChange={handleCheckboxChange}
-              disabled={updateTask.isPending}
-            >
-              {task.description}
-            </Markdown>
-          </div>
-        ) : (
-          <p
-            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
-            onClick={startEditing}
-            title="Click to add description"
-          >
-            No description provided. Click to add one.
-          </p>
-        )}
-      </CardContent>
-    </Card>
-    {task.constraints ? (
-      <Card className="border-dashed">
+      <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base text-muted-foreground">
-            Constraints
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg">Description</CardTitle>
+            {isEditing ? (
+              <div className="flex items-center gap-2">
+                <Tabs
+                  value={editMode}
+                  onValueChange={(v) => setEditMode(v as "write" | "preview")}
+                >
+                  <TabsList className="h-8">
+                    <TabsTrigger value="write" className="text-xs px-2 h-6">
+                      <Edit3 className="h-3 w-3 mr-1" />
+                      Write
+                    </TabsTrigger>
+                    <TabsTrigger value="preview" className="text-xs px-2 h-6">
+                      <Eye className="h-3 w-3 mr-1" />
+                      Preview
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleCancel}
+                  disabled={updateTask.isPending}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={updateTask.isPending}
+                >
+                  <Check className="h-4 w-4 mr-1" />
+                  Save
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={startEditing}>
+                <Edit3 className="h-4 w-4 mr-1" />
+                Edit
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          <p className="text-xs text-muted-foreground mb-3">
-            Architectural standard derived from the project conventions —
-            read-only. Applies to every task in this project.
-          </p>
-          <Markdown>{task.constraints}</Markdown>
+          {isEditing ? (
+            <div className="space-y-2">
+              {editMode === "write" ? (
+                <Textarea
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Add a description..."
+                  className="min-h-[200px] font-mono text-sm"
+                  disabled={updateTask.isPending}
+                  autoFocus
+                />
+              ) : (
+                <div className="min-h-[200px] p-3 border rounded-md bg-muted/30">
+                  {editValue ? (
+                    <Markdown>{editValue}</Markdown>
+                  ) : (
+                    <p className="text-muted-foreground text-sm italic">
+                      Nothing to preview
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
+                cancel.
+              </p>
+            </div>
+          ) : task.description ? (
+            <div
+              className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
+              onClick={startEditing}
+              title="Click to edit"
+            >
+              <Markdown
+                onCheckboxChange={handleCheckboxChange}
+                disabled={updateTask.isPending}
+              >
+                {task.description}
+              </Markdown>
+            </div>
+          ) : (
+            <p
+              className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
+              onClick={startEditing}
+              title="Click to add description"
+            >
+              No description provided. Click to add one.
+            </p>
+          )}
         </CardContent>
       </Card>
-    ) : null}
+      {task.constraints ? (
+        <Card className="border-dashed">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base text-muted-foreground">
+              Constraints
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-muted-foreground mb-3">
+              Architectural standard derived from the project conventions —
+              read-only. Applies to every task in this project.
+            </p>
+            <Markdown>{task.constraints}</Markdown>
+          </CardContent>
+        </Card>
+      ) : null}
     </>
   );
 }

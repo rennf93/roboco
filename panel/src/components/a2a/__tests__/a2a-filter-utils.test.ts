@@ -1,8 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type {
-  AdminConversationSummary,
-  AdminPairSummary,
-} from "@/lib/api/a2a";
+import type { AdminConversationSummary, AdminPairSummary } from "@/lib/api/a2a";
 import { filterConversations, filterPairs } from "../a2a-filter-utils";
 
 function buildConversation(
@@ -62,9 +59,9 @@ describe("filterConversations", () => {
 
   it("matches search against agent display name (case-insensitive)", () => {
     const conversations = [buildConversation()];
-    expect(filterConversations(conversations, "all", "backend qa")).toHaveLength(
-      1,
-    );
+    expect(
+      filterConversations(conversations, "all", "backend qa"),
+    ).toHaveLength(1);
     expect(filterConversations(conversations, "all", "nope")).toHaveLength(0);
   });
 
