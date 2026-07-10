@@ -18,6 +18,17 @@ RUN uv pip install --python /app/.venv/bin/python playwright \
     && /app/.venv/bin/playwright install --with-deps chromium-headless-shell \
     && chown -R agent:agent /app/.playwright
 
+# Playwright MCP server — structured browser tools (navigate/click/snapshot/
+# screenshot) for QA's browser verification, registered by the orchestrator
+# for the fe-qa/ux-qa roles only (see roboco/runtime/orchestrator.py
+# _generate_mcp_config). Pinned version; the wrapper entrypoint below points
+# it at this image's baked chromium-headless-shell instead of letting it
+# download its own bundled browser.
+RUN npm install -g @playwright/mcp@0.0.78 \
+    && npm cache clean --force
+COPY docker/scripts/playwright-mcp-entrypoint.sh /app/scripts/playwright-mcp-entrypoint.sh
+RUN chmod 0755 /app/scripts/playwright-mcp-entrypoint.sh
+
 USER agent
 
 LABEL role="frontend-qa"

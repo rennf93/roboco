@@ -28,27 +28,17 @@ Browser verification is a **verification aid** — use it when reading the diff 
 ### What's installed
 
 The QA image (`agent-qa-fe` for Frontend, `agent-ux` for UX) ships:
-- **Python 3.13** via `/app/.venv`
-- **Playwright** library (sync API) installed in the venv
-- **chromium-headless-shell** browser only (no firefox or webkit)
-- **System dependencies** for headless rendering (via `playwright install --with-deps chromium-headless-shell`)
+- **Python 3.13** via `/app/.venv`, with the **Playwright** library (sync API) installed in the venv
+- **chromium-headless-shell** browser only (no firefox or webkit), plus system deps for headless rendering (via `playwright install --with-deps chromium-headless-shell`)
+- A **`playwright` MCP server** (`@playwright/mcp`, `mcp__playwright__*` tools) registered for the `fe-qa`/`ux-qa` roles only, wired to run against that same baked chromium-headless-shell via a wrapper entrypoint (`docker/scripts/playwright-mcp-entrypoint.sh`) — see `roboco/runtime/orchestrator.py`'s `_generate_mcp_config`
 
-### Basic headless launch
+Drive the browser through the structured `mcp__playwright__*` tools — hand-scripting the Python sync API against a live agent is fragile (multi-line `Bash -c` strings, no structured error surface); the MCP tools give you `browser_navigate`, `browser_snapshot`, `browser_evaluate`, `browser_take_screenshot`, and `browser_close` directly as first-class tool calls.
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
+### Basic flow
 
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    page.goto('http://localhost:3000/some-route')
-    
-    # Your assertions here
-    
-    browser.close()
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/some-route")
+    # ... inspect via browser_snapshot / browser_evaluate / browser_take_screenshot ...
+    mcp__playwright__browser_close()
 
 Replace `http://localhost:3000/some-route` with the actual route under test.
 
@@ -56,131 +46,63 @@ Replace `http://localhost:3000/some-route` with the actual route under test.
 
 **Check computed styles (after a CSS change):**
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    page.goto('http://localhost:3000/dashboard')
-    
-    # Get computed styles
-    computed = page.locator('.sidebar').evaluate('el => window.getComputedStyle(el).backgroundColor')
-    print('Computed background:', computed)
-    assert computed != 'rgba(0, 0, 0, 0)', 'Background should not be transparent'
-    
-    browser.close()
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/dashboard")
+    mcp__playwright__browser_evaluate(
+        function="() => window.getComputedStyle(document.querySelector('.sidebar')).backgroundColor"
+    )
+    # Assert the returned value isn't transparent ("rgba(0, 0, 0, 0)")
+    mcp__playwright__browser_close()
 
 **Verify accessibility tree (after a semantic HTML change):**
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    page.goto('http://localhost:3000/form-page')
-    
-    # Get accessibility tree
-    snapshot = page.accessibility.snapshot()
-    print('A11y tree:', snapshot)
-    
-    # Verify a form button is properly labeled
-    form_button = [node for node in snapshot['children'] if node.get('name') == 'Submit']
-    assert form_button, 'Form should have a Submit button in accessibility tree'
-    
-    browser.close()
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/form-page")
+    mcp__playwright__browser_snapshot()
+    # Confirm the tree includes a "Submit" button node
+    mcp__playwright__browser_close()
 
 ### UX QA examples
 
 **Check layout in a specific viewport (responsive design verification):**
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    
-    # Test desktop viewport
-    page = browser.new_page(viewport={'width': 1280, 'height': 800})
-    page.goto('http://localhost:3000/home')
-    page.screenshot(path='/tmp/review-desktop.png')
-    
-    browser.close()
-
-print('Screenshot saved to /tmp/review-desktop.png')
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/home")
+    mcp__playwright__browser_resize(width=1280, height=800)
+    mcp__playwright__browser_take_screenshot(filename="review-desktop.png")
+    mcp__playwright__browser_close()
 
 **Verify CSS grid or flex layout after a design change:**
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page(viewport={'width': 1280, 'height': 800})
-    page.goto('http://localhost:3000/kanban')
-    
-    # Get bounding boxes of cards to verify layout
-    card_boxes = page.locator('[data-testid=card]').all_bounding_boxes()
-    print(f'Card count: {len(card_boxes)}')
-    
-    # Check cards are in a grid (same x-positions per row)
-    x_positions = [box['x'] for box in card_boxes]
-    unique_x = len(set(x_positions))
-    print(f'Unique x-positions (columns): {unique_x}')
-    
-    browser.close()
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/kanban")
+    mcp__playwright__browser_resize(width=1280, height=800)
+    mcp__playwright__browser_snapshot(boxes=True)  # bounding boxes per element, to compare card x-positions
+    mcp__playwright__browser_close()
 
 **Take a screenshot for visual review:**
 
-```python
-/app/.venv/bin/python -c "
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page(viewport={'width': 1280, 'height': 800})
-    page.goto('http://localhost:3000/new-design')
-    page.screenshot(path='/tmp/review.png')
-    browser.close()
-
-print('Visual review screenshot saved: /tmp/review.png')
-"
-```
+    mcp__playwright__browser_navigate(url="http://localhost:3000/new-design")
+    mcp__playwright__browser_resize(width=1280, height=800)
+    mcp__playwright__browser_take_screenshot(filename="review.png")
+    mcp__playwright__browser_close()
 
 ## Important notes
 
 ### Limitations
 
-- **Only chromium-headless-shell** is installed; `p.chromium` is the only browser type available
-- `p.chromium.launch()` automatically runs in headless mode — no visual browser window will open
-- The screenshot is saved to the container's filesystem (e.g., `/tmp/review.png`), not downloaded to your host
-- JavaScript is enabled; async DOM updates may require `page.wait_for_timeout()` or navigation waits
-- No console output capture is provided; use Playwright's logging if needed for debugging
+- **Only chromium-headless-shell** is available — the MCP server's `--executable-path` (set by the wrapper entrypoint) points at this image's baked browser only, no firefox/webkit
+- Runs headless (`--headless`) with an in-memory profile (`--isolated`) — no visual browser window, no persisted state between sessions
+- Screenshots/snapshots saved via `filename` land in the MCP server's output directory inside the container, not on your host
+- JavaScript is enabled; async DOM updates may need `browser_wait_for` before snapshotting
 
 ### Documentation
 
-- **Playwright sync API docs:** https://playwright.dev/python/docs/api/class-browser
-- **Common methods:**
-  - `page.goto(url)` — Navigate to a URL
-  - `page.locator(selector)` — Query elements (CSS selector)
-  - `page.evaluate(js_code)` — Run JavaScript in the page context
-  - `page.accessibility.snapshot()` — Get the accessibility tree
-  - `page.screenshot(path=...)` — Take a screenshot
-  - `page.wait_for_timeout(ms)` — Wait (for animations, etc.)
-  - `page.content()` — Get the full HTML source
+- **Playwright MCP tool reference:** run `npx @playwright/mcp@latest --help` for CLI flags, or see the [`@playwright/mcp` README](https://github.com/microsoft/playwright-mcp) for the full tool list
+- **Common tools:**
+  - `browser_navigate(url)` — Navigate to a URL
+  - `browser_snapshot()` — Accessibility-tree snapshot of the current page (preferred over a screenshot for verifying structure)
+  - `browser_evaluate(function)` — Run JavaScript in the page context
+  - `browser_take_screenshot(filename)` — Take a screenshot
+  - `browser_resize(width, height)` — Set the viewport size
+  - `browser_wait_for(text | textGone | time)` — Wait for content or a fixed delay
+  - `browser_close()` — Close the browser
 
 ### Journaling your verification
 
@@ -194,35 +116,25 @@ This documents what you checked and how for future reference.
 
 ## Troubleshooting
 
-**"ModuleNotFoundError: No module named 'playwright'"**
-- The Playwright package is installed in the venv; ensure you're using the full venv path: `/app/.venv/bin/python`
+**MCP tool call errors immediately**
+- Confirm you're on `fe-qa` or `ux-qa` — the `playwright` MCP server is role-gated and won't appear in any other role's tool set (see `roboco/runtime/orchestrator.py` `_generate_mcp_config`).
 
-**"Timeout waiting for target..."**
+**"Timeout waiting for target..." / navigation hangs**
 - The app may not be running on `localhost:3000`. Check that the dev server is up.
-- Increase timeout: `page.goto(..., timeout=30000)` (milliseconds)
+- Use `browser_wait_for(text=...)` after `browser_navigate` if the target renders asynchronously.
 
 **"Browser exited unexpectedly"**
 - Insufficient memory or display resources in the container. Chromium headless is lightweight but needs some system memory.
-- If screenshots hang, reduce viewport size or try without screenshot.
 
-**"No screenshots appear"**
-- Screenshots are saved to the container's filesystem (e.g., `/tmp/review.png`), not your host. They're local to the QA agent's environment and cannot be downloaded directly.
-- If you need visual output for review, use `page.evaluate()` to extract element properties or accessibility snapshots instead.
+**No screenshot/snapshot output appears**
+- Files saved via `filename` are local to the QA agent's environment and cannot be downloaded directly — use `browser_evaluate` or `browser_snapshot`'s inline (non-file) response instead when you need the content back in the conversation.
 
-## Why an orchestrator.py Playwright allowance is a no-op
+## Why the Playwright MCP registration is role-gated, not orchestrator-Bash-gated
 
-QA and UX QA agents already run Playwright without any orchestrator-level "allowance" — there is no gate in `roboco/runtime/orchestrator.py` that could grant or withhold Playwright access, because none of the three places such a change would need to touch actually govern it. This section is the explicit written analysis for anyone who later proposes adding one.
-
-**1. `_get_role_permissions` only scopes Write/Edit, never Bash.** `_get_role_permissions` (`roboco/runtime/orchestrator.py:1472`) builds a per-role Claude Code allow/deny list, and every role's entries in that function are `Write(...)`/`Edit(...)` patterns — the `qa` role's own entry (`roboco/runtime/orchestrator.py:1504-1511`) only denies `Write(*)`/`Edit(*)`. Playwright is invoked as `/app/.venv/bin/python -c "..."`, a `Bash` tool call, and no role's config in `_get_role_permissions` ever adds a `Bash` allow or deny entry for it. There is therefore nothing in `_get_role_permissions` that "allows" or "blocks" Playwright either way — the invocation is already permitted by the same unrestricted-Bash default every other shell command gets.
-
-**2. The browser binary and its env var are baked into the image, not set by the orchestrator.** `chromium-headless-shell` and `PLAYWRIGHT_BROWSERS_PATH` are installed and exported at image build time in `docker/agent-qa-fe.Dockerfile` and `docker/agent-ux.Dockerfile` (`ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright`, followed by `RUN uv pip install --python /app/.venv/bin/python playwright && /app/.venv/bin/playwright install --with-deps chromium-headless-shell`). Neither `_generate_agent_settings` nor `_prepare_agent_spawn` in `roboco/runtime/orchestrator.py` sets this environment variable or mounts a browser at spawn time — whether the browser is reachable is decided once, when the image is built, not per-spawn by orchestrator code.
-
-**3. Playwright's sync API is a subprocess call, not an MCP tool, so no manifest entry is needed.** Every state-changing or gated capability an agent gets routes through the `mcp__roboco-flow__*`/`mcp__roboco-do__*` verbs listed in `role_config.py` and mounted as `/app/tool-manifest.json`. Playwright is called directly via its sync Python API inside a `Bash`-invoked subprocess (see the examples above) — it is never registered as an MCP tool, so there is no manifest entry to add, remove, or gate for a role to "get" Playwright access.
-
-Put together: an orchestrator.py change that tried to add a Playwright "allowance" would have no code path left to attach to — the browser is already installed, the env var is already set, and the invocation method (Bash plus the sync API) is already unrestricted for any role that isn't Write/Edit-denied on the invoking shell. That is why QA's own browser verification works today with zero orchestrator involvement, and why a dedicated allowance change is a no-op.
+Earlier versions of this doc argued that any orchestrator-level Playwright "allowance" would be a no-op, because the original design ran Playwright by hand-scripting its Python sync API through an unrestricted `Bash` call. That's no longer the whole picture: the `playwright` MCP server itself **is** an orchestrator-level gate — `_generate_mcp_config` registers it only when `get_agent_role(agent_id) == "qa"` and `get_agent_team(agent_id)` is `frontend` or `ux_ui`, so `be-qa` (backend QA, same role, different team) and `ux-dev` (same image as `ux-qa`, different role) never see `mcp__playwright__*` in their tool set even though the npm package and the baked browser exist in their image or a sibling image. The underlying Bash+Python path from the original no-op analysis still exists and is still unrestricted for any role that isn't Write/Edit-denied — this doc just no longer recommends it, since the structured MCP tools are strictly more reliable for an agent to drive.
 
 ## Related documentation
 
 - **Identity prompts:** `agents/prompts/identities/fe-qa.md` and `ux-qa.md` contain the built-in browser verification guidance
-- **CI verification:** `.github/workflows/agent-image-smoke.yml` runs a real headless smoke test to verify the Playwright + chromium installation on each image build
+- **CI verification:** `.github/workflows/agent-image-smoke.yml` runs a real headless smoke test to verify the Playwright + chromium installation, the `playwright-mcp` binary, and a real panel-page screenshot on each image build
 - **Diff review:** Always start with code review; browser verification is a supplement, not a replacement
