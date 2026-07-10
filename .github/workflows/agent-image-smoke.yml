@@ -9,16 +9,18 @@ name: Agent Image Smoke (Playwright)
 
 on:
   push:
-    branches:
-      - master
     paths:
       - 'docker/agent-base.Dockerfile'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
       - '.github/workflows/agent-image-smoke.yml'
   pull_request:
-    branches:
-      - master
+    # No `branches:` filter — this repo's task hierarchy opens dev-level
+    # PRs against nested parent feature branches (e.g.
+    # feature/backend/<root>--<cell>--<subcell>), not directly against
+    # master, so a `branches: [master]` filter here would only ever fire
+    # once the assembled PR reaches root->master — too late to give QA/PM
+    # real evidence at the dev-PR review stage this task exists for.
     paths:
       - 'docker/agent-base.Dockerfile'
       - 'docker/agent-qa-fe.Dockerfile'
@@ -30,6 +32,8 @@ jobs:
   playwright-smoke:
     name: Build QA images, verify headless chromium launch + size delta
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
 
     steps:
       - name: Checkout code
@@ -68,10 +72,15 @@ jobs:
               delta_mb=$(( (after_bytes - before_bytes) / 1024 / 1024 ))
               echo "| ${name} | $(( before_bytes / 1024 / 1024 ))MB | $(( after_bytes / 1024 / 1024 ))MB | +${delta_mb}MB |"
             done
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY" /tmp/smoke-report.md
 
       - name: Headless chromium launch smoke check
         run: |
+          {
+            echo
+            echo "### Headless chromium launch smoke check"
+            echo
+          } | tee -a /tmp/smoke-report.md
           for name in agent-qa-fe agent-ux; do
             echo "::group::${name} headless launch smoke"
             docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
@@ -83,6 +92,20 @@ jobs:
               assert page.title() == ""
               browser.close()
           print("PLAYWRIGHT_SMOKE_OK")
-          '
+          ' | tee -a /tmp/smoke-report.md
             echo "::endgroup::"
           done
+
+      - name: Post results as a PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/smoke-report.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Agent Image Smoke (Playwright) results\n\n${body}`,
+            });
