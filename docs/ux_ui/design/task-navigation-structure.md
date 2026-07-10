@@ -1,6 +1,6 @@
 # Navigation/structure spec: breadcrumb, prev/next, constraints distinction
 
-Status: proposed
+Status: implemented (v0.21.0+)
 Owner: ux-dev-2
 Surface: task detail page (`panel/src/app/(dashboard)/tasks/[taskId]/page.tsx`)
 and its header (`panel/src/components/tasks/task-detail/task-header.tsx`) and
@@ -42,12 +42,13 @@ field (`parent_task_id`, `sequence`, and `project_id` already exist on `Task`;
 
 ## 1. Breadcrumb trail
 
-**Component:** new `TaskBreadcrumb` at
-`panel/src/components/tasks/task-detail/task-breadcrumb.tsx`, rendered inside
-`TaskHeader` as a new row **above** the existing title row (still inside the
-`<div className="border-b pb-4">` wrapper), replacing the standalone
-`ArrowLeft` button — the breadcrumb's leading "Tasks" crumb takes over that
-back-to-list function, so no control is lost.
+**Implementation status:** ✓ Complete (v0.21.0+). The standalone `ArrowLeft` back button has been removed from `task-header.tsx`. The breadcrumb component and prev/next navigation now provide all navigation affordances.
+
+**Component:** `TaskBreadcrumb` at
+`panel/src/components/tasks/task-detail/task-breadcrumb.tsx`, rendered in the
+task detail page (`[taskId]/page.tsx`) above the `TaskHeader` component,
+replacing the standalone `ArrowLeft` button — the breadcrumb's leading "Tasks"
+crumb takes over that back-to-list function, so no control is lost.
 
 **Data.** The chain is built client-side from data already available:
 `Project` (via the existing `useProject(task.project_id)` call `TaskMetadata`
@@ -100,14 +101,15 @@ preferable to introducing a new scroll container.
 **Accessibility.** Wrap the row in `<nav aria-label="Task breadcrumb">`; the
 current-task span carries `aria-current="page"`.
 
-## 2. Prev/next sibling navigation
+## 2. Prev/next list navigation
 
-**Component:** new `TaskPrevNext` at
-`panel/src/components/tasks/task-detail/task-prev-next.tsx`, rendered in the
-existing header's right-hand action area (`task-header.tsx`'s
-`<div className="shrink-0">` block, lines 598-649), immediately to the left
-of the "Actions" dropdown button — two icon buttons, not a full toolbar,
-so it doesn't compete with the primary Actions control for attention.
+**Implementation status:** ✓ Complete (v0.21.0+). List-context-aware navigation, documented separately in `docs/guide/task-detail-navigation.md`.
+
+**Component:** `TaskListNav` at
+`panel/src/components/tasks/task-detail/task-list-nav.tsx`, rendered in the
+task detail page (`[taskId]/page.tsx`) alongside the breadcrumb —  two chevron
+icon buttons that move to adjacent tasks within the current Tasks list
+filter/sort context, or disabled when viewed outside the list context.
 
 **Data & ordering.** "Sibling" means another task sharing the same
 `parent_task_id`. Fetch with the existing `useSubtasks(task.parent_task_id)`
@@ -150,8 +152,10 @@ predictable regardless of which task the reader is on.
 
 ## 3. Constraints visual distinction
 
-**File:** `panel/src/components/tasks/task-detail/task-description.tsx`,
-replacing the existing `constraints` block (lines 181-196).
+**Implementation status:** ✓ Complete (v0.21.0+). Constraints now render with distinctive amber styling and a ShieldAlert icon.
+
+**File:** `panel/src/components/tasks/task-detail/task-description.tsx`
+(lines 181-199).
 
 **Treatment — amber "read-only architectural" tint, matching the existing
 convention already used for the *same* concept elsewhere in the panel:** the
