@@ -42,6 +42,14 @@ interface CollapsibleSectionProps {
  * scrolling. Collapse/expand is fade + slide (opacity/transform only, via
  * tw-animate-css's animate-in/out) — no height/width property is animated,
  * and prefers-reduced-motion is handled globally in globals.css.
+ *
+ * Auto-collapse logic (content-readability-spec):
+ * - If `defaultOpen` is explicitly set, it takes precedence (e.g., force-open while editing)
+ * - Otherwise, if `content` is provided, starts collapsed if content exceeds ~10 lines or ~640 chars
+ * - If neither is set, defaults to true (visible by default, safe for new sections)
+ *
+ * This ensures a task with a long acceptance-criteria list or verbose description
+ * doesn't open fully expanded, keeping the page navigable.
  */
 export function CollapsibleSection({
   title,
@@ -54,6 +62,7 @@ export function CollapsibleSection({
   headerClassName,
   children,
 }: CollapsibleSectionProps) {
+  // Resolve the starting state: explicit defaultOpen > content-derived > default to true
   const resolvedDefaultOpen =
     defaultOpen ??
     (content !== undefined ? !exceedsReadabilityThreshold(content) : true);
