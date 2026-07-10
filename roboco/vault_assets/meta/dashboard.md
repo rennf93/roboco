@@ -1,8 +1,6 @@
 # Task board (Dataview)
 
-Live queries over `RoboCo/Tasks/**` — requires the Dataview community plugin
-(already named in `.obsidian/community-plugins.json`; install it via
-Settings -> Community plugins if it isn't downloaded yet).
+Live queries over `RoboCo/Tasks/**` — requires the Dataview community plugin (already named in `.obsidian/community-plugins.json`; install it via Settings -> Community plugins if it isn't downloaded yet).
 
 ## Open work, by status
 
