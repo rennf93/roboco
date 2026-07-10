@@ -3,8 +3,10 @@
 Reads GitHub check-runs on a PR's head SHA (falling back to list-workflows
 when zero check-runs exist yet) and classifies the result into one of:
 success, failure, pending, pending_not_scheduled, no_ci_configured, error.
-``None`` is reserved for a configuration gap (missing project/token/head sha)
-so the caller can fail open rather than treat it as a CI signal.
+Every unresolvable case is classified explicitly — a missing project/git_url/
+token, or an unreachable/nonexistent repo or PR, is ``no_ci_configured``
+(the guard passes through with an evidence stamp); a genuine GitHub API
+failure on a real, reachable repo is ``error`` (the guard stays fail-closed).
 """
 
 from __future__ import annotations
@@ -12,11 +14,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from roboco.services.git import GitService
 
 _PR = 42
 _SHA = "deadbeefcafebabe0000111122223333aaaabbbb"
+_HTTP_SUCCESS_RANGE = range(200, 300)
 
 
 def _service() -> GitService:
@@ -30,7 +34,7 @@ def _service() -> GitService:
 def _resp(status_code: int, *, json_payload: Any = None) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = status_code in _HTTP_SUCCESS_RANGE
     resp.json.return_value = json_payload
     return resp
 
@@ -171,36 +175,90 @@ async def test_zero_checks_with_workflows_configured_is_pending_not_scheduled() 
 
 
 # ---------------------------------------------------------------------------
-# Fail-open on a configuration gap (never mistaken for a CI signal)
+# Config gaps and an unreachable/nonexistent repo pass through cleanly as
+# no_ci_configured (pr_pass stamps the evidence note, never mistaken for a
+# CI signal)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_none_on_missing_token() -> None:
+async def test_no_ci_configured_on_missing_token() -> None:
     svc = _service()
     object.__setattr__(svc, "_token_for_project", AsyncMock(return_value=None))
     with _patch_project():
-        assert await svc.get_pr_ci_status("roboco", _PR) is None
+        out = await svc.get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": None}
 
 
 @pytest.mark.asyncio
-async def test_none_on_missing_project() -> None:
+async def test_no_ci_configured_on_missing_project() -> None:
     fake = MagicMock()
     fake.get_by_slug = AsyncMock(return_value=None)
     with patch("roboco.services.git.get_project_service", return_value=fake):
-        assert await _service().get_pr_ci_status("roboco", _PR) is None
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": None}
 
 
 @pytest.mark.asyncio
-async def test_none_when_head_sha_unresolvable() -> None:
-    # The PR lookup itself 404s (closed/missing PR) — get_pr_head_sha yields None.
+async def test_no_ci_configured_when_pr_lookup_404s() -> None:
+    # The PR lookup itself 404s — the repo/PR doesn't exist or isn't reachable.
     pr_lookup = _resp(404, json_payload={"message": "not found"})
     client = _client(pr_lookup)
     with (
         _patch_project(),
         patch("roboco.services.git.httpx.AsyncClient", return_value=client),
     ):
-        assert await _service().get_pr_ci_status("roboco", _PR) is None
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": None}
+
+
+@pytest.mark.asyncio
+async def test_no_ci_configured_when_pr_lookup_unreachable() -> None:
+    # A connection/network failure resolving the PR's head SHA — the repo is
+    # unreachable, not just returning an error response.
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": None}
+
+
+# ---------------------------------------------------------------------------
+# A real, reachable repo's genuinely failing GitHub API call stays
+# fail-closed (error), never conflated with the no_ci_configured cases above
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_error_when_pr_lookup_api_fails_on_real_repo() -> None:
+    # The repo/project/token all resolve fine, but the PR-head-sha lookup
+    # itself returns a genuine 5xx — this must stay fail-closed (error), not
+    # be conflated with the unreachable/nonexistent-repo no_ci_configured case.
+    pr_lookup = _resp(500, json_payload={"message": "internal error"})
+    client = _client(pr_lookup)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "error", "head_sha": None}
+
+
+@pytest.mark.asyncio
+async def test_error_when_pr_lookup_body_unparseable() -> None:
+    pr_lookup = _resp(200, json_payload={"head": {}})  # missing "sha" key
+    client = _client(pr_lookup)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "error", "head_sha": None}
 
 
 @pytest.mark.asyncio
