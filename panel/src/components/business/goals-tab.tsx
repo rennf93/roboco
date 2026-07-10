@@ -44,6 +44,20 @@ function formatTs(ts: string | null | undefined): string {
 // ---------------------------------------------------------------------------
 // Objectives field — one text field per key derived from the first item.
 // Falls back to a single "value" field when array is empty.
+//
+// Renders a responsive grid of objective cards with the following layout:
+// - Mobile (< md): 1 column (grid-cols-1)
+// - Desktop (md+): 2 columns (md:grid-cols-2)
+// - The '+ Add objective' button sits below the grid as a full-width sibling
+//   (not as a grid item), maintaining consistent width across all breakpoints.
+//
+// Layout structure:
+//   <div className="space-y-3">
+//     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+//       {objective cards as grid items}
+//     </div>
+//     <Button className="w-full">{+ Add objective}</Button>
+//   </div>
 // ---------------------------------------------------------------------------
 
 interface ObjectivesEditorProps {
