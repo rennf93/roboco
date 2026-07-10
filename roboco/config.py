@@ -1604,6 +1604,61 @@ class Settings(BaseSettings):
         description="Banned single-word commit subjects",
     )
 
+    # ==========================================================================
+    # Obsidian vault projection (V1 — projection core) — DEFAULT OFF
+    # ==========================================================================
+    # The org's human-readable memory palace: tasks/journals/A2A conversations
+    # materialize as markdown notes with wikilinks, browsable in Obsidian
+    # (Dataview/Kanban/graph plugins). Off by default and fully inert — every
+    # seam (journal write, A2A send, task transition) no-ops when off.
+    obsidian_vault_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Obsidian vault projection. OFF by default; "
+            "when off no note is ever written and every event seam is a no-op."
+        ),
+    )
+    vault_path: str = Field(
+        default="/data/vault",
+        description=(
+            "Root directory the vault materializes into (bind-mounted on the "
+            "NAS in production). Only consulted when obsidian_vault_enabled."
+        ),
+    )
+
+    # Vault intake — the vexa-inspired input loop (V1 item 4): notes tagged
+    # #roboco in an opt-in vault folder become HELD intake drafts. Inert
+    # unless BOTH obsidian_vault_enabled AND vault_intake_enabled are on.
+    vault_intake_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the vault intake watcher. OFF by default; when "
+            "off no note is ever scanned and nothing is drafted."
+        ),
+    )
+    vault_intake_interval_seconds: int = Field(
+        default=300,
+        ge=30,
+        description="Seconds between vault-intake scan cycles.",
+    )
+    vault_intake_dir: str = Field(
+        default="RoboCo/Inbox",
+        description=("Vault-relative folder scanned for tagged notes (non-recursive)."),
+    )
+    vault_intake_max_per_cycle: int = Field(
+        default=3,
+        ge=1,
+        description="Max held drafts the intake watcher may originate in one cycle.",
+    )
+    vault_intake_max_open_drafts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open held vault-note drafts; the "
+            "watcher originates nothing more past it."
+        ),
+    )
+
 
 def resolve_uvicorn_loop_factory(
     loop: Literal["asyncio", "uvloop"],

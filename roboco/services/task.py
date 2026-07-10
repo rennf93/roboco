@@ -610,6 +610,13 @@ ROADMAP_SOURCE = "board_roadmap"
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
 
+# Source tag for a held intake draft the vault-intake watcher originates from
+# a #roboco-tagged vault note. Like X_SOURCES/VIDEO_HELD_SOURCES this is NEVER
+# dispatched — held for the CEO (confirmed_by_human=False) like any other
+# backlog task; acted on only by the normal task-review flow (no dedicated
+# route — it is a plain Task).
+VAULT_NOTE_SOURCE = "vault_note"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -853,6 +860,38 @@ class TaskService(BaseService):
                     severity="info",
                     details=dict(details),
                 )
+            )
+        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _touch_vault_frontmatter(
+        self, task: TaskTable, *, to_status: str, team: str
+    ) -> None:
+        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
+
+        Only patches an EXISTING note's status/team/pr fields — no extra
+        queries (everything used here is already a plain column on ``task``).
+        A vault failure (or a not-yet-materialized note) never blocks the
+        transition; see ``VaultWriter.touch_task_frontmatter``.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.vault_writer import get_vault_writer
+
+            get_vault_writer().touch_task_frontmatter(
+                task_id=str(task.id),
+                status=to_status,
+                team=team,
+                pr_number=task.pr_number,
+                pr_url=task.pr_url,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Vault frontmatter touch failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
             )
 
     def _emit_escalation_audit(
@@ -1599,6 +1638,19 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == X_FEATURE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_vault_note_drafts(self) -> list[TaskTable]:
+        """Non-terminal held vault-note drafts — the vault-intake watcher's
+        open-cap basis. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VAULT_NOTE_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
@@ -6780,6 +6832,34 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_completed_roots_pending_vault_curation(
+        self, *, limit: int = 20
+    ) -> list[TaskTable]:
+        """Root tasks (no parent) most recently completed, not yet vault-curated.
+
+        Backs the orchestrator's root-completion Auditor spawn. Ordered by
+        ``completed_at`` DESC within a small window — self-bounding without a
+        migration: ``orchestration_markers`` is a plain JSON column (no
+        server-side "key absent" filter), so the marker check runs client-side
+        over a small recency window instead of the whole completed-task table,
+        which would otherwise grow forever and could mask a fresh completion
+        behind older, already-curated rows.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.parent_task_id.is_(None),
+            )
+            .order_by(TaskTable.completed_at.desc())
+            .limit(limit)
+        )
+        return [
+            t
+            for t in result.scalars().all()
+            if not markers.is_vault_curation_dispatched(t)
+        ]
+
     async def list_all(
         self,
         limit: int = 100,
@@ -8166,7 +8246,8 @@ class TaskService(BaseService):
         reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
         treatment; the video-authoring source (``video``) is NOT held — it is
         pre-assigned to a ux-dev and must still be offered like any other
-        delegated code task.
+        delegated code task. ``VAULT_NOTE_SOURCE`` (``vault_note``) is held the
+        same way — a Secretary-owned held draft from the vault-intake watcher.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -8178,7 +8259,12 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.PENDING,
                 or_(
                     TaskTable.source.notin_(
-                        (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
+                        (
+                            SELF_HEAL_SOURCE,
+                            *X_SOURCES,
+                            *VIDEO_HELD_SOURCES,
+                            VAULT_NOTE_SOURCE,
+                        )
                     ),
                     TaskTable.confirmed_by_human.is_(True),
                 ),
