@@ -12,6 +12,7 @@ from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.services.base import NotFoundError
 from roboco.services.prompter import (
     PrompterService,
+    compose_batch_redraft_message,
     compose_redraft_message,
     format_board_briefing,
 )
@@ -61,6 +62,60 @@ def test_compose_redraft_message_includes_draft_and_brief() -> None:
     assert "- does X" in msg
     assert "Product Owner" in msg
     assert "z" in msg
+
+
+def test_compose_batch_redraft_message_includes_every_child_and_brief() -> None:
+    umbrella = SimpleNamespace(
+        title="MegaTask: Ship the thing",
+        description="Coordinate 2 sequenced tasks as one MegaTask.",
+    )
+    children = [
+        SimpleNamespace(
+            title="Backend piece",
+            description="Backend description.",
+            acceptance_criteria=["backend ac"],
+            project=SimpleNamespace(name="roboco-api"),
+            cell_projects=[],
+        ),
+        SimpleNamespace(
+            title="Frontend piece",
+            description="Frontend description.",
+            acceptance_criteria=["frontend ac"],
+            project=None,
+            cell_projects=[
+                SimpleNamespace(
+                    team=Team.FRONTEND, project=SimpleNamespace(name="panel-repo")
+                )
+            ],
+        ),
+    ]
+    entries = [
+        {
+            "author_role": "product_owner",
+            "author": "po",
+            "title": "PO",
+            "content": "board feedback",
+        }
+    ]
+    msg = compose_batch_redraft_message(
+        cast("TaskTable", umbrella), cast("list[TaskTable]", children), entries
+    )
+    assert "Ship the thing" in msg
+    assert "Backend piece" in msg
+    assert "roboco-api" in msg
+    assert "backend ac" in msg
+    assert "Frontend piece" in msg
+    assert "panel-repo" in msg
+    assert "Product Owner" in msg
+    assert "board feedback" in msg
+    assert "propose_batch" in msg
+
+
+def test_compose_batch_redraft_message_no_children_is_still_valid() -> None:
+    umbrella = SimpleNamespace(title="MegaTask: Empty", description="Nothing yet.")
+    msg = compose_batch_redraft_message(cast("TaskTable", umbrella), [], [])
+    assert "Empty" in msg
+    assert "propose_batch" in msg
 
 
 # --------------------------------------------------------------------------- #
