@@ -64,6 +64,11 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `GitService.update_pr_for_task` | method | git.py:2506 | Patch PR title/body; 404→typed GitError |
 | `GitService.get_pr_head_sha` | method | git.py:2451 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
 | `GitService.get_latest_ci_conclusion` | method | git.py:1929 | Per-project CI signal (unknown never false-green) |
+| `GitService.get_pr_ci_status` | method | git.py:2662 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
+| `GitService._ci_status_prereqs` | method | git.py:2698 | Resolve (owner, repo, auth headers, head_sha) for CI-status lookup or None on any gap |
+| `GitService._fetch_check_runs` | method | git.py:2730 | GET check-runs for head_sha; None on any API failure |
+| `GitService._classify_check_runs` | method | git.py:2770 | State classification: success/failure/pending from check-run conclusions list |
+| `GitService._classify_zero_check_runs` | method | git.py:2790 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
 | `GitService.list_open_prs` | method | git.py:1844 | Normalized open-PR list |
 | `GitService.post_pr_review` | method | git.py:2329 | Post reviewer comments via GitHub API |
 | `GitService.merge_pull_request` | method | git.py:2914 | GitHub merge API + method fallback + already-merged disambiguation |

@@ -327,6 +327,13 @@ _CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
 # huge repo) can't hang the i_am_done/pr_pass gate forever.
 _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
+# --- pr_pass CI-status guard ------------------------------------------------
+# GitHub check-run conclusions that count as a failing check on a PR's head
+# commit. ``neutral``/``skipped``/``success`` (and ``None`` on a still-running
+# run) are not failing.
+_FAILING_CHECK_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "timed_out", "action_required"}
+)
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2654,6 +2661,176 @@ class GitService(BaseService):
                 error=str(e),
             )
             return None
+
+    async def get_pr_ci_status(
+        self, project_slug: str, pr_number: int
+    ) -> dict[str, Any] | None:
+        """CI status of a PR's current head commit, for the in-path ``pr_pass`` gate.
+
+        Reads GitHub check-runs on the PR's head SHA — the same signal GitHub
+        Actions surfaces on the PR page — and classifies it into one
+        ``state``: ``success`` (every check-run completed with no failing
+        conclusion), ``failure`` (at least one completed check-run failed —
+        ``failing_checks`` names them), ``pending`` (at least one check-run
+        has not completed yet), ``pending_not_scheduled`` (zero check-runs
+        exist for this commit but the repo has workflows configured — CI
+        just hasn't started), ``no_ci_configured`` (zero check-runs AND the
+        repo has no workflows at all), or ``error`` (a genuine GitHub API
+        failure fetching either signal).
+
+        Returns ``None`` — fail-open, the caller skips the guard entirely —
+        when the project, its git_url, a git token, or the PR's head SHA
+        cannot be resolved. Those are configuration gaps, not a CI signal,
+        and must never masquerade as a failing/pending gate (mirrors
+        ``get_pr_head_sha`` / ``_capture_pr_head_sha``).
+
+        ponytail: reads GitHub check-runs only (the project's own CI is
+        GitHub Actions). A repo whose only signal is the legacy commit-status
+        API would show zero check-runs here; add a statuses fallback if that
+        ever becomes a real CI provider for a project.
+        """
+        prereqs = await self._ci_status_prereqs(project_slug, pr_number)
+        if prereqs is None:
+            return None
+        owner, repo, headers, head_sha = prereqs
+        check_runs = await self._fetch_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+        if check_runs is None:
+            return {"state": "error", "head_sha": head_sha}
+        if check_runs:
+            return self._classify_check_runs(check_runs, head_sha)
+        return await self._classify_zero_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+
+    async def _ci_status_prereqs(
+        self, project_slug: str, pr_number: int
+    ) -> tuple[str, str, dict[str, str], str] | None:
+        """Resolve ``(owner, repo, auth headers, head_sha)`` for a CI-status
+        lookup, or ``None`` on any unresolvable configuration gap (missing
+        project/git_url, an unparseable remote, a missing token, or a
+        PR/head-sha the GitHub API won't return)."""
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        head_sha = await self.get_pr_head_sha(project_slug, pr_number)
+        if not head_sha:
+            return None
+        headers = {
+            "Authorization": f"Bearer {git_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        return owner, repo, headers, head_sha
+
+    async def _fetch_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]] | None:
+        """GET the check-runs for ``head_sha``; ``None`` on any API failure."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+                    headers=headers,
+                    params={"per_page": 100},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return None
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status check-runs non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return None
+        try:
+            runs = resp.json().get("check_runs")
+        except (ValueError, AttributeError) as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return None
+        return runs if isinstance(runs, list) else []
+
+    @staticmethod
+    def _classify_check_runs(
+        check_runs: list[dict[str, Any]], head_sha: str
+    ) -> dict[str, Any]:
+        """Map a non-empty check-runs list to a failure/pending/success state."""
+        failing = [
+            str(cr.get("name") or "check")
+            for cr in check_runs
+            if cr.get("status") == "completed"
+            and cr.get("conclusion") in _FAILING_CHECK_CONCLUSIONS
+        ]
+        if failing:
+            return {"state": "failure", "failing_checks": failing, "head_sha": head_sha}
+        if any(cr.get("status") != "completed" for cr in check_runs):
+            return {"state": "pending", "head_sha": head_sha}
+        return {"state": "success", "head_sha": head_sha}
+
+    async def _classify_zero_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """No check-runs exist yet for ``head_sha`` — tell "not scheduled" apart
+        from "no CI configured" by asking whether the repo has any workflows."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/actions/workflows",
+                    headers=headers,
+                    params={"per_page": 1},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status workflows request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status workflows non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": head_sha}
+        try:
+            total = int(resp.json().get("total_count") or 0)
+        except (ValueError, AttributeError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status workflows parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        state = "pending_not_scheduled" if total > 0 else "no_ci_configured"
+        return {"state": state, "head_sha": head_sha}
 
     async def update_pr_for_task(
         self,
