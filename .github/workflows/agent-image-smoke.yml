@@ -1,0 +1,88 @@
+name: Agent Image Smoke (Playwright)
+
+# Builds the two images that carry Playwright + chromium-headless-shell
+# (agent-qa-fe, agent-ux) with a real Docker daemon, verifies a headless
+# chromium launch actually works inside each, and reports the real
+# before/after image size delta against origin/master. This exists because
+# dev/QA agent sandboxes have no Docker daemon of their own — this workflow
+# is the only place that can produce non-estimated numbers for this change.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/agent-qa-fe.Dockerfile'
+      - 'docker/agent-ux.Dockerfile'
+      - '.github/workflows/agent-image-smoke.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/agent-qa-fe.Dockerfile'
+      - 'docker/agent-ux.Dockerfile'
+      - '.github/workflows/agent-image-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  playwright-smoke:
+    name: Build QA images, verify headless chromium launch + size delta
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # Need origin/master reachable to diff this branch's Dockerfiles
+          # against the pre-change baseline for the size-delta report below.
+          fetch-depth: 0
+
+      - name: Build agent-base (shared FROM target for both variants)
+        run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
+
+      - name: Build "after" images (this branch)
+        run: |
+          docker build -f docker/agent-qa-fe.Dockerfile -t agent-qa-fe:after .
+          docker build -f docker/agent-ux.Dockerfile -t agent-ux:after .
+
+      - name: Build "before" images (origin/master baseline)
+        run: |
+          mkdir -p /tmp/before
+          git show origin/master:docker/agent-qa-fe.Dockerfile > /tmp/before/agent-qa-fe.Dockerfile
+          git show origin/master:docker/agent-ux.Dockerfile > /tmp/before/agent-ux.Dockerfile
+          docker build -f /tmp/before/agent-qa-fe.Dockerfile -t agent-qa-fe:before .
+          docker build -f /tmp/before/agent-ux.Dockerfile -t agent-ux:before .
+
+      - name: Report real before/after image size delta
+        run: |
+          {
+            echo "### Playwright image size delta (real \`docker inspect\` sizes)"
+            echo
+            echo "| image | before | after | delta |"
+            echo "|---|---|---|---|"
+            for name in agent-qa-fe agent-ux; do
+              before_bytes=$(docker inspect -f '{{.Size}}' "${name}:before")
+              after_bytes=$(docker inspect -f '{{.Size}}' "${name}:after")
+              delta_mb=$(( (after_bytes - before_bytes) / 1024 / 1024 ))
+              echo "| ${name} | $(( before_bytes / 1024 / 1024 ))MB | $(( after_bytes / 1024 / 1024 ))MB | +${delta_mb}MB |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Headless chromium launch smoke check
+        run: |
+          for name in agent-qa-fe agent-ux; do
+            echo "::group::${name} headless launch smoke"
+            docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto("about:blank")
+              assert page.title() == ""
+              browser.close()
+          print("PLAYWRIGHT_SMOKE_OK")
+          '
+            echo "::endgroup::"
+          done
