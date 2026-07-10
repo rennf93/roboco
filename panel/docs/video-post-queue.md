@@ -39,15 +39,16 @@ const canSubmit =
 
 The picker prevents submission of the video request until a project is explicitly selected, ensuring every on-demand video is scoped to a specific project.
 
-## Re-render Control for Stale Drafts
+## Re-render Control for Any Composition-Bearing Draft
 
-The `RerenderControl` component appears only on drafts whose render has failed (`render_status === "failed"`), giving the CEO a way to retry a failed render without creating a new request.
+The `RerenderControl` component (`panel/src/components/dashboard/video-rerender-control.tsx`) appears on any draft that has both an authoring task and a proposed composition, giving the CEO a way to retry — or deliberately redo — a render without creating a new request.
 
 ### When It Appears
 
-- Only rendered in `VideoPostRow` when both conditions hold:
-  - `post.render_status === "failed"`
+- Rendered in `VideoPostRow` when both conditions hold:
   - `post.source_task_id` is truthy (the authoring task exists)
+  - `post.composition_id` is truthy (a composition was proposed)
+- This is regardless of `render_status` — the backend's rerender endpoint only requires a completed authoring task with a proposed composition, not a failed render, so a healthy render can be deliberately redone too
 - Positioned in the draft header row, right-aligned after the occasion badge
 
 ### Visual States
@@ -179,9 +180,11 @@ All three features integrate into `VideoPostRow` via:
 
 1. **Re-render button** appears in the header row (between the occasion badge and the edge):
    ```typescript
-   {isStale && post.source_task_id && (
+   const canRerender = !!post.source_task_id && !!post.composition_id;
+
+   {canRerender && (
      <div className="ml-auto">
-       <RerenderControl authoringTaskId={post.source_task_id} />
+       <RerenderControl authoringTaskId={post.source_task_id as string} />
      </div>
    )}
    ```
@@ -195,7 +198,7 @@ This placement gives the CEO a visual hierarchy: draft metadata → live composi
 
 ## Design Notes
 
-- **Stale detection**: The `isStale` computation (`render_status === "failed" && !!source_task_id`) mirrors the pipeline strip's render-failure logic in `video-pipeline-utils.ts`, keeping both UI surfaces consistent.
+- **Rerender gating**: The `canRerender` computation (`!!source_task_id && !!composition_id`) shows the control for any composition-bearing draft regardless of `render_status`, matching `RerenderControl`'s own gating in `video-pipeline-strip.tsx`, keeping both UI surfaces consistent.
 - **Composition preview sizing**: Uses `aspect-video` to maintain the standard 16:9 ratio for the iframe, with `w-full` for responsive scaling.
 - **Lazy loading**: The iframe uses `loading="lazy"` so it only fetches when scrolled into view, reducing initial page load on the queue.
 - **Sandbox isolation**: The iframe runs with `sandbox="allow-scripts"` to execute the composition's interactive elements while preventing navigation or form submission from escaping the preview.

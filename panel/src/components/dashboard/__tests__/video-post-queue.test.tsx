@@ -8,6 +8,30 @@ const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
+const { useProjects } = vi.hoisted(() => ({
+  // One video-enabled project by default ("p-1", matching the mocked
+  // ProjectSelector's onChange value below) so the dialog can default-select
+  // it — tests that need the empty-state override this per-test.
+  useProjects: vi.fn(() => ({
+    data: [
+      {
+        id: "p-1",
+        name: "roboco-panel",
+        slug: "roboco-panel",
+        git_url: "https://example.com/roboco-panel.git",
+        assigned_cell: "frontend",
+        is_active: true,
+        has_workspace: true,
+        has_git_token: true,
+        video_engine_enabled: true,
+      },
+    ],
+    isLoading: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-projects", () => ({ useProjects }));
+
 const {
   listPosts,
   listPipeline,
@@ -314,21 +338,63 @@ describe("VideoPostQueue", () => {
     );
   });
 
-  it("keeps Request disabled until a project is picked", async () => {
+  it("defaults the project to the current (first) video-enabled project so Request enables without an explicit pick", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
 
     fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    // Request still needs occasion/brief filled...
+    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Occasion"), {
       target: { value: "Founder's Day" },
     });
     fireEvent.change(screen.getByLabelText("Brief"), {
       target: { value: "Celebrate the founding." },
     });
-    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    // ...but never a manual "Set Project" click — the picker already
+    // defaulted to the sole video-enabled project.
     expect(screen.getByRole("button", { name: "Request" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Request" }));
+    await waitFor(() =>
+      expect(requestVideo).toHaveBeenCalledWith(
+        expect.objectContaining({ project_id: "p-1" }),
+      ),
+    );
+  });
+
+  it("shows a friendly empty-state when no project has the video engine enabled", async () => {
+    // mockReturnValue (not -Once): RequestVideoDialog re-renders more than
+    // once before the assertions run, and a -Once override would only cover
+    // the first of those renders.
+    useProjects.mockReturnValue({
+      data: [
+        {
+          id: "p-2",
+          name: "not-opted-in",
+          slug: "not-opted-in",
+          git_url: "https://example.com/not-opted-in.git",
+          assigned_cell: "backend",
+          is_active: true,
+          has_workspace: true,
+          has_git_token: true,
+          video_engine_enabled: false,
+        },
+      ],
+      isLoading: false,
+    });
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    expect(
+      screen.getByText(/No projects have the video engine enabled/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Occasion")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Request" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
   it("shows the keys/engine empty copy when nothing is in the pipeline either", async () => {
@@ -364,7 +430,7 @@ describe("VideoPostQueue", () => {
     expect(screen.queryByText(/No drafts yet/)).not.toBeInTheDocument();
   });
 
-  it("does not show a re-render button when the draft's render is healthy", async () => {
+  it("does not show a re-render button when the draft has no source_task_id/composition_id", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
     expect(
@@ -372,7 +438,7 @@ describe("VideoPostQueue", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows a re-render button only on a stale draft and triggers the backend re-render action", async () => {
+  it("shows a re-render button on a draft with a composition regardless of render_status, behind a confirm dialog", async () => {
     listPosts.mockResolvedValueOnce([
       {
         task_id: "v-1",
@@ -386,6 +452,7 @@ describe("VideoPostQueue", () => {
         tiktok_caption: "New RoboCo drop!",
         mp4_paths: { vertical: "/fake/vertical.mp4" },
         source_task_id: "auth-1",
+        composition_id: "release-recap",
         render_status: "failed",
       },
     ] as VideoPost[]);
@@ -395,7 +462,41 @@ describe("VideoPostQueue", () => {
     const rerenderButton = screen.getByRole("button", { name: /Re-render/ });
     fireEvent.click(rerenderButton);
 
+    // The action is gated behind a confirm dialog — clicking the trigger
+    // alone must not call the backend.
+    expect(rerender).not.toHaveBeenCalled();
+    const confirmButton = await screen.findByRole("button", {
+      name: /Re-render/,
+    });
+    fireEvent.click(confirmButton);
+
     await waitFor(() => expect(rerender).toHaveBeenCalledWith("auth-1"));
+  });
+
+  it("renders the re-render button for a post with render_status='rendered'", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        composition_id: "release-recap",
+        render_status: "rendered",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    expect(
+      screen.getByRole("button", { name: /Re-render/ }),
+    ).toBeInTheDocument();
   });
 
   it("shows the live composition preview iframe with captions when composition_id is present", async () => {

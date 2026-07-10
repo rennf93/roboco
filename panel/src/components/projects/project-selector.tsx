@@ -22,6 +22,10 @@ interface ProjectSelectorProps {
   filterByTeam?: Team;
   disabled?: boolean;
   allowClear?: boolean;
+  // Restrict the list to projects with the video engine opted in
+  // (project.video_engine_enabled) — for pickers scoped to video-authoring
+  // flows (e.g. RequestVideoDialog).
+  videoEngineOnly?: boolean;
 }
 
 // Team display names for project cells
@@ -38,12 +42,18 @@ export function ProjectSelector({
   filterByTeam,
   disabled = false,
   allowClear = true,
+  videoEngineOnly = false,
 }: ProjectSelectorProps) {
   const { data: projects = [], isLoading } = useProjects();
 
   // Group projects by team/cell
   const groupedProjects = useMemo(() => {
     let filtered = projects;
+
+    // Restrict to video-engine-opted-in projects
+    if (videoEngineOnly) {
+      filtered = filtered.filter((p) => p.video_engine_enabled);
+    }
 
     // Apply team filter
     if (filterByTeam) {
@@ -71,7 +81,7 @@ export function ProjectSelector({
     }
 
     return groups;
-  }, [projects, filterByTeam]);
+  }, [projects, filterByTeam, videoEngineOnly]);
 
   // Find selected project for display
   const selectedProject = useMemo(() => {
