@@ -25,6 +25,7 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.batch import is_batch_root_subtask
 from roboco.foundation.policy.content import markers
 from roboco.services.gateway.envelope import Envelope
+from roboco.services.gateway.merge_chain import resolve_parent_branch
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -440,9 +441,18 @@ class PRGateMixin(_Base):
         violations; pr_fail stays available. Returns the emitted rejection or
         None to proceed. Both guards are inert when their flag is off.
         """
+        from roboco.config import settings as _settings
+
+        # Only the conventions guard consumes the parent — skip the lookup
+        # entirely (and its failure surface) while the flag is off.
+        parent = (
+            await self._gate_diff_parent(t) if _settings.conventions_enabled else None
+        )
         guards = (
             lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
-            lambda: self._conventions_guard(reviewer_agent_id, t, briefing),
+            lambda: self._conventions_guard(
+                reviewer_agent_id, t, briefing, preferred_parent=parent
+            ),
         )
         for guard in guards:
             rejection = await guard()
@@ -696,11 +706,34 @@ class PRGateMixin(_Base):
             verb=verb,
         )
 
+    async def _gate_diff_parent(self, t: Any) -> str | None:
+        """The assembled task's real parent branch, or None (branchless task).
+
+        ``resolve_parent_branch`` reads the parent TASK's own ``branch_name``
+        (correct across a team boundary — every cell→root hop, where the
+        child's own team segment can't derive the root's ``main_pm``
+        branch), unlike the string-derived ``parent_branch_for`` that
+        ``git.diff``'s default base falls back on. Fail-open on a lookup
+        error (None → the derived-base fallback), like every other
+        ``resolve_parent_branch`` call site — a transient DB miss degrades
+        the diff base, never 500s the gate verb.
+        """
+        if not t.branch_name:
+            return None
+        try:
+            return await resolve_parent_branch(t, self.task)
+        except Exception as exc:
+            logger.warning("gate_diff_parent_skip", task_id=str(t.id), error=str(exc))
+            return None
+
     async def _build_gate_review_evidence(self, t: Any) -> dict[str, Any]:
         """Inline evidence for claim_gate_review: the assembled diff + criteria."""
         diff = ""
         if t.branch_name:
-            diff = await self.git.diff(branch_name=t.branch_name)
+            diff = await self.git.diff(
+                branch_name=t.branch_name,
+                preferred_parent=await self._gate_diff_parent(t),
+            )
         return {
             "pr_number": t.pr_number,
             "pr_url": t.pr_url,
