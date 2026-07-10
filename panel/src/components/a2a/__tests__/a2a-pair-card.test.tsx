@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { AdminPairSummary } from "@/lib/api/a2a";
-import { A2APairCard } from "../a2a-pair-card";
+import { A2APairCard, PairAvatar } from "../a2a-pair-card";
 
 function buildPair(
   overrides: Partial<AdminPairSummary> = {},
@@ -49,6 +49,13 @@ describe("A2APairCard", () => {
     expect(screen.getByTestId("pair-card")).toHaveClass("opacity-60");
     // No message-count badge for a pair with no history.
     expect(screen.queryByText("5")).not.toBeInTheDocument();
+  });
+
+  it("colors each avatar by team, not a per-agent hue", () => {
+    render(<PairAvatar slug="fe-dev-1" />);
+    expect(screen.getByTitle("Frontend Dev 1")).toHaveClass(
+      "border-violet-500/40",
+    );
   });
 
   it("marks the card as selected via aria-pressed", () => {

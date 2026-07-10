@@ -8,52 +8,46 @@ const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
-const {
-  listPosts,
-  listPipeline,
-  approve,
-  reject,
-  requestVideo,
-  getMediaBlob,
-} = vi.hoisted(() => ({
-  listPosts: vi.fn(
-    async () =>
-      [
-        {
-          task_id: "v-1",
-          source: "video_post",
-          title: "Video: release v0.19.0",
-          status: "pending",
-          occasion: "release",
-          script: "RoboCo v0.19.0 just shipped!",
-          platforms: ["x", "tiktok"],
-          x_caption: "RoboCo v0.19.0 is here!",
-          tiktok_caption: "New RoboCo drop!",
-          mp4_paths: {
-            vertical: "/fake/vertical.mp4",
-            square: "/fake/square.mp4",
+const { listPosts, listPipeline, approve, reject, requestVideo, getMediaBlob } =
+  vi.hoisted(() => ({
+    listPosts: vi.fn(
+      async () =>
+        [
+          {
+            task_id: "v-1",
+            source: "video_post",
+            title: "Video: release v0.19.0",
+            status: "pending",
+            occasion: "release",
+            script: "RoboCo v0.19.0 just shipped!",
+            platforms: ["x", "tiktok"],
+            x_caption: "RoboCo v0.19.0 is here!",
+            tiktok_caption: "New RoboCo drop!",
+            mp4_paths: {
+              vertical: "/fake/vertical.mp4",
+              square: "/fake/square.mp4",
+            },
           },
-        },
-      ] as VideoPost[],
-  ),
-  listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
-  // Deferred so the test can freeze the approve mid-flight.
-  approve: vi.fn(
-    () =>
-      new Promise((r) => {
-        resolveApproveRef.current = r as (v: unknown) => void;
-      }),
-  ),
-  reject: vi.fn(async () => ({})),
-  requestVideo: vi.fn(async () => ({
-    status: "opened",
-    task_id: "v-2",
-    detail: "Video-authoring task opened.",
-  })),
-  getMediaBlob: vi.fn(
-    async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
-  ),
-}));
+        ] as VideoPost[],
+    ),
+    listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
+    // Deferred so the test can freeze the approve mid-flight.
+    approve: vi.fn(
+      () =>
+        new Promise((r) => {
+          resolveApproveRef.current = r as (v: unknown) => void;
+        }),
+    ),
+    reject: vi.fn(async () => ({})),
+    requestVideo: vi.fn(async () => ({
+      status: "opened",
+      task_id: "v-2",
+      detail: "Video-authoring task opened.",
+    })),
+    getMediaBlob: vi.fn(
+      async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
+    ),
+  }));
 
 vi.mock("@/lib/api", () => ({
   videoApi: {
