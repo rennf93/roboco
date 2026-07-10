@@ -22,7 +22,13 @@ import { A2AConversationList } from "@/components/a2a/a2a-conversation-list";
 import { A2ASwitchboard } from "@/components/a2a/a2a-switchboard";
 import { A2ATranscript } from "@/components/a2a/a2a-transcript";
 import { A2AReplyComposer } from "@/components/a2a/a2a-reply-composer";
+import { A2AFilterBar } from "@/components/a2a/a2a-filter-bar";
 import { latestPulseTimestamps } from "@/components/a2a/a2a-switchboard-utils";
+import {
+  filterConversations,
+  filterPairs,
+  type A2AStatusFilter,
+} from "@/components/a2a/a2a-filter-utils";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +85,11 @@ function A2APageContent() {
   // nothing to select via `?conversation=`, so it's tracked separately and
   // shown as an explicit "no A2A yet" state in the drill-in panel.
   const [peekedPair, setPeekedPair] = useState<PeekedPair | null>(null);
+
+  // Filter bar: status (active/all) + free-text search over agent name/topic
+  // — narrows both the switchboard's pairs and the list's conversations.
+  const [statusFilter, setStatusFilter] = useState<A2AStatusFilter>("all");
+  const [search, setSearch] = useState("");
 
   const {
     data: conversationData,
@@ -158,6 +169,10 @@ function A2APageContent() {
     () => latestPulseTimestamps(a2aMessages, pairs),
     [a2aMessages, pairs],
   );
+  const filteredPairs = useMemo(
+    () => filterPairs(pairs, statusFilter, search),
+    [pairs, statusFilter, search],
+  );
 
   const handleSelect = useCallback(
     (id: string) => {
@@ -186,7 +201,14 @@ function A2APageContent() {
     [handleSelect, router, searchParams],
   );
 
-  const conversations = conversationData?.items ?? [];
+  const conversations = useMemo(
+    () => conversationData?.items ?? [],
+    [conversationData],
+  );
+  const filteredConversations = useMemo(
+    () => filterConversations(conversations, statusFilter, search),
+    [conversations, statusFilter, search],
+  );
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
   const messages = messagesData?.items ?? [];
   const lastSender = lastSenderOf(messages);
@@ -296,10 +318,16 @@ function A2APageContent() {
                     </Button>
                   </div>
                 </div>
+                <A2AFilterBar
+                  status={statusFilter}
+                  onStatusChange={setStatusFilter}
+                  search={search}
+                  onSearchChange={setSearch}
+                />
                 <div className="flex-1 overflow-hidden -mx-3">
                   {view === "switchboard" ? (
                     <A2ASwitchboard
-                      pairs={pairs}
+                      pairs={filteredPairs}
                       pulses={pulses}
                       selectedConversationId={selectedId}
                       isLoading={loadingPairs}
@@ -307,10 +335,11 @@ function A2APageContent() {
                     />
                   ) : (
                     <A2AConversationList
-                      conversations={conversations}
+                      conversations={filteredConversations}
                       selectedId={selectedId}
                       onSelect={handleSelect}
                       isLoading={loadingConversations}
+                      pulses={pulses}
                     />
                   )}
                 </div>

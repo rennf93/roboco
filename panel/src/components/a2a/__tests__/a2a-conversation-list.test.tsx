@@ -30,12 +30,16 @@ describe("A2AConversationList", () => {
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={false}
+        pulses={{}}
       />,
     );
 
     // Participants via getAgentDisplayName ("{a} <-> {b}").
     expect(screen.getByText(/Backend Dev 1/)).toBeInTheDocument();
     expect(screen.getByText(/Backend QA/)).toBeInTheDocument();
+    // Both participants get an avatar, matching A2APairCard's PairAvatar.
+    expect(screen.getByTitle("Backend Dev 1")).toBeInTheDocument();
+    expect(screen.getByTitle("Backend QA")).toBeInTheDocument();
     // Topic, preview, message count, relative timestamp.
     expect(screen.getByText("QA handoff")).toBeInTheDocument();
     expect(
@@ -61,6 +65,7 @@ describe("A2AConversationList", () => {
         selectedId={null}
         onSelect={onSelect}
         isLoading={false}
+        pulses={{}}
       />,
     );
     fireEvent.click(screen.getByRole("button"));
@@ -75,6 +80,7 @@ describe("A2AConversationList", () => {
         selectedId={null}
         onSelect={onSelect}
         isLoading={false}
+        pulses={{}}
       />,
     );
     fireEvent.click(screen.getByRole("link", { name: /Task 11111111/ }));
@@ -88,8 +94,25 @@ describe("A2AConversationList", () => {
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={false}
+        pulses={{}}
       />,
     );
     expect(screen.getByText(/No A2A conversations yet/)).toBeInTheDocument();
+  });
+
+  it("flashes a row hot when its pair's pulse key matches (same key as the switchboard)", () => {
+    render(
+      <A2AConversationList
+        conversations={[buildConversation()]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        pulses={{ "be-dev-1|be-qa": 1700000000000 }}
+      />,
+    );
+    expect(screen.getByTestId("conversation-row")).toHaveAttribute(
+      "data-pulsing",
+      "true",
+    );
   });
 });
