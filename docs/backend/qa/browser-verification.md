@@ -1,6 +1,7 @@
 # Browser Verification with Playwright
 
 **For:** Frontend QA (`fe-qa`) and UX QA (`ux-qa`) agents
+
 **Purpose:** Verify rendered output, computed styles, a11y trees, and visual design when code review and diff analysis cannot settle an acceptance criterion
 
 ## When to use browser verification
