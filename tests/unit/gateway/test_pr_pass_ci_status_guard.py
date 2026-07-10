@@ -15,6 +15,7 @@ entirely, and the separate inbound ``PRReviewerMixin`` surface
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -255,3 +256,45 @@ def test_pr_review_mixin_has_no_ci_status_coupling() -> None:
     assert "get_pr_ci_status" not in source
     assert "_ci_status_guard" not in source
     assert not hasattr(pr_review.PRReviewerMixin, "_ci_status_guard")
+
+
+# ---------------------------------------------------------------------------
+# Regression-lock: this task's 7 ACs mapped to the test(s) that cover each
+# ---------------------------------------------------------------------------
+
+
+def test_ac_coverage_map_and_pr_reviewer_prompt_states_ci_guard() -> None:
+    """Explicit AC-to-test mapping for this task's 7 acceptance criteria.
+
+    AC1 (CI failure names the failing check) ->
+        test_pr_pass_blocked_on_failing_ci (this file, line ~90)
+    AC2 (pending vs error are distinct invalid_state envelopes with a
+        different remediate text) -> test_pr_pass_blocked_on_pending_ci
+        (~111), test_pr_pass_blocked_on_github_api_error (~140)
+    AC3 (pending_not_scheduled is the retryable not-yet-scheduled case) ->
+        test_pr_pass_blocked_on_zero_checks_workflows_pending (~126)
+    AC4 (no_ci_configured passes through + stamps the ci_status verdict
+        note) -> test_pr_pass_passes_through_when_no_ci_configured_and_
+        stamps_evidence (~175)
+    AC5 (all-green CI passes through with no note) ->
+        test_pr_pass_succeeds_on_all_green (~155)
+    AC6 (pr_fail and the inbound PRReviewerMixin have zero CI-status
+        coupling) -> test_pr_fail_succeeds_regardless_of_ci_state (~221),
+        test_pr_review_mixin_has_no_ci_status_coupling (~245)
+    AC7 (the pr_reviewer prompt states the per-AC evidence-walk + CI-status
+        guard section) -> asserted directly below. Previously verified only
+        by manual reading during self-verification, with no test-level
+        regression lock — this closes that gap.
+    """
+    prompt_path = (
+        Path(__file__).resolve().parents[3]
+        / "agents"
+        / "prompts"
+        / "roles"
+        / "pr_reviewer.md"
+    )
+    text = prompt_path.read_text(encoding="utf-8")
+    assert "per-AC evidence-walk" in text
+    assert "named-deliverable/silent-drop rule" in text
+    assert "CI status:" in text
+    assert 'ci_status: "no CI configured on this project"' in text
