@@ -106,6 +106,41 @@ class TestSharedClaudeCredentialsDenied:
             assert inner.startswith("//"), f"must use // absolute form: {entry}"
 
 
+class TestSubagentBanned:
+    """Every role's settings.json denies the `Task` subagent tool.
+
+    `Task` is a default-permitted Claude Code built-in; under
+    defaultMode=bypassPermissions the manifest/allowlist omission does NOT
+    remove it — only an explicit `permissions.deny` entry does. Without this
+    the fleet-wide subagent ban (CEO, 2026-07-09) is unenforced on the Claude
+    path (the grok path already blocks it via `--disallowed-tools Agent`).
+    """
+
+    def test_developer_settings_deny_task(self) -> None:
+        orch = _orch()
+        path = orch._generate_agent_settings(
+            agent_id="be-dev-1",
+            role="developer",
+            workspace_path=_WS,
+            cell_workspace_path=_CELL,
+        )
+        deny = json.loads(Path(path).read_text())["permissions"]["deny"]
+        assert "Task" in deny, deny
+
+    def test_read_only_role_also_denies_task(self) -> None:
+        """A read-only role (pr_reviewer, the top prompt-injection target)
+        gets the same base_deny → no subagent escape hatch."""
+        orch = _orch()
+        path = orch._generate_agent_settings(
+            agent_id="be-pr-reviewer",
+            role="pr_reviewer",
+            workspace_path=_WS,
+            cell_workspace_path=_CELL,
+        )
+        deny = json.loads(Path(path).read_text())["permissions"]["deny"]
+        assert "Task" in deny, deny
+
+
 class TestSlashCommandsDisabled:
     """--disable-slash-commands accompanies every container agent spawn."""
 

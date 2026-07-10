@@ -1719,6 +1719,13 @@ class AgentOrchestrator:
         base_deny = [
             # Block ALL native git commands - must use roboco_git_* tools
             "Bash(git:*)",
+            # Fleet-wide subagent ban (CEO, 2026-07-09): no agent spawns Claude
+            # Code subagents. `Task` is a default-permitted built-in, so under
+            # defaultMode=bypassPermissions the manifest/allowlist omission does
+            # NOT remove it — only an explicit deny does. Mirrors the grok path's
+            # `--disallowed-tools Agent`. `allows_subagent` is False for every
+            # role, so this is unconditional.
+            "Task",
             # NOTE: Write/Edit are intentionally NOT globally denied here.
             # Claude Code evaluates rules deny -> ask -> allow and the first
             # match wins, so a deny ALWAYS beats a more-specific allow (the

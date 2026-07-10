@@ -249,6 +249,11 @@ def build_secretary_options(
             "mcp__secretary__search_tasks",
             "mcp__secretary__submit_directive",
         ],
+        # Fleet-wide subagent ban: `Task` is a default-permitted built-in that an
+        # allowlist omission + permission_mode="dontAsk" do NOT remove, so an
+        # explicit disallow is the only claude-code-level block (see the intake
+        # driver for the full rationale).
+        disallowed_tools=["Task"],
         model=model,
         include_partial_messages=True,
         permission_mode="dontAsk",
