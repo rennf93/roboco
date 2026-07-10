@@ -27,7 +27,7 @@ CEO-only (401 if not CEO).
 ```json
 {
   "occasion": "string",      // Unique identifier; required, min 1 char
-  "brief": "string",         // Video brief description; required, min 1 char  
+  "brief": "string",         // Video brief description; required, min 1 char
   "platforms": ["string"],   // Target platforms: ["x", "tiktok"]; required, min 1
   "project_id": "UUID"       // Project to author against; required (NEW in v2)
 }
