@@ -7,6 +7,8 @@ import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
 import {
   TaskHeader,
+  TaskBreadcrumb,
+  TaskListNav,
   TaskMetadata,
   TaskTabs,
 } from "@/components/tasks/task-detail";
@@ -443,6 +445,12 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   return (
     <div className="space-y-6">
+      {/* Breadcrumb (parent task) + prev/next list navigation */}
+      <div className="flex items-center justify-between gap-4">
+        <TaskBreadcrumb task={task} />
+        <TaskListNav task={task} />
+      </div>
+
       {/* Header */}
       <TaskHeader task={task} onAction={handleAction} />
 
