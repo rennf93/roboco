@@ -384,7 +384,7 @@ ignore = []
 # Deptry Configuration
 # =============================================================================
 [tool.deptry]
-exclude = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
+exclude = ["tests", ".venv", ".uv-cache", ".claude", "vulture_whitelist.py", "alembic"]
 extend_exclude = ["conftest.py", "setup.py"]
 known_first_party = ["roboco"]
 
