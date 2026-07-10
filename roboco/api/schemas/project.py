@@ -67,7 +67,12 @@ class ProjectResponse(BaseModel):
 
 
 class ProjectSummaryResponse(BaseModel):
-    """Compact project response for list views."""
+    """Compact project response for list views.
+
+    Returned by GET /api/projects; includes essential project metadata
+    for list-view cards. The `video_engine_enabled` field indicates
+    whether this project is opted in to the video engine subsystem.
+    """
 
     id: UUID
     name: str
