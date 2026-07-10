@@ -455,9 +455,12 @@ class PRGateMixin(_Base):
         to block, or ``(None, ci_note)`` to proceed — ``ci_note`` is a
         non-None evidence stamp only when the CI guard passed through a
         project with no CI configured at all. The toolchain/conventions
-        guards are inert when their flag is off; the CI guard fails open
-        (``None`` from ``get_pr_ci_status``) on any unresolvable project/PR
-        configuration.
+        guards are inert when their flag is off; the CI guard fails open on
+        an unresolvable gate-level slug/PR number (``None`` from
+        ``_resolve_ci_status``) and also passes through — with an evidence
+        stamp — when ``get_pr_ci_status`` itself classifies a missing
+        project/git_url/token or an unreachable/nonexistent repo as
+        ``no_ci_configured``.
         """
         guards = (
             lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
