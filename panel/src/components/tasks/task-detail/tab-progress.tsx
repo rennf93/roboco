@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 
 interface TabProgressProps {
   task: Task;
@@ -225,9 +226,13 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                         {getAgentDisplayName(update.agent_id)}
                       </span>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <span
+                          className="text-xs text-muted-foreground flex items-center gap-1"
+                          title={formatAbsoluteTimestamp(update.timestamp)}
+                        >
                           <Clock className="h-3 w-3" />
-                          {formatTime(update.timestamp)}
+                          {formatTime(update.timestamp)} ·{" "}
+                          {formatAbsoluteTimestamp(update.timestamp)}
                         </span>
                         <Button
                           size="sm"
@@ -438,9 +443,13 @@ function CheckpointsSection({ task }: { task: Task }) {
                     <span className="font-medium text-sm">Checkpoint</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                    <span
+                      className="text-xs text-muted-foreground flex items-center gap-1"
+                      title={formatAbsoluteTimestamp(checkpoint.timestamp)}
+                    >
                       <Clock className="h-3 w-3" />
-                      {formatTime(checkpoint.timestamp)}
+                      {formatTime(checkpoint.timestamp)} ·{" "}
+                      {formatAbsoluteTimestamp(checkpoint.timestamp)}
                     </span>
                     <Button
                       size="sm"
