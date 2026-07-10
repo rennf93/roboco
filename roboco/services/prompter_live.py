@@ -34,6 +34,13 @@ logger = structlog.get_logger()
 SDK_PORT = 9000
 # Sentinel pushed onto a session's queue to end its SSE stream.
 _CLOSE = object()
+# While the panel holds the SSE stream open, refresh ``last_activity`` on this
+# cadence even with no events — an open stream means the human is watching (e.g.
+# reading a proposed draft / MegaTask without typing), so the idle reaper must
+# not retire the chat out from under them. Well under
+# ``interactive_idle_reap_seconds`` (default 1800). When the tab closes the
+# generator is cancelled, the refresh stops, and the chat reaps normally.
+_STREAM_KEEPALIVE_SECONDS = 60.0
 
 
 @dataclass
@@ -182,16 +189,37 @@ class PrompterLiveRegistry:
             and now - s.last_activity > threshold_seconds
         ]
 
+    @staticmethod
+    async def _keepalive(session: LiveIntakeSession) -> None:
+        """Refresh ``last_activity`` while a stream is connected (see ``stream``)."""
+        while True:
+            await asyncio.sleep(_STREAM_KEEPALIVE_SECONDS)
+            session.last_activity = time.monotonic()
+
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Yield queued agent events until the session is closed."""
+        """Yield queued agent events until the session is closed.
+
+        A connected stream keeps the session's ``last_activity`` fresh (a
+        ``_keepalive`` task ticks every ``_STREAM_KEEPALIVE_SECONDS`` even with
+        no events), so the idle reaper treats an open, actively-watched chat as
+        alive — a human reading a proposed draft without typing is not "idle".
+        The keepalive runs beside an un-cancelled ``queue.get()`` (so no live
+        token/``_CLOSE`` is lost) and is cancelled when the stream ends; on
+        client disconnect the refresh stops and an abandoned chat reaps normally.
+        """
         session = self._sessions.get(session_id)
         if session is None:
             return
-        while True:
-            item = await session.queue.get()
-            if item is _CLOSE:
-                return
-            yield item
+        keepalive = asyncio.create_task(self._keepalive(session))
+        try:
+            while True:
+                item = await session.queue.get()
+                if item is _CLOSE:
+                    return
+                session.last_activity = time.monotonic()
+                yield item
+        finally:
+            keepalive.cancel()
 
     # -- panel -> agent ----------------------------------------------------
 

@@ -6,6 +6,7 @@ import subprocess
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.services.git import _ConventionsPr, get_git_service
@@ -23,7 +24,9 @@ def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
 
 
-async def _seed_project(db: AsyncSession, workspace_path: str) -> ProjectTable:
+async def _seed_project(
+    db: AsyncSession, workspace_path: str, *, slug: str | None = None
+) -> ProjectTable:
     agent = AgentTable(
         id=uuid4(),
         name="Dev",
@@ -42,7 +45,7 @@ async def _seed_project(db: AsyncSession, workspace_path: str) -> ProjectTable:
     project = ProjectTable(
         id=uuid4(),
         name="G-Proj",
-        slug=f"g-proj-{uuid4().hex[:8]}",
+        slug=slug or f"g-proj-{uuid4().hex[:8]}",
         git_url="https://example.com/r.git",
         default_branch="master",
         assigned_cell=Team.BACKEND,
@@ -55,10 +58,15 @@ async def _seed_project(db: AsyncSession, workspace_path: str) -> ProjectTable:
 
 
 async def test_open_conventions_pr_commits_locally_without_remote(
-    db_session: AsyncSession, tmp_path: Path
+    db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    # open_conventions_pr only accepts a workspace_path under
+    # {workspaces_root}/{slug} (the containment guard), so anchor the root at
+    # the test dir and place the repo under the project's own slug.
+    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path))
+    slug = f"g-proj-{uuid4().hex[:8]}"
+    repo = tmp_path / slug / "repo"
+    repo.mkdir(parents=True)
     _git(repo, "init", "-b", "master")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
@@ -67,7 +75,7 @@ async def test_open_conventions_pr_commits_locally_without_remote(
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "init")
 
-    project = await _seed_project(db_session, str(repo))
+    project = await _seed_project(db_session, str(repo), slug=slug)
     git = get_git_service(db_session)
     result = await git.open_conventions_pr(
         project.slug,
