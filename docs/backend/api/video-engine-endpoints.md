@@ -27,7 +27,7 @@ CEO-only (401 if not CEO).
 ```json
 {
   "occasion": "string",      // Unique identifier; required, min 1 char
-  "brief": "string",         // Video brief description; required, min 1 char  
+  "brief": "string",         // Video brief description; required, min 1 char
   "platforms": ["string"],   // Target platforms: ["x", "tiktok"]; required, min 1
   "project_id": "UUID"       // Project to author against; required (NEW in v2)
 }
@@ -176,7 +176,7 @@ CEO-only (401 if not CEO).
 1. **Task lookup**: Fetches task; validates it's a video task (`source=VIDEO_SOURCE`) with `project_id`.
 2. **Project resolution**: Looks up project by `project_id`.
 3. **Workspace fetch**: Ensures project's read-clone is available (clones if needed).
-4. **Path resolution**: 
+4. **Path resolution**:
    - Strips leading `/` from `file_path`
    - Resolves against workspace root
    - Validates resolved path is under root and is a regular file
@@ -220,7 +220,7 @@ curl -H 'X-Agent-Token: <ceo-token>' \
 Previously, the video engine hardcoded `settings.self_heal_project_slug` everywhere. Now:
 
 1. **On-demand requests** (`POST /video/request`): `project_id` required in request body
-2. **Authoring tasks**: Each task stores its own `project_id`  
+2. **Authoring tasks**: Each task stores its own `project_id`
 3. **Render loop** (`orchestrator._render_both_cuts`): Uses task's `project_id` to resolve motion/ workspace, not hardcoded setting
 
 ### Rationale
