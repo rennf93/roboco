@@ -78,6 +78,7 @@ class ProjectSummaryResponse(BaseModel):
     is_active: bool
     has_workspace: bool = False
     has_git_token: bool = False
+    video_engine_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -255,4 +256,5 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         is_active=bool(project.is_active),
         has_workspace=bool(project.workspace_path),
         has_git_token=bool(project.git_token_encrypted),
+        video_engine_enabled=bool(project.video_engine_enabled),
     )
