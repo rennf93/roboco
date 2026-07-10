@@ -17,12 +17,14 @@ The two choreographer mixins that implement the PR-reviewer's two distinct surfa
 | PRGateMixin.pr_pass | method | roboco/services/gateway/choreographer/pr_gate.py:115 | Pass the assembled PR: awaiting_pr_review → awaiting_pm_review; delegates to _gate_decision |
 | PRGateMixin.pr_fail | method | roboco/services/gateway/choreographer/pr_gate.py:123 | Fail the assembled PR with concrete issues → needs_revision; rejects empty issues list, formats issues into notes, delegates to _gate_decision |
 | PRGateMixin._gate_preflight | method | roboco/services/gateway/choreographer/pr_gate.py:148 | Ownership + role + spec gate (with self_review_block via actor_slug/original_developer_slug) + free-text soup guard for pr_pass/pr_fail; returns rejection Envelope or (t,agent,role_str,briefing,spec_ctx) |
-| PRGateMixin._record_gate_verdict_for | method | roboco/services/gateway/choreographer/pr_gate.py:229 | Author the canonical pr_review verdict note before the transition; on pr_fail also capture the assembled PR head SHA for the unchanged-PR gate |
+| PRGateMixin._record_gate_verdict_for | method | roboco/services/gateway/choreographer/pr_gate.py:229 | Author the canonical pr_review verdict note before the transition; on pr_fail also capture the assembled PR head SHA for the unchanged-PR gate; on pr_pass with ci_note, stamp the ci_status field into the verdict with evidence the CI guard ran |
 | PRGateMixin._post_gate_review | method | roboco/services/gateway/choreographer/pr_gate.py:245 | Post the gate verdict to the PR itself (best-effort, after the DB transition); resolves reviewer slug |
 | PRGateMixin._deliver_pr_fail_to_owner | method | roboco/services/gateway/choreographer/pr_gate.py:253 | a2a the pr_fail change-requests to the owning PM (best-effort) with a Main-PM-root steer to re-delegate not re-submit; closes the blind re-submit loop |
 | PRGateMixin._gate_decision | method | roboco/services/gateway/choreographer/pr_gate.py:292 | Shared body for pr_pass/pr_fail: preflight + tracing + pr_pass blocked guards + record verdict + run_intent + None-guard for concurrent transition + post-PR + a2a on fail |
-| PRGateMixin._pr_pass_blocked | method | roboco/services/gateway/choreographer/pr_gate.py:373 | Refuse pr_pass on a broken toolchain or block-level convention violation; pr_fail stays available; both guards inert when their flag is off |
-| PRGateMixin._record_gate_verdict | method | roboco/services/gateway/choreographer/pr_gate.py:403 | Persist the gate verdict as the canonical pr_review structured note (passed/failed), with issues slot for pr_fail and head_sha stamp; best-effort (ContentValidationError logged not raised) |
+| PRGateMixin._pr_pass_blocked | method | roboco/services/gateway/choreographer/pr_gate.py:373 | Refuse pr_pass on a broken toolchain, block-level convention violation, or non-green CI on the assembled PR's head commit; returns (rejection_envelope, ci_note). Both toolchain and conventions guards inert when their flags are off; CI guard fails open on configuration gaps |
+| PRGateMixin._ci_status_guard | method | roboco/services/gateway/choreographer/pr_gate.py:520 | Refuse pr_pass unless CI on the assembled PR's head commit is green. Failing/pending/unscheduled/error CI blocks with reviewer-aware remediation pointing at pr_fail; a project with no CI configured passes through cleanly with an evidence stamp |
+| PRGateMixin._resolve_ci_status | method | roboco/services/gateway/choreographer/pr_gate.py:480 | Best-effort CI-status lookup for the assembled PR's head commit; returns None on any configuration gap or lookup failure so the guard fails open |
+| PRGateMixin._record_gate_verdict | method | roboco/services/gateway/choreographer/pr_gate.py:403 | Persist the gate verdict as the canonical pr_review structured note (passed/failed), with issues slot for pr_fail, head_sha stamp for pr_fail, and ci_status evidence on pr_pass; best-effort (ContentValidationError logged not raised) |
 | PRGateMixin._capture_pr_head_sha | method | roboco/services/gateway/choreographer/pr_gate.py:468 | Best-effort capture of the assembled PR head SHA at pr_fail time via _project_slug_for + git.get_pr_head_sha; returns None on any failure (fail-open) |
 | PRGateMixin._post_gate_review_to_pr | method | roboco/services/gateway/choreographer/pr_gate.py:502 | Post APPROVE/REQUEST_CHANGES on cell→root PRs; always COMMENT on root→master (only CEO merges master); best-effort |
 | PRGateMixin._gate_role_or_rejection | method | roboco/services/gateway/choreographer/pr_gate.py:545 | Parse the role enum from role_str or return a not_authorized rejection Envelope |
@@ -85,8 +87,10 @@ pr-gate-review slice
 │       ├── _gate_decision — shared body (preflight→tracing→blocked→record→run_intent→None-guard→post→a2a)
 │       ├── _gate_preflight — ownership/role/spec-gate (self_review_block) + soup guard
 │       ├── _gate_tracing — journal:learning + pr_reviewer_notes min chars
-│       ├── _pr_pass_blocked — toolchain-broken + conventions block guards
-│       ├── _record_gate_verdict_for / _record_gate_verdict — structured pr_review note (+ issues + head_sha)
+│       ├── _pr_pass_blocked — toolchain-broken + conventions block + CI-status guards (returns rejection, ci_note)
+│       ├── _ci_status_guard — refuse pr_pass on failing/pending/unscheduled/error CI with retryable frames
+│       ├── _resolve_ci_status — best-effort GitHub check-runs lookup for PR head SHA (fails open)
+│       ├── _record_gate_verdict_for / _record_gate_verdict — structured pr_review note (+ issues + head_sha + ci_status)
 │       ├── _re_stamp_pr_fail_head_sha_if_advanced — re-capture head SHA post-transition and re-stamp verdict note if advanced (#189)
 │       ├── _capture_pr_head_sha — best-effort PR head SHA for unchanged-PR gate
 │       ├── _post_gate_review / _post_gate_review_to_pr — PR review post (COMMENT on root→master or MegaTask root-subtask)
@@ -125,6 +129,7 @@ pr-gate-review slice
 - ROBOCO_TOOLCHAIN_MATCH_ENABLED (gates _toolchain_broken_guard in _pr_pass_blocked — inert when off)
 - ROBOCO_CONVENTIONS_ENABLED (gates _conventions_guard in _pr_pass_blocked — inert when off)
 - ROBOCO_PR_REVIEWER_NOTES_MIN_CHARS / settings.pr_reviewer_notes_min_chars (tracing gate substantive-note threshold for pr_pass/pr_fail/post_pr_review)
+- CI-status guard is always armed when the toolchain can reach get_pr_ci_status via git service; fails open on any configuration gap or lookup failure so a misconfigured project's CI is silently not enforced (never blocks pr_pass)
 
 
 ## Gotchas
@@ -167,6 +172,9 @@ pr-gate-review slice
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
+|---|---|---|---|
+| CI-status guard reads GitHub check-runs only, not legacy commit-status API | roboco/services/gateway/choreographer/pr_gate.py:520 | _ci_status_guard and get_pr_ci_status read only the check-runs API endpoint. A repo whose only CI signal is the legacy commit-status API would show zero check-runs and be classified as no_ci_configured (passes through). Noted as ponytail-comment in git.py with the upgrade path if a project ever needs it. | low |
+| CI-status guard fails open on project/token/head-sha resolution gaps | roboco/services/gateway/choreographer/pr_gate.py:480 | _resolve_ci_status returns None on any unresolvable configuration gap (missing project, git_url, token, or PR head SHA), so the guard never blocks pr_pass on a misconfigured project. By design: network-isolation or stale-config should not wedge the gate. A deliberately misconfigured project's CI is silently not enforced. | low |
 |---|---|---|---|
 | self_review_block could fire if a reviewer is also the original developer | roboco/services/gateway/choreographer/pr_gate.py:202 | actor_slug=str(reviewer_agent_id) + original_developer_slug=markers.get_original_developer(t). The comment asserts dormancy because the marker is never set on assembled coordination tasks. If a future change sets the marker on an assembled task (or a reviewer UUID coincides with the recorded dev UUID), pr_pass/pr_fail would be refused as self-review with no remediate path. The defense is correctly wired but unguarded by a test asserting dormancy. | low |
 | ~~resolve_task_project_slug cell_projects branch can raise AttributeError on malformed mapping~~ **FIXED 536bbb64 #82** | roboco/services/gateway/choreographer/pr_review.py:594 | ~~sorted(cell_map, key=lambda m: m.team.value) assumes every mapping has a non-None team with .value. _capture_pr_head_sha wraps the slug call in try/except (fail-open), but _post_gate_review_to_pr calls self._project_slug_for(t) WITHOUT a try/except — a malformed cell_map mapping would raise and abort the verdict PR post (best-effort but the exception escapes the helper, caught only by the outer try in _post_gate_review_to_pr's git.post_pr_review call, NOT the slug resolution).~~ _post_gate_review_to_pr now wraps the slug-resolve call in its own try/except (mirrors _capture_pr_head_sha) — a malformed mapping logs and returns, no longer 500s the reviewer after the committed gate transition. The underlying AttributeError possibility in resolve_task_project_slug remains but is contained. | medium |
