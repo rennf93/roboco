@@ -15,6 +15,7 @@ const {
   reject,
   requestVideo,
   getMediaBlob,
+  rerender,
 } = vi.hoisted(() => ({
   listPosts: vi.fn(
     async () =>
@@ -53,6 +54,7 @@ const {
   getMediaBlob: vi.fn(
     async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
   ),
+  rerender: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -63,7 +65,17 @@ vi.mock("@/lib/api", () => ({
     reject,
     requestVideo,
     getMediaBlob,
+    rerender,
   },
+}));
+// ProjectSelector: a button that sets the project, mirroring
+// create-task-dialog.test.tsx — bypasses the data-fetching combobox.
+vi.mock("@/components/projects/project-selector", () => ({
+  ProjectSelector: ({ onChange }: { onChange: (v: string | null) => void }) => (
+    <button type="button" onClick={() => onChange("p-1")}>
+      Set Project
+    </button>
+  ),
 }));
 
 import { VideoPostQueue } from "../video-post-queue";
@@ -277,11 +289,12 @@ describe("VideoPostQueue", () => {
     );
   });
 
-  it("requests an on-demand video with the chosen occasion, brief, and platforms", async () => {
+  it("requests an on-demand video with the chosen project, occasion, brief, and platforms", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
 
     fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
     fireEvent.change(screen.getByLabelText("Occasion"), {
       target: { value: "Founder's Day" },
     });
@@ -296,8 +309,26 @@ describe("VideoPostQueue", () => {
         occasion: "Founder's Day",
         brief: "Celebrate the founding.",
         platforms: ["x", "tiktok"],
+        project_id: "p-1",
       }),
     );
+  });
+
+  it("keeps Request disabled until a project is picked", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    fireEvent.change(screen.getByLabelText("Occasion"), {
+      target: { value: "Founder's Day" },
+    });
+    fireEvent.change(screen.getByLabelText("Brief"), {
+      target: { value: "Celebrate the founding." },
+    });
+    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    expect(screen.getByRole("button", { name: "Request" })).not.toBeDisabled();
   });
 
   it("shows the keys/engine empty copy when nothing is in the pipeline either", async () => {
@@ -331,5 +362,73 @@ describe("VideoPostQueue", () => {
       await screen.findByText(/1 video in flight — nothing rendered yet/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/No drafts yet/)).not.toBeInTheDocument();
+  });
+
+  it("does not show a re-render button when the draft's render is healthy", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    expect(
+      screen.queryByRole("button", { name: /Re-render/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a re-render button only on a stale draft and triggers the backend re-render action", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        render_status: "failed",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    const rerenderButton = screen.getByRole("button", { name: /Re-render/ });
+    fireEvent.click(rerenderButton);
+
+    await waitFor(() => expect(rerender).toHaveBeenCalledWith("auth-1"));
+  });
+
+  it("shows the live composition preview iframe with captions when composition_id is present", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        composition_id: "release-recap",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    const iframe = document.querySelector("iframe");
+    expect(iframe).toBeInTheDocument();
+    expect(iframe?.getAttribute("src")).toContain(
+      "/video/preview/auth-1/motion/compositions/release-recap/vertical.html",
+    );
+    expect(screen.getByText("Captions as they will post")).toBeInTheDocument();
+  });
+
+  it("hides the composition preview panel when the draft carries no composition_id", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    expect(document.querySelector("iframe")).not.toBeInTheDocument();
   });
 });

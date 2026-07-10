@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { videoApi } from "@/lib/api";
+import { compositionPreviewUrl } from "@/lib/api/video";
 import type {
   VideoCut,
   VideoPost,
@@ -30,7 +31,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, Film, Sparkles, XCircle } from "lucide-react";
+import { ProjectSelector } from "@/components/projects/project-selector";
+import { CheckCircle2, Film, RefreshCw, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 const MAX_X_CAPTION_CHARS = 280;
@@ -62,6 +64,98 @@ function describeExecuteResult(result: VideoPostExecuteResult): string {
   if (result.status === "redis_unavailable")
     return "Redis is unavailable — can't acquire the post lock.";
   return `${result.status}: ${result.detail}`;
+}
+
+// Re-render retry control — only rendered by the caller when the draft's
+// render is stale (render_status === "failed"; see VideoPostRow). Three
+// visual states: idle (button, ready to click), loading (mutation
+// in-flight), error (the retry itself failed — button re-enables so the CEO
+// can try again). Mirrors the pipeline strip's render_failed derivation in
+// video-pipeline-utils.ts.
+function RerenderControl({ authoringTaskId }: { authoringTaskId: string }) {
+  const queryClient = useQueryClient();
+  const rerenderMutation = useMutation({
+    mutationFn: () => videoApi.rerender(authoringTaskId),
+    onSuccess: () => {
+      toast.success("Re-render queued — it will re-pick up on the next cycle.");
+      queryClient.invalidateQueries({ queryKey: ["video", "pipeline"] });
+    },
+    onError: (e) =>
+      toast.error(
+        `Re-render failed: ${e instanceof Error ? e.message : "error"}`,
+      ),
+  });
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={rerenderMutation.isPending}
+      onClick={() => rerenderMutation.mutate()}
+      className={
+        rerenderMutation.isError
+          ? "border-destructive text-destructive"
+          : undefined
+      }
+    >
+      <RefreshCw
+        className={`mr-1 h-4 w-4 ${rerenderMutation.isPending ? "animate-spin" : ""}`}
+      />
+      {rerenderMutation.isPending
+        ? "Re-rendering..."
+        : rerenderMutation.isError
+          ? "Retry re-render"
+          : "Re-render"}
+    </Button>
+  );
+}
+
+// Live composition preview: the authoring task's actual HyperFrames HTML for
+// the currently-selected cut, embedded via the backend's composition-HTML
+// proxy (iframe-permitting headers, so a direct <iframe src> works — no
+// blob-fetch workaround needed, unlike the MP4 player below). Read-only
+// captions sit alongside so the CEO can compare the live composition against
+// what will actually post, before approving. Renders nothing when the draft
+// carries no composition_id (older drafts / backend not yet exposing it).
+function CompositionPreviewPanel({
+  post,
+  cut,
+}: {
+  post: VideoPost;
+  cut: VideoCut;
+}) {
+  if (!post.composition_id || !post.source_task_id) return null;
+  return (
+    <div className="mb-3 grid gap-3 rounded-md border p-3 sm:grid-cols-2">
+      <iframe
+        src={compositionPreviewUrl(
+          post.source_task_id,
+          post.composition_id,
+          cut,
+        )}
+        title={`${post.title} — live composition preview`}
+        sandbox="allow-scripts"
+        loading="lazy"
+        className="aspect-video w-full rounded-md border bg-black"
+      />
+      <div className="space-y-2 text-sm">
+        <p className="font-medium text-muted-foreground">
+          Captions as they will post
+        </p>
+        {post.x_caption && (
+          <p>
+            <span className="font-medium">X:</span> {post.x_caption}
+          </p>
+        )}
+        {post.tiktok_caption && (
+          <p>
+            <span className="font-medium">TikTok:</span> {post.tiktok_caption}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // One row of the queue: an MP4 preview (9:16 / 1:1 cut switcher) + per-
@@ -134,6 +228,11 @@ function VideoPostRow({
   const tiktokOverLimit =
     editTiktok && tiktokCaption.length > MAX_TIKTOK_CAPTION_CHARS;
   const overLimit = xOverLimit || tiktokOverLimit;
+  // The re-render (CEO retry) endpoint's use case is retrying a render that
+  // hit a terminal failed state — mirrors video-pipeline-utils.ts's
+  // render_failed derivation. Undefined render_status (backend not yet
+  // exposing it on this response, or a healthy render) never shows the button.
+  const isStale = post.render_status === "failed" && !!post.source_task_id;
 
   const handleApprove = () => {
     onApprove(post.task_id, {
@@ -148,6 +247,11 @@ function VideoPostRow({
         <meta.icon className="h-4 w-4 text-muted-foreground" />
         <span className="font-medium">{meta.label}</span>
         {post.occasion && <Badge variant="outline">{post.occasion}</Badge>}
+        {isStale && post.source_task_id && (
+          <div className="ml-auto">
+            <RerenderControl authoringTaskId={post.source_task_id} />
+          </div>
+        )}
       </div>
 
       <p className="mb-1 text-sm font-medium">{post.title}</p>
@@ -156,6 +260,8 @@ function VideoPostRow({
           {post.script}
         </p>
       )}
+
+      <CompositionPreviewPanel post={post} cut={cut} />
 
       <div className="mb-3 space-y-2">
         <div className="flex gap-2">
@@ -176,7 +282,9 @@ function VideoPostRow({
             size="sm"
             variant={cut === "square" ? "default" : "outline"}
             disabled={!post.mp4_paths?.square}
-            title={post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"}
+            title={
+              post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"
+            }
             onClick={() => setCut("square")}
           >
             1:1{!post.mp4_paths?.square && " (missing)"}
@@ -294,6 +402,7 @@ function RequestVideoDialog({
   const [occasion, setOccasion] = useState("");
   const [brief, setBrief] = useState("");
   const [platforms, setPlatforms] = useState<string[]>(["x", "tiktok"]);
+  const [projectId, setProjectId] = useState<string | null>(null);
 
   const requestMutation = useMutation({
     mutationFn: () =>
@@ -301,6 +410,7 @@ function RequestVideoDialog({
         occasion: occasion.trim(),
         brief: brief.trim(),
         platforms,
+        project_id: projectId as string,
       }),
     onSuccess: (result) => {
       if (result.status === "opened") {
@@ -309,6 +419,7 @@ function RequestVideoDialog({
         setOccasion("");
         setBrief("");
         setPlatforms(["x", "tiktok"]);
+        setProjectId(null);
       } else {
         toast.warning(result.detail);
       }
@@ -328,6 +439,7 @@ function RequestVideoDialog({
   };
 
   const canSubmit =
+    !!projectId &&
     occasion.trim().length > 0 &&
     brief.trim().length > 0 &&
     platforms.length > 0;
@@ -344,6 +456,15 @@ function RequestVideoDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Project</Label>
+            <ProjectSelector
+              value={projectId}
+              onChange={setProjectId}
+              placeholder="Select the project this video is about..."
+              allowClear={false}
+            />
+          </div>
           <div className="space-y-2">
             <Label htmlFor="video-request-occasion">Occasion</Label>
             <Input
