@@ -169,7 +169,7 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
     # the fetches authenticate (unauth fails on private repos).
     svc._resolve_head_ref.assert_awaited_once_with(Path("/tmp/qa-ws"), _BR, token="tok")
     svc._resolve_diff_base.assert_awaited_once_with(
-        Path("/tmp/qa-ws"), _BR, token="tok"
+        Path("/tmp/qa-ws"), _BR, token="tok", preferred_parent=None
     )
 
 
@@ -192,7 +192,7 @@ async def test_list_changed_files_targets_origin_head_in_foreign_clone() -> None
     assert files == ["README.md", "src/app.py"]
     assert captured == [["diff", "--name-only", f"origin/master...origin/{_BR}"]]
     svc._resolve_diff_base.assert_awaited_once_with(
-        Path("/tmp/qa-ws"), _BR, token="tok"
+        Path("/tmp/qa-ws"), _BR, token="tok", preferred_parent=None
     )
 
 
@@ -213,6 +213,93 @@ async def test_diff_honours_explicit_base_with_resolved_head() -> None:
 
     with patch.object(svc, "_run_git", new=fake_run):
         await svc.diff(branch_name=_BR, base="HEAD~1")
+    assert captured == [["diff", f"HEAD~1...{_BR}"]]
+    svc._resolve_diff_base.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# In-path PR-review gate cross-team fix: an explicit ``preferred_parent``
+# (resolve_parent_branch's real parent-task branch) overrides the derived
+# parent_branch_for, fetched + qualified exactly like the derived one — and
+# falls back to the same repo-default when it was never pushed. An explicit
+# literal ``base`` (e.g. HEAD~1 above) still wins outright and ignores it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_diff_base_uses_preferred_parent_when_pushed() -> None:
+    svc = _git_service()
+    svc._run_git = AsyncMock()
+    svc._ref_exists = AsyncMock(return_value=True)
+    ws = Path("/tmp/ws")
+
+    base = await svc._resolve_diff_base(
+        ws,
+        "feature/frontend/f7d0a61a--e56e6543--e2b50b06",
+        preferred_parent="feature/main_pm/f7d0a61a--e56e6543",
+    )
+    # NOT the same-team derivation (feature/frontend/f7d0a61a--e56e6543).
+    assert base == "origin/feature/main_pm/f7d0a61a--e56e6543"
+
+
+@pytest.mark.asyncio
+async def test_resolve_diff_base_preferred_parent_falls_back_when_absent() -> None:
+    """A preferred_parent that was never pushed (unassembled branchless
+    parent) still falls back to the repo default branch — never crashes."""
+    svc = _git_service()
+    svc._run_git = AsyncMock()
+    svc._ref_exists = AsyncMock(return_value=False)
+    svc._default_branch_ref = AsyncMock(return_value="origin/master")
+    ws = Path("/tmp/ws")
+
+    base = await svc._resolve_diff_base(
+        ws, "feature/main_pm/f7d0a61a--e56e6543", preferred_parent="master"
+    )
+    assert base == "origin/master"
+    svc._default_branch_ref.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_diff_threads_preferred_parent_into_resolve_diff_base() -> None:
+    """diff()/list_changed_files() forward preferred_parent only when base is
+    omitted — the gate's evidence-build path (no explicit base)."""
+    svc = _git_service()
+    svc._workspace_for_branch = AsyncMock(return_value=Path("/tmp/ws"))
+    svc._resolve_head_ref = AsyncMock(return_value=_BR)
+    svc._token_for_branch = AsyncMock(return_value="tok")
+    svc._ref_exists = AsyncMock(return_value=True)
+    svc._run_git = AsyncMock(
+        return_value=type("R", (), {"returncode": 0, "stdout": "diff body"})()
+    )
+
+    out = await svc.diff(branch_name=_BR, preferred_parent="feature/main_pm/root")
+    assert out == "diff body"
+    svc._run_git.assert_any_call(
+        Path("/tmp/ws"),
+        ["diff", f"origin/feature/main_pm/root...{_BR}"],
+        check=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_base_ignores_preferred_parent() -> None:
+    """An explicit literal base wins outright — preferred_parent is only
+    consulted when base is omitted."""
+    svc = _git_service()
+    svc._workspace_for_branch = AsyncMock(return_value=Path("/tmp/ws"))
+    svc._resolve_head_ref = AsyncMock(return_value=_BR)
+    svc._token_for_branch = AsyncMock(return_value=None)
+    svc._resolve_diff_base = AsyncMock(return_value="SHOULD_NOT_BE_USED")
+    captured: list[list[str]] = []
+
+    async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
+        captured.append(args)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    with patch.object(svc, "_run_git", new=fake_run):
+        await svc.diff(
+            branch_name=_BR, base="HEAD~1", preferred_parent="feature/main_pm/root"
+        )
     assert captured == [["diff", f"HEAD~1...{_BR}"]]
     svc._resolve_diff_base.assert_not_awaited()
 

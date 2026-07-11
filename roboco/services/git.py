@@ -4809,7 +4809,12 @@ class GitService(BaseService):
         return "origin/master"
 
     async def _resolve_diff_base(
-        self, workspace: Any, branch_name: str, token: str | None = None
+        self,
+        workspace: Any,
+        branch_name: str,
+        token: str | None = None,
+        *,
+        preferred_parent: str | None = None,
     ) -> str:
         """Best diff base for `branch_name` when no explicit base is given.
 
@@ -4826,10 +4831,23 @@ class GitService(BaseService):
         a stale base spans the whole repo delta, not the branch's change.
         Re-fetch the resolved base authenticated (unauth fails on private
         repos) so the base is current.
+
+        ``preferred_parent``, when given, overrides the string-derived
+        ``parent_branch_for`` with an authoritative parent branch name (e.g.
+        ``merge_chain.resolve_parent_branch``, which reads the parent TASK's
+        own ``branch_name`` — correct across a team boundary, unlike the
+        derivation below which reuses ``branch_name``'s own team segment).
+        Still falls back to the repo default branch when that parent was
+        never pushed, so an unassembled/branchless parent can't crash the
+        diff.
         """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
-        parent = parent_branch_for(branch_name)
+        parent = (
+            preferred_parent
+            if preferred_parent is not None
+            else parent_branch_for(branch_name)
+        )
         await self._run_git(
             workspace, ["fetch", "origin", parent], check=False, token=token
         )
@@ -4891,6 +4909,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> str:
         """Return the git diff for `branch_name` against `base`.
 
@@ -4902,6 +4921,11 @@ class GitService(BaseService):
         ``actor_agent_id`` resolves the workspace via the caller's clone
         when ``task.assigned_to`` is None — important for
         QA reviewing post-submit_qa.
+
+        ``preferred_parent`` is ignored once ``base`` is explicit; it only
+        overrides the derived-parent lookup (see ``_resolve_diff_base``) for
+        a caller with an authoritative parent branch name (a cross-team
+        assembled-PR review) — never a literal ref like ``base="HEAD~1"``.
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4911,7 +4935,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -4924,6 +4950,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> list[str]:
         """Return the file paths changed on `branch_name` relative to `base`.
 
@@ -4933,7 +4960,7 @@ class GitService(BaseService):
         ever called the legacy ``add_files_modified`` HTTP endpoint
         (which the gateway commit() does not call). Empty paths are
         skipped; output preserves git's order. Same default-
-        branch fallback as ``diff``.
+        branch fallback as ``diff`` (including ``preferred_parent``).
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4943,7 +4970,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         result = await self._run_git(
             workspace,
@@ -5062,7 +5091,11 @@ class GitService(BaseService):
         }
 
     async def conventions_check_for_task(
-        self, actor_agent_id: UUID | None, task: Any
+        self,
+        actor_agent_id: UUID | None,
+        task: Any,
+        *,
+        preferred_parent: str | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -5074,6 +5107,9 @@ class GitService(BaseService):
         exit-3 philosophy). The two empty-result paths stay fail-open: a
         branchless task (no ``branch_name``) and a task with no changed files
         genuinely have nothing to validate, so the gate correctly passes.
+
+        ``preferred_parent`` threads to ``list_changed_files`` — the in-path
+        PR-review gate's cross-team parent (see ``diff``'s docstring).
         """
         try:
             branch = task.branch_name
@@ -5083,7 +5119,9 @@ class GitService(BaseService):
                 branch, actor_agent_id=actor_agent_id
             )
             changed = await self.list_changed_files(
-                branch_name=branch, actor_agent_id=actor_agent_id
+                branch_name=branch,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
             )
         except Exception as exc:
             return {

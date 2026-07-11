@@ -96,6 +96,28 @@ async def test_no_changed_files_still_fails_open() -> None:
 
 
 @pytest.mark.asyncio
+async def test_preferred_parent_forwards_to_list_changed_files() -> None:
+    """The in-path PR-review gate's cross-team parent (see ``diff``) must
+    reach ``list_changed_files`` so the validator never analyzes files
+    inherited from the wrong-team derived base."""
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    changed = AsyncMock(return_value=[])
+    _bind(svc, "list_changed_files", changed)
+    actor_id = uuid4()
+    await svc.conventions_check_for_task(
+        actor_id,
+        _task("feature/frontend/root--cell"),
+        preferred_parent="feature/main_pm/root",
+    )
+    changed.assert_awaited_once_with(
+        branch_name="feature/frontend/root--cell",
+        actor_agent_id=actor_id,
+        preferred_parent="feature/main_pm/root",
+    )
+
+
+@pytest.mark.asyncio
 async def test_validator_timeout_fails_closed_and_reaps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

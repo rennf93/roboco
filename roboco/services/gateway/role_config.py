@@ -143,6 +143,7 @@ _AUDITOR_DO = (
     "approve_playbook",
     "reject_playbook",
     "archive_playbook",
+    "curate_vault",
     "notify_list",
     "notify_get",
 )

@@ -298,11 +298,14 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     sibling without a ``project_id`` cannot collide (collisions are scoped to
     a repo) and is skipped. Siblings are ordered by ``(priority, sequence)``
     before indexing so the analyzer's edge order is stable across re-runs
-    (a newly-delegated sibling takes a fresh ``sequence``; existing siblings
-    keep theirs), so re-running after each delegate only ADDS edges for the
-    new sibling's collisions — never flips an existing pair's order into a
-    reverse edge (which would cycle). ``add_dependency`` dedupes, so repeated
-    wiring is a no-op on already-wired pairs.
+    (a newly-delegated sibling arrives at the default sequence and is
+    wave-stamped post-wiring; existing siblings keep theirs, and sequence
+    ties break by the stable ``created_at`` list order), so re-running after
+    each delegate only ADDS edges for the new sibling's collisions — never
+    flips an existing pair's order into a reverse edge (which would cycle:
+    waves are edge-consistent, so an edge-wired pair can never invert its
+    sort). ``add_dependency`` dedupes, so repeated wiring is a no-op on
+    already-wired pairs.
     """
     # Collision edges from DECLARED surfaces. Fewer than two surfaced siblings
     # -> no collision path (edges stays empty); the undeclared-surface fallback
@@ -384,9 +387,12 @@ def by_osmosis_tail_dev_tasks(
     fully-merged tail. Subsequent dev tasks inherit the tail via the kind-3
     collision DAG (they depend on earlier siblings) or share the cell branch's
     already-merged base, so they need no explicit edge. "Tail" = the
-    highest-``sequence`` dev task under each predecessor cell-task; a
-    predecessor with no dev tasks contributes no edge. Idempotent + best-effort
-    (a tail already terminal is a no-op gate).
+    highest-``sequence`` dev task under each predecessor cell-task; sequence
+    ties (wave-stamped independent siblings) resolve to the LAST group member
+    (groups arrive in ``created_at`` order — the merge barrier's tiebreak —
+    so the tail is the last-merging task); a predecessor with no dev tasks
+    contributes no edge. Idempotent + best-effort (a tail already terminal is
+    a no-op gate).
     """
     if not is_first_dev_task:
         return []
@@ -394,6 +400,9 @@ def by_osmosis_tail_dev_tasks(
     for group in predecessor_dev_task_groups:
         if not group:
             continue
-        tail = max(group, key=lambda t: int(getattr(t, "sequence", 0)))
+        _, tail = max(
+            enumerate(group),
+            key=lambda pair: (int(getattr(pair[1], "sequence", 0)), pair[0]),
+        )
         tails.append(getattr(tail, "id", tail))
     return tails

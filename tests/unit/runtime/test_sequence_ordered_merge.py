@@ -9,6 +9,7 @@ cancelled sibling can't deadlock the rest.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -107,6 +108,61 @@ async def test_higher_sequence_sibling_does_not_block() -> None:
     # A LATER sibling (seq 1) must not hold up the earlier one (seq 0).
     siblings = [_sibling(1, "frontend", TaskStatus.IN_PROGRESS)]
     p1, p2 = _patch_siblings(siblings)
+    with p1, p2:
+        assert await orch._blocked_by_earlier_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_equal_sequence_created_earlier_sibling_blocks() -> None:
+    """Wave ties (independent siblings share a sequence) tie-break by
+    created_at: the earlier-created same-team sibling merges first, so the
+    later one's review dispatch is held — the shared-cell-branch merge race
+    the ordinal used to prevent."""
+    orch = _new_orchestrator()
+    task = {
+        "id": str(uuid4()),
+        "parent_task_id": str(uuid4()),
+        "sequence": 0,
+        "team": "frontend",
+        "created_at": "2026-07-10T12:00:00+00:00",
+    }
+    earlier = _sibling(0, "frontend", TaskStatus.IN_PROGRESS)
+    earlier.created_at = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([earlier])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_sibling(task) is True
+
+
+@pytest.mark.asyncio
+async def test_equal_sequence_created_later_sibling_does_not_block() -> None:
+    orch = _new_orchestrator()
+    task = {
+        "id": str(uuid4()),
+        "parent_task_id": str(uuid4()),
+        "sequence": 0,
+        "team": "frontend",
+        "created_at": "2026-07-10T12:00:00+00:00",
+    }
+    later = _sibling(0, "frontend", TaskStatus.IN_PROGRESS)
+    later.created_at = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([later])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_equal_sequence_unparseable_created_at_fails_open() -> None:
+    """A tie that can't be ordered (missing/mock created_at) must not wedge
+    dispatch — the tiebreak degrades to not-blocked."""
+    orch = _new_orchestrator()
+    task = {
+        "id": str(uuid4()),
+        "parent_task_id": str(uuid4()),
+        "sequence": 0,
+        "team": "frontend",
+    }
+    tie = _sibling(0, "frontend", TaskStatus.IN_PROGRESS)
+    p1, p2 = _patch_siblings([tie])
     with p1, p2:
         assert await orch._blocked_by_earlier_sibling(task) is False
 

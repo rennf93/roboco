@@ -46,6 +46,8 @@ X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
+VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
+VAULT_NOTE_REF = "vault_note_ref"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -277,6 +279,36 @@ def get_video_reject_reason(task: HasMarkers) -> str | None:
 
 def set_video_reject_reason(task: HasMarkers, reason: str) -> None:
     set_marker(task, VIDEO_REJECT_REASON, reason)
+
+
+# --- vault curation ---------------------------------------------------------
+# One-shot guard for the root-completion Auditor spawn (orchestrator): set the
+# moment the spawn fires so a restart can't re-spawn a root another process
+# instance already dispatched (in-memory `_board_dispatched` covers the
+# same-process race; this covers cross-restart).
+
+
+def is_vault_curation_dispatched(task: HasMarkers) -> bool:
+    return bool(get_marker(task, VAULT_CURATION_DISPATCHED, False))
+
+
+def mark_vault_curation_dispatched(task: HasMarkers) -> None:
+    set_marker(task, VAULT_CURATION_DISPATCHED, True)
+
+
+# --- vault note ref ----------------------------------------------------------
+# The vault-intake watcher's origin ref on a held ``vault_note`` draft:
+# {path, content_hash, action_items}. Set once at origination; read back by
+# nothing else yet (phase 2 could use it to re-locate the source note).
+
+
+def get_vault_note_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, VAULT_NOTE_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_vault_note_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, VAULT_NOTE_REF, ref)
 
 
 # --- external PR head ------------------------------------------------------ #

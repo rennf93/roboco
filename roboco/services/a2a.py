@@ -1343,7 +1343,44 @@ class A2AService:
         await self._publish_a2a_message_sent(
             model, task_id, from_agent, to_agent, skill
         )
+        await self._materialize_vault_note(model, conv, from_agent, to_agent)
         return model
+
+    @staticmethod
+    async def _materialize_vault_note(
+        msg: A2AChatMessage,
+        conv: A2AConversationTable,
+        from_agent: str,
+        to_agent: str,
+    ) -> None:
+        """Best-effort Obsidian-vault thread digest (event seam).
+
+        A vault failure never fails the A2A send — logged and swallowed,
+        same posture as ``_publish_a2a_message_sent``.
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.vault_writer import (
+                A2AMessageData,
+                TaskLinkRef,
+                get_vault_writer,
+            )
+
+            task_ref = TaskLinkRef(id=str(conv.task_id)) if conv.task_id else None
+            get_vault_writer().append_a2a_message(
+                A2AMessageData(
+                    conversation_id=str(conv.id),
+                    message_id=str(msg.id),
+                    from_agent=from_agent,
+                    to_agent=to_agent,
+                    content=msg.content,
+                    timestamp=msg.created_at or datetime.now(UTC),
+                    task_ref=task_ref,
+                )
+            )
+        except Exception as e:
+            logger.warning("Vault A2A note materialization failed", error=str(e))
 
     async def get_messages(
         self,
