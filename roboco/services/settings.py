@@ -70,6 +70,8 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("video_on_spotlight", "Video on feature spotlight"),
     ("roadmap_engine_enabled", "Board roadmap engine"),
     ("fable_mode_enabled", "Fable + Ponytail doctrine (+ hooks)"),
+    ("obsidian_vault_enabled", "Obsidian vault projection"),
+    ("vault_intake_enabled", "Vault intake watcher (notes -> held drafts)"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
 

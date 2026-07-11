@@ -202,6 +202,10 @@ select = [
 # imports so the prompt-composition utility stays decoupled from the heavy
 # service graph (it loads at every agent spawn).
 "roboco/agents/factories/_base.py" = ["PLC0415"]
+# roboco/vault.py's cheap ensure_vault_assets() is imported at orchestrator
+# startup; _rebuild()'s full service graph (Task/Journal/A2A/Agent services)
+# stays deferred so that startup path never pays for it.
+"roboco/vault.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.
@@ -380,7 +384,7 @@ ignore = []
 # Deptry Configuration
 # =============================================================================
 [tool.deptry]
-exclude = ["tests", ".venv", "vulture_whitelist.py", "alembic"]
+exclude = ["tests", ".venv", ".uv-cache", ".claude", "vulture_whitelist.py", "alembic"]
 extend_exclude = ["conftest.py", "setup.py"]
 known_first_party = ["roboco"]
 

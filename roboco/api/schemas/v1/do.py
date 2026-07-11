@@ -278,3 +278,10 @@ class ArchivePlaybookRequest(BaseModel):
     """Auditor archives a playbook (-> archived)."""
 
     playbook_id: UUID
+
+
+class CurateVaultRequest(BaseModel):
+    """Auditor writes a root task-tree's vault narrative section."""
+
+    task_id: UUID
+    narrative: str = Field(..., min_length=1)

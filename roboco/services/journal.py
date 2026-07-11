@@ -301,6 +301,9 @@ class JournalService(BaseService):
             ),
             is_private=entry_create.is_private,
         )
+        await self._materialize_vault_note(
+            entry_row, agent_id_for_index, is_private=entry_create.is_private
+        )
 
         return JournalEntry(
             id=require_uuid(entry_row.id),
@@ -315,6 +318,52 @@ class JournalService(BaseService):
             is_private=entry_row.is_private,
             created_at=entry_row.created_at,
         )
+
+    async def _materialize_vault_note(
+        self, entry_row: JournalEntryTable, agent_id: UUID, *, is_private: bool
+    ) -> None:
+        """Best-effort Obsidian-vault note for this entry (event seam).
+
+        Mirrors the RAG-index exclusion: a private entry never leaves the
+        agent's own journal, vault included. A vault failure NEVER fails the
+        journal write — logged and swallowed, same posture as the RAG index.
+        """
+        from roboco.config import settings
+
+        if is_private or not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.foundation.policy.journaling import TYPE_TO_SCOPE
+            from roboco.services.vault_writer import (
+                JournalNoteData,
+                TaskLinkRef,
+                get_vault_writer,
+            )
+
+            agent_slug = await self.get_agent_slug(agent_id)
+            if not agent_slug:
+                return
+            scope = TYPE_TO_SCOPE.get(entry_row.type)
+            task_ref = (
+                TaskLinkRef(id=str(entry_row.task_id)) if entry_row.task_id else None
+            )
+            get_vault_writer().write_journal_entry(
+                JournalNoteData(
+                    entry_id=str(entry_row.id),
+                    agent_slug=agent_slug,
+                    scope=scope.value if scope else str(entry_row.type),
+                    title=entry_row.title,
+                    content=entry_row.content,
+                    timestamp=entry_row.timestamp,
+                    task_ref=task_ref,
+                )
+            )
+        except Exception as e:
+            self.log.warning(
+                "Vault note materialization failed (best-effort)",
+                entry_id=str(entry_row.id),
+                error=str(e),
+            )
 
     def _schedule_rag_index(
         self, params: IndexJournalEntryParams, *, is_private: bool
