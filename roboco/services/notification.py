@@ -328,6 +328,212 @@ class NotificationService:
             )
         )
 
+    async def send_reassignment_notification(
+        self,
+        task_id: str,
+        previous_assignee: str | None,
+        new_assignee: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the outgoing + incoming owner (and the CEO) a task moved.
+
+        Skipped by the caller when ``new_assignee == previous_assignee`` —
+        ``TaskService.reassign`` runs even on a no-op redirect, and a
+        same-owner "reassignment" is not a coordination event.
+        """
+        recipients = list(
+            dict.fromkeys(r for r in (previous_assignee, new_assignee, to_ceo) if r)
+        )
+        if not recipients:
+            return
+        logger.info(
+            "Sending reassignment notification",
+            task_id=task_id,
+            previous_assignee=previous_assignee,
+            new_assignee=new_assignee,
+        )
+        body = (
+            f"Task {task_id} was reassigned from "
+            f"{previous_assignee or 'unassigned'} to {new_assignee or 'unassigned'}."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} reassigned",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_collision_sequencing_notification(
+        self,
+        held_back_task_id: str,
+        blocking_task_id: str,
+        held_back_assignee: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the held-back task's owner (+ CEO) it now waits on a sibling.
+
+        Fired only for a newly-created collision-sequencing edge (see
+        ``wire_sibling_collision_dag`` — a repeat wiring pass over an
+        already-wired pair contributes no edge, so this cannot double-fire).
+        """
+        recipients = list(dict.fromkeys(r for r in (held_back_assignee, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending collision-sequencing notification",
+            held_back_task_id=held_back_task_id,
+            blocking_task_id=blocking_task_id,
+        )
+        body = (
+            f"Task {held_back_task_id} was held back by the collision-sequencing "
+            f"analyzer: it now depends on task {blocking_task_id}, which surfaced "
+            "an overlapping file/migration/shared-surface collision. It will "
+            "resume once that task reaches a terminal state."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {held_back_task_id} sequenced behind a sibling",
+                body=body,
+                related_task_id=held_back_task_id,
+            )
+        )
+
+    async def send_unblock_notification(
+        self,
+        task_id: str,
+        restored_owner: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the restored owner (+ CEO) a blocked task is workable again.
+
+        Fired from ``TaskService.unblock`` / ``unblock_with_restore`` — both
+        only act on a task whose status is currently ``BLOCKED``, so a
+        repeated call against the same (already-unblocked) task is a no-op
+        upstream and this cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (restored_owner, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending unblock notification",
+            task_id=task_id,
+            restored_owner=restored_owner,
+        )
+        body = (
+            f"Task {task_id} has been unblocked and handed back to "
+            f"{restored_owner or 'its owner'}. It is ready to resume."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} unblocked",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_dependency_revival_notification(
+        self,
+        task_id: str,
+        assignee: str | None,
+        completed_dependency_id: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the revived task's owner (+ CEO) its last dependency landed.
+
+        Distinct event from ``send_unblock_notification``: that one fires
+        when a resolver explicitly calls ``unblock``/``unblock_with_restore``
+        on a task blocked by escalation. This one fires from
+        ``TaskService._unblock_dependents`` when the LAST outstanding
+        dependency of a task blocked ON THAT DEPENDENCY completes — no
+        resolver acted, the trigger is upstream task completion, so the
+        notification names which dependency unblocked it rather than who
+        resolved it. ``_unblock_dependents`` prunes ``dependency_ids`` before
+        this fires, so a repeated call for the same completed dependency
+        finds no matching dependent and cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (assignee, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending dependency-revival notification",
+            task_id=task_id,
+            completed_dependency_id=completed_dependency_id,
+        )
+        body = (
+            f"Task {task_id} was revived: its dependency "
+            f"{completed_dependency_id} just completed and no other "
+            "dependencies remain. It is ready to resume."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} revived by dependency completion",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_stale_claim_reaped_notification(
+        self,
+        task_id: str,
+        reaped_agent: str | None,
+        last_heartbeat: str | None = None,
+        from_agent: str = "system",
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the reaped agent (+ CEO) its stale claim was released.
+
+        Fired from the orchestrator's ``_reap_with_service`` alongside
+        ``unclaim_for_reaper``. A reaped task leaves
+        ``list_in_progress_or_claimed`` once released to pending, so a
+        subsequent reaper tick never re-considers the same claim and this
+        cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (reaped_agent, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending stale-claim-reaped notification",
+            task_id=task_id,
+            reaped_agent=reaped_agent,
+        )
+        body = (
+            f"Task {task_id}'s claim went stale "
+            f"(last heartbeat: {last_heartbeat or 'unknown'}) and was reaped "
+            f"back to pending, releasing it from {reaped_agent or 'its holder'}."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent,
+                to_agents=recipients,
+                subject=f"Task {task_id}: stale claim reaped",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,
