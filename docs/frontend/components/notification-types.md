@@ -5,35 +5,19 @@ The RoboCo panel renders five core **coordination-event notification types** —
 ## The 5 Coordination-Event Types
 
 ### 1. TASK_ASSIGNMENT
-**Icon:** ListTodo (green)  
-**Use case:** An agent has been assigned a new task.  
-**When sent:** Via `NotificationService.send_task_assignment` when a PM assigns work.  
-**Related task:** Usually carries `related_task_id` linking to the assigned task.
+**Icon:** ListTodo (green) **Use case:** An agent has been assigned a new task. **When sent:** Via `NotificationService.send_task_assignment` when a PM assigns work. **Related task:** Usually carries `related_task_id` linking to the assigned task.
 
 ### 2. BLOCKER_ESCALATION
-**Icon:** AlertTriangle (red)  
-**Use case:** A developer is blocked and has escalated the issue to the PM.  
-**When sent:** Via `NotificationDeliveryService.escalate_and_notify` when an agent calls `i_am_blocked`.  
-**Related task:** Links to the task that is blocked.
+**Icon:** AlertTriangle (red) **Use case:** A developer is blocked and has escalated the issue to the PM. **When sent:** Via `NotificationDeliveryService.escalate_and_notify` when an agent calls `i_am_blocked`. **Related task:** Links to the task that is blocked.
 
 ### 3. REVIEW_REQUEST
-**Icon:** Check (purple)  
-**Use case:** QA has been asked to review a developer's work.  
-**When sent:** Via `NotificationService.send_qa_ready` when a dev submits `i_am_done`.  
-**Related task:** Links to the task under review.
+**Icon:** Check (purple) **Use case:** QA has been asked to review a developer's work. **When sent:** Via `NotificationService.send_qa_ready` when a dev submits `i_am_done`. **Related task:** Links to the task under review.
 
 ### 4. DOCUMENTATION_REQUEST
-**Icon:** Info (blue)  
-**Use case:** A documenter has been asked to write docs for a code change.  
-**When sent:** Via `NotificationService.send_docs_ready` when QA passes a task.  
-**Related task:** Links to the task whose code needs documenting.
+**Icon:** Info (blue) **Use case:** A documenter has been asked to write docs for a code change. **When sent:** Via `NotificationService.send_docs_ready` when QA passes a task. **Related task:** Links to the task whose code needs documenting.
 
 ### 5. APPROVAL *(New in this release)*
-**Icon:** ShieldCheck (emerald)  
-**Use case:** A Board member (Product Owner, Head of Marketing, or Main PM) is requested to approve or provide feedback on escalated work.  
-**When sent:** Via `NotificationDeliveryService.notify_ceo_of_escalation` when a task escalates to the Board.  
-**Related task:** Links to the task awaiting approval.  
-**Backend reference:** Matches `roboco/models/base.py` `NotificationType.APPROVAL`.
+**Icon:** ShieldCheck (emerald) **Use case:** A Board member (Product Owner, Head of Marketing, or Main PM) is requested to approve or provide feedback on escalated work. **When sent:** Via `NotificationDeliveryService.notify_ceo_of_escalation` when a task escalates to the Board. **Related task:** Links to the task awaiting approval. **Backend reference:** Matches `roboco/models/base.py` `NotificationType.APPROVAL`.
 
 ## Implementation Details
 
