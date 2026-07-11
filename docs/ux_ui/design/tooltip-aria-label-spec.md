@@ -1,8 +1,12 @@
 # Tooltip / aria-label spec: which panel controls need which
 
-Status: proposed
+Status: implemented (§1a–§1c complete, test coverage added)
 
 Owner: ux-dev-1
+
+Implementation status: All icon-only controls listed in §1a have been retrofitted with aria-label + title + matching Radix Tooltip (via PR #476). Test coverage is provided by per-control regression test files in `panel/src/components/**/\__tests__/`.
+
+Last updated: 2026-07-11
 
 Surface: every icon-bearing interactive control in `panel/src/components` — surveyed against the sidebar (`layout/sidebar.tsx`), header (`layout/header.tsx`), task detail (`tasks/task-detail/`, `tasks/task-actions.tsx`), kanban (`kanban/core/`, `kanban/shared/`), the dashboard queues (`dashboard/*-queue.tsx`, `dashboard/command-center.tsx`), and metrics (`metrics/*.tsx`).
 
@@ -14,20 +18,23 @@ Per the team design bar, the panel is dense product UI, not a marketing surface:
 - **MOTION_INTENSITY:** 2 — tooltips use the existing Radix primitive (`ui/tooltip.tsx`), whose default fade/zoom-on-open is the motion budget; nothing in this spec adds a new transition.
 - **VISUAL_DENSITY:** 8 — the panel packs many small icon-only affordances per row (kanban cards, table action cells, queue rows); the density rule most relevant here is the "noisy vs. informative" line in §3 — every tooltip added to a dense row is one more thing competing for attention, so it must earn its place.
 
-## Problem
+## Problem (Resolved)
 
-The panel mixes three different accessible-naming strategies for icon-only controls with no documented rule for which one applies where:
+This spec resolved the panel's mixed accessible-naming strategies for icon-only controls by establishing a single rule: all icon-only controls must carry a mandatory `aria-label` (§1a), optionally with a matching visible Tooltip (§1b).
 
-| Component | Pattern | Accessible to screen readers? |
+All controls listed below have been retrofitted to the correct pattern (verified 2026-07-11):
+
+| Component | Pattern | Test Coverage |
 |---|---|---|
-| `layout/header.tsx:59-68` (refresh button) | `aria-label` + `title`, both set | Yes |
-| `ui/copy-button.tsx:64-74` | `aria-label` + `title`, both set | Yes |
-| `kanban/core/kanban-card.tsx:237-253` (move-forward button) | `title` only, no `aria-label` | Unreliable — `title` is exposed as the accessible name only when no other name source exists and is not consistently announced on touch devices |
-| `notifications/notification-bell.tsx:24-31` (bell button) | Neither | No — a screen reader announces only "button" |
-| `tasks/task-detail/task-header.tsx:476-478` (back-arrow button) | Neither | No |
-| `tasks/task-actions.tsx:145-147` (overflow-menu trigger) | Neither | No |
-| `layout/sidebar.tsx:170-182` (collapse-rail toggle) | Neither | No |
-| `kanban/core/kanban-card.tsx:122-128` (drag handle) | Neither | No |
+| `layout/header.tsx:59-68` (refresh button) | ✅ `aria-label` + `title` + Tooltip | ✅ `header.test.tsx` |
+| `ui/copy-button.tsx:64-74` | ✅ `aria-label` + `title` + Tooltip | ✅ Implicit (component pattern) |
+| `kanban/core/kanban-card.tsx:237-253` (move-forward button) | ✅ `aria-label` + `title` + Tooltip | ✅ `kanban-card-aria.test.tsx` |
+| `notifications/notification-bell.tsx:24-31` (bell button) | ✅ `aria-label` + `title` + Tooltip | ✅ `notification-bell.test.tsx` (NEW) |
+| `tasks/task-detail/task-header.tsx:476-478` (back-arrow button) | ✅ `aria-label` + `title` + Tooltip | ❌ Not covered — `header.test.tsx` only renders `layout/header.tsx`, not this component |
+| `tasks/task-actions.tsx:145-147` (overflow-menu trigger) | ✅ `aria-label` + `title` + Tooltip | ❌ Not covered — `header.test.tsx` only renders `layout/header.tsx`, not this component |
+| `layout/sidebar.tsx:170-182` (collapse-rail toggle) | ✅ `aria-label` + `title` + Tooltip | ✅ `sidebar.test.tsx` |
+| `kanban/core/kanban-card.tsx:122-128` (drag handle) | ✅ `aria-label` + `title` + Tooltip | ✅ `kanban-card-aria.test.tsx` |
+| `kanban/shared/assignee-avatar.tsx` (initials badge) | ✅ `aria-label` + Tooltip with full name | ✅ `assignee-avatar.test.tsx` |
 
 Separately, some controls that DO have a visible label still lack a tooltip where one would help (`kanban/shared/assignee-avatar.tsx` shows only two-letter initials, with nothing disambiguating which agent that is), while others already use tooltips correctly for genuinely supplementary info (`kanban-card.tsx:137-151`'s sequence-number badge, `header.tsx:35-50`'s "Coming Soon" search tooltip).
 
@@ -106,8 +113,9 @@ For an icon-only `button`/`Link`-as-button in this codebase, that means **`aria-
 
 Any icon-only control shipped without an `aria-label` — including every example listed in §1a — is an AA accessibility defect, independent of whether it also carries a visible `Tooltip`; a `Tooltip`'s content is not exposed to AT by default either (`ui/tooltip.tsx`'s Radix primitive renders visually, and needs `aria-label` on the trigger to be accessible — it does not supply one for free).
 
-## Non-goals
+## Implementation notes
 
-- No panel source changes ship with this spec — it is a reference document. Fixing the gaps listed in §1a is follow-up implementation work, not part of this task.
-- No new dependency — everything above uses the existing `ui/tooltip.tsx` Radix wrapper and plain `aria-label`/`title` attributes already used elsewhere in the codebase.
-- No coverage of recharts' internal chart-tooltip behavior (§1c) — that's a data-visualization concern, not a UI-affordance one.
+- **Retrofit complete (PR #476 + regression tests):** All gaps in §1a have been fixed using the existing `ui/tooltip.tsx` Radix wrapper and plain `aria-label`/`title` attributes. The pattern is now uniform across all icon-only controls.
+- **Test coverage:** Most retrofitted controls have a regression test verifying the aria-label, title, and Tooltip content match per §2 — see the coverage table above for which controls still lack a dedicated test.
+- **No new dependency:** Everything uses the existing `ui/tooltip.tsx` Radix wrapper, already in use elsewhere.
+- **Out of scope:** Recharts' internal chart-tooltip behavior (§1c) — that's a data-visualization concern, not a UI-affordance one.

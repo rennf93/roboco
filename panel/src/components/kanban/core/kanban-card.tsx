@@ -67,6 +67,11 @@ export function KanbanCard({
 
   const isDragging = isDraggingProp || isDraggingDnd;
 
+  const dragHandleLabel = "Drag to move task between columns";
+  const moveForwardLabel = isBacklog
+    ? "PM must activate this task first"
+    : "Move forward";
+
   const style = transform
     ? {
         transform: CSS.Translate.toString(transform),
@@ -119,13 +124,22 @@ export function KanbanCard({
               </p>
             )}
           </div>
-          <div
-            {...attributes}
-            {...listeners}
-            className={`shrink-0 mt-0.5 ${isBacklog ? "cursor-not-allowed opacity-50" : "cursor-grab active:cursor-grabbing"}`}
-          >
-            <GripVertical className="h-4 w-4 text-muted-foreground" />
-          </div>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  {...attributes}
+                  {...listeners}
+                  aria-label={dragHandleLabel}
+                  title={dragHandleLabel}
+                  className={`shrink-0 mt-0.5 ${isBacklog ? "cursor-not-allowed opacity-50" : "cursor-grab active:cursor-grabbing"}`}
+                >
+                  <GripVertical className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>{dragHandleLabel}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
 
         <div className="flex items-center justify-between mt-2">
@@ -234,23 +248,27 @@ export function KanbanCard({
               ) : (
                 task.status !== TaskStatus.COMPLETED &&
                 task.status !== TaskStatus.CANCELLED && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-11 w-11"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction("move-forward", task.id);
-                    }}
-                    disabled={isBacklog}
-                    title={
-                      isBacklog
-                        ? "PM must activate this task first"
-                        : "Move forward"
-                    }
-                  >
-                    <ArrowRight className="h-3 w-3" />
-                  </Button>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-11 w-11"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAction("move-forward", task.id);
+                          }}
+                          disabled={isBacklog}
+                          aria-label={moveForwardLabel}
+                          title={moveForwardLabel}
+                        >
+                          <ArrowRight className="h-3 w-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{moveForwardLabel}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )
               )}
             </div>

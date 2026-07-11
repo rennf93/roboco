@@ -22,6 +22,8 @@ import {
 import { cn } from "@/lib/utils";
 import { usePageRefresh } from "@/hooks";
 
+const REFRESH_LABEL = "Refresh only the current page";
+
 export function Header() {
   const { setTheme } = useTheme();
   const { refresh, loading, disabled } = usePageRefresh();
@@ -56,16 +58,25 @@ export function Header() {
         <ConnectionStatus />
 
         {/* Refresh current page data */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => void refresh()}
-          disabled={disabled || loading}
-          aria-label="Refresh only the current page"
-          title="Refresh only the current page"
-        >
-          <RefreshCw className={cn("h-5 w-5", loading && "animate-spin")} />
-        </Button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => void refresh()}
+                disabled={disabled || loading}
+                aria-label={REFRESH_LABEL}
+                title={REFRESH_LABEL}
+              >
+                <RefreshCw
+                  className={cn("h-5 w-5", loading && "animate-spin")}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{REFRESH_LABEL}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
 
         {/* Theme toggle */}
         <DropdownMenu>
