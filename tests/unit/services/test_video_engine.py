@@ -817,4 +817,4 @@ async def test_rerender_none_for_missing_task(db_session: AsyncSession) -> None:
     result = await engine.rerender(uuid4())
     assert result is None
     open_tasks = await get_task_service(db_session).list_open_video_posts()
-    assert len(open_tasks) == ONE
+    assert open_tasks == []
