@@ -1352,9 +1352,12 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
 
 
 def _svc_with_sibling_status_seq(rows: list[tuple]) -> TaskService:
-    """TaskService whose execute() yields (status, sequence) sibling rows."""
+    """TaskService whose execute() yields (status, sequence[, created_at])
+    sibling rows; 2-tuples are padded with created_at=None (only compared on
+    a sequence tie)."""
+    row_width = 3  # (status, sequence, created_at)
     res = MagicMock()
-    res.all.return_value = rows
+    res.all.return_value = [r if len(r) == row_width else (*r, None) for r in rows]
     return TaskService(MagicMock(execute=AsyncMock(return_value=res)))
 
 
@@ -1383,6 +1386,25 @@ async def test_earlier_incomplete_code_sibling_false_when_earlier_terminal() -> 
     svc = _svc_with_sibling_status_seq(
         [(TaskStatus.COMPLETED, 0), (TaskStatus.CANCELLED, 1)]
     )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_tie_breaks_by_created_at() -> None:
+    # Wave ties (equal sequence) order by created_at: the earlier-created
+    # tied sibling holds the later one; a later-created one does not.
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=1,
+        created_at=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+    )
+    earlier = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    later = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, earlier)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is True
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, later)])
     assert await svc.has_earlier_incomplete_code_sibling(task) is False
 
 

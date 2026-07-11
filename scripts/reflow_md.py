@@ -28,6 +28,8 @@ SKIP_DIRS = {
     ".OLD",
     "node_modules",
     ".venv",
+    ".uv-cache",
+    ".claude",
     ".next",
     "dist",
     ".git",
