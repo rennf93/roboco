@@ -333,6 +333,10 @@ _DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
 )
 _CURATE_PLAYBOOK_ROLES: frozenset[str] = frozenset({"auditor"})
 
+# Vault-curation: only the Auditor writes a root task-tree's narrative
+# (mirrors the playbook-curation bounded-expansion pattern above).
+_CURATE_VAULT_ROLES: frozenset[str] = frozenset({"auditor"})
+
 # propose_video's target-platform set + TikTok caption limit (the X caption
 # reuses MAX_TWEET_CHARS). No role frozenset here, unlike the sets above:
 # propose_video is gated on the caller's TEAM at runtime (_caller_team), not
@@ -983,6 +987,60 @@ class ContentActions:
                 "playbook_id": str(playbook.id),
                 "playbook_status": str(playbook.status),
             },
+        )
+
+    async def curate_vault(
+        self, *, agent_id: UUID, task_id: UUID, narrative: str
+    ) -> Envelope:
+        """Auditor-only: write a root task-tree's vault narrative section.
+
+        Fully re-materializes the task's note (parent/subtasks/dependencies
+        resolved fresh) with ``narrative`` filling the ``## Narrative``
+        section a deterministic write otherwise leaves as a placeholder.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _CURATE_VAULT_ROLES:
+            return Envelope.not_authorized(
+                message=f"role {role!r} may not curate the vault",
+                remediate="Only the Auditor writes vault narratives.",
+                context_briefing={},
+            )
+        if not settings.obsidian_vault_enabled:
+            return Envelope.invalid_state(
+                message="the Obsidian vault is disabled",
+                remediate="ROBOCO_OBSIDIAN_VAULT_ENABLED is off — nothing to curate.",
+                context_briefing={},
+            )
+        task = await self.task.get(task_id)
+        if task is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+
+        from roboco.services.project import get_project_service
+        from roboco.services.vault_assembly import assemble_task_note_data
+        from roboco.services.vault_writer import get_vault_writer
+
+        try:
+            data = await assemble_task_note_data(
+                self.task,
+                get_project_service(self.task.session),
+                task,
+                narrative=narrative,
+            )
+            get_vault_writer().write_task(data)
+        except Exception as exc:
+            logger.warning(
+                "vault curation write failed", task_id=str(task_id), error=str(exc)
+            )
+            return Envelope.invalid_state(
+                message=f"vault write failed: {exc}",
+                remediate="retry curate_vault; check ROBOCO_VAULT_PATH is writable",
+                context_briefing={},
+            )
+        return Envelope.ok(
+            status="vault_curated",
+            task_id=str(task_id),
+            next="continue",
+            context_briefing={},
         )
 
     async def _record_section_handoff(

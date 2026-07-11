@@ -37,7 +37,7 @@ from roboco.models.base import (
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services import prompter as prompter_module
-from roboco.services.base import ServiceError, ValidationError
+from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import (
     _HISTORY_DIGEST_PER_PROJECT_LIMIT,
     _HISTORY_TITLE_EXCERPT_CAP,
@@ -55,6 +55,7 @@ from roboco.services.prompter import (
     history_digest_layer,
     parse_readiness,
 )
+from roboco.services.task import get_task_service
 
 # =============================================================================
 # Pure function tests (no DB)
@@ -912,6 +913,560 @@ async def test_confirm_live_batch_strips_assigned_to_from_drafts(
         assert r.assigned_to is None, (
             f"root-subtask {r.id} wrongly assigned to {r.assigned_to}"
         )
+
+
+# =============================================================================
+# MegaTask redraft: update_live_batch (board-review keep-alive loop, batch shape)
+# =============================================================================
+
+
+async def _confirm_board_batch(
+    db_session: Any,
+    ceo_id: UUID,
+    drafts: list[dict[str, Any]],
+    project_ids: list[UUID],
+) -> dict[str, Any]:
+    """Confirm a board-routed MegaTask (held root-subtasks) to redraft against."""
+    service = get_prompter_service(db=db_session)
+    with patch("roboco.services.prompter.redis.from_url", return_value=_FakeRedis()):
+        return await service.confirm_live_batch(
+            "Seed batch",
+            drafts,
+            ceo_id,
+            project_ids=project_ids,
+            route="board",
+            session_id=f"sess-{uuid4().hex}",
+        )
+
+
+def _two_item_drafts(project1: UUID, project2: UUID) -> list[dict[str, Any]]:
+    return [
+        {
+            "title": "One",
+            "acceptance_criteria": ["x"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+        {
+            "title": "Two",
+            "acceptance_criteria": ["y"],
+            "team": "frontend",
+            "project_id": str(project2),
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_patches_unchanged_scope_in_place(
+    db_session: Any,
+) -> None:
+    """A redraft that keeps every item's project targets patches title/
+    description/acceptance criteria in place — no child is replaced."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    before_ids = [UUID(sid) for sid in result["root_subtask_ids"]]
+
+    revised = [
+        {**drafts[0], "title": "One revised", "acceptance_criteria": ["x2"]},
+        {**drafts[1], "title": "Two revised", "acceptance_criteria": ["y2"]},
+    ]
+    service = get_prompter_service(db=db_session)
+    out = await service.update_live_batch(
+        UUID(result["umbrella_task_id"]), "Seed batch", revised, ceo_id, route="board"
+    )
+
+    assert [UUID(sid) for sid in out["root_subtask_ids"]] == before_ids
+    child0 = await db_session.get(TaskTable, before_ids[0])
+    child1 = await db_session.get(TaskTable, before_ids[1])
+    assert child0.title == "One revised"
+    assert child0.acceptance_criteria == ["x2"]
+    assert child0.status == TaskStatus.BACKLOG  # untouched, still board-held
+    assert child1.title == "Two revised"
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_grows_creates_extra_child(db_session: Any) -> None:
+    """More drafts than existing root-subtasks creates the extras, BACKLOG."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+
+    grown = [
+        *drafts,
+        {
+            "title": "Three",
+            "acceptance_criteria": ["z"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+    ]
+    service = get_prompter_service(db=db_session)
+    out = await service.update_live_batch(
+        UUID(result["umbrella_task_id"]), "Seed batch", grown, ceo_id, route="board"
+    )
+
+    assert len(out["root_subtask_ids"]) == len(grown)
+    new_child = await db_session.get(TaskTable, UUID(out["root_subtask_ids"][2]))
+    assert new_child.title == "Three"
+    assert new_child.status == TaskStatus.BACKLOG
+    assert new_child.parent_task_id == UUID(result["umbrella_task_id"])
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_shrinks_cancels_surplus_child(db_session: Any) -> None:
+    """Fewer drafts than existing root-subtasks cancels the surplus."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = [
+        *_two_item_drafts(project1, project2),
+        {
+            "title": "Three",
+            "acceptance_criteria": ["z"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+    ]
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    surplus_id = UUID(result["root_subtask_ids"][2])
+    kept_drafts = drafts[:2]
+
+    service = get_prompter_service(db=db_session)
+    out = await service.update_live_batch(
+        UUID(result["umbrella_task_id"]),
+        "Seed batch",
+        kept_drafts,
+        ceo_id,
+        route="board",
+    )
+
+    assert len(out["root_subtask_ids"]) == len(kept_drafts)
+    surplus = await db_session.get(TaskTable, surplus_id)
+    assert surplus.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_scope_change_replaces_child(db_session: Any) -> None:
+    """A revised draft that moves to a different project cancels the stale
+    child and creates a replacement — never patches a scope change in place."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    project3 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    original_second_id = UUID(result["root_subtask_ids"][1])
+
+    revised = [
+        drafts[0],
+        {
+            "title": "Two moved",
+            "acceptance_criteria": ["y2"],
+            "team": "frontend",
+            "project_id": str(project3),
+        },
+    ]
+    service = get_prompter_service(db=db_session)
+    # project3 is new to the batch — the panel round-trips the widened scope.
+    out = await service.update_live_batch(
+        UUID(result["umbrella_task_id"]),
+        "Seed batch",
+        revised,
+        ceo_id,
+        project_ids=[project1, project2, project3],
+        route="board",
+    )
+
+    new_second_id = UUID(out["root_subtask_ids"][1])
+    assert new_second_id != original_second_id
+    original = await db_session.get(TaskTable, original_second_id)
+    assert original.status == TaskStatus.CANCELLED
+    replacement = await db_session.get(TaskTable, new_second_id)
+    assert replacement.project_id == project3
+    assert replacement.title == "Two moved"
+    assert replacement.status == TaskStatus.BACKLOG
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_rewires_dependency_edges(db_session: Any) -> None:
+    """Old sibling dependency edges are cleared and the fresh wave plan's edges
+    are wired — a redraft never leaves a stale edge from the prior sequencing."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "A: add table",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            "project_id": str(project1),
+            "intends_to_touch": ["roboco/services/foo.py"],
+            "adds_migration": True,
+        },
+        {
+            "title": "B: extend table",
+            "acceptance_criteria": ["b"],
+            "team": "backend",
+            "project_id": str(project1),
+            "intends_to_touch": ["roboco/services/bar.py"],
+            "adds_migration": True,
+        },
+        {
+            "title": "C: frontend widget",
+            "acceptance_criteria": ["c"],
+            "team": "frontend",
+            "project_id": str(project2),
+            "intends_to_touch": ["panel/src/widget.tsx"],
+        },
+    ]
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    a_id, b_id, c_id = (UUID(sid) for sid in result["root_subtask_ids"])
+    b = await db_session.get(TaskTable, b_id)
+    assert a_id in b.dependency_ids  # original chain: B waits on A (migrations)
+
+    # Neither A nor B adds a migration anymore; C now explicitly waits on A.
+    revised: list[dict[str, Any]] = [
+        {**drafts[0], "adds_migration": False},
+        {**drafts[1], "adds_migration": False},
+        {**drafts[2], "depends_on": [0]},
+    ]
+    service = get_prompter_service(db=db_session)
+    await service.update_live_batch(
+        UUID(result["umbrella_task_id"]), "Seed batch", revised, ceo_id, route="board"
+    )
+
+    c = await db_session.get(TaskTable, c_id)
+    assert a_id not in b.dependency_ids  # stale edge cleared
+    assert a_id in c.dependency_ids  # fresh edge applied
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_board_route_resets_review_flag(
+    db_session: Any,
+) -> None:
+    """route='board' sends the redrafted umbrella back for another review round."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    umbrella_id = UUID(result["umbrella_task_id"])
+    umbrella = await db_session.get(TaskTable, umbrella_id)
+    umbrella.board_review_complete = True
+    await db_session.flush()
+
+    service = get_prompter_service(db=db_session)
+    await service.update_live_batch(
+        umbrella_id, "Seed batch", drafts, ceo_id, route="board"
+    )
+
+    assert umbrella.board_review_complete is False
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_main_pm_route_approves_and_activates(
+    db_session: Any,
+) -> None:
+    """route='main_pm' hands the umbrella to Main PM and releases its BACKLOG
+    root-subtasks to PENDING (approve_and_start's existing batch-activation)."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    # merge() with the fixed AGENT_UUIDS id: idempotent whether or not another
+    # test already committed this row on the shared session-scoped test DB
+    # (mirrors ``_seed_project_and_ceo``'s product-owner/main-pm upsert above).
+    main_pm = await db_session.merge(
+        AgentTable(
+            id=UUID(AGENT_UUIDS["main-pm"]),
+            name="main-pm",
+            slug="main-pm",
+            role=AgentRole.MAIN_PM,
+            team=None,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="x",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+    )
+    await db_session.flush()
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    umbrella_id = UUID(result["umbrella_task_id"])
+    umbrella = await db_session.get(TaskTable, umbrella_id)
+    umbrella.board_review_complete = True
+    await db_session.flush()
+
+    service = get_prompter_service(db=db_session)
+    out = await service.update_live_batch(
+        umbrella_id, "Seed batch", drafts, ceo_id, route="main_pm"
+    )
+
+    assert umbrella.assigned_to == main_pm.id
+    assert umbrella.team == Team.MAIN_PM
+    child = await db_session.get(TaskTable, UUID(out["root_subtask_ids"][0]))
+    assert child.status == TaskStatus.PENDING  # released by approve_and_start
+    assert child.team == Team.MAIN_PM
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_refuses_when_child_not_backlog(
+    db_session: Any,
+) -> None:
+    """A root-subtask already past BACKLOG (claimed/dispatched) refuses the
+    whole redraft — in-place mutation of live work would corrupt it."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    child = await db_session.get(TaskTable, UUID(result["root_subtask_ids"][0]))
+    child.status = TaskStatus.PENDING
+    await db_session.flush()
+
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(ValidationError, match="BACKLOG"):
+        await service.update_live_batch(
+            UUID(result["umbrella_task_id"]),
+            "Seed batch",
+            drafts,
+            ceo_id,
+            route="board",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_refuses_non_umbrella_task(db_session: Any) -> None:
+    """A task_id that isn't a batch umbrella (e.g. a root-subtask) is refused."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    root_subtask_id = UUID(result["root_subtask_ids"][0])
+
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(ValidationError, match="umbrella"):
+        await service.update_live_batch(
+            root_subtask_id, "Seed batch", drafts, ceo_id, route="board"
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_refuses_unknown_task(db_session: Any) -> None:
+    """A task_id that doesn't exist at all raises NotFoundError, not a crash."""
+    _project1, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(NotFoundError):
+        await service.update_live_batch(
+            uuid4(),
+            "Seed batch",
+            [{"title": "x", "acceptance_criteria": ["a"]}],
+            ceo_id,
+            route="board",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_round2_after_shrink_succeeds(db_session: Any) -> None:
+    """A round-1 shrink leaves a CANCELLED child; a round-2 redraft must ignore
+    it — not be refused by the backlog gate, not mismatch positionally."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = [
+        *_two_item_drafts(project1, project2),
+        {
+            "title": "Three",
+            "acceptance_criteria": ["z"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+    ]
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    umbrella_id = UUID(result["umbrella_task_id"])
+    service = get_prompter_service(db=db_session)
+
+    # Round 1: shrink to 2 → cancels the third child.
+    round1 = await service.update_live_batch(
+        umbrella_id, "Seed batch", drafts[:2], ceo_id, route="board"
+    )
+    # Round 2: revise the surviving 2 in place — must not see the cancelled row.
+    revised = [
+        {**drafts[0], "title": "One round-2"},
+        {**drafts[1], "title": "Two round-2"},
+    ]
+    round2 = await service.update_live_batch(
+        umbrella_id, "Seed batch", revised, ceo_id, route="board"
+    )
+
+    assert round2["root_subtask_ids"] == round1["root_subtask_ids"]  # in-place
+    child0 = await db_session.get(TaskTable, UUID(round2["root_subtask_ids"][0]))
+    assert child0.title == "One round-2"
+    cancelled = await db_session.get(TaskTable, UUID(result["root_subtask_ids"][2]))
+    assert cancelled.status == TaskStatus.CANCELLED  # untouched by round 2
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_round2_after_scope_change_succeeds(
+    db_session: Any,
+) -> None:
+    """A round-1 scope change leaves a CANCELLED child mid-list; round 2 must
+    match drafts positionally against only the LIVE children."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    project3 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+    umbrella_id = UUID(result["umbrella_task_id"])
+    service = get_prompter_service(db=db_session)
+
+    # Round 1: move the second draft to project3 → old child cancelled, replaced.
+    moved = {
+        "title": "Two moved",
+        "acceptance_criteria": ["y2"],
+        "team": "frontend",
+        "project_id": str(project3),
+    }
+    round1 = await service.update_live_batch(
+        umbrella_id,
+        "Seed batch",
+        [drafts[0], moved],
+        ceo_id,
+        project_ids=[project1, project2, project3],
+        route="board",
+    )
+    replacement_id = UUID(round1["root_subtask_ids"][1])
+
+    # Round 2: same scopes → both live children patched in place (the cancelled
+    # original must not shift the positional pairing).
+    round2 = await service.update_live_batch(
+        umbrella_id,
+        "Seed batch",
+        [{**drafts[0], "title": "One round-2"}, {**moved, "title": "Two round-2"}],
+        ceo_id,
+        project_ids=[project1, project2, project3],
+        route="board",
+    )
+
+    assert UUID(round2["root_subtask_ids"][1]) == replacement_id  # in-place
+    replacement = await db_session.get(TaskTable, replacement_id)
+    assert replacement.title == "Two round-2"
+    assert replacement.status == TaskStatus.BACKLOG
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_rejects_single_project_collapse(
+    db_session: Any,
+) -> None:
+    """A redraft whose drafts all target one project is refused — same
+    MegaTask-shape gate as the create path."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+
+    collapsed = [
+        {**drafts[0]},
+        {**drafts[1], "project_id": str(project1)},  # both on project1 now
+    ]
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(ValidationError, match="at least two distinct projects"):
+        await service.update_live_batch(
+            UUID(result["umbrella_task_id"]),
+            "Seed batch",
+            collapsed,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="board",
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_live_batch_rejects_out_of_scope_draft(db_session: Any) -> None:
+    """A redraft draft targeting a project outside the scoped set is refused —
+    same scope gate as the create path (scope derived from the live children
+    when the caller passes none)."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    drafts = _two_item_drafts(project1, project2)
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2]
+    )
+
+    drifted = [
+        drafts[0],
+        {**drafts[1], "project_id": str(uuid4())},  # never in scope
+    ]
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(ValidationError, match="outside this MegaTask"):
+        await service.update_live_batch(
+            UUID(result["umbrella_task_id"]),
+            "Seed batch",
+            drifted,
+            ceo_id,
+            route="board",
+        )
+
+
+@pytest.mark.asyncio
+async def test_distinct_projects_for_batch_unions_cells_and_skips_cancelled(
+    db_session: Any,
+) -> None:
+    """Scope recovery unions each live child's project_id + cell_projects rows;
+    a cancelled child's repo does not resurrect."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    project3 = await _seed_second_project(db_session, ceo_id)
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "Single-project child",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+        {
+            "title": "Multi-cell child",
+            "acceptance_criteria": ["b"],
+            "the_work": [
+                {"team": "backend", "summary": "s", "project_id": str(project2)},
+                {"team": "frontend", "summary": "s", "project_id": str(project3)},
+            ],
+        },
+    ]
+    result = await _confirm_board_batch(
+        db_session, ceo_id, drafts, [project1, project2, project3]
+    )
+    umbrella_id = UUID(result["umbrella_task_id"])
+    task_service = get_task_service(db_session)
+
+    recovered = await task_service.distinct_projects_for_batch(umbrella_id)
+    assert set(recovered) == {project1, project2, project3}
+
+    # Cancel the single-project child — its repo drops out of the recovery.
+    await task_service.cancel(UUID(result["root_subtask_ids"][0]), agent_role="main_pm")
+    recovered = await task_service.distinct_projects_for_batch(umbrella_id)
+    assert set(recovered) == {project2, project3}
 
 
 def test_preview_batch_computes_waves_without_creating() -> None:
