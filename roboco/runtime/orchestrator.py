@@ -3414,6 +3414,7 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
+        - playwright          browser tools (fe-qa/ux-qa only — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3512,6 +3513,45 @@ class AgentOrchestrator:
             },
         }
 
+        self._append_role_scoped_mcp_servers(
+            mcp_servers, agent_id, agent_role, agent_uuid, mcp_env
+        )
+
+        config: dict[str, Any] = {"mcpServers": mcp_servers}
+
+        # Write to shared config directory (mounted in both orchestrator and agents)
+        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            # Running in container - use shared mounted directory
+            config_dir = Path("/app/mcp-configs")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running on host - use temp directory
+            config_dir = Path(tempfile.gettempdir())
+
+        # basename-sanitized like _grok_usage_json: agent ids are orchestrator-
+        # issued slugs, but the filename must not be able to traverse anyway.
+        safe_agent_id = os.path.basename(agent_id)
+        config_path = config_dir / f"roboco-mcp-{safe_agent_id}.json"
+        config_path.write_text(json.dumps(config, indent=2))
+
+        return config_path
+
+    def _append_role_scoped_mcp_servers(
+        self,
+        mcp_servers: dict[str, dict[str, Any]],
+        agent_id: str,
+        agent_role: str,
+        agent_uuid: str,
+        mcp_env: dict[str, str],
+    ) -> None:
+        """Register the role-scoped MCP servers (docs, research, playwright).
+
+        Split from ``_generate_mcp_config`` so the base registration stays
+        within the complexity budget; each branch is fail-closed server-side
+        regardless of registration.
+        """
         # Docs server — documentation file management. Registered only for
         # roles that touch panel docs; handlers still enforce per-role
         # access so the surface is fail-closed.
@@ -3559,23 +3599,21 @@ class AgentOrchestrator:
                 "env": mcp_env,
             }
 
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
-
-        # Write to shared config directory (mounted in both orchestrator and agents)
-        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
-        # When running on host: use temp directory
-        if DATA_HOST_PATH:
-            # Running in container - use shared mounted directory
-            config_dir = Path("/app/mcp-configs")
-            config_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            # Running on host - use temp directory
-            config_dir = Path(tempfile.gettempdir())
-
-        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
-        config_path.write_text(json.dumps(config, indent=2))
-
-        return config_path
+        # Playwright MCP — structured browser tools (navigate/click/snapshot/
+        # screenshot) for QA's browser verification, replacing hand-scripted
+        # Bash+Python. Scoped to fe-qa/ux-qa only (role-gated, not
+        # image-gated: ux-dev shares agent-ux's image but never gets this),
+        # per the CEO's round-3 note on the Playwright QA-image work. The
+        # binary + wrapper entrypoint are baked into agent-qa-fe/agent-ux
+        # only (docker/agent-qa-fe.Dockerfile, docker/agent-ux.Dockerfile),
+        # so registering it for any other role would reference a command
+        # that doesn't exist in that role's image.
+        playwright_mcp_teams = ("frontend", "ux_ui")
+        if agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams:
+            mcp_servers["playwright"] = {
+                "command": "/app/scripts/playwright-mcp-entrypoint.sh",
+                "args": [],
+            }
 
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
