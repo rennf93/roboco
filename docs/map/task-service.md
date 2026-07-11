@@ -52,7 +52,7 @@
 | `apply_escalation` | method | task.py:4942 | `in_progress→blocked` direct status set + audit emit (bypasses validator by design). |
 | `escalate_to_ceo` | method | task.py:5064 | `awaiting_pm_review→awaiting_ceo_approval`; gained `actor_agent_id: UUID | None = None` param (stamped as `audit_agent_id` so the transition row attributes to the specific PM/Board agent, not just the role). |
 | `ceo_approve` | method | task.py:5146 | CEO merges then approves; `awaiting_ceo_approval→completed`. |
-| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status). |
+| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status); now validates `reason` (`reject_trivial` — previously an uncaught Pydantic error could 500 on empty/trivial input) and inserts one `origin=ceo` Finding onto the revision-findings ledger; the branchless-root path manually bumps `revision_count` + emits `task.ceo_reject` since it skips `_emit_status_transition_audit`. See `docs/map/review-findings.md`. |
 | `_remove_task_worktree_on_terminal` | method | task.py:5601 | Best-effort worktree cleanup on complete/ceo_approve; no-op for branchless. |
 | `cancel` | method | task.py:5644 | Cascade-cancel descendants through the validator. |
 | `reassign` / `reassign_active_claim` | method | task.py:7657 / 7807 | Reassignment with Board/Main-PM diversion guards. |
@@ -146,6 +146,8 @@ stateDiagram-v2
 - `3aff6e04` Chore: Close gaps (#285) — follow-on gap close (worktree-on-terminal cleanup F123 Phase C, escalation audit emit, rework routing hardening).
 
 > Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution). `8f3f4236` (#452) "sequence is the bar" — adds `_claim_blocked_by_sequence` + `_validate_claim_preconditions` wiring, `stamp_wave_sequence` (replacing a raw per-sibling delegation ordinal), and migration 069 (`tasks.parent_task_id` index, the sibling probe's hot path). `f2834cf5` (#466) adds `_apply_dependency_lineage`/`_merge_one_dependency`, called from `_create_branch_in_project` right after a fresh branch cut.
+>
+> (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: `_audit_events_for` (task.py:997) gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`; `ceo_reject` gains reason validation + a ledger `Finding` insert (see above); `qa_fail` and `request_changes` drop their raw `dev_notes` appends (the mirror-column data-loss bug) in favor of the ledger + a structured note. Full detail: `docs/map/review-findings.md`.
 
 ## Regression Risks
 
