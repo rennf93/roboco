@@ -3513,6 +3513,42 @@ class AgentOrchestrator:
             },
         }
 
+        self._append_role_scoped_mcp_servers(
+            mcp_servers, agent_id, agent_role, agent_uuid, mcp_env
+        )
+
+        config: dict[str, Any] = {"mcpServers": mcp_servers}
+
+        # Write to shared config directory (mounted in both orchestrator and agents)
+        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            # Running in container - use shared mounted directory
+            config_dir = Path("/app/mcp-configs")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running on host - use temp directory
+            config_dir = Path(tempfile.gettempdir())
+
+        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
+        config_path.write_text(json.dumps(config, indent=2))
+
+        return config_path
+
+    def _append_role_scoped_mcp_servers(
+        self,
+        mcp_servers: dict[str, dict[str, Any]],
+        agent_id: str,
+        agent_role: str,
+        agent_uuid: str,
+        mcp_env: dict[str, str],
+    ) -> None:
+        """Register the role-scoped MCP servers (docs, research, playwright).
+
+        Split from ``_generate_mcp_config`` so the base registration stays
+        within the complexity budget; each branch is fail-closed server-side
+        regardless of registration.
+        """
         # Docs server — documentation file management. Registered only for
         # roles that touch panel docs; handlers still enforce per-role
         # access so the surface is fail-closed.
@@ -3575,24 +3611,6 @@ class AgentOrchestrator:
                 "command": "/app/scripts/playwright-mcp-entrypoint.sh",
                 "args": [],
             }
-
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
-
-        # Write to shared config directory (mounted in both orchestrator and agents)
-        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
-        # When running on host: use temp directory
-        if DATA_HOST_PATH:
-            # Running in container - use shared mounted directory
-            config_dir = Path("/app/mcp-configs")
-            config_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            # Running on host - use temp directory
-            config_dir = Path(tempfile.gettempdir())
-
-        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
-        config_path.write_text(json.dumps(config, indent=2))
-
-        return config_path
 
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
