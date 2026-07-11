@@ -4367,7 +4367,28 @@ class TaskService(BaseService):
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
 
+        await self._notify_unblock(task_id, task.assigned_to)
+
         return task
+
+    async def _notify_unblock(self, task_id: UUID, restored_owner: Any) -> None:
+        """Best-effort coordination notification when a blocked task resumes.
+
+        Called from both `unblock` and `unblock_with_restore`'s restore=True
+        success path. `unblock` only acts on a task whose status is
+        currently BLOCKED (guarded above), so a repeated call against an
+        already-unblocked task never re-fires this.
+        """
+        if restored_owner is None:
+            return
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_unblock_notification(
+                task_id=str(task_id), restored_owner=str(restored_owner)
+            )
+        except Exception as e:
+            self.log.warning("Unblock notify failed", task_id=str(task_id), error=str(e))
 
     async def pause(
         self, task_id: UUID, agent_role: str | None = None
@@ -6487,6 +6508,14 @@ class TaskService(BaseService):
                     task_id=str(task.id),
                     completed_dependency=str(completed_task_id),
                 )
+                # Distinct coordination event from `_notify_unblock`: THIS fires
+                # automatically when a dependency's completion clears the last
+                # blocker, not from a resolver explicitly calling `unblock` — no
+                # human/PM acted, so the notification names the dependency that
+                # unblocked it rather than a resolver. Dependency_ids was already
+                # pruned above, so a repeated pass over this completed_task_id
+                # finds no matching dependent and cannot double-fire.
+                await self._notify_dependency_revival(task, completed_task_id)
 
         if blocked_tasks:
             # Metrics (blocked-others): record how many downstream tasks this
@@ -6509,6 +6538,26 @@ class TaskService(BaseService):
             )
 
         await self.session.flush()
+
+    async def _notify_dependency_revival(
+        self, task: TaskTable, completed_dependency_id: UUID
+    ) -> None:
+        """Best-effort coordination notification for an auto-revived dependent."""
+        owner = cast("Any", task.claimed_by or task.assigned_to)
+        if owner is None:
+            return
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_dependency_revival_notification(
+                task_id=str(task.id),
+                assignee=str(owner),
+                completed_dependency_id=str(completed_dependency_id),
+            )
+        except Exception as e:
+            self.log.warning(
+                "Dependency-revival notify failed", task_id=str(task.id), error=str(e)
+            )
 
     async def _revive_unblocked_dependent(self, task: TaskTable) -> None:
         """Resume — or re-home — a task whose last dependency just cleared.
@@ -6939,7 +6988,7 @@ class TaskService(BaseService):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
-    async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> None:
+    async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> bool:
         """Append a dependency to a task WITHOUT changing its status.
 
         A PENDING task with unmet dependencies is held back by
@@ -6951,6 +7000,11 @@ class TaskService(BaseService):
         Rejects a self-reference and any edge that would close a cycle (the
         reverse path already reaches the dependent) — a cycle deadlocks both
         tasks (`_unblock_dependents` never fires).
+
+        Returns ``True`` only when a new edge was actually inserted, ``False``
+        for an idempotent no-op (missing task, already-present edge) — lets
+        callers like `wire_sibling_collision_dag` tell a fresh wiring pass
+        from a repeat one without a separate membership check.
         """
         if depends_on_id == task_id:
             raise ConflictError(
@@ -6959,9 +7013,9 @@ class TaskService(BaseService):
             )
         task = await self.get(task_id)
         if task is None:
-            return
+            return False
         if depends_on_id in task.dependency_ids:
-            return  # idempotent re-add
+            return False  # idempotent re-add
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
                 f"adding {depends_on_id} as a dependency of {task_id} would "
@@ -6970,6 +7024,7 @@ class TaskService(BaseService):
             )
         task.dependency_ids = [*task.dependency_ids, depends_on_id]
         await self.session.flush()
+        return True
 
     async def _would_create_cycle(self, task_id: UUID, depends_on_id: UUID) -> bool:
         """True if ``depends_on_id`` already (transitively) depends on ``task_id``.
@@ -7018,9 +7073,31 @@ class TaskService(BaseService):
         from roboco.services.sequencing import dev_task_collision_edges
 
         siblings = await self.get_subtasks(parent_task_id)
+        siblings_by_id = {UUID(str(s.id)): s for s in siblings}
         edges = dev_task_collision_edges(siblings)
         for depends_on_id, task_id in edges:
-            await self.add_dependency(UUID(str(task_id)), UUID(str(depends_on_id)))
+            held_back_id = UUID(str(task_id))
+            blocking_id = UUID(str(depends_on_id))
+            created = await self.add_dependency(held_back_id, blocking_id)
+            if created:
+                held_back = siblings_by_id.get(held_back_id)
+                owner = getattr(held_back, "assigned_to", None) if held_back else None
+                await self._notify_collision_sequencing(held_back_id, blocking_id, owner)
+
+    async def _notify_collision_sequencing(
+        self, held_back_task_id: UUID, blocking_task_id: UUID, owner: Any
+    ) -> None:
+        """Best-effort coordination notification for a newly-wired collision edge."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_collision_sequencing_notification(
+                held_back_task_id=str(held_back_task_id),
+                blocking_task_id=str(blocking_task_id),
+                held_back_assignee=str(owner) if owner is not None else None,
+            )
+        except Exception as e:
+            self.log.warning("Collision-sequencing notify failed", error=str(e))
 
     async def wire_cell_task_wave_chain(self, cell_task_id: UUID) -> None:
         """Wire the cell-task wave chain (multi-level sequencing edge kind 2).
@@ -8578,6 +8655,7 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return None
+        previous_assignee = cast("Any", task.assigned_to)
         # Board/advisory → cell-task hand-off is diverted to the pool (see
         # `_maybe_divert_board_advisory_reassign`); otherwise proceed with the
         # normal handoff + cell-PM redirect.
@@ -8622,7 +8700,31 @@ class TaskService(BaseService):
             task_id=str(task_id),
             new_assignee=str(effective_assignee) if effective_assignee else None,
         )
+        await self._notify_reassignment(task_id, previous_assignee, effective_assignee)
         return task
+
+    async def _notify_reassignment(
+        self, task_id: UUID, previous_assignee: Any, new_assignee: Any
+    ) -> None:
+        """Best-effort coordination notification for a real ownership change.
+
+        Skipped when nothing actually changed — `reassign` runs even on a
+        no-op redirect (the effective assignee already matched the request).
+        """
+        if new_assignee == previous_assignee:
+            return
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_reassignment_notification(
+                task_id=str(task_id),
+                previous_assignee=str(previous_assignee)
+                if previous_assignee is not None
+                else None,
+                new_assignee=str(new_assignee) if new_assignee is not None else None,
+            )
+        except Exception as e:
+            self.log.warning("Reassignment notify failed", task_id=str(task_id), error=str(e))
 
     @dataclass(frozen=True)
     class _CellPmRedirect:
@@ -9208,7 +9310,9 @@ class TaskService(BaseService):
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
 
-        return await self._apply_pre_block_restore(task, restored_status)
+        restored = await self._apply_pre_block_restore(task, restored_status)
+        await self._notify_unblock(task_id, restored.assigned_to)
+        return restored
 
     async def _apply_pre_block_restore(
         self,
