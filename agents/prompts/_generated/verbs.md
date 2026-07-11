@@ -251,6 +251,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `approve_playbook` | `approve_playbook(playbook_id: UUID)` |
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
+| `curate_vault` | `curate_vault(task_id: UUID, narrative: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 

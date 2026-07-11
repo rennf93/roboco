@@ -8,46 +8,78 @@ const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
-const { listPosts, listPipeline, approve, reject, requestVideo, getMediaBlob } =
-  vi.hoisted(() => ({
-    listPosts: vi.fn(
-      async () =>
-        [
-          {
-            task_id: "v-1",
-            source: "video_post",
-            title: "Video: release v0.19.0",
-            status: "pending",
-            occasion: "release",
-            script: "RoboCo v0.19.0 just shipped!",
-            platforms: ["x", "tiktok"],
-            x_caption: "RoboCo v0.19.0 is here!",
-            tiktok_caption: "New RoboCo drop!",
-            mp4_paths: {
-              vertical: "/fake/vertical.mp4",
-              square: "/fake/square.mp4",
-            },
+const { useProjects } = vi.hoisted(() => ({
+  // One video-enabled project by default ("p-1", matching the mocked
+  // ProjectSelector's onChange value below) so the dialog can default-select
+  // it — tests that need the empty-state override this per-test.
+  useProjects: vi.fn(() => ({
+    data: [
+      {
+        id: "p-1",
+        name: "roboco-panel",
+        slug: "roboco-panel",
+        git_url: "https://example.com/roboco-panel.git",
+        assigned_cell: "frontend",
+        is_active: true,
+        has_workspace: true,
+        has_git_token: true,
+        video_engine_enabled: true,
+      },
+    ],
+    isLoading: false,
+  })),
+}));
+
+vi.mock("@/hooks/use-projects", () => ({ useProjects }));
+
+const {
+  listPosts,
+  listPipeline,
+  approve,
+  reject,
+  requestVideo,
+  getMediaBlob,
+  rerender,
+} = vi.hoisted(() => ({
+  listPosts: vi.fn(
+    async () =>
+      [
+        {
+          task_id: "v-1",
+          source: "video_post",
+          title: "Video: release v0.19.0",
+          status: "pending",
+          occasion: "release",
+          script: "RoboCo v0.19.0 just shipped!",
+          platforms: ["x", "tiktok"],
+          x_caption: "RoboCo v0.19.0 is here!",
+          tiktok_caption: "New RoboCo drop!",
+          mp4_paths: {
+            vertical: "/fake/vertical.mp4",
+            square: "/fake/square.mp4",
           },
-        ] as VideoPost[],
-    ),
-    listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
-    // Deferred so the test can freeze the approve mid-flight.
-    approve: vi.fn(
-      () =>
-        new Promise((r) => {
-          resolveApproveRef.current = r as (v: unknown) => void;
-        }),
-    ),
-    reject: vi.fn(async () => ({})),
-    requestVideo: vi.fn(async () => ({
-      status: "opened",
-      task_id: "v-2",
-      detail: "Video-authoring task opened.",
-    })),
-    getMediaBlob: vi.fn(
-      async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
-    ),
-  }));
+        },
+      ] as VideoPost[],
+  ),
+  listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
+  // Deferred so the test can freeze the approve mid-flight.
+  approve: vi.fn(
+    () =>
+      new Promise((r) => {
+        resolveApproveRef.current = r as (v: unknown) => void;
+      }),
+  ),
+  reject: vi.fn(async () => ({})),
+  requestVideo: vi.fn(async () => ({
+    status: "opened",
+    task_id: "v-2",
+    detail: "Video-authoring task opened.",
+  })),
+  getMediaBlob: vi.fn(
+    async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
+  ),
+  rerender: vi.fn(async () => undefined),
+}));
 
 vi.mock("@/lib/api", () => ({
   videoApi: {
@@ -57,7 +89,17 @@ vi.mock("@/lib/api", () => ({
     reject,
     requestVideo,
     getMediaBlob,
+    rerender,
   },
+}));
+// ProjectSelector: a button that sets the project, mirroring
+// create-task-dialog.test.tsx — bypasses the data-fetching combobox.
+vi.mock("@/components/projects/project-selector", () => ({
+  ProjectSelector: ({ onChange }: { onChange: (v: string | null) => void }) => (
+    <button type="button" onClick={() => onChange("p-1")}>
+      Set Project
+    </button>
+  ),
 }));
 
 import { VideoPostQueue } from "../video-post-queue";
@@ -271,11 +313,12 @@ describe("VideoPostQueue", () => {
     );
   });
 
-  it("requests an on-demand video with the chosen occasion, brief, and platforms", async () => {
+  it("requests an on-demand video with the chosen project, occasion, brief, and platforms", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
 
     fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
     fireEvent.change(screen.getByLabelText("Occasion"), {
       target: { value: "Founder's Day" },
     });
@@ -290,8 +333,68 @@ describe("VideoPostQueue", () => {
         occasion: "Founder's Day",
         brief: "Celebrate the founding.",
         platforms: ["x", "tiktok"],
+        project_id: "p-1",
       }),
     );
+  });
+
+  it("defaults the project to the current (first) video-enabled project so Request enables without an explicit pick", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    // Request still needs occasion/brief filled...
+    expect(screen.getByRole("button", { name: "Request" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Occasion"), {
+      target: { value: "Founder's Day" },
+    });
+    fireEvent.change(screen.getByLabelText("Brief"), {
+      target: { value: "Celebrate the founding." },
+    });
+    // ...but never a manual "Set Project" click — the picker already
+    // defaulted to the sole video-enabled project.
+    expect(screen.getByRole("button", { name: "Request" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Request" }));
+    await waitFor(() =>
+      expect(requestVideo).toHaveBeenCalledWith(
+        expect.objectContaining({ project_id: "p-1" }),
+      ),
+    );
+  });
+
+  it("shows a friendly empty-state when no project has the video engine enabled", async () => {
+    // mockReturnValue (not -Once): RequestVideoDialog re-renders more than
+    // once before the assertions run, and a -Once override would only cover
+    // the first of those renders.
+    useProjects.mockReturnValue({
+      data: [
+        {
+          id: "p-2",
+          name: "not-opted-in",
+          slug: "not-opted-in",
+          git_url: "https://example.com/not-opted-in.git",
+          assigned_cell: "backend",
+          is_active: true,
+          has_workspace: true,
+          has_git_token: true,
+          video_engine_enabled: false,
+        },
+      ],
+      isLoading: false,
+    });
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    fireEvent.click(screen.getByRole("button", { name: /Request a video/ }));
+    expect(
+      screen.getByText(/No projects have the video engine enabled/),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Occasion")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Request" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
   it("shows the keys/engine empty copy when nothing is in the pipeline either", async () => {
@@ -325,5 +428,108 @@ describe("VideoPostQueue", () => {
       await screen.findByText(/1 video in flight — nothing rendered yet/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/No drafts yet/)).not.toBeInTheDocument();
+  });
+
+  it("does not show a re-render button when the draft has no source_task_id/composition_id", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    expect(
+      screen.queryByRole("button", { name: /Re-render/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a re-render button on a draft with a composition regardless of render_status, behind a confirm dialog", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        composition_id: "release-recap",
+        render_status: "failed",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    const rerenderButton = screen.getByRole("button", { name: /Re-render/ });
+    fireEvent.click(rerenderButton);
+
+    // The action is gated behind a confirm dialog — clicking the trigger
+    // alone must not call the backend.
+    expect(rerender).not.toHaveBeenCalled();
+    const confirmButton = await screen.findByRole("button", {
+      name: /Re-render/,
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(rerender).toHaveBeenCalledWith("auth-1"));
+  });
+
+  it("renders the re-render button for a post with render_status='rendered'", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        composition_id: "release-recap",
+        render_status: "rendered",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    expect(
+      screen.getByRole("button", { name: /Re-render/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the live composition preview iframe with captions when composition_id is present", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "RoboCo v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "RoboCo v0.19.0 is here!",
+        tiktok_caption: "New RoboCo drop!",
+        mp4_paths: { vertical: "/fake/vertical.mp4" },
+        source_task_id: "auth-1",
+        composition_id: "release-recap",
+      },
+    ] as VideoPost[]);
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+
+    const iframe = document.querySelector("iframe");
+    expect(iframe).toBeInTheDocument();
+    expect(iframe?.getAttribute("src")).toContain(
+      "/video/preview/auth-1/motion/compositions/release-recap/vertical.html",
+    );
+    expect(screen.getByText("Captions as they will post")).toBeInTheDocument();
+  });
+
+  it("hides the composition preview panel when the draft carries no composition_id", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    expect(document.querySelector("iframe")).not.toBeInTheDocument();
   });
 });

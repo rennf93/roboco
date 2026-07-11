@@ -1,0 +1,33 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    { "query": "tag:#team/backend", "color": { "a": 1, "rgb": 2455239 } },
+    { "query": "tag:#team/frontend", "color": { "a": 1, "rgb": 16738740 } },
+    { "query": "tag:#team/ux_ui", "color": { "a": 1, "rgb": 10181046 } },
+    { "query": "tag:#team/main_pm", "color": { "a": 1, "rgb": 16755763 } },
+    { "query": "tag:#team/board", "color": { "a": 1, "rgb": 4886754 } },
+    { "query": "tag:#status/completed", "color": { "a": 1, "rgb": 3381606 } },
+    { "query": "tag:#status/blocked", "color": { "a": 1, "rgb": 15277667 } },
+    { "query": "path:RoboCo/Journals", "color": { "a": 1, "rgb": 9807270 } },
+    { "query": "path:RoboCo/A2A", "color": { "a": 1, "rgb": 12634495 } },
+    { "query": "path:RoboCo/Agents", "color": { "a": 1, "rgb": 6250335 } }
+  ],
+  "collapse-display": true,
+  "showArrow": false,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": true,
+  "centerStrength": 0.5,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 1,
+  "close": false
+}

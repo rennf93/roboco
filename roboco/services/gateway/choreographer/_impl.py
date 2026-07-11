@@ -2215,7 +2215,11 @@ class Choreographer:
             )
 
     async def _conventions_guard(
-        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+        self,
+        agent_id: UUID,
+        task: Any,
+        briefing: dict[str, Any],
+        preferred_parent: str | None = None,
     ) -> Envelope | None:
         """Run the conventions validator on the actor's changed files (gated).
 
@@ -2225,12 +2229,19 @@ class Choreographer:
         flag is off. This is the pr_pass (reviewer) path — the remediation is
         reviewer-aware (``pr_fail``, not ``i_am_blocked`` which a reviewer
         lacks) via ``_conventions_rejection(..., reviewer=True)``.
+
+        ``preferred_parent`` is the assembled task's real parent branch (see
+        ``PRGateMixin._gate_diff_parent``) — the same cross-team-correct base
+        the gate's own diff evidence uses, so a misplaced-definition finding
+        can't be raised against inherited base-branch content.
         """
         from roboco.config import settings as _settings
 
         if not _settings.conventions_enabled:
             return None
-        result = await self.git.conventions_check_for_task(agent_id, task)
+        result = await self.git.conventions_check_for_task(
+            agent_id, task, preferred_parent=preferred_parent
+        )
         return self._conventions_rejection(result, briefing, reviewer=True)
 
     @staticmethod
@@ -5568,17 +5579,33 @@ class Choreographer:
         return value.value if hasattr(value, "value") else str(value)
 
     async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
-        """Cross-cell sequencing: in a product fan-out the implementation cells
+        """Cross-cell sequencing: in a multi-cell fan-out the implementation cells
         (FRONTEND and BACKEND) depend on the UX/UI cell task — UX design defines
         the screens and API contracts both cells build against, so it is upstream
         of implementation. Wires the dependency in either delegation order. A
         dev/code subtask delegated under a cell task that is itself still waiting
         on that dependency inherits it, so the developer is held until UX is done
         instead of coding ahead of the design. Best-effort: never breaks delegate.
+
+        Fires for a product fan-out (``product_id`` set) AND a MegaTask
+        root-subtask (a batch item that fans out to its own cells via
+        ``cell_projects`` and carries no ``product_id``) — without the latter the
+        cross-cell edges were never wired for MegaTask cells, so they ran fully
+        in parallel and the sequence was ignored (divergent branches).
         """
-        if parent is None or getattr(parent, "product_id", None) is None:
+        if parent is None:
             return
         from roboco.foundation.identity import Team
+        from roboco.foundation.policy.batch import is_batch_root_subtask
+
+        is_fanout = getattr(
+            parent, "product_id", None
+        ) is not None or is_batch_root_subtask(
+            batch_id=getattr(parent, "batch_id", None),
+            parent_task_id=getattr(parent, "parent_task_id", None),
+        )
+        if not is_fanout:
+            return
 
         nt_team = self._team_value(new_task.team)
         try:
@@ -5600,7 +5627,13 @@ class Choreographer:
             )
 
     async def _depend_frontend_on_ux(self, fe_task: Any, parent_id: Any) -> None:
-        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling.
+
+        The wire is followed by a wave restamp (not a hand-rolled ``ux+1``
+        write) so the sequence reflects EVERY same-parent dependency the task
+        carries — a relative write could undercut a collision-derived stamp
+        and invert the claim gate's order against a wired edge.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5618,12 +5651,13 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(fe_task.id, ux.id)
-            await self.task.set_sequence(
-                fe_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(fe_task.id)
 
     async def _depend_backend_on_ux(self, be_task: Any, parent_id: Any) -> None:
-        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling.
+
+        Wire + wave restamp, mirroring :meth:`_depend_frontend_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5641,19 +5675,22 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(be_task.id, ux.id)
-            await self.task.set_sequence(
-                be_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(be_task.id)
 
     async def _depend_pending_frontends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task.
+
+        Each retro-wired sibling is wave-restamped so it lands above the UX
+        task's OWN stamped wave (the new task is stamped before this runs) —
+        a relative ``ux+1`` write here read the pre-stamp sequence and could
+        invert the order.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for fe in siblings:
             if (
@@ -5662,17 +5699,20 @@ class Choreographer:
                 and fe.status in not_started
             ):
                 await self.task.add_dependency(fe.id, ux_task.id)
-                await self.task.set_sequence(fe.id, ux_sequence)
+                await self.task.stamp_wave_sequence(fe.id)
 
     async def _depend_pending_backends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task.
+
+        Wire + wave restamp per sibling, mirroring
+        :meth:`_depend_pending_frontends_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for be in siblings:
             if (
@@ -5681,7 +5721,7 @@ class Choreographer:
                 and be.status in not_started
             ):
                 await self.task.add_dependency(be.id, ux_task.id)
-                await self.task.set_sequence(be.id, ux_sequence)
+                await self.task.stamp_wave_sequence(be.id)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs
@@ -5820,14 +5860,6 @@ class Choreographer:
             dependency_ids=list(inputs.depends_on) if inputs.depends_on else [],
         )
         new_task = await self.task.create_subtask(req)
-        # Assign a distinct ordinal within the parent's siblings so the merge
-        # order is deterministic. Within-cell siblings were all left at the
-        # default sequence 0 — which is why two leaf PRs raced into the same
-        # cell branch and the second wedged. Each new sibling takes the next
-        # ordinal (the count of pre-existing siblings).
-        siblings = await self.task.get_subtasks(parent_task_id)
-        next_seq = len([s for s in siblings if s.id != new_task.id])
-        await self.task.set_sequence(new_task.id, next_seq)
         # Wire the dev-task collision DAG (multi-level sequencing edge kind 3):
         # run the deterministic analyzer over the parent's surfaced siblings
         # and add_dependency each collision edge so a later dev task stays
@@ -5857,6 +5889,16 @@ class Choreographer:
             Team.UX_UI.value,
         ):
             await self.task.wire_by_osmosis_edge(new_task.id)
+        # Post-wiring wave stamp: sequence = 1 + max(same-parent dependency
+        # sequences), 0 when independent — so independent siblings tie (and
+        # run in parallel under the sequence claim gate) while colliding /
+        # ordered ones ascend. Replaces the raw per-sibling ordinal, which
+        # gave independent siblings distinct sequences and serialized ALL
+        # delegated work fleet-wide. The cross-cell UX wiring (in the caller)
+        # restamps any task it re-wires, so every sequence write in the
+        # delegate flow is this one wave computation; merge order for wave
+        # ties falls back to created_at in the merge/lane dispatch barriers.
+        await self.task.stamp_wave_sequence(new_task.id)
         return new_task
 
     @staticmethod

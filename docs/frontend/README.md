@@ -11,6 +11,7 @@ Documentation for the Frontend Cell team.
 
 - `/components/` - Component documentation
   - [Page-scoped refresh provider](./components/page-refresh-provider.md) — `PageRefreshProvider` callback registry that lets the navbar refresh button re-fetch only the current page.
+  - [Project selector](./components/project-selector.md) — `ProjectSelector` dropdown for picking a project, with optional filtering by team and video-engine enablement.
 - `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
 

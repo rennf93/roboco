@@ -327,6 +327,17 @@ _CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
 # huge repo) can't hang the i_am_done/pr_pass gate forever.
 _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
+# --- pr_pass CI-status guard ------------------------------------------------
+# GitHub check-run conclusions that count as a failing check on a PR's head
+# commit. ``neutral``/``skipped``/``success`` (and ``None`` on a still-running
+# run) are not failing.
+_FAILING_CHECK_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "timed_out", "action_required"}
+)
+# A 404 resolving a PR's head SHA means the repo/PR is unreachable or doesn't
+# exist — classified as no_ci_configured, distinct from any other non-2xx
+# (a genuine API failure on a real, reachable repo) which is `error`.
+_HTTP_NOT_FOUND = 404
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2655,6 +2666,254 @@ class GitService(BaseService):
             )
             return None
 
+    async def get_pr_ci_status(
+        self, project_slug: str, pr_number: int
+    ) -> dict[str, Any] | None:
+        """CI status of a PR's current head commit, for the in-path ``pr_pass`` gate.
+
+        Reads GitHub check-runs on the PR's head SHA — the same signal GitHub
+        Actions surfaces on the PR page — and classifies it into one
+        ``state``: ``success`` (every check-run completed with no failing
+        conclusion), ``failure`` (at least one completed check-run failed —
+        ``failing_checks`` names them), ``pending`` (at least one check-run
+        has not completed yet), ``pending_not_scheduled`` (zero check-runs
+        exist for this commit but the repo has workflows configured — CI
+        just hasn't started), ``no_ci_configured`` (zero check-runs AND the
+        repo has no workflows at all — or the project/git_url/token is
+        missing, or the repo/PR is unreachable/nonexistent), or ``error`` (a
+        genuine GitHub API failure on a real, reachable repo).
+
+        Every unresolvable case is now classified explicitly rather than
+        returning ``None``: a missing project/git_url/git-token, or an
+        unreachable/nonexistent repo or PR (a network failure or a 404 on
+        the PR-head, check-runs, or workflows lookup) all classify as
+        ``no_ci_configured`` — ``pr_pass`` passes through cleanly and still
+        stamps the evidence note, instead of silently skipping the guard. A
+        genuine GitHub API failure on a real, reachable repo (any other
+        non-2xx, or an unparseable response) classifies as ``error`` so
+        ``pr_pass`` stays fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
+        ``_capture_pr_head_sha`` in spirit (never mistake a configuration gap
+        for a CI signal) but resolves head-sha lookups via a dedicated helper
+        so the two failure classes above stay distinguishable — the shared
+        ``get_pr_head_sha`` (used by the unrelated pr_fail head-sha capture)
+        is untouched.
+
+        ponytail: reads GitHub check-runs only (the project's own CI is
+        GitHub Actions). A repo whose only signal is the legacy commit-status
+        API would show zero check-runs here; add a statuses fallback if that
+        ever becomes a real CI provider for a project.
+        """
+        config = await self._ci_status_config(project_slug)
+        if isinstance(config, dict):
+            return config
+        owner, repo, headers = config
+        head_sha_or_gap = await self._resolve_ci_head_sha(
+            project_slug, pr_number, owner, repo, headers
+        )
+        if isinstance(head_sha_or_gap, dict):
+            return head_sha_or_gap
+        head_sha = head_sha_or_gap
+        check_runs = await self._fetch_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+        if isinstance(check_runs, dict):
+            return check_runs
+        if check_runs:
+            return self._classify_check_runs(check_runs, head_sha)
+        return await self._classify_zero_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+
+    async def _ci_status_config(
+        self, project_slug: str
+    ) -> tuple[str, str, dict[str, str]] | dict[str, Any]:
+        """Resolve ``(owner, repo, auth headers)`` for a CI-status lookup, or
+        a terminal ``no_ci_configured`` gap dict when the project, its
+        git_url, or a git token is missing, or the git_url doesn't parse."""
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return {"state": "no_ci_configured", "head_sha": None}
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return {"state": "no_ci_configured", "head_sha": None}
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return {"state": "no_ci_configured", "head_sha": None}
+        headers = {
+            "Authorization": f"Bearer {git_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        return owner, repo, headers
+
+    async def _resolve_ci_head_sha(
+        self,
+        project_slug: str,
+        pr_number: int,
+        owner: str,
+        repo: str,
+        headers: dict[str, str],
+    ) -> str | dict[str, Any]:
+        """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
+
+        Returns the head SHA (``str``) on success, or a terminal gap-state
+        dict to return directly from the caller on failure. A network error
+        or a 404 (the repo or PR doesn't exist / isn't reachable) is
+        ``no_ci_configured`` — there is no way to determine a CI signal, so
+        the guard should pass through, not block. Any other non-2xx or an
+        unparseable response is a real, reachable repo whose API call itself
+        failed, so it is ``error`` — a retryable signal the guard must not
+        treat as green.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup unreachable",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "no_ci_configured", "head_sha": None}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": None}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status pr lookup non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": None}
+        try:
+            return str(resp.json()["head"]["sha"])
+        except (ValueError, KeyError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": None}
+
+    async def _fetch_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """GET the check-runs for ``head_sha``.
+
+        Returns the (possibly empty) check-runs list on success, or a
+        terminal gap-state dict to return directly from the caller: a 404
+        (the repo/commit isn't reachable, e.g. no CI integration at all) is
+        ``no_ci_configured``; any other failure (network, non-2xx,
+        unparseable body) is ``error``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+                    headers=headers,
+                    params={"per_page": 100},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status check-runs non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": head_sha}
+        try:
+            runs = resp.json().get("check_runs")
+        except (ValueError, AttributeError) as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        return runs if isinstance(runs, list) else []
+
+    @staticmethod
+    def _classify_check_runs(
+        check_runs: list[dict[str, Any]], head_sha: str
+    ) -> dict[str, Any]:
+        """Map a non-empty check-runs list to a failure/pending/success state."""
+        failing = [
+            str(cr.get("name") or "check")
+            for cr in check_runs
+            if cr.get("status") == "completed"
+            and cr.get("conclusion") in _FAILING_CHECK_CONCLUSIONS
+        ]
+        if failing:
+            return {"state": "failure", "failing_checks": failing, "head_sha": head_sha}
+        if any(cr.get("status") != "completed" for cr in check_runs):
+            return {"state": "pending", "head_sha": head_sha}
+        return {"state": "success", "head_sha": head_sha}
+
+    async def _classify_zero_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """No check-runs exist yet for ``head_sha`` — tell "not scheduled" apart
+        from "no CI configured" by asking whether the repo has any workflows.
+
+        A 404 here (repo unreachable/nonexistent — no CI integration) is
+        ``no_ci_configured``; any other failure is ``error``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/actions/workflows",
+                    headers=headers,
+                    params={"per_page": 1},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status workflows request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status workflows non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": head_sha}
+        try:
+            total = int(resp.json().get("total_count") or 0)
+        except (ValueError, AttributeError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status workflows parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        state = "pending_not_scheduled" if total > 0 else "no_ci_configured"
+        return {"state": state, "head_sha": head_sha}
+
     async def update_pr_for_task(
         self,
         task_id: UUID,
@@ -4550,7 +4809,12 @@ class GitService(BaseService):
         return "origin/master"
 
     async def _resolve_diff_base(
-        self, workspace: Any, branch_name: str, token: str | None = None
+        self,
+        workspace: Any,
+        branch_name: str,
+        token: str | None = None,
+        *,
+        preferred_parent: str | None = None,
     ) -> str:
         """Best diff base for `branch_name` when no explicit base is given.
 
@@ -4567,10 +4831,23 @@ class GitService(BaseService):
         a stale base spans the whole repo delta, not the branch's change.
         Re-fetch the resolved base authenticated (unauth fails on private
         repos) so the base is current.
+
+        ``preferred_parent``, when given, overrides the string-derived
+        ``parent_branch_for`` with an authoritative parent branch name (e.g.
+        ``merge_chain.resolve_parent_branch``, which reads the parent TASK's
+        own ``branch_name`` — correct across a team boundary, unlike the
+        derivation below which reuses ``branch_name``'s own team segment).
+        Still falls back to the repo default branch when that parent was
+        never pushed, so an unassembled/branchless parent can't crash the
+        diff.
         """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
-        parent = parent_branch_for(branch_name)
+        parent = (
+            preferred_parent
+            if preferred_parent is not None
+            else parent_branch_for(branch_name)
+        )
         await self._run_git(
             workspace, ["fetch", "origin", parent], check=False, token=token
         )
@@ -4632,6 +4909,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> str:
         """Return the git diff for `branch_name` against `base`.
 
@@ -4643,6 +4921,11 @@ class GitService(BaseService):
         ``actor_agent_id`` resolves the workspace via the caller's clone
         when ``task.assigned_to`` is None — important for
         QA reviewing post-submit_qa.
+
+        ``preferred_parent`` is ignored once ``base`` is explicit; it only
+        overrides the derived-parent lookup (see ``_resolve_diff_base``) for
+        a caller with an authoritative parent branch name (a cross-team
+        assembled-PR review) — never a literal ref like ``base="HEAD~1"``.
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4652,7 +4935,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -4665,6 +4950,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> list[str]:
         """Return the file paths changed on `branch_name` relative to `base`.
 
@@ -4674,7 +4960,7 @@ class GitService(BaseService):
         ever called the legacy ``add_files_modified`` HTTP endpoint
         (which the gateway commit() does not call). Empty paths are
         skipped; output preserves git's order. Same default-
-        branch fallback as ``diff``.
+        branch fallback as ``diff`` (including ``preferred_parent``).
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4684,7 +4970,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         result = await self._run_git(
             workspace,
@@ -4803,7 +5091,11 @@ class GitService(BaseService):
         }
 
     async def conventions_check_for_task(
-        self, actor_agent_id: UUID | None, task: Any
+        self,
+        actor_agent_id: UUID | None,
+        task: Any,
+        *,
+        preferred_parent: str | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -4815,6 +5107,9 @@ class GitService(BaseService):
         exit-3 philosophy). The two empty-result paths stay fail-open: a
         branchless task (no ``branch_name``) and a task with no changed files
         genuinely have nothing to validate, so the gate correctly passes.
+
+        ``preferred_parent`` threads to ``list_changed_files`` — the in-path
+        PR-review gate's cross-team parent (see ``diff``'s docstring).
         """
         try:
             branch = task.branch_name
@@ -4824,7 +5119,9 @@ class GitService(BaseService):
                 branch, actor_agent_id=actor_agent_id
             )
             changed = await self.list_changed_files(
-                branch_name=branch, actor_agent_id=actor_agent_id
+                branch_name=branch,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
             )
         except Exception as exc:
             return {

@@ -18,6 +18,7 @@ import pytest_asyncio
 from roboco.db.tables import AgentTable, ProductTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
+from roboco.models.product import ProductCellMapping
 from roboco.models.task import TaskCreateRequest
 from roboco.services.gateway.choreographer._impl import (
     Choreographer,
@@ -177,6 +178,93 @@ async def _build_product_fanout(setup: dict) -> dict:
         "precondition: frontend cell task must depend on the UX cell task"
     )
     return {"root": root, "ux_cell": ux_cell, "fe_cell": fe_cell}
+
+
+@pytest.mark.asyncio
+async def test_megatask_root_wires_cross_cell_ux_dependency(
+    fanout_setup: dict,
+) -> None:
+    """A MegaTask root-subtask (a batch item with NO product_id — it fans out to
+    cells via cell_projects) must get the same cross-cell wiring as a product
+    fan-out: its FRONTEND cell depends on its UX/UI cell. Regression for the
+    product_id-only guard that skipped MegaTask roots, so their cells ran fully
+    in parallel and ignored the sequence (divergent branches)."""
+    svc: TaskService = fanout_setup["svc"]
+    choreo: Choreographer = fanout_setup["choreo"]
+    batch_id = uuid4()
+    umbrella = await svc.create(
+        TaskCreateRequest(
+            title="MegaTask umbrella coordination root",
+            description="a real umbrella coordination task description over 20 chars",
+            acceptance_criteria=["batch coordination"],
+            team=Team.MAIN_PM,
+            created_by=fanout_setup["creator"],
+            project_id=None,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.HIGH,
+            batch_id=batch_id,
+        )
+    )
+    root = await svc.create(
+        TaskCreateRequest(
+            title="MegaTask root-subtask that fans out to cells",
+            description="a real megatask root-subtask description over twenty chars",
+            acceptance_criteria=["fans out to ux + frontend cells"],
+            team=Team.MAIN_PM,
+            created_by=fanout_setup["creator"],
+            project_id=None,  # no product_id — the cell_projects model
+            parent_task_id=cast("UUID", umbrella.id),
+            batch_id=batch_id,
+            cell_projects=[
+                ProductCellMapping(
+                    team=Team.UX_UI, project_id=fanout_setup["ux_project_id"]
+                ),
+                ProductCellMapping(
+                    team=Team.FRONTEND, project_id=fanout_setup["fe_project_id"]
+                ),
+            ],
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.HIGH,
+        )
+    )
+    ux_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="UX/UI design for the megatask root",
+            description="a real ux design task description over twenty chars",
+            acceptance_criteria=["wireframes approved"],
+            team=Team.UX_UI,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["ux_project_id"],
+            parent_task_id=cast("UUID", root.id),
+            task_type=TaskType.DESIGN,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    fe_cell = await svc.create_subtask(
+        TaskCreateRequest(
+            title="Frontend implementation for the megatask root",
+            description="a real frontend cell task description over twenty chars",
+            acceptance_criteria=["UI matches the design"],
+            team=Team.FRONTEND,
+            created_by=fanout_setup["creator"],
+            project_id=fanout_setup["fe_project_id"],
+            parent_task_id=cast("UUID", root.id),
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+    )
+    await choreo._wire_ux_frontend_dependency(fe_cell, root)
+    await svc.session.flush()
+    refreshed_fe = await svc.get(cast("UUID", fe_cell.id))
+    assert refreshed_fe is not None
+    assert ux_cell.id in refreshed_fe.dependency_ids, (
+        "MegaTask root frontend cell must depend on its UX cell — the product_id "
+        "guard previously skipped MegaTask roots, leaving their cells un-sequenced"
+    )
 
 
 @pytest.mark.asyncio

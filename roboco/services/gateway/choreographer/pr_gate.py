@@ -25,6 +25,7 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.batch import is_batch_root_subtask
 from roboco.foundation.policy.content import markers
 from roboco.services.gateway.envelope import Envelope
+from roboco.services.gateway.merge_chain import resolve_parent_branch
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -52,37 +53,10 @@ class PRGateMixin(_Base):
         pr_pass / pr_fail source-status still matches. The assembled PR's diff is
         returned inline (read-only) so the reviewer inspects it before deciding.
         """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb="claim_gate_review",
-            )
-        agent = await self.task.agent_for(reviewer_agent_id)
-        role_str = str(agent.role) if agent is not None else "pr_reviewer"
-        briefing = await self._briefing_for(reviewer_agent_id, task_id, full=True)
-        role = await self._gate_role_or_rejection(
-            t, role_str, briefing, reviewer_agent_id, task_id, "claim_gate_review"
-        )
-        if isinstance(role, Envelope):
-            return role
-        spec_ctx = spec_module.Context(
-            actor_id=reviewer_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
-        )
-        decision = spec_module.can_invoke_intent(role, "claim_gate_review", t, spec_ctx)
-        if not decision.allowed:
-            return await self._emit_rejection(
-                Envelope.from_decision(decision, briefing=briefing).with_introspection(
-                    task=t, role=role_str
-                ),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb="claim_gate_review",
-            )
+        pre = await self._claim_gate_preflight(reviewer_agent_id, task_id)
+        if isinstance(pre, Envelope):
+            return pre
+        t, role_str, briefing = pre
         guard = await self._run_claim_guards(
             agent_id=reviewer_agent_id,
             task=t,
@@ -117,6 +91,52 @@ class PRGateMixin(_Base):
             evidence=evidence,
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    async def _claim_gate_preflight(
+        self, reviewer_agent_id: UUID, task_id: UUID
+    ) -> Any:
+        """Task fetch + role + spec gate for ``claim_gate_review``.
+
+        Returns a rejection ``Envelope`` or the ``(t, role_str, briefing)``
+        tuple on pass.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="claim_gate_review",
+            )
+        agent = await self.task.agent_for(reviewer_agent_id)
+        role_str = self._role_str_for_agent(agent)
+        briefing = await self._briefing_for(reviewer_agent_id, task_id, full=True)
+        role = await self._gate_role_or_rejection(
+            t, role_str, briefing, reviewer_agent_id, task_id, "claim_gate_review"
+        )
+        if isinstance(role, Envelope):
+            return role
+        spec_ctx = spec_module.Context(
+            actor_id=reviewer_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
+        )
+        decision = spec_module.can_invoke_intent(role, "claim_gate_review", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="claim_gate_review",
+            )
+        return (t, role_str, briefing)
+
+    @staticmethod
+    def _role_str_for_agent(agent: Any) -> str:
+        """Reviewer role string off the agent view, defaulting to pr_reviewer."""
+        return str(agent.role) if agent is not None else "pr_reviewer"
 
     async def pr_pass(
         self, reviewer_agent_id: UUID, task_id: UUID, notes: str
@@ -165,53 +185,19 @@ class PRGateMixin(_Base):
         Returns a rejection ``Envelope`` or the
         ``(t, agent, role_str, briefing, spec_ctx)`` tuple on pass.
         """
-        t = await self.task.get(task_id)
-        if t is None:
-            return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb=verb,
-            )
-        if t.assigned_to != reviewer_agent_id:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message="not assigned to you",
-                    remediate="claim it via claim_gate_review(task_id) first",
-                    context_briefing=await self._briefing_for(
-                        reviewer_agent_id, task_id
-                    ),
-                ).with_introspection(task=t, role="pr_reviewer"),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb=verb,
-            )
+        t = await self._gate_ownership_or_rejection(reviewer_agent_id, task_id, verb)
+        if isinstance(t, Envelope):
+            return t
         agent = await self.task.agent_for(reviewer_agent_id)
-        role_str = str(agent.role) if agent is not None else "pr_reviewer"
+        role_str = self._role_str_for_agent(agent)
         briefing = await self._briefing_for(reviewer_agent_id, task_id)
         role = await self._gate_role_or_rejection(
             t, role_str, briefing, reviewer_agent_id, task_id, verb
         )
         if isinstance(role, Envelope):
             return role
-        # The spec gate's ``self_review_block`` is the only self-review defense
-        # for pr_pass / pr_fail: the service-layer ``_validate_not_self_review``
-        # backstop covers qa/documenter but skips pr_reviewer. For the comparison
-        # to fire, both sides must be populated. ``GatewayAgentView`` carries no
-        # ``slug`` field (so ``getattr(agent, "slug", None)`` is always None in
-        # production), and the ``original_developer`` marker stores the dev's
-        # UUID — so resolve both as UUID strings and let the spec's string
-        # equality do the rest. The marker is never set on assembled coordination
-        # tasks (only on dev-leaf tasks at QA/doc claim), so the block is dormant
-        # by design in production — but the gate is now correctly wired to fire
-        # if the marker were ever set to the reviewer.
-        spec_ctx = spec_module.Context(
-            actor_id=reviewer_agent_id,
-            actor_slug=str(reviewer_agent_id),
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
-            original_developer_slug=markers.get_original_developer(t),
-            notes=notes,
-            issues=issues,
+        spec_ctx = self._gate_preflight_spec_ctx(
+            reviewer_agent_id, agent, t, notes, issues
         )
         if soup := await self._guard_free_text(
             checks=(("notes", notes, 8), ("issues", list(issues), 8)),
@@ -233,8 +219,73 @@ class PRGateMixin(_Base):
             )
         return (t, agent, role_str, briefing, spec_ctx)
 
+    async def _gate_ownership_or_rejection(
+        self, reviewer_agent_id: UUID, task_id: UUID, verb: str
+    ) -> Any:
+        """Fetch the task and verify it is assigned to the reviewer.
+
+        Returns the task on success, or a ``not_found`` / ``not_authorized``
+        rejection ``Envelope`` on failure.
+        """
+        t = await self.task.get(task_id)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
+        if t.assigned_to != reviewer_agent_id:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message="not assigned to you",
+                    remediate="claim it via claim_gate_review(task_id) first",
+                    context_briefing=await self._briefing_for(
+                        reviewer_agent_id, task_id
+                    ),
+                ).with_introspection(task=t, role="pr_reviewer"),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
+        return t
+
+    @staticmethod
+    def _gate_preflight_spec_ctx(
+        reviewer_agent_id: UUID, agent: Any, t: Any, notes: str, issues: tuple[str, ...]
+    ) -> spec_module.Context:
+        """Build the pr_pass / pr_fail spec ``Context``, including the
+        self-review wiring.
+
+        The spec gate's ``self_review_block`` is the only self-review defense
+        for pr_pass / pr_fail: the service-layer ``_validate_not_self_review``
+        backstop covers qa/documenter but skips pr_reviewer. For the comparison
+        to fire, both sides must be populated. ``GatewayAgentView`` carries no
+        ``slug`` field (so ``getattr(agent, "slug", None)`` is always None in
+        production), and the ``original_developer`` marker stores the dev's
+        UUID — so resolve both as UUID strings and let the spec's string
+        equality do the rest. The marker is never set on assembled coordination
+        tasks (only on dev-leaf tasks at QA/doc claim), so the block is dormant
+        by design in production — but the gate is now correctly wired to fire
+        if the marker were ever set to the reviewer.
+        """
+        return spec_module.Context(
+            actor_id=reviewer_agent_id,
+            actor_slug=str(reviewer_agent_id),
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            original_developer_slug=markers.get_original_developer(t),
+            notes=notes,
+            issues=issues,
+        )
+
     async def _record_gate_verdict_for(
-        self, verb: str, t: Any, notes: str, *, issues: tuple[str, ...]
+        self,
+        verb: str,
+        t: Any,
+        notes: str,
+        *,
+        issues: tuple[str, ...],
+        ci_note: str | None = None,
     ) -> str | None:
         """Author the canonical pr_review verdict note before the transition.
 
@@ -242,6 +293,9 @@ class PRGateMixin(_Base):
         can structurally refuse to re-submit the unchanged root (the 2026-06-27
         infinite pr_fail re-submit loop). Best-effort: a capture failure leaves
         head_sha absent and submit_root fails open rather than wedging the PM.
+        On pr_pass, ``ci_note`` (set by ``_pr_pass_blocked`` when the CI-status
+        guard passed through a project with no CI configured) is stamped into
+        the verdict's ``ci_status`` field as evidence the guard actually ran.
 
         Returns the captured head_sha for pr_fail (None for pr_pass) so the caller
         can re-capture after the transition commits and re-stamp if the PR head
@@ -251,7 +305,7 @@ class PRGateMixin(_Base):
             head_sha = await self._capture_pr_head_sha(t)
             self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
             return head_sha
-        self._record_gate_verdict(t, verb, notes, issues=issues)
+        self._record_gate_verdict(t, verb, notes, issues=issues, ci_note=ci_note)
         return None
 
     async def _re_stamp_pr_fail_head_sha_if_advanced(
@@ -353,8 +407,9 @@ class PRGateMixin(_Base):
         )
         if gate is not None:
             return gate
+        ci_note: str | None = None
         if verb == "pr_pass":
-            blocked = await self._pr_pass_blocked(
+            blocked, ci_note = await self._pr_pass_blocked(
                 reviewer_agent_id, task_id, t, role_str, briefing
             )
             if blocked is not None:
@@ -362,7 +417,9 @@ class PRGateMixin(_Base):
         # Author the canonical pr_review verdict note BEFORE the transition so it
         # is persisted by the same commit (mirrors post_pr_review) and stays in
         # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
-        pre_sha = await self._record_gate_verdict_for(verb, t, notes, issues=issues)
+        pre_sha = await self._record_gate_verdict_for(
+            verb, t, notes, issues=issues, ci_note=ci_note
+        )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -432,28 +489,162 @@ class PRGateMixin(_Base):
         t: Any,
         role_str: str,
         briefing: dict[str, Any],
-    ) -> Envelope | None:
-        """Refuse pr_pass on a broken toolchain or a block-level violation.
+    ) -> tuple[Envelope | None, str | None]:
+        """Refuse pr_pass on a broken toolchain, a block-level violation, or
+        non-green CI on the assembled PR's head commit.
 
         A reviewer must not PASS an assembled PR whose suite can't run in the
-        workspace, or that carries unresolved architectural-convention
-        violations; pr_fail stays available. Returns the emitted rejection or
-        None to proceed. Both guards are inert when their flag is off.
+        workspace, that carries unresolved architectural-convention
+        violations, or whose CI is red/pending/unscheduled/unresolvable;
+        pr_fail stays available for all three. Returns ``(rejection, None)``
+        to block, or ``(None, ci_note)`` to proceed — ``ci_note`` is a
+        non-None evidence stamp only when the CI guard passed through a
+        project with no CI configured at all. The toolchain/conventions
+        guards are inert when their flag is off; the CI guard fails open on
+        an unresolvable gate-level slug/PR number (``None`` from
+        ``_resolve_ci_status``) and also passes through — with an evidence
+        stamp — when ``get_pr_ci_status`` itself classifies a missing
+        project/git_url/token or an unreachable/nonexistent repo as
+        ``no_ci_configured``.
         """
+        from roboco.config import settings as _settings
+
+        # Only the conventions guard consumes the parent — skip the lookup
+        # entirely (and its failure surface) while the flag is off.
+        parent = (
+            await self._gate_diff_parent(t) if _settings.conventions_enabled else None
+        )
         guards = (
             lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
-            lambda: self._conventions_guard(reviewer_agent_id, t, briefing),
+            lambda: self._conventions_guard(
+                reviewer_agent_id, t, briefing, preferred_parent=parent
+            ),
         )
         for guard in guards:
             rejection = await guard()
             if rejection is not None:
-                return await self._emit_rejection(
-                    rejection.with_introspection(task=t, role=role_str),
-                    agent_id=reviewer_agent_id,
-                    task_id=task_id,
-                    verb="pr_pass",
+                return (
+                    await self._emit_rejection(
+                        rejection.with_introspection(task=t, role=role_str),
+                        agent_id=reviewer_agent_id,
+                        task_id=task_id,
+                        verb="pr_pass",
+                    ),
+                    None,
                 )
-        return None
+        return await self._ci_status_guard(
+            reviewer_agent_id, task_id, t, role_str, briefing
+        )
+
+    async def _resolve_ci_status(self, task_id: UUID, t: Any) -> dict[str, Any] | None:
+        """Best-effort CI-status lookup for the assembled PR's head commit.
+
+        Returns ``None`` on ANY configuration gap or lookup failure (no
+        resolvable slug/PR number, a raised exception, or a caller returning
+        something other than the documented ``dict[str, Any]`` shape) so
+        ``_ci_status_guard`` fails open on every one of them uniformly.
+        """
+        pr_number = getattr(t, "pr_number", None)
+        try:
+            slug = await self._project_slug_for(t)
+        except Exception:
+            logger.exception(
+                "ci status guard: slug resolve failed", task_id=str(task_id)
+            )
+            return None
+        if not slug or not pr_number:
+            return None
+        try:
+            status = await self.git.get_pr_ci_status(slug, int(pr_number))
+        except Exception:
+            logger.exception(
+                "ci status guard: get_pr_ci_status raised", task_id=str(task_id)
+            )
+            return None
+        return status if isinstance(status, dict) else None
+
+    async def _ci_status_guard(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, str | None]:
+        """Refuse pr_pass unless CI on the assembled PR's head commit is green.
+
+        Failing, pending, unscheduled, or unresolvable-via-API CI states all
+        block with a reviewer-aware remediation pointing at ``pr_fail`` (a
+        reviewer has no ``i_am_blocked``) — pending/unscheduled/error are
+        framed as retryable (wait and call pr_pass again), never as a defect
+        to route back to the dev. A project with no CI configured at all
+        passes through cleanly, returning an evidence note so the caller can
+        stamp the verdict with why the guard did not block.
+        """
+        status = await self._resolve_ci_status(task_id, t)
+        if status is None:
+            # A configuration gap or lookup failure — never mistaken for a CI
+            # signal, so the guard fails open rather than blocking.
+            return None, None
+        state = status.get("state")
+        if state == "success":
+            return None, None
+        if state == "no_ci_configured":
+            return None, "no CI configured on this project"
+        message, remediate = self._ci_status_block_message(state, status)
+        return (
+            await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=message,
+                    remediate=remediate,
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="pr_pass",
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _ci_status_block_message(
+        state: str | None, status: dict[str, Any]
+    ) -> tuple[str, str]:
+        """(message, remediate) for a blocking CI state — failure / pending /
+        pending_not_scheduled / error (the non-terminal, non-green states).
+
+        pending/unscheduled/error are framed as retryable (wait and call
+        pr_pass again), never as a defect to route back to the dev.
+        """
+        if state == "failure":
+            names = (
+                ", ".join(status.get("failing_checks") or []) or "one or more checks"
+            )
+            return (
+                f"CI is failing on the assembled PR's head commit — {names}",
+                f"call pr_fail(issues=['CI failing: {names}']) so the PR returns "
+                "to needs_revision and the dev fixes the failing check(s) — do "
+                "NOT pr_pass on red CI",
+            )
+        if state == "pending":
+            return (
+                "CI is still running on the assembled PR's head commit",
+                "wait for CI to finish and call pr_pass again once it's green "
+                "— do NOT pr_pass while checks are still running",
+            )
+        if state == "pending_not_scheduled":
+            return (
+                "CI has not started running on the assembled PR's head commit yet",
+                "wait for CI to be scheduled and call pr_pass again once it's "
+                "green — do NOT pr_pass before any check has run",
+            )
+        # state == "error" (or an unrecognized value) — a genuine GitHub API
+        # failure resolving the signal; never treat this as green.
+        return (
+            "could not determine CI status for the assembled PR (GitHub API error)",
+            "retry pr_pass shortly once the CI status can be resolved; "
+            "if it persists, pr_fail(issues=[...]) to unwedge the PR",
+        )
 
     def _record_gate_verdict(
         self,
@@ -463,6 +654,7 @@ class PRGateMixin(_Base):
         issues: tuple[str, ...] = (),
         *,
         head_sha: str | None = None,
+        ci_note: str | None = None,
     ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
@@ -483,25 +675,59 @@ class PRGateMixin(_Base):
         re-submit the unchanged root — the 2026-06-27 infinite ``pr_fail``
         re-submit loop. ``None`` (the default) leaves it absent, which the
         ``submit_root`` gate treats as fail-open.
+
+        On ``pr_pass``, ``ci_note`` (set only when the CI-status guard passed
+        through a project with no CI configured) is stamped into the slot's
+        ``ci_status`` field — the evidence that the guard ran and deliberately
+        did not block, rather than silently never having checked at all.
         """
         from roboco.foundation.policy.content import ContentValidationError
         from roboco.services.content_notes import apply_structured_note
 
         verdict = "passed" if verb == "pr_pass" else "failed"
+        summary = self._gate_verdict_summary(verb, notes, issues)
+        payload = self._gate_verdict_payload(
+            verdict, summary, issues, verb, head_sha=head_sha, ci_note=ci_note
+        )
+        try:
+            apply_structured_note(t, "pr_review", payload)
+        except ContentValidationError:
+            logger.warning(
+                "gate verdict note skipped (invalid content)",
+                verb=verb,
+                task_id=str(getattr(t, "id", "")),
+            )
+
+    @staticmethod
+    def _gate_verdict_summary(verb: str, notes: str, issues: tuple[str, ...]) -> str:
+        """The verdict note's ``summary`` field.
+
+        The free-text ``issues`` render under their own ``## Issues`` section
+        (render_markdown). Baking them into ``summary`` too duplicated each
+        issue on the Task Details "PR Reviewer Notes" card (once under
+        ## Summary, once under ## Issues). The summary is a substantive
+        non-issues sentence; ``notes`` (with the issues) still drives the
+        GitHub PR post and the a2a to the owning PM — those are raw text,
+        not rendered through render_markdown, so no duplication there.
+        """
         if verb == "pr_fail" and issues:
-            # The free-text issues render under their own ``## Issues`` section
-            # (render_markdown). Baking them into ``summary`` too duplicated each
-            # issue on the Task Details "PR Reviewer Notes" card (once under
-            # ## Summary, once under ## Issues). The summary is a substantive
-            # non-issues sentence; ``notes`` (with the issues) still drives the
-            # GitHub PR post and the a2a to the owning PM — those are raw text,
-            # not rendered through render_markdown, so no duplication there.
-            summary = (
+            return (
                 f"In-path PR-review gate requested changes - "
                 f"{len(issues)} issue(s) listed below."
             )
-        else:
-            summary = notes
+        return notes
+
+    @staticmethod
+    def _gate_verdict_payload(
+        verdict: str,
+        summary: str,
+        issues: tuple[str, ...],
+        verb: str,
+        *,
+        head_sha: str | None,
+        ci_note: str | None,
+    ) -> dict[str, Any]:
+        """Assemble the structured ``pr_review`` note payload."""
         payload: dict[str, Any] = {
             "summary": summary,
             "findings": [],
@@ -511,14 +737,9 @@ class PRGateMixin(_Base):
             payload["issues"] = list(issues)
         if verb == "pr_fail" and head_sha:
             payload["head_sha"] = head_sha
-        try:
-            apply_structured_note(t, "pr_review", payload)
-        except ContentValidationError:
-            logger.warning(
-                "gate verdict note skipped (invalid content)",
-                verb=verb,
-                task_id=str(getattr(t, "id", "")),
-            )
+        if verb == "pr_pass" and ci_note:
+            payload["ci_status"] = ci_note
+        return payload
 
     async def _capture_pr_head_sha(self, t: Any) -> str | None:
         """Best-effort capture of the assembled PR's head SHA at ``pr_fail`` time.
@@ -696,11 +917,34 @@ class PRGateMixin(_Base):
             verb=verb,
         )
 
+    async def _gate_diff_parent(self, t: Any) -> str | None:
+        """The assembled task's real parent branch, or None (branchless task).
+
+        ``resolve_parent_branch`` reads the parent TASK's own ``branch_name``
+        (correct across a team boundary — every cell→root hop, where the
+        child's own team segment can't derive the root's ``main_pm``
+        branch), unlike the string-derived ``parent_branch_for`` that
+        ``git.diff``'s default base falls back on. Fail-open on a lookup
+        error (None → the derived-base fallback), like every other
+        ``resolve_parent_branch`` call site — a transient DB miss degrades
+        the diff base, never 500s the gate verb.
+        """
+        if not t.branch_name:
+            return None
+        try:
+            return await resolve_parent_branch(t, self.task)
+        except Exception as exc:
+            logger.warning("gate_diff_parent_skip", task_id=str(t.id), error=str(exc))
+            return None
+
     async def _build_gate_review_evidence(self, t: Any) -> dict[str, Any]:
         """Inline evidence for claim_gate_review: the assembled diff + criteria."""
         diff = ""
         if t.branch_name:
-            diff = await self.git.diff(branch_name=t.branch_name)
+            diff = await self.git.diff(
+                branch_name=t.branch_name,
+                preferred_parent=await self._gate_diff_parent(t),
+            )
         return {
             "pr_number": t.pr_number,
             "pr_url": t.pr_url,

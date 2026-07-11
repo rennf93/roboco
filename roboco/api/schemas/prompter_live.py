@@ -11,6 +11,11 @@ from uuid import UUID  # noqa: TC003 — pydantic resolves these annotations at 
 
 from pydantic import BaseModel, Field, model_validator
 
+# A MegaTask must span at least this many distinct projects (mirrors
+# ``PrompterService._MIN_MEGATASK_PROJECTS``) — enforced here only for the
+# create path; a redraft recovers each item's scope from its own draft.
+_MIN_MEGATASK_PROJECTS = 2
+
 
 class StartLiveRequest(BaseModel):
     """Open a live intake chat scoped to a project, a product, or a MegaTask.
@@ -38,9 +43,15 @@ class StartLiveRequest(BaseModel):
 
 
 class StartLiveResponse(BaseModel):
-    """The new session's id — the panel opens its stream and posts messages to it."""
+    """The new session's id — the panel opens its stream and posts messages to it.
+
+    ``project_ids`` is set on a MegaTask cold re-interview (the umbrella's
+    recovered multi-repo scope) so the panel can enter batch mode; None on
+    every other start path.
+    """
 
     session_id: str
+    project_ids: list[UUID] | None = None
 
 
 class LiveMessageRequest(BaseModel):
@@ -99,8 +110,25 @@ class BatchConfirmRequest(BaseModel):
     drafts: list[dict[str, Any]] = Field(..., min_length=1)
     # The scoped repos the MegaTask spans (the set the intake agent read). Every
     # draft must target one of these, and the batch must span at least two.
-    project_ids: list[UUID] = Field(..., min_length=2)
+    # Required only when creating (``task_id`` unset) — a board-informed
+    # redraft recovers each item's scope from its own draft instead.
+    project_ids: list[UUID] | None = None
     route: Literal["board", "main_pm"] = "board"
+    # Set on a board-informed re-draft: confirm updates this existing MegaTask
+    # umbrella in place instead of creating a new one (mirrors
+    # ``LiveConfirmRequest.task_id``).
+    task_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _project_ids_required_for_create(self) -> BatchConfirmRequest:
+        if self.task_id is not None:
+            return self
+        if self.project_ids is None or len(self.project_ids) < _MIN_MEGATASK_PROJECTS:
+            raise ValueError(
+                "project_ids must include at least two projects when creating "
+                "a MegaTask"
+            )
+        return self
 
 
 class BatchPreviewRequest(BaseModel):

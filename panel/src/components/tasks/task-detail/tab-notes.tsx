@@ -3,12 +3,13 @@
 import { useState } from "react";
 import { Task } from "@/types";
 import { useUpdateTask } from "@/hooks/use-tasks";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
+import { CollapsibleSection } from "./collapsible-section";
+import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 import {
   FileText,
   Code,
@@ -96,13 +97,17 @@ const FIELD_TO_SECTION: Record<NoteField, string> = {
   doc_notes: "doc",
 };
 
-// When the section was last written (apply_structured_note stamps it).
+// When the section was last written (apply_structured_note stamps it). Falls
+// back to the task's creation time when content exists but predates the stamp
+// (older notes written before apply_structured_note started stamping) so a
+// populated field never renders with no timestamp at all.
 function writtenAt(task: Task, field: NoteField): string | null {
   const sections = task.notes_structured as
     | Record<string, { written_at?: string }>
     | null
     | undefined;
-  const stamp = sections?.[FIELD_TO_SECTION[field]]?.written_at;
+  const stamp =
+    sections?.[FIELD_TO_SECTION[field]]?.written_at ?? task.created_at;
   if (!stamp) return null;
   const date = new Date(stamp);
   if (Number.isNaN(date.getTime())) return null;
@@ -145,11 +150,14 @@ function EditableNoteCard({
   bgClass,
 }: NoteCardProps) {
   const updateTask = useUpdateTask();
+  const currentValue = task[field];
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
-
-  const currentValue = task[field];
+  // Long content starts collapsed; short content starts expanded.
+  const [sectionOpen, setSectionOpen] = useState(() =>
+    !exceedsReadabilityThreshold(currentValue ?? ""),
+  );
 
   // Display prop value when not editing, local value when editing
   const editValue = isEditing ? localEditValue : (currentValue ?? "");
@@ -200,126 +208,129 @@ function EditableNoteCard({
   // If no content and not editing, show placeholder
   if (!currentValue && !isEditing) {
     return (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg flex items-center gap-2">
-              {icon}
-              {title}
-              {badge}
-            </CardTitle>
-            <Button size="sm" variant="ghost" onClick={startEditing}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <p
-            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
-            onClick={startEditing}
-          >
-            No {title.toLowerCase()} added yet. Click to add.
-          </p>
-        </CardContent>
-      </Card>
+      <CollapsibleSection
+        title={
+          <>
+            {icon}
+            {title}
+            {badge}
+          </>
+        }
+        open={sectionOpen}
+        onOpenChange={setSectionOpen}
+        actions={
+          <Button size="sm" variant="ghost" onClick={startEditing}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add
+          </Button>
+        }
+      >
+        <p
+          className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2 transition-colors"
+          onClick={startEditing}
+        >
+          No {title.toLowerCase()} added yet. Click to add.
+        </p>
+      </CollapsibleSection>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            {icon}
-            {title}
-            {badge}
-            <WrittenAtStamp task={task} field={field} />
-          </CardTitle>
-          {isEditing ? (
-            <div className="flex items-center gap-2">
-              <Tabs
-                value={editMode}
-                onValueChange={(v) => setEditMode(v as "write" | "preview")}
-              >
-                <TabsList className="h-8">
-                  <TabsTrigger value="write" className="text-xs px-2 h-6">
-                    <Edit3 className="h-3 w-3 mr-1" />
-                    Write
-                  </TabsTrigger>
-                  <TabsTrigger value="preview" className="text-xs px-2 h-6">
-                    <Eye className="h-3 w-3 mr-1" />
-                    Preview
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={handleCancel}
-                disabled={updateTask.isPending}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={updateTask.isPending}
-              >
-                <Check className="h-4 w-4 mr-1" />
-                Save
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={startEditing}>
-              <Edit3 className="h-4 w-4 mr-1" />
-              Edit
+    <CollapsibleSection
+      title={
+        <>
+          {icon}
+          {title}
+          {badge}
+          <WrittenAtStamp task={task} field={field} />
+        </>
+      }
+      open={isEditing || sectionOpen}
+      onOpenChange={setSectionOpen}
+      content={currentValue ?? undefined}
+      actions={
+        isEditing ? (
+          <>
+            <Tabs
+              value={editMode}
+              onValueChange={(v) => setEditMode(v as "write" | "preview")}
+            >
+              <TabsList className="h-8">
+                <TabsTrigger value="write" className="text-xs px-2 h-6">
+                  <Edit3 className="h-3 w-3 mr-1" />
+                  Write
+                </TabsTrigger>
+                <TabsTrigger value="preview" className="text-xs px-2 h-6">
+                  <Eye className="h-3 w-3 mr-1" />
+                  Preview
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={handleCancel}
+              disabled={updateTask.isPending}
+            >
+              <X className="h-4 w-4" />
             </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {isEditing ? (
-          <div className="space-y-2">
-            {editMode === "write" ? (
-              <Textarea
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={`Add ${title.toLowerCase()}...`}
-                className="min-h-[150px] font-mono text-sm"
-                disabled={updateTask.isPending}
-                autoFocus
-              />
-            ) : (
-              <div
-                className={`min-h-[150px] p-4 rounded-lg ${bgClass ?? "bg-muted/50"}`}
-              >
-                {editValue ? (
-                  <Markdown className="text-sm">{editValue}</Markdown>
-                ) : (
-                  <p className="text-muted-foreground text-sm italic">
-                    Nothing to preview
-                  </p>
-                )}
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
-              cancel.
-            </p>
-          </div>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={updateTask.isPending}
+            >
+              <Check className="h-4 w-4 mr-1" />
+              Save
+            </Button>
+          </>
         ) : (
-          <div
-            className={`rounded-lg p-4 cursor-pointer hover:opacity-80 transition-opacity ${bgClass ?? "bg-muted/50"}`}
-            onClick={startEditing}
-            title="Click to edit"
-          >
-            <Markdown className="text-sm">{currentValue!}</Markdown>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          <Button size="sm" variant="ghost" onClick={startEditing}>
+            <Edit3 className="h-4 w-4 mr-1" />
+            Edit
+          </Button>
+        )
+      }
+    >
+      {isEditing ? (
+        <div className="space-y-2">
+          {editMode === "write" ? (
+            <Textarea
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={`Add ${title.toLowerCase()}...`}
+              className="min-h-[150px] font-mono text-sm"
+              disabled={updateTask.isPending}
+              autoFocus
+            />
+          ) : (
+            <div
+              className={`min-h-[150px] p-4 rounded-lg ${bgClass ?? "bg-muted/50"}`}
+            >
+              {editValue ? (
+                <Markdown className="text-sm">{editValue}</Markdown>
+              ) : (
+                <p className="text-muted-foreground text-sm italic">
+                  Nothing to preview
+                </p>
+              )}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
+            cancel.
+          </p>
+        </div>
+      ) : (
+        <div
+          className={`rounded-lg p-4 cursor-pointer hover:opacity-80 transition-opacity ${bgClass ?? "bg-muted/50"}`}
+          onClick={startEditing}
+          title="Click to edit"
+        >
+          <Markdown className="text-sm">{currentValue!}</Markdown>
+        </div>
+      )}
+    </CollapsibleSection>
   );
 }
 

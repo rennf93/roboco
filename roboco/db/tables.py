@@ -272,7 +272,10 @@ class TaskTable(Base):
 
     # Relationships
     parent_task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     dependency_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
@@ -2302,6 +2305,30 @@ class XSeenFeatureTable(Base):
     feature_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class VaultSeenNoteTable(Base):
+    """Dedup ledger for the vault-intake watcher — one row per (vault-relative
+    path, content hash) pair already turned into a held draft. Unique on both
+    columns together (not just path): an unchanged note never reprocesses, but
+    an edited note (new hash) is eligible again. Mirrors XSeenMentionTable."""
+
+    __tablename__ = "vault_seen_notes"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    note_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "note_path", "content_hash", name="uq_vault_seen_notes_path_hash"
+        ),
     )
 
 
