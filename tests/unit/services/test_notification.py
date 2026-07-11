@@ -419,6 +419,11 @@ async def test_create_notification_requires_ack_derives_from_type(
 # dependency-revival / stale-claim-reaped)
 # ---------------------------------------------------------------------------
 
+# previous_assignee + new_assignee + ceo, resolved to UUIDs pre-insert.
+_REASSIGN_RECIPIENT_COUNT = 3
+# {task-owner, ceo} for the other four coordination producers.
+_TWO_RECIPIENT_COUNT = 2
+
 
 @pytest.mark.asyncio
 async def test_send_reassignment_notification(svc: NotificationService) -> None:
@@ -430,8 +435,7 @@ async def test_send_reassignment_notification(svc: NotificationService) -> None:
         )
     rows = [r for r in db.added if r.related_task_id == "t1"]
     assert rows
-    # previous_assignee + new_assignee + ceo, resolved to UUIDs pre-insert.
-    assert all(len(r.to_agents) == 3 for r in rows)
+    assert all(len(r.to_agents) == _REASSIGN_RECIPIENT_COUNT for r in rows)
     assert any("reassigned" in r.subject for r in rows)
 
 
@@ -465,7 +469,7 @@ async def test_send_collision_sequencing_notification(
         )
     rows = [r for r in db.added if r.related_task_id == "t2"]
     assert rows
-    assert all(len(r.to_agents) == 2 for r in rows)
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
     assert any("sequenced behind" in r.subject for r in rows)
 
 
@@ -477,7 +481,7 @@ async def test_send_unblock_notification(svc: NotificationService) -> None:
         await svc.send_unblock_notification(task_id="t1", restored_owner="be-dev-1")
     rows = [r for r in db.added if r.related_task_id == "t1"]
     assert rows
-    assert all(len(r.to_agents) == 2 for r in rows)
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
     assert any("unblocked" in r.subject for r in rows)
 
 
@@ -493,7 +497,7 @@ async def test_send_dependency_revival_notification(
         )
     rows = [r for r in db.added if r.related_task_id == "t1"]
     assert rows
-    assert all(len(r.to_agents) == 2 for r in rows)
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
     assert any("revived" in r.subject for r in rows)
     assert any("dep1" in r.body for r in rows)
 
@@ -510,6 +514,6 @@ async def test_send_stale_claim_reaped_notification(
         )
     rows = [r for r in db.added if r.related_task_id == "t1"]
     assert rows
-    assert all(len(r.to_agents) == 2 for r in rows)
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
     assert any(r.priority == NotificationPriority.HIGH for r in rows)
     assert any("stale claim reaped" in r.subject for r in rows)

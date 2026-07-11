@@ -4388,7 +4388,9 @@ class TaskService(BaseService):
                 task_id=str(task_id), restored_owner=str(restored_owner)
             )
         except Exception as e:
-            self.log.warning("Unblock notify failed", task_id=str(task_id), error=str(e))
+            self.log.warning(
+                "Unblock notify failed", task_id=str(task_id), error=str(e)
+            )
 
     async def pause(
         self, task_id: UUID, agent_role: str | None = None
@@ -7082,7 +7084,9 @@ class TaskService(BaseService):
             if created:
                 held_back = siblings_by_id.get(held_back_id)
                 owner = getattr(held_back, "assigned_to", None) if held_back else None
-                await self._notify_collision_sequencing(held_back_id, blocking_id, owner)
+                await self._notify_collision_sequencing(
+                    held_back_id, blocking_id, owner
+                )
 
     async def _notify_collision_sequencing(
         self, held_back_task_id: UUID, blocking_task_id: UUID, owner: Any
@@ -8724,7 +8728,9 @@ class TaskService(BaseService):
                 new_assignee=str(new_assignee) if new_assignee is not None else None,
             )
         except Exception as e:
-            self.log.warning("Reassignment notify failed", task_id=str(task_id), error=str(e))
+            self.log.warning(
+                "Reassignment notify failed", task_id=str(task_id), error=str(e)
+            )
 
     @dataclass(frozen=True)
     class _CellPmRedirect:
