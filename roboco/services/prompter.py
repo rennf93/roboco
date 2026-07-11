@@ -356,29 +356,9 @@ class PrompterService:
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
 
-        resolved_project_id = self._resolve_uuid_field(draft_data, "project_id")
-        resolved_product_id = self._resolve_uuid_field(draft_data, "product_id")
-        # The ad-hoc per-cell map: ≥2 cells → multi-cell root-subtask (cell map
-        # shape, no project/product); 1 cell → single-project (use that project);
-        # 0 → fall back to the top-level project_id (single-cell legacy).
-        cell_map = _draft_cell_map(draft_data)
-        cell_projects: list[ProductCellMapping] = []
-        if len(cell_map) >= _MULTI_CELL_MIN:
-            cell_projects = [
-                ProductCellMapping(team=team, project_id=pid) for team, pid in cell_map
-            ]
-            resolved_project_id = None
-            resolved_product_id = None
-        elif (
-            len(cell_map) == 1
-            and resolved_project_id is None
-            and resolved_product_id is None
-        ):
-            # A lone the_work cell with no top-level target → single-project
-            # task on that cell's project. A top-level project_id/product_id
-            # wins over a redundant 1-cell map — the explicit target is
-            # preserved, not silently dropped (#57).
-            resolved_project_id = cell_map[0][1]
+        resolved_project_id, resolved_product_id, cell_projects = _resolve_draft_scope(
+            draft_data
+        )
         self._validate_draft_target(
             resolved_project_id,
             resolved_product_id,
@@ -912,6 +892,209 @@ class PrompterService:
         )
         return task_id
 
+    async def _require_batch_umbrella(self, task_id: UUID) -> TaskTable:
+        """The umbrella row for ``task_id``, or raise (not found / not a batch)."""
+        from roboco.services.task import get_task_service
+
+        umbrella = await get_task_service(self._session).get(task_id)
+        if umbrella is None:
+            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
+        if not is_batch_umbrella(
+            batch_id=umbrella.batch_id, parent_task_id=umbrella.parent_task_id
+        ):
+            raise ValidationError(
+                message="update_live_batch requires a MegaTask umbrella task_id.",
+                field="task_id",
+            )
+        return umbrella
+
+    @staticmethod
+    def _require_children_backlog(children: list[TaskTable]) -> None:
+        """Refuse a MegaTask redraft unless every root-subtask is still BACKLOG.
+
+        In-place mutation (patch / cancel+replace / rewire deps) of a
+        root-subtask already claimed or dispatched would corrupt live work — a
+        redraft is only safe while the whole batch is still board-held.
+        """
+        for child in children:
+            if child.status != TaskStatus.BACKLOG:
+                raise ValidationError(
+                    message=(
+                        f"Root-subtask {child.id} is already "
+                        f"{child.status.value}; a MegaTask redraft is only "
+                        "allowed while every item is still BACKLOG (board-held, "
+                        "unstarted)."
+                    ),
+                    field="task_id",
+                )
+
+    def _same_batch_scope(self, sub_draft: dict[str, Any], child: TaskTable) -> bool:
+        """True when a revised root-subtask draft still targets ``child``'s scope."""
+        new_project_id, new_product_id, new_cell_projects = _resolve_draft_scope(
+            sub_draft
+        )
+        return _scope_signature(
+            new_project_id, new_product_id, new_cell_projects
+        ) == _scope_signature(child.project_id, child.product_id, child.cell_projects)
+
+    async def _patch_batch_child(
+        self, child: TaskTable, sub_draft: dict[str, Any], sequence: int
+    ) -> None:
+        """Patch an unchanged-scope root-subtask's content + wave in place."""
+        from roboco.services.task import get_task_service
+
+        normalized = _copy_draft(sub_draft)
+        self._validate_and_coerce_draft(normalized)
+        await get_task_service(self._session).update(
+            UUID(str(child.id)),
+            title=normalized["title"],
+            description=compose_description(normalized),
+            acceptance_criteria=normalized["acceptance_criteria"],
+            sequence=sequence,
+        )
+
+    async def _rewrite_batch_children(
+        self,
+        umbrella: TaskTable,
+        drafts: list[dict[str, Any]],
+        children: list[TaskTable],
+        wave_of: dict[int, int],
+        agent_id: UUID,
+        agent_role: str,
+    ) -> dict[int, UUID]:
+        """Match each draft to its positional root-subtask; patch, replace, or
+        create/cancel on a count change. ``children`` is the LIVE set (cancelled
+        rows excluded), positional in ``created_at`` order — the panel
+        round-trips no per-draft id, the same order the create loop used. A
+        same-scope match patches in place; a scope change cancels the stale
+        child and creates its replacement via the create path (reused rather
+        than reimplementing cell-map patching). Returns
+        ``{draft_idx: child_task_id}``; every returned child's
+        ``dependency_ids`` is cleared (the caller rewires the fresh edges).
+        """
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(self._session)
+        umbrella_id = UUID(str(umbrella.id))
+        batch_id = UUID(str(umbrella.batch_id))
+        superseded_note = "Superseded by a board-informed MegaTask redraft."
+        task_of: dict[int, UUID] = {}
+        for idx, draft in enumerate(drafts):
+            sub_draft = _batch_subtask_draft(draft)
+            if idx < len(children) and self._same_batch_scope(sub_draft, children[idx]):
+                await self._patch_batch_child(children[idx], sub_draft, wave_of[idx])
+                task_of[idx] = UUID(str(children[idx].id))
+                continue
+            if idx < len(children):
+                await task_service.cancel(
+                    UUID(str(children[idx].id)),
+                    agent_role=agent_role,
+                    cancellation_note=superseded_note,
+                )
+            new_child = await self.create_task_from_draft(
+                sub_draft,
+                agent_id,
+                status=TaskStatus.BACKLOG,
+                placement=BatchPlacement(
+                    parent_task_id=umbrella_id,
+                    batch_id=batch_id,
+                    sequence=wave_of[idx],
+                    team_override=umbrella.team,
+                ),
+            )
+            task_of[idx] = UUID(str(new_child.id))
+        for surplus in children[len(drafts) :]:
+            await task_service.cancel(
+                UUID(str(surplus.id)),
+                agent_role=agent_role,
+                cancellation_note=superseded_note,
+            )
+        for child_id in task_of.values():
+            await task_service.update(child_id, dependency_ids=[])
+        return task_of
+
+    async def update_live_batch(
+        self,
+        task_id: UUID,
+        title: str,
+        drafts: list[dict[str, Any]],
+        agent_id: UUID,
+        *,
+        project_ids: list[UUID] | None = None,
+        route: Literal["board", "main_pm"] = "board",
+        agent_role: str = "main_pm",
+    ) -> dict[str, Any]:
+        """Apply a board-informed re-draft to an existing MegaTask, then route it.
+
+        Mirrors :meth:`update_live_draft` for the batch shape: re-sequences the
+        revised drafts, matches each to its existing LIVE (non-cancelled)
+        root-subtask positionally (patch in place / replace on a scope change /
+        create or cancel on a count change — see
+        :meth:`_rewrite_batch_children`), rewires every surviving/new child's
+        dependency edges to the fresh wave plan, and patches the umbrella's own
+        title/description/acceptance criteria. Requires every live root-subtask
+        to still be BACKLOG, and holds the revised drafts to the same
+        ``_validate_batch_scope`` gate as the create path — ``project_ids`` is
+        the scoped repo set (the panel round-trips it); when absent it is
+        recovered from the live children. Without this gate a redraft could
+        silently collapse the batch to one project or drift a draft outside the
+        scoped set.
+
+        - ``"main_pm"`` ("Approve & Start") → hand the umbrella to the Main PM
+          via ``approve_and_start`` (which also releases the BACKLOG children).
+        - ``"board"`` → send it back for another review round: clear
+          ``board_review_complete`` so the orchestrator re-dispatches the board.
+        """
+        from roboco.services.task import get_task_service
+
+        if not drafts:
+            raise ValidationError(
+                message="A MegaTask needs at least one task draft.", field="drafts"
+            )
+        task_service = get_task_service(self._session)
+        umbrella = await self._require_batch_umbrella(task_id)
+        children = await task_service.get_live_subtasks(task_id)
+        self._require_children_backlog(children)
+        scope = project_ids or await task_service.distinct_projects_for_batch(task_id)
+        self._validate_batch_scope(drafts, scope)
+
+        plan = self._sequence_drafts(drafts)
+        wave_of = {idx: w for w, wave in enumerate(plan.waves) for idx in wave}
+        task_of = await self._rewrite_batch_children(
+            umbrella, drafts, children, wave_of, agent_id, agent_role
+        )
+        for a, b in plan.edges:
+            await task_service.add_dependency(task_of[b], task_of[a])
+
+        umbrella_draft = _compose_umbrella_draft(title, drafts, plan)
+        await task_service.update(
+            task_id,
+            title=umbrella_draft["title"],
+            description=compose_description(umbrella_draft),
+            acceptance_criteria=umbrella_draft["acceptance_criteria"],
+        )
+
+        if route == "main_pm":
+            await task_service.approve_and_start(
+                task_id,
+                notes="Re-drafted with board feedback; approved to build.",
+            )
+        else:  # re-board: another review round on the revised batch
+            await task_service.update(task_id, board_review_complete=False)
+
+        self.log.info(
+            "Live intake MegaTask re-draft applied",
+            task_id=str(task_id),
+            route=route,
+            items=len(drafts),
+        )
+        return {
+            "umbrella_task_id": str(task_id),
+            "root_subtask_ids": [str(task_of[i]) for i in range(len(drafts))],
+            "waves": plan.waves,
+            "warnings": plan.warnings,
+        }
+
     @staticmethod
     def _resolve_uuid_field(draft_data: dict[str, Any], key: str) -> UUID | None:
         """Parse ``draft_data[key]`` as a UUID; None if absent, raises if malformed."""
@@ -1149,6 +1332,58 @@ def _draft_cell_map(draft: dict[str, Any]) -> list[tuple[Team, UUID]]:
     return out
 
 
+def _resolve_draft_scope(
+    draft_data: dict[str, Any],
+) -> tuple[UUID | None, UUID | None, list[ProductCellMapping]]:
+    """A draft's resolved (project_id, product_id, cell_projects) scope.
+
+    The single source both ``create_task_from_draft`` and a MegaTask redraft's
+    scope-change check use: ≥2 cells in ``the_work`` → multi-cell root-subtask
+    (no project/product, one ``cell_projects`` row each); exactly 1 cell with no
+    top-level target → that cell's project (a top-level target still wins over
+    a redundant 1-cell map, #57); otherwise the top-level project_id/product_id.
+    """
+    project_id = PrompterService._resolve_uuid_field(draft_data, "project_id")
+    product_id = PrompterService._resolve_uuid_field(draft_data, "product_id")
+    cell_map = _draft_cell_map(draft_data)
+    cell_projects: list[ProductCellMapping] = []
+    if len(cell_map) >= _MULTI_CELL_MIN:
+        cell_projects = [
+            ProductCellMapping(team=team, project_id=pid) for team, pid in cell_map
+        ]
+        project_id = None
+        product_id = None
+    elif len(cell_map) == 1 and project_id is None and product_id is None:
+        project_id = cell_map[0][1]
+    return project_id, product_id, cell_projects
+
+
+def _scope_signature(
+    project_id: object | None,
+    product_id: object | None,
+    cell_projects: Any,
+) -> tuple[UUID | None, UUID | None, frozenset[tuple[str, UUID]]]:
+    """Comparable scope key: ``(project_id, product_id, {(team, project_id)})``.
+
+    Accepts either ``ProductCellMapping`` (a draft's resolved scope) or
+    ``TaskCellProjectTable`` rows (a persisted child's ``cell_projects``) —
+    both carry ``.team`` / ``.project_id``, so the same key comparison covers
+    a MegaTask redraft's "did this root-subtask's scope change?" check.
+    ``project_id`` / ``product_id`` are typed ``object | None`` (mirrors
+    ``roboco.foundation.policy.batch``'s predicates) since callers pass either
+    a resolved ``uuid.UUID`` or an ORM column value.
+    """
+    cells = frozenset(
+        (str(getattr(m.team, "value", m.team)), UUID(str(m.project_id)))
+        for m in cell_projects
+    )
+    return (
+        UUID(str(project_id)) if project_id else None,
+        UUID(str(product_id)) if product_id else None,
+        cells,
+    )
+
+
 def derive_scale(the_work: list[Any]) -> str:
     """'multi' when more than one cell participates, else 'single'."""
     return "multi" if len(_cell_teams(the_work)) > 1 else "single"
@@ -1266,6 +1501,55 @@ def compose_redraft_message(task: TaskTable, entries: list[dict[str, Any]]) -> s
         "You are revising an existing task draft with board feedback.\n\n"
         f"## Current draft: {task.title}\n\n{task.description}\n\n"
         f"### Acceptance criteria\n{criteria}\n\n{briefing}"
+    ).strip()
+
+
+def _project_label(child: TaskTable) -> str:
+    """Compact project-scope label for a root-subtask redraft snapshot line."""
+    if child.project is not None:
+        return str(child.project.name)
+    if child.cell_projects:
+        return ", ".join(
+            f"{_cell_label(cp.team.value)}: {cp.project.name}"
+            for cp in sorted(child.cell_projects, key=lambda m: m.team.value)
+        )
+    return "—"
+
+
+def _render_child_snapshot(idx: int, child: TaskTable) -> str:
+    """One numbered root-subtask snapshot: title, project, description, AC."""
+    criteria = "\n".join(f"- {c}" for c in (child.acceptance_criteria or []))
+    return (
+        f"### {idx + 1}. {child.title} ({_project_label(child)})\n\n"
+        f"{child.description}\n\n"
+        f"Acceptance criteria:\n{criteria}"
+    )
+
+
+def compose_batch_redraft_message(
+    umbrella: TaskTable, children: list[TaskTable], entries: list[dict[str, Any]]
+) -> str:
+    """Seed message for a MegaTask re-draft: every root-subtask + board review.
+
+    Mirrors :func:`compose_redraft_message` for the batch shape. The board
+    reviewed the umbrella as one unit, so the revised session must re-propose
+    the ENTIRE batch (not one item at a time) — the closing instruction names
+    ``propose_batch`` explicitly so the revision doesn't silently drop the
+    sequencing by using the single-task ``propose_draft`` tool instead.
+    """
+    briefing = format_board_briefing(entries)
+    snapshots = "\n\n".join(
+        _render_child_snapshot(idx, child) for idx, child in enumerate(children)
+    )
+    title = _text(umbrella.title).removeprefix("MegaTask: ")
+    return (
+        "You are revising an existing MegaTask (a sequenced batch of "
+        f"{len(children)} tasks) with board feedback.\n\n"
+        f"## MegaTask: {title}\n\n{umbrella.description}\n\n"
+        f"## Current root-subtasks\n\n{snapshots}\n\n{briefing}\n\n"
+        "Revise the scope per this feedback, then call `propose_batch` ONCE "
+        "with the FULL revised set of tasks (not `propose_task`/`propose_draft` "
+        "per item) — the panel needs the whole batch to re-sequence it."
     ).strip()
 
 

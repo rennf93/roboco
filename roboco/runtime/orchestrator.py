@@ -503,6 +503,25 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     return str(inner) if inner else None
 
 
+def _created_before(sib_created: Any, task_created: Any) -> bool:
+    """True if ``sib_created`` (a datetime row value) precedes ``task_created``
+    (an ISO string from the API task payload, or a datetime).
+
+    The equal-sequence tiebreak for the merge / lane dispatch barriers: wave-
+    stamped independent siblings share a sequence, so creation order decides
+    who merges first. Fail-open (False) on any missing/unparseable value —
+    a tie that can't be ordered must not wedge dispatch.
+    """
+    if sib_created is None or not task_created:
+        return False
+    try:
+        if isinstance(task_created, str):
+            task_created = datetime.fromisoformat(task_created)
+        return bool(sib_created < task_created)
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_coordination_task(task: dict[str, Any]) -> bool:
     """True for a task that does no git of its own.
 
@@ -766,7 +785,10 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     External-PR review (owned by the PR dispatcher), release proposals, X
     posts/replies, and video-post drafts (all CEO-HELD, acted on only by
     their own routes), and a self-heal fix task until the CEO's
-    approve_and_start flips ``confirmed_by_human``. Module-level (not a
+    approve_and_start flips ``confirmed_by_human``. A ``vault_note`` draft is
+    NOT held: it is a board-assigned intake draft, so this dispatcher's board
+    branch routes it to the board review (its start gate is the CEO's
+    approve_and_start, like any board-routed draft). Module-level (not a
     method) so the dispatcher's unit tests, which drive it with a
     wholesale-mocked ``self``, exercise the real skip logic rather than an
     auto-mocked stub.
@@ -906,17 +928,7 @@ class AgentOrchestrator:
         self._last_image_prune: datetime | None = None
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
-        self._rate_limit_probe_task: asyncio.Task | None = None
-        self._strategy_engine_task: asyncio.Task | None = None
-        self._external_pr_poll_task: asyncio.Task | None = None
-        self._self_heal_task: asyncio.Task | None = None
-        self._ci_watch_task: asyncio.Task | None = None
-        self._dep_update_task: asyncio.Task | None = None
-        self._release_manager_task: asyncio.Task | None = None
-        self._x_mentions_task: asyncio.Task | None = None
-        self._roadmap_engine_task: asyncio.Task | None = None
-        self._x_feature_spotlight_task: asyncio.Task | None = None
-        self._video_render_task: asyncio.Task | None = None
+        self._init_engine_loop_task_slots()
         # per-engine-loop heartbeat (monotonic last-success, interval) so
         # _check_loop_liveness can alert when a cycle task dies silently.
         self._loop_heartbeats: dict[str, tuple[float, float]] = {}
@@ -1041,6 +1053,23 @@ class AgentOrchestrator:
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
 
+    def _init_engine_loop_task_slots(self) -> None:
+        """Task handles for the default-off engine loops. Split out of
+        __init__ (rather than inlined) to keep it under the statement budget
+        as more engine loops accrete over time."""
+        self._rate_limit_probe_task: asyncio.Task | None = None
+        self._strategy_engine_task: asyncio.Task | None = None
+        self._external_pr_poll_task: asyncio.Task | None = None
+        self._self_heal_task: asyncio.Task | None = None
+        self._ci_watch_task: asyncio.Task | None = None
+        self._dep_update_task: asyncio.Task | None = None
+        self._release_manager_task: asyncio.Task | None = None
+        self._x_mentions_task: asyncio.Task | None = None
+        self._roadmap_engine_task: asyncio.Task | None = None
+        self._x_feature_spotlight_task: asyncio.Task | None = None
+        self._video_render_task: asyncio.Task | None = None
+        self._vault_intake_task: asyncio.Task | None = None
+
     def _record_loop_heartbeat(self, name: str, interval: float) -> None:
         self._loop_heartbeats[name] = (time.monotonic(), interval)
 
@@ -1113,6 +1142,11 @@ class AgentOrchestrator:
 
         await sweep_orphan_release_locks()
 
+        # Obsidian vault: materialize the shipped .obsidian/ + _meta/ template
+        # assets on first enable (idempotent — never overwrites an operator's
+        # own edits). No-op when the flag is off.
+        self._ensure_vault_assets_on_startup()
+
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
@@ -1130,12 +1164,26 @@ class AgentOrchestrator:
             self._x_feature_spotlight_loop()
         )
         self._video_render_task = asyncio.create_task(self._video_render_loop())
+        self._vault_intake_task = asyncio.create_task(self._vault_intake_loop())
 
         logger.info(
             "Orchestrator started",
             dispatcher_interval=self.dispatcher_interval,
             internal_api_url=self._api_url,
         )
+
+    def _ensure_vault_assets_on_startup(self) -> None:
+        """Best-effort, gated: never blocks/fails startup on a vault error."""
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from pathlib import Path
+
+            from roboco.vault import ensure_vault_assets
+
+            ensure_vault_assets(Path(settings.vault_path))
+        except Exception as e:
+            logger.warning("Vault asset bootstrap failed at startup", error=str(e))
 
     async def _cancel_background_task(self, task: asyncio.Task | None) -> None:
         """Cancel one background loop task and await its teardown (idempotent)."""
@@ -1228,6 +1276,7 @@ class AgentOrchestrator:
             self._roadmap_engine_task,
             self._x_feature_spotlight_task,
             self._video_render_task,
+            self._vault_intake_task,
         ):
             await self._cancel_background_task(task)
 
@@ -8016,6 +8065,36 @@ Start by:
             await get_roadmap_engine(db).run_cycle()
             await db.commit()
 
+    async def _vault_intake_loop(self) -> None:
+        """Vault intake: on an interval, turn tagged notes into held drafts.
+
+        Dormant unless BOTH ``obsidian_vault_enabled`` AND
+        ``vault_intake_enabled`` are on — a standard deployment scans nothing.
+        Every draft is held for the CEO; this loop never starts anything.
+        """
+        if not (settings.obsidian_vault_enabled and settings.vault_intake_enabled):
+            return
+        interval = settings.vault_intake_interval_seconds
+        self._record_loop_heartbeat("vault_intake", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_intake_cycle()
+                self._record_loop_heartbeat("vault_intake", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-intake cycle failed")
+
+    async def _run_vault_intake_cycle(self) -> None:
+        """One vault-intake pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_intake_engine import get_vault_intake_engine
+
+        async with get_db_context() as db:
+            await get_vault_intake_engine(db).run_cycle()
+            await db.commit()
+
     async def _x_feature_spotlight_loop(self) -> None:
         """X engine: on an interval, open ONE held feature-spotlight exploration
         for the Head of Marketing.
@@ -10836,6 +10915,7 @@ Start now: evidence(task_id="{task_id}")
                 ("approval_work", self._dispatch_approval_work(client)),
                 ("a2a_work", self._dispatch_a2a_work(client)),
                 ("audit_work", self._dispatch_audit_work(client)),
+                ("vault_curation_work", self._dispatch_vault_curation_work(client)),
                 ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
             ]
             for name, coro in dispatchers:
@@ -11381,6 +11461,35 @@ Start now: evidence(task_id="{task_id}")
         # in-context. Best-effort; the cold "Re-draft" path covers the rest.
         await self._inject_board_brief_into_parked_intake(task_id)
 
+    async def _compose_parked_intake_redraft(
+        self, db: "AsyncSession", task_id: str
+    ) -> str | None:
+        """The redraft seed message for a parked intake session, or None if the
+        task is gone. A MegaTask umbrella gets its batch-aware composer (every
+        LIVE root-subtask's snapshot); a normal task gets the single-task one.
+        """
+        from uuid import UUID
+
+        from roboco.foundation.policy.batch import is_batch_umbrella
+        from roboco.services.journal import get_journal_service
+        from roboco.services.prompter import (
+            compose_batch_redraft_message,
+            compose_redraft_message,
+        )
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(db)
+        task = await task_service.get(UUID(task_id))
+        if task is None:
+            return None
+        entries = await get_journal_service(db).board_review_brief(UUID(task_id))
+        if is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            children = await task_service.get_live_subtasks(UUID(task_id))
+            return compose_batch_redraft_message(task, children, entries)
+        return compose_redraft_message(task, entries)
+
     async def _inject_board_brief_into_parked_intake(self, task_id: str) -> None:
         """Inject the board's review into a parked intake session, if one exists.
 
@@ -11393,22 +11502,13 @@ Start now: evidence(task_id="{task_id}")
         session = get_live_registry().find_by_task(task_id)
         if session is None:
             return
-        from uuid import UUID
-
         from roboco.db.base import get_db_context
-        from roboco.services.journal import get_journal_service
-        from roboco.services.prompter import compose_redraft_message
-        from roboco.services.task import get_task_service
 
         try:
             async with get_db_context() as db:
-                task = await get_task_service(db).get(UUID(task_id))
-                if task is None:
-                    return
-                entries = await get_journal_service(db).board_review_brief(
-                    UUID(task_id)
-                )
-                message = compose_redraft_message(task, entries)
+                message = await self._compose_parked_intake_redraft(db, task_id)
+            if message is None:
+                return
             delivered = await get_live_registry().deliver(session.session_id, message)
             logger.info(
                 "Injected board feedback into parked intake",
@@ -11869,6 +11969,82 @@ Start now: evidence(task_id="{task_id}")
             tasks = await self._fetch_tasks(client, status)
             for task in tasks:
                 await self._maybe_spawn_pm_closure(client, task)
+
+    async def _dispatch_vault_curation_work(self, _client: httpx.AsyncClient) -> None:
+        """Obsidian-vault root-completion hook: spawn the Auditor to write a
+        just-completed root task-tree's narrative.
+
+        Gated on ``ROBOCO_OBSIDIAN_VAULT_ENABLED``; a no-op scan otherwise.
+        Owns ONLY this vault-curation trigger — distinct from
+        ``_dispatch_audit_work`` (scheduled sweeps + alert producers, owned by
+        a separate, queued fleet task). ``_client`` is accepted for
+        dispatcher-tuple shape parity but unused — this reads the DB
+        directly (see ``TaskService.list_completed_roots_pending_vault_curation``).
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        async with get_db_context() as db:
+            candidates = await TaskService(
+                db
+            ).list_completed_roots_pending_vault_curation()
+            for task in candidates:
+                await self._maybe_spawn_vault_curation(str(task.id), task.title)
+
+    async def _maybe_spawn_vault_curation(self, task_id: str, title: str) -> None:
+        """One-shot Auditor spawn for one completed root task.
+
+        Mirrors ``_dispatch_board_reviewer``'s guard shape: an in-memory
+        one-shot tracker (reuses ``_board_dispatched``) for the same-process
+        race, plus a durable ``vault_curation_dispatched`` marker so a
+        restart can't re-spawn a root another process instance already
+        handled. Spawned WITHOUT a bound task_id (mirrors
+        ``_dispatch_audit_work``'s alert spawn) — the root task is
+        `completed`, so binding it would trip the readiness gate's
+        role-for-status check; the task id is named in the prompt instead,
+        and ``curate_vault`` takes it as an explicit argument.
+        """
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        self._board_dispatched.add(key)
+        await self._mark_vault_curation_dispatched(task_id)
+        logger.info("Spawning Auditor for vault curation", task_id=task_id)
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            initial_prompt=self._build_vault_curation_prompt(task_id, title),
+            spawned_by="_maybe_spawn_vault_curation",
+        )
+
+    @staticmethod
+    async def _mark_vault_curation_dispatched(task_id: str) -> None:
+        """Persist the one-shot marker so a restart never re-spawns this
+        root. Best-effort: a failure here only risks a harmless duplicate
+        Auditor spawn (curate_vault's write is idempotent), never a crash."""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                task = await svc.get(UUID(task_id))
+                if task is not None:
+                    markers.mark_vault_curation_dispatched(task)
+                    await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist vault_curation_dispatched marker",
+                task_id=task_id,
+                error=str(exc),
+            )
 
     async def _fetch_subtasks(
         self, client: httpx.AsyncClient, parent_id: str
@@ -12528,7 +12704,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         a later sibling before an earlier one diverges the branch and wedges the
         loser. Hold a higher-sequence sibling's review/merge dispatch until the
         earlier ones land (or are cancelled). Loop-free: the task simply isn't
-        dispatched this tick — no reject, no respawn churn.
+        dispatched this tick — no reject, no respawn churn. Equal sequences
+        (wave-stamped independent siblings — parallel to CLAIM and build) tie-
+        break by ``created_at`` so the shared-branch merge stays serialized.
 
         Only same-team siblings block (they target the same branch). Terminal
         siblings (completed/cancelled) never block, so a cancelled sibling can't
@@ -12559,18 +12737,39 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 error=str(exc),
             )
             return False
-        for sib in siblings:
-            sib_seq = getattr(sib, "sequence", 0) or 0
-            sib_team = getattr(sib, "team", None)
-            sib_status = getattr(sib, "status", None)
-            sib_team_val = getattr(sib_team, "value", sib_team)
-            if (
-                str(sib_team_val) == str(team)
-                and sib_seq < seq
-                and sib_status not in terminal
-            ):
-                return True
-        return False
+        task_created = task.get("created_at")
+        return any(
+            self._is_earlier_live_team_sibling(
+                sib,
+                team=str(team),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
+            )
+            for sib in siblings
+        )
+
+    @staticmethod
+    def _is_earlier_live_team_sibling(
+        sib: Any, *, team: str, seq: int, terminal: set[Any], task_created: Any
+    ) -> bool:
+        """True if ``sib`` is an earlier non-terminal same-team sibling.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak that keeps the shared-branch merge serialized).
+        """
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        sib_team = getattr(sib, "team", None)
+        sib_team_val = getattr(sib_team, "value", sib_team)
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
+        return (
+            str(sib_team_val) == team
+            and earlier
+            and getattr(sib, "status", None) not in terminal
+        )
 
     async def _blocked_by_earlier_lane_sibling(self, task: dict[str, Any]) -> bool:
         """True if the SAME dev has an earlier non-terminal code sibling.
@@ -12586,6 +12785,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         keyed on team): this is keyed on the assignee and only gates ``code``.
         Loop-free (skip this tick — no reject, no respawn churn) and best-effort
         (any lookup failure falls through to dispatch so the check never wedges).
+        Equal sequences tie-break by ``created_at``, mirroring the merge
+        barrier, so a dev's wave-tied queue keeps a deterministic order.
         """
         if str(task.get("task_type") or "") != "code":
             return False
@@ -12614,26 +12815,47 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
             return False
         task_id = str(task.get("id"))
+        task_created = task.get("created_at")
         return any(
             self._is_earlier_live_lane_sibling(
-                sib, task_id=task_id, owner=str(owner), seq=seq, terminal=terminal
+                sib,
+                task_id=task_id,
+                owner=str(owner),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
             )
             for sib in siblings
         )
 
     @staticmethod
     def _is_earlier_live_lane_sibling(
-        sib: Any, *, task_id: str, owner: str, seq: int, terminal: set[Any]
+        sib: Any,
+        *,
+        task_id: str,
+        owner: str,
+        seq: int,
+        terminal: set[Any],
+        task_created: Any = None,
     ) -> bool:
-        """True if ``sib`` is a lower-sequence non-terminal code task for ``owner``."""
+        """True if ``sib`` is an earlier non-terminal code task for ``owner``.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak mirroring the merge barrier).
+        """
         if str(sib.id) == task_id:
             return False
         sib_type = getattr(sib, "task_type", None)
         sib_type_val = getattr(sib_type, "value", sib_type)
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
         return (
             str(getattr(sib, "assigned_to", None)) == owner
             and str(sib_type_val) == "code"
-            and (getattr(sib, "sequence", 0) or 0) < seq
+            and earlier
             and getattr(sib, "status", None) not in terminal
         )
 
@@ -13900,6 +14122,21 @@ Your job:
 3. Identify any concerns or patterns
 4. Compile audit report for CEO
 5. Call i_am_idle() when complete
+"""
+
+    def _build_vault_curation_prompt(self, task_id: str, title: str) -> str:
+        """Build initial prompt for a root-completion Obsidian-vault curation."""
+        return f"""Root task COMPLETED — Obsidian-vault curation requested.
+
+TASK: {title} ({task_id})
+
+Your job:
+
+1. Review this task's full tree (description, subtasks, PR, journal trail,
+   decisions, any rework story).
+2. Call curate_vault(task_id="{task_id}", narrative=...) EXACTLY ONCE with a
+   concise narrative: what happened, key decisions, rework if any.
+3. Call i_am_idle() when complete.
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:
