@@ -49,6 +49,7 @@ import {
   Send,
   ThumbsUp,
   ThumbsDown,
+  RotateCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
@@ -142,6 +143,7 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
   const overrideStatuses: TaskStatus[] = Object.values(TaskStatus).filter(
     (s) => s !== task.status && !nextStatuses.includes(s),
   );
+  const revisionCount = task.revision_count ?? 0;
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -603,6 +605,22 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                     <TaskTypeBadge type={task.task_type} />
                   </span>
                 </>
+              )}
+
+              {/* Bounced chip — hidden for a never-bounced task. */}
+              {revisionCount > 0 && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-amber-300 bg-amber-100 px-2 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-900 dark:text-amber-300">
+                      <RotateCcw className="h-3 w-3" />
+                      bounced x{revisionCount}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Sent back to needs_revision {revisionCount} time
+                    {revisionCount === 1 ? "" : "s"} — see the Findings tab
+                  </TooltipContent>
+                </Tooltip>
               )}
             </div>
           </div>

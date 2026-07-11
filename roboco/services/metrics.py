@@ -42,7 +42,26 @@ from roboco.models.metrics import (
     VelocityMetrics,
 )
 from roboco.services.base import BaseService
+from roboco.services.repositories.review_findings import (
+    STATUS_OPEN,
+    ReviewFindingsRepository,
+)
 from roboco.utils.converters import to_python_uuid
+
+# Named audit events attributing a needs_revision bounce to its rejector —
+# qa/pr_gate (developer-facing) plus the PM/CEO merge-review rejects.
+_REWORK_EVENT_TYPES = (
+    "task.qa_fail",
+    "task.pr_fail",
+    "task.request_changes",
+    "task.ceo_reject",
+)
+_REWORK_EVENT_TO_FIELD = {
+    "task.qa_fail": "qa_fails",
+    "task.pr_fail": "pr_fails",
+    "task.request_changes": "pm_rejects",
+    "task.ceo_reject": "ceo_rejects",
+}
 
 # Constants
 DEFAULT_VELOCITY_DAYS = 7
@@ -634,7 +653,7 @@ class MetricsService(BaseService):
                     func.count(AuditLogTable.id),
                 )
                 .where(
-                    AuditLogTable.event_type.in_(["task.qa_fail", "task.pr_fail"]),
+                    AuditLogTable.event_type.in_(_REWORK_EVENT_TYPES),
                     AuditLogTable.timestamp >= since,
                     AuditLogTable.agent_id.isnot(None),
                 )
@@ -644,13 +663,15 @@ class MetricsService(BaseService):
         completed_by = await self._count_by_assignee(since, reworked_only=False)
         reworked_by = await self._count_by_assignee(since, reworked_only=True)
 
-        qa_by: dict[str, int] = {}
-        pr_by: dict[str, int] = {}
+        by_field: dict[str, dict[str, int]] = {
+            f: {} for f in _REWORK_EVENT_TO_FIELD.values()
+        }
         for agent_id, event_type, cnt in fail_rows:
-            key = str(agent_id)
-            (qa_by if event_type == "task.qa_fail" else pr_by)[key] = cnt
+            field = _REWORK_EVENT_TO_FIELD.get(event_type)
+            if field is not None:
+                by_field[field][str(agent_id)] = cnt
 
-        agent_ids = set(completed_by) | set(qa_by) | set(pr_by)
+        agent_ids = set(completed_by).union(*(set(d) for d in by_field.values()))
         if not agent_ids:
             return []
         slug_rows = (
@@ -670,12 +691,20 @@ class MetricsService(BaseService):
                     if completed_by.get(aid)
                     else 0.0
                 ),
-                qa_fails=qa_by.get(aid, 0),
-                pr_fails=pr_by.get(aid, 0),
+                qa_fails=by_field["qa_fails"].get(aid, 0),
+                pr_fails=by_field["pr_fails"].get(aid, 0),
+                pm_rejects=by_field["pm_rejects"].get(aid, 0),
+                ceo_rejects=by_field["ceo_rejects"].get(aid, 0),
             )
             for aid in agent_ids
         ]
-        out.sort(key=lambda a: (a.qa_fails + a.pr_fails, a.rate), reverse=True)
+        out.sort(
+            key=lambda a: (
+                a.qa_fails + a.pr_fails + a.pm_rejects + a.ceo_rejects,
+                a.rate,
+            ),
+            reverse=True,
+        )
         return out
 
     async def _count_by_assignee(
@@ -805,20 +834,26 @@ class MetricsService(BaseService):
         rows = (await self.session.execute(sql, {"tid": str(task_id)})).all()
         return [(r.status, r.entered_at, r.exited_at or close_at) for r in rows]
 
-    async def _task_fail_counts(self, task_id: UUID) -> tuple[int, int]:
-        """(qa_fails, pr_fails) attributed to this task from named audit events."""
+    async def _task_fail_counts(self, task_id: UUID) -> tuple[int, int, int, int]:
+        """(qa_fails, pr_fails, pm_rejects, ceo_rejects) attributed to this
+        task from named audit events."""
         rows = (
             await self.session.execute(
                 select(AuditLogTable.event_type, func.count())
                 .where(
                     AuditLogTable.target_id == task_id,
-                    AuditLogTable.event_type.in_(["task.qa_fail", "task.pr_fail"]),
+                    AuditLogTable.event_type.in_(_REWORK_EVENT_TYPES),
                 )
                 .group_by(AuditLogTable.event_type)
             )
         ).all()
         counts: dict[str, int] = {row[0]: row[1] for row in rows}
-        return counts.get("task.qa_fail", 0), counts.get("task.pr_fail", 0)
+        return (
+            counts.get("task.qa_fail", 0),
+            counts.get("task.pr_fail", 0),
+            counts.get("task.request_changes", 0),
+            counts.get("task.ceo_reject", 0),
+        )
 
     async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
         """Live granular metrics for one task, or None if the task doesn't exist.
@@ -846,8 +881,11 @@ class MetricsService(BaseService):
 
         spawn = await self._spawn_rollup_for_task(task_id, wall_end)
         windows = await self._stage_windows_for_task(task_id, wall_end)
-        qa_fails, pr_fails = await self._task_fail_counts(task_id)
+        qa_fails, pr_fails, pm_rejects, ceo_rejects = await self._task_fail_counts(
+            task_id
+        )
         stages = compute_stage_effort(windows, spawn["stints"])
+        findings = await ReviewFindingsRepository(self.session).list_for_task(task_id)
 
         return TaskMetrics(
             task_id=str(task_id),
@@ -860,8 +898,12 @@ class MetricsService(BaseService):
             revision_count=revision_count or 0,
             qa_fails=qa_fails,
             pr_fails=pr_fails,
+            pm_rejects=pm_rejects,
+            ceo_rejects=ceo_rejects,
             stints=len(spawn["stints"]),
             stages=stages,
+            findings_open=sum(1 for f in findings if f.status == STATUS_OPEN),
+            findings_total=len(findings),
         )
 
     async def _ceo_latency(

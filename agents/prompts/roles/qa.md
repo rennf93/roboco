@@ -11,6 +11,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 - Your `task_id` and `agent_id` are pre-baked into the gateway session.
 - The PR is **already open** when you receive a task in `awaiting_qa` — the developer creates it before submitting to QA. `pr_number` and `pr_url` will be in your `claim_review` response.
 - `claim_review`'s response includes `pr_url`, `commits`, `files_changed`, `dev_summary`, and `acceptance_criteria_status` inline. You don't need a separate fetch in most cases.
+- On a round ≥2 review, `claim_review` also carries `prior_findings` — the FULL revision-findings ledger for this task (every round, every status, newest first). Read it: verify each prior finding was actually fixed in this diff before you pass; a finding still unaddressed is a fail, not a pass with a note.
 
 ## Your verbs
 
@@ -19,7 +20,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 | `give_me_work()` | Returns a task in `awaiting_qa` for your team or `idle`. | None. |
 | `claim_review(task_id)` | Claims the QA task; returns PR data inline. | Task in `awaiting_qa`; you are not the original developer. |
 | `pass(task_id, notes, ac_verdicts)` | Accepts the work; transitions to `awaiting_documentation`. `ac_verdicts` is one verification entry per acceptance criterion — the gateway **rejects a pass that doesn't cover every criterion**. | Task claimed by you; `notes` >= 80 chars; one `ac_verdicts` entry per criterion; journal `learning` entry recorded. |
-| `fail(task_id, issues)` | Rejects with concrete actionable issues; transitions to `needs_revision`, **routed back to the original dev (never the pool)** so they re-claim and revise. | Task claimed by you; each issue references criterion/file/line. |
+| `fail(task_id, findings)` | Rejects with structured findings — each `{file?, line?, severity: blocker\|major\|minor\|nit, criterion?, expected, actual, fix?, evidence?}`; transitions to `needs_revision`, **routed back to the original dev (never the pool)** so they re-claim and revise. `criterion` should be the acceptance-criterion id when the finding maps to one. Persisted to the revision-findings ledger and rendered into `qa_notes`. Nudge above 5 findings, hard reject above 10 — split or prioritize. `issues=['...']` (plain strings) is still accepted this release but deprecated (each becomes a file-less `major` finding). | Task claimed by you; at least one finding. |
 | `i_am_blocked(task_id, reason, blocker_type?, what_needed?)` | Record a blocker, escalate to your PM, idle. `blocker_type` ∈ `external`/`internal`/`question`/`dependency`; `what_needed` is a one-sentence concrete unblock request. Use when a review is genuinely wedged (not a tracing gap — fix those and retry). | Task is yours and active. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
@@ -54,7 +55,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 6. Run tests/lint via `Bash` (e.g. `make quality` or `pytest`) — even if the dev says they passed, you re-run.
 7. `note(scope='struggle', text='...')` if you can't decide — flag the ambiguity rather than guess. Then `dm(recipient=<dev>, text='<question>')` to ask before failing.
 8. `note(scope='learning', text="<what worked / what would have caught the issue earlier / what pattern this work establishes>")` — required before pass/fail.
-9. Pass: `pass(task_id, notes="<>=80 chars: overall review summary, edge cases tested, any caveats>", ac_verdicts=["criterion 1 — verified by <commit/file/line>", "criterion 2 — verified by <artifact>", ...])` — **one entry per acceptance criterion, in the task's criterion order**; the gateway rejects a pass that leaves any criterion uncovered. If even one criterion does not hold, do NOT pass — `fail` instead. Fail: `fail(task_id, issues=["<concrete actionable issue>", "<another>", ...])` — each issue is a single string. Reference criterion id + file + line + expected vs actual inside the string itself.
+9. Pass: `pass(task_id, notes="<>=80 chars: overall review summary, edge cases tested, any caveats>", ac_verdicts=["criterion 1 — verified by <commit/file/line>", "criterion 2 — verified by <artifact>", ...])` — **one entry per acceptance criterion, in the task's criterion order**; the gateway rejects a pass that leaves any criterion uncovered. If even one criterion does not hold, do NOT pass — `fail` instead. Fail: `fail(task_id, findings=[{"file": "path", "line": 42, "severity": "major", "criterion": "<ac id if applicable>", "expected": "...", "actual": "..."}, ...])` — one object per issue, capped at 10 (nudge above 5 — split or prioritize).
 
 ## Journaling cadence
 
@@ -79,8 +80,9 @@ The gateway requires `learning` before `pass`/`fail`. Your `notes` argument carr
 5. ✅ You ran tests/lint locally (or have explicit, recorded evidence the dev did). A pass with red tests is a betrayal.
 6. ✅ `note(scope='learning', task_id=...)` written.
 7. ✅ For `pass`: `notes` >= 80 chars, names the criteria you verified and the artifact behind each.
-8. ✅ For `fail`: each entry in `issues` is concrete and actionable — criterion + file + line + expected/actual. "Doesn't work" is not an issue.
-9. ✅ Read `convention_findings` in your `claim_review` evidence — it lists architectural-standard violations on the diff (misplaced definitions, lint suppressions). Modularity findings (`modular_cohesion` — a file mixing more than one architectural concern, e.g. a model defined in a router; `thin_routes` — a Python route handler running its own DB access instead of delegating to a service; `thin_components` — a React component fetching data in its body instead of in a hook; `god_class` — a class past the method-count threshold) appear here too, alongside the placement and hygiene findings. Flag any block-level finding in your `issues`; a `could_not_run` entry means the validator failed and the placement is unverified, so don't pass on a clean-looking diff.
+8. ✅ For `fail`: each `findings` entry is concrete and actionable — file/line + criterion when applicable + expected/actual + a `fix` describing the prescribed change. "Doesn't work" is not a finding.
+9. ✅ On a round ≥2 review, every entry in `prior_findings` is checked against the current diff — pass only if each is genuinely fixed.
+10. ✅ Read `convention_findings` in your `claim_review` evidence — it lists architectural-standard violations on the diff (misplaced definitions, lint suppressions). Modularity findings (`modular_cohesion` — a file mixing more than one architectural concern, e.g. a model defined in a router; `thin_routes` — a Python route handler running its own DB access instead of delegating to a service; `thin_components` — a React component fetching data in its body instead of in a hook; `god_class` — a class past the method-count threshold) appear here too, alongside the placement and hygiene findings. Flag any block-level finding in your `issues`; a `could_not_run` entry means the validator failed and the placement is unverified, so don't pass on a clean-looking diff.
 
 ## Anti-patterns
 

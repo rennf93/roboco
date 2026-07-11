@@ -815,6 +815,21 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
 
 
+# Cap on findings rendered inline in a dispatch prompt (REVISION_REQUIRED /
+# the PM bounced-block) — beyond this, an overflow line points at evidence().
+_PROMPT_FINDINGS_CAP = 10
+
+
+def _render_open_finding_prompt_line(row: Any) -> str:
+    """One ``task_review_findings`` row -> a single dispatch-prompt line.
+    Module-level (not a method), mirroring ``_is_non_dev_dispatch_source``."""
+    loc = row.file or "—"
+    if row.line is not None:
+        loc += f":{row.line}"
+    fix = f" → {row.fix}" if row.fix else ""
+    return f"[F-{str(row.id)[:8]}] {loc} — {row.expected} → {row.actual}{fix}"
+
+
 # Bounded retry for the video render loop — single source of truth lives in
 # the policy/markers layer (importable from API code without importing this
 # orchestrator module); mirrored here under the historical name.
@@ -4400,7 +4415,7 @@ class AgentOrchestrator:
         await self.spawn_agent(
             agent_id=dev_slug,
             task_id=task["id"],
-            initial_prompt=self._build_dev_prompt(task),
+            initial_prompt=await self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
             spawned_by="_respawn_dev_for_pr_half",
         )
@@ -10009,14 +10024,26 @@ Start by:
         )
         return "main-pm"
 
-    def _build_main_pm_triage_prompt(self, task: dict[str, Any]) -> str:
-        """Build prompt for MAIN PM to triage and distribute to Cell PMs."""
+    def _build_main_pm_triage_prompt(
+        self, task: dict[str, Any], *, bounced_block: str = ""
+    ) -> str:
+        """Build prompt for MAIN PM to triage and distribute to Cell PMs.
+
+        ``bounced_block`` (pre-rendered by the async caller — this method
+        stays sync) prepends a "THIS ROOT BOUNCED" section when the root is
+        ``needs_revision`` — everything else here is static.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         complexity = task.get("complexity", "medium")
         description = task.get("description", "")
+        bounced_section = (
+            f"## THIS ROOT BOUNCED — needs_revision\n\n{bounced_block}\n\n"
+            if bounced_block
+            else ""
+        )
 
-        return f"""You are the MAIN PM at RoboCo. This task is assigned to YOU.
+        body = f"""You are the MAIN PM at RoboCo. This task is assigned to YOU.
 
 TASK: {task_id}
 TITLE: {title}
@@ -10087,9 +10114,17 @@ Gateway verbs (already loaded):
 
 Start now: evidence(task_id="{task_id}")
 """
+        return bounced_section + body
 
-    def _build_pm_triage_prompt(self, task: dict[str, Any]) -> str:
-        """Build prompt for CELL PM to triage and delegate a task."""
+    def _build_pm_triage_prompt(
+        self, task: dict[str, Any], *, bounced_block: str = ""
+    ) -> str:
+        """Build prompt for CELL PM to triage and delegate a task.
+
+        ``bounced_block`` (pre-rendered by the async caller — this method
+        stays sync) prepends a "THIS ROOT BOUNCED" section when the task is
+        ``needs_revision`` — everything else here is static.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         complexity = task.get("complexity", "medium")
@@ -10104,8 +10139,13 @@ Start now: evidence(task_id="{task_id}")
         devs = dev_map.get(team, ("be-dev-1",))
         primary_dev = devs[0]
         dev_options = " or ".join(devs)
+        bounced_section = (
+            f"## THIS TASK BOUNCED — needs_revision\n\n{bounced_block}\n\n"
+            if bounced_block
+            else ""
+        )
 
-        return f"""You are the PM for {team} team. This task is assigned to YOU.
+        body = f"""You are the PM for {team} team. This task is assigned to YOU.
 
 TASK: {task_id}
 TITLE: {title}
@@ -10173,6 +10213,7 @@ Gateway verbs (already loaded):
 
 Start now: evidence(task_id="{task_id}")
 """
+        return bounced_section + body
 
     # =========================================================================
     # SMART DISPATCHER - MAIN LOOP
@@ -11641,12 +11682,12 @@ Start now: evidence(task_id="{task_id}")
                 error=str(exc),
             )
 
-    def _pm_spawn_prompt(
+    async def _pm_spawn_prompt(
         self, routing: str, agent_id: str, task: dict[str, Any]
     ) -> str:
         """Pick the correct prompt for a classified spawn."""
         if routing == "dev":
-            return self._build_dev_prompt(task)
+            return await self._build_dev_prompt(task)
         if routing == "main_pm" or agent_id == "main-pm":
             return self._build_main_pm_triage_prompt(task)
         return self._build_pm_triage_prompt(task)
@@ -11740,7 +11781,7 @@ Start now: evidence(task_id="{task_id}")
             return
 
         if await self._claim_task_for_agent(client, task["id"], agent_id):
-            prompt = self._pm_spawn_prompt(routing, agent_id, task)
+            prompt = await self._pm_spawn_prompt(routing, agent_id, task)
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=task["id"],
@@ -11825,7 +11866,7 @@ Start now: evidence(task_id="{task_id}")
             await self.spawn_agent(
                 agent_id=agent_slug,
                 task_id=task["id"],
-                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_revision_coordination_roots",
             )
@@ -12337,7 +12378,7 @@ PROMOTION TARGET: {target_line}
 Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
-    def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
+    async def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
         """Get the prompt appropriate to the agent's ACTUAL role.
 
         A respawn must hand each role the prompt it can act on — a PM or board
@@ -12345,11 +12386,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         it does not own. Reuses the same per-role prompt builders the role
         dispatchers use so a respawn matches a fresh dispatch:
 
-          developer      → dev prompt
+          developer      → dev prompt (REVISION_REQUIRED findings inline)
           qa             → QA prompt
           documenter     → doc prompt
-          cell_pm        → cell-PM triage prompt
-          main_pm        → main-PM triage prompt
+          cell_pm        → cell-PM triage prompt (+ bounced-block if needs_revision)
+          main_pm        → main-PM triage prompt (+ bounced-block if needs_revision)
           product_owner  → board-review prompt
           head_marketing → marketing prompt for a marketing task, else board
           auditor        → audit prompt
@@ -12364,18 +12405,26 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             if task.get("team") == "marketing":
                 return self._build_marketing_prompt(task)
             return self._build_board_prompt(task)
+        if role == "cell_pm":
+            return self._build_pm_triage_prompt(
+                task, bounced_block=await self._revision_bounced_block(task)
+            )
+        if role == "main_pm":
+            return self._build_main_pm_triage_prompt(
+                task, bounced_block=await self._revision_bounced_block(task)
+            )
         builders: dict[str, Callable[[dict[str, Any]], str]] = {
-            "developer": self._build_dev_prompt,
             "qa": self._build_qa_prompt,
             "documenter": self._build_doc_prompt,
-            "cell_pm": self._build_pm_triage_prompt,
-            "main_pm": self._build_main_pm_triage_prompt,
             "product_owner": self._build_board_prompt,
             "auditor": lambda _task: self._build_audit_prompt(),
             "pr_reviewer": self._build_pr_review_prompt,
         }
-        builder = builders.get(role, self._build_dev_prompt)
-        return builder(task)
+        if role in builders:
+            return builders[role](task)
+        # "developer" plus every unknown role: the dev prompt is the safe
+        # default for an executable task.
+        return await self._build_dev_prompt(task)
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -12430,7 +12479,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         await self.spawn_agent(
             agent_id=agent_slug,
             task_id=task["id"],
-            initial_prompt=self._build_dev_prompt(task),
+            initial_prompt=await self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
             spawned_by="_respawn_dev_if_inactive",
         )
@@ -12466,7 +12515,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         await self.spawn_agent(
             agent_id=agent_slug,
             task_id=task["id"],
-            initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+            initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
             git_context=self._task_git_context(task),
             spawned_by="_spawn_pending_dev",
         )
@@ -13272,7 +13321,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             await self.spawn_agent(
                 agent_id=agent_slug,
                 task_id=str(task_id),
-                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_claimed_without_agent",
             )
@@ -13691,6 +13740,48 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     # SMART DISPATCHER - PROMPT BUILDERS
     # =========================================================================
 
+    async def _open_findings_prompt_block(self, task_id: str) -> str:
+        """Render up to ``_PROMPT_FINDINGS_CAP`` open revision-ledger findings
+        for a dispatch prompt: one ``[F-<id8>] file:line — expected -> actual
+        -> fix`` line each, plus a "+N more" overflow line past the cap.
+
+        Returns "" for no task_id, no open findings, or any DB error
+        (fail-open — the agent still has evidence()/triage() to read the
+        full ledger).
+        """
+        if not task_id:
+            return ""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.repositories.review_findings import (
+            STATUS_OPEN,
+            ReviewFindingsRepository,
+        )
+
+        try:
+            async with get_db_context() as db:
+                rows = await ReviewFindingsRepository(db).list_for_task(
+                    UUID(task_id), status=STATUS_OPEN, limit=_PROMPT_FINDINGS_CAP + 1
+                )
+        except Exception:
+            logger.warning("open findings prompt fetch failed", task_id=task_id)
+            return ""
+        if not rows:
+            return ""
+        shown = rows[:_PROMPT_FINDINGS_CAP]
+        lines = [_render_open_finding_prompt_line(row) for row in shown]
+        if len(rows) > _PROMPT_FINDINGS_CAP:
+            lines.append(f"... +{len(rows) - _PROMPT_FINDINGS_CAP} more via evidence()")
+        return "\n".join(lines)
+
+    async def _revision_bounced_block(self, task: dict[str, Any]) -> str:
+        """The rendered open-findings block for a bounced PM prompt, or ""
+        when the task isn't needs_revision (skips the DB fetch otherwise)."""
+        if task.get("status") != "needs_revision":
+            return ""
+        return await self._open_findings_prompt_block(str(task.get("id") or ""))
+
     def _get_workflow_state(
         self,
         status: str,
@@ -13723,16 +13814,26 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
         return status.upper()
 
-    def _get_workflow_instructions(self, state: str, task_id: str) -> str:
+    def _get_workflow_instructions(
+        self, state: str, task_id: str, open_findings_block: str = ""
+    ) -> str:
         """Get workflow instructions for the given state.
 
         Args:
             state: Workflow state (NEEDS_PLAN, READY_TO_START, etc.)
             task_id: Task ID for tool call examples
+            open_findings_block: pre-rendered open-findings text for
+                REVISION_REQUIRED (fetched by the async caller — this method
+                stays sync and just threads the string through).
 
         Returns:
             Markdown-formatted instructions for the current state
         """
+        findings_section = (
+            f"\nOpen findings:\n{open_findings_block}\n"
+            if open_findings_block
+            else "\n(no findings on the ledger for this task)\n"
+        )
         instructions = {
             "NEEDS_PLAN": f"""## NEXT STEP: Claim + Plan + Start
 
@@ -13767,13 +13868,16 @@ i_am_blocked(task_id="...",
     reason="<blocked_external|low_context|...>").
 """,
             "REVISION_REQUIRED": f"""## REVISION REQUESTED
+{findings_section}
+1. i_will_work_on(task_id="{task_id}",
+   plan="<revised plan addressing each finding>")
+2. commit() the fixes, then
+   i_am_done(task_id="{task_id}", notes="<what was fixed>",
+   resolved_findings=[{{"finding_id": "<id>", "commit": "<sha>",
+   "note": "<what changed>"}}, ...])
 
-QA or PM requested changes:
-1. evidence(task_id="{task_id}") — read qa_notes / pm_notes / inline diff
-2. i_will_work_on(task_id="{task_id}",
-   plan="<revised plan addressing each issue>")
-3. commit() the fixes, then
-   i_am_done(task_id="{task_id}", notes="<what was fixed>")
+evidence(task_id="{task_id}") for the full diff + revision_findings if you
+need more than the excerpt above.
 """,
             "VERIFYING": f"""## SELF-VERIFICATION
 
@@ -13790,7 +13894,7 @@ Run the project's quality checks against acceptance criteria:
             state, f'Call evidence(task_id="{task_id}") to check status.'
         )
 
-    def _build_dev_prompt(self, task: dict[str, Any]) -> str:
+    async def _build_dev_prompt(self, task: dict[str, Any]) -> str:
         """Build state-aware initial prompt for a developer."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
@@ -13799,7 +13903,12 @@ Run the project's quality checks against acceptance criteria:
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
         workflow_state = self._get_workflow_state(status, has_plan)
-        instructions = self._get_workflow_instructions(workflow_state, task_id)
+        open_findings_block = ""
+        if workflow_state == "REVISION_REQUIRED":
+            open_findings_block = await self._open_findings_prompt_block(str(task_id))
+        instructions = self._get_workflow_instructions(
+            workflow_state, task_id, open_findings_block
+        )
 
         return f"""You have been assigned a development task.
 

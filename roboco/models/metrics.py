@@ -180,12 +180,19 @@ class BottleneckReport:
 
 @dataclass
 class AgentReworkRate:
-    """Per-agent rework: bounce rate + fails attributed to this agent's reviews."""
+    """Per-agent rework: bounce rate + fails attributed to this agent's reviews.
+
+    ``pm_rejects``/``ceo_rejects`` are the ``task.request_changes``/
+    ``task.ceo_reject`` named-event counterparts to ``qa_fails``/``pr_fails``
+    (both default 0 — additive, so existing constructions are unaffected).
+    """
 
     agent_slug: str
     rate: float
     qa_fails: int
     pr_fails: int
+    pm_rejects: int = 0
+    ceo_rejects: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -193,6 +200,8 @@ class AgentReworkRate:
             "rate": round(self.rate, 4),
             "qa_fails": self.qa_fails,
             "pr_fails": self.pr_fails,
+            "pm_rejects": self.pm_rejects,
+            "ceo_rejects": self.ceo_rejects,
         }
 
 
@@ -402,6 +411,13 @@ class TaskMetrics:
     pr_fails: int
     stints: int
     stages: list[StageEffort]
+    # Additive (default 0/None-safe): pm_rejects/ceo_rejects mirror qa_fails/
+    # pr_fails for the other two named bounce events; findings_open/_total are
+    # the ledger's live open-vs-total count for this task.
+    pm_rejects: int = 0
+    ceo_rejects: int = 0
+    findings_open: int = 0
+    findings_total: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -415,6 +431,10 @@ class TaskMetrics:
             "revision_count": self.revision_count,
             "qa_fails": self.qa_fails,
             "pr_fails": self.pr_fails,
+            "pm_rejects": self.pm_rejects,
+            "ceo_rejects": self.ceo_rejects,
             "stints": self.stints,
             "stages": [s.to_dict() for s in self.stages],
+            "findings_open": self.findings_open,
+            "findings_total": self.findings_total,
         }

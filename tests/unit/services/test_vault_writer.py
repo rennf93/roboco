@@ -14,6 +14,7 @@ from roboco.services.vault_writer import (
     A2AMessageData,
     AgentNoteData,
     BottleneckRow,
+    FindingRow,
     JournalNoteData,
     OrgReportData,
     StageTimingRow,
@@ -362,3 +363,60 @@ def test_write_org_report_same_week_overwrites(tmp_path: Path) -> None:
     p2 = writer.write_org_report(_report_data())
     assert p1 == p2
     assert len(list((tmp_path / "RoboCo" / "Reports").glob("*.md"))) == 1
+
+
+# --- revision-findings ledger section -------------------------------------- #
+
+_FINDINGS_CAP = 20
+
+
+def test_write_task_omits_findings_section_when_empty(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    text = writer.write_task(_task_data()).read_text(encoding="utf-8")
+    assert "## Findings" not in text
+
+
+def test_write_task_renders_findings_section(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    finding = FindingRow(
+        id8="aaaaaaaa",
+        severity="blocker",
+        file="roboco/services/task.py",
+        line=42,
+        expected="the endpoint returns 404",
+        actual="the endpoint returns 500",
+        fix="add a not-found guard",
+        status="open",
+        round=2,
+    )
+    text = writer.write_task(_task_data(findings=(finding,))).read_text(
+        encoding="utf-8"
+    )
+    assert "## Findings" in text
+    assert "[F-aaaaaaaa] (blocker, round 2, open)" in text
+    assert "roboco/services/task.py:42" in text
+    assert (
+        "the endpoint returns 404 → the endpoint returns 500 → "
+        "add a not-found guard" in text
+    )
+
+
+def test_write_task_findings_capped_with_overflow_line(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    many = tuple(
+        FindingRow(
+            id8=f"{i:08d}",
+            severity="minor",
+            file=None,
+            line=None,
+            expected="x",
+            actual="y",
+            fix=None,
+            status="open",
+            round=1,
+        )
+        for i in range(25)
+    )
+    text = writer.write_task(_task_data(findings=many)).read_text(encoding="utf-8")
+    assert text.count("[F-") == _FINDINGS_CAP
+    assert "5 more" in text

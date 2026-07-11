@@ -44,6 +44,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import markers
 from roboco.models.task import DocRef
+from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -227,11 +228,15 @@ class DocMixin(_Base):
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, task_id
+        )
         return build_evidence_for_task(
             task,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             pr_diff_summary=diff,
+            revision_findings=open_findings,
         ).as_dict()
 
     async def _verify_doc_owner(

@@ -45,6 +45,14 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    # cell_pm_complete / main_pm_complete's pm-origin verified-stamp reads via
+    # session.execute (ReviewFindingsRepository.list_for_task) before merging
+    # — an empty scalars result (no findings) so the stamp is a no-op here.
+    task_dep.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",

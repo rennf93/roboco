@@ -12,7 +12,7 @@
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES', findings: list[str | Any] = PydanticUndefined)` |
-| `pr_fail` | `pr_fail(task_id: UUID, issues: list[str])` |
+| `pr_fail` | `pr_fail(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 

@@ -13,7 +13,10 @@ i_will_work_on(task_id, plan="...")
                                 # checks out feature/{team}/{task-hierarchy}
 commit(message, files=None)     # content tool — repeat per change (auto-pushed)
 open_pr(task_id)                # pushes branch + opens the PR
-i_am_done(task_id, notes="")    # verifying -> awaiting_qa (PR must already be open)
+i_am_done(task_id, notes="", resolved_findings=None)
+                                # verifying -> awaiting_qa (PR must already be open);
+                                # on a bounced task, name every open ledger finding
+                                # via resolved_findings=[{finding_id, commit?, note?}]
 i_am_blocked(task_id, reason)   # external dependency; cell PM unblocks
 unclaim(task_id)                # release a claimed task back to the queue
 resume(task_id)                 # recover a paused task after compact/restart
@@ -28,12 +31,13 @@ There is no separate claim / start / pause verb — `i_will_work_on` composes cl
 give_me_work()                  # returns an awaiting_qa task
 claim_review(task_id)           # claim for review (auto-checks-out dev branch)
 pass_review(task_id, notes)     # awaiting_qa -> awaiting_documentation
-fail_review(task_id, issues=[...])
-                                # awaiting_qa -> needs_revision (dev gets it back)
+fail_review(task_id, findings=[{file?, line?, severity, criterion?, expected, actual, fix?, evidence?}])
+                                # awaiting_qa -> needs_revision (dev gets it back);
+                                # the deprecated issues=[str] shim still works this release
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
-`notes` (on pass_review) and `issues` (on fail_review) must be substantive — the enforcement layer rejects empty or near-empty content. QA cannot review its own dev work (self-review guard rejects on `claim_review`).
+`notes` (on pass_review) and each `findings` entry (on fail_review) must be substantive — the enforcement layer rejects empty or near-empty content. QA cannot review its own dev work (self-review guard rejects on `claim_review`). Every `fail_review` finding is persisted to the append-only revision-findings ledger and rendered into `qa_notes`; a soft nudge fires above 5 findings, a hard reject above 10. On a round ≥2 review, `claim_review` also returns `prior_findings` (the full ledger) so you check what was filed before. See `docs/rag/architecture/review-findings.md`.
 
 ## Documenter flow
 
@@ -62,10 +66,16 @@ reassign(task_id, assigned_to)  # move a subtask to a different agent
 unblock(task_id, reason)        # blocked -> in_progress (PM only); reason is
                                 # recorded as your journal:decision (no separate
                                 # note needed)
-submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pr_review
+submit_up(task_id, notes, resolved_findings=None)
+                                # open cell->root PR; -> awaiting_pr_review
                                 # (the cell PR reviewer gates it; after pr_pass
-                                #  the same Cell PM completes + merges)
+                                #  the same Cell PM completes + merges); a re-submit
+                                # after pr_fail must resolve every open finding first
 complete(task_id, notes)        # awaiting_pm_review -> completed (merges leaf PR)
+request_changes(task_id, findings=[...])
+                                # reject a subtask's merge review -> needs_revision,
+                                # routed to whoever owns the revision; structured
+                                # findings persist to the ledger + render into pm_notes
 escalate_up(task_id, reason)    # escalate to your escalation target
 ```
 
@@ -75,13 +85,15 @@ After `i_will_plan` and each `delegate`, the envelope includes a coverage view o
 
 ## Main PM flow
 
-The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `unblock`, `triage`, `escalate_up`), **adds** the verbs below, and — unlike a Cell PM — has **no** `submit_up` or `reassign`. Its bubble-up verb is `submit_root` (the root analogue of the Cell PM's `submit_up`):
+The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `request_changes`, `unblock`, `triage`, `escalate_up`), **adds** the verbs below, and — unlike a Cell PM — has **no** `submit_up` or `reassign`. Its bubble-up verb is `submit_root` (the root analogue of the Cell PM's `submit_up`):
 
 ```python
 triage_all()                    # list actionable tasks across all teams
-submit_root(task_id, notes)     # open root->master PR; -> awaiting_pr_review
+submit_root(task_id, notes, resolved_findings=None)
+                                # open root->master PR; -> awaiting_pr_review
                                 # (the main PR reviewer gates it; after pr_pass,
-                                #  complete escalates to the CEO)
+                                #  complete escalates to the CEO); a re-submit
+                                # after pr_fail must resolve every open finding first
 escalate_to_ceo(task_id, reason)
                                 # awaiting_pm_review -> awaiting_ceo_approval
 give_me_work()                  # Main PM may also pull work directly
@@ -125,9 +137,12 @@ The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs
 The same role also runs the **in-path PR-review gate** on the org's own assembled delivery PRs — the merge-level review before the PM merges:
 
 ```python
-claim_gate_review(task_id)      # claim an awaiting_pr_review task; returns the assembled diff
+claim_gate_review(task_id)      # claim an awaiting_pr_review task; returns the assembled
+                                # diff + (on round >=2) prior_findings, the full ledger
 pr_pass(task_id, notes)         # assembled PR is correct -> awaiting_pm_review (the PM merges)
-pr_fail(task_id, issues)        # send it back -> needs_revision, like a QA fail
+pr_fail(task_id, findings=[...])
+                                # send it back -> needs_revision, like a QA fail;
+                                # the deprecated issues=[str] shim still works this release
 ```
 
 Both verdicts are also posted on the assembled PR itself as a GitHub review (server-side, bot account) so the decision is visible on the PR the PM merges: `pr_pass` → APPROVE, `pr_fail` → REQUEST_CHANGES — except the root→master PR, which only ever gets a plain COMMENT (only the CEO acts on `master`).

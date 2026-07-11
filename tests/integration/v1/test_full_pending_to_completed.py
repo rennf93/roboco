@@ -76,6 +76,7 @@ class _MockChoreographer:
         _agent_id: object,
         _task_id: object,
         _notes: object,
+        **_kwargs: object,
     ) -> Envelope:
         self._state["task_status"] = "awaiting_qa"
         return Envelope.ok(

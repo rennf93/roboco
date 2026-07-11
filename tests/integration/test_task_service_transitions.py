@@ -2797,9 +2797,11 @@ async def test_qa_fail_appends_issues_and_calls_fail_qa(
     )
     assert out is not None
     assert out.status == TaskStatus.NEEDS_REVISION
-    # Issues block was appended to dev_notes
-    assert "typo" in (out.dev_notes or "")
-    assert "missing test" in (out.dev_notes or "")
+    # qa_fail no longer raw-appends issues onto dev_notes (the data-loss bug
+    # the revision-findings ledger fix retires) — the choreographer's
+    # fail_review verb persists them structurally (ledger + QaNote) before
+    # this call. dev_notes is untouched here.
+    assert out.dev_notes is None
 
 
 @pytest.mark.asyncio

@@ -43,8 +43,11 @@ from roboco.foundation.policy.batch import (
     main_pm_cannot_own_code,
     pm_cannot_own_code,
 )
-from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.content.validators import ContentValidationError
+from roboco.foundation.policy.content import Finding, Severity, markers
+from roboco.foundation.policy.content.validators import (
+    ContentValidationError,
+    reject_trivial,
+)
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -70,6 +73,7 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
@@ -376,6 +380,33 @@ def _append_capped(existing: str | None, addition: str) -> str:
     # Keep the newest, drop enough of the head to fit the marker + content.
     keep = _MAX_NOTES_CHARS - len(_TRUNCATION_MARKER)
     return _TRUNCATION_MARKER + joined[-keep:]
+
+
+_CEO_REJECT_ACTUAL_CAP = 300
+_CEO_REJECT_EVIDENCE_CAP = 2000
+
+
+def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
+    """Split a CEO rejection reason into a ledger Finding's (actual, evidence).
+
+    ``actual`` (the Finding field cap) gets the reason, truncated with an
+    "…[N chars omitted]" marker (caller-side truncation — the model itself
+    only caps, never truncates) when it overruns; the untruncated reason
+    (up to its own, larger cap) then lands in ``evidence`` so nothing not
+    already lost to the 2000-char ceiling is dropped silently.
+    """
+    text = reason.strip()
+    if len(text) <= _CEO_REJECT_ACTUAL_CAP:
+        return text, None
+    evidence = text
+    if len(evidence) > _CEO_REJECT_EVIDENCE_CAP:
+        omitted_ev = len(evidence) - _CEO_REJECT_EVIDENCE_CAP
+        marker_ev = f"…[{omitted_ev} chars omitted]"
+        evidence = evidence[: _CEO_REJECT_EVIDENCE_CAP - len(marker_ev)] + marker_ev
+    omitted = len(text) - _CEO_REJECT_ACTUAL_CAP
+    marker = f"…[{omitted} chars omitted]"
+    actual = text[: _CEO_REJECT_ACTUAL_CAP - len(marker)] + marker
+    return actual, evidence
 
 
 def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
@@ -967,10 +998,11 @@ class TaskService(BaseService):
         """Audit event types to emit for a transition.
 
         Always the generic ``task.<status>``; plus a rejector-attributed
-        ``task.qa_fail`` / ``task.pr_fail`` when a reviewer bounces a task to
-        needs_revision — so the per-agent rework scorecard can charge the
-        rejection to the QA / PR-reviewer who made it (the audit row carries
-        their agent_id), not the developer who owns the task.
+        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
+        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
+        so the per-agent rework scorecard can charge the rejection to whoever
+        made it (the audit row carries their agent_id), not the developer who
+        owns the task.
         """
         events = [f"task.{to_status}"]
         if to_status == TaskStatus.NEEDS_REVISION.value:
@@ -978,6 +1010,10 @@ class TaskService(BaseService):
                 events.append("task.pr_fail")
             elif agent_role == "qa":
                 events.append("task.qa_fail")
+            elif agent_role in ("cell_pm", "main_pm"):
+                events.append("task.request_changes")
+            elif agent_role == "ceo":
+                events.append("task.ceo_reject")
         return events
 
     # =========================================================================
@@ -6060,6 +6096,24 @@ class TaskService(BaseService):
         if notes:
             markers.set_transition_note(task, "ceo_approval", notes)
 
+        # The CEO's own approval IS the confirmation that a prior ceo_reject's
+        # findings were resolved — bulk-verify any addressed ceo-origin ledger
+        # rows (parity with pass_review / pr_pass / complete). Best-effort: a
+        # stale ledger entry is a cosmetic gap, never worth blocking the CEO's
+        # approval (and every other completion side-effect below) over.
+        try:
+            from roboco.services.gateway.choreographer.findings import (
+                stamp_addressed_verified,
+            )
+
+            await stamp_addressed_verified(self.session, task_id, origin="ceo")
+        except Exception as exc:
+            self.log.warning(
+                "ceo-origin findings verify-stamp failed (best-effort)",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
         task.completed_at = datetime.now(UTC)
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
@@ -6297,6 +6351,41 @@ class TaskService(BaseService):
             )
         )
 
+    def _bump_coordination_ceo_reject(self, task: TaskTable) -> None:
+        """Bump ``revision_count`` + emit a ``task.ceo_reject`` audit row for a
+        branchless-coordination reject.
+
+        This path routes to PENDING via ``admin_set_status`` instead of
+        NEEDS_REVISION (no developer to claim a coordination root), so
+        ``_emit_status_transition_audit``'s rework-counter bump and rejector-
+        attributed event — both gated on ``to_status == NEEDS_REVISION`` —
+        never fire on their own. Without this two consecutive rejects both
+        wrote ledger round=1 (the round always reads the same stale
+        ``revision_count``) and the rejection was invisible to rework metrics.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        task.revision_count = (task.revision_count or 0) + 1
+        self.session.add(
+            AuditLogTable(
+                event_type="task.ceo_reject",
+                agent_id=UUID(AGENT_UUIDS["ceo"]),
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={
+                    "from_status": TaskStatus.AWAITING_CEO_APPROVAL.value,
+                    "to_status": TaskStatus.PENDING.value,
+                    "agent_role": "ceo",
+                    "team": (
+                        task.team.value
+                        if hasattr(task.team, "value")
+                        else str(task.team)
+                    ),
+                },
+            )
+        )
+
     async def ceo_reject(
         self,
         task_id: UUID,
@@ -6328,8 +6417,38 @@ class TaskService(BaseService):
             )
             return None
 
-        # Store the CEO's rejection reason as a marker, not quick_context soup.
-        markers.set_transition_note(task, "ceo_rejection", reason)
+        # Validate BEFORE constructing the ledger Finding — the model's own
+        # `expected`/`actual` validator rejects the same empty/placeholder
+        # reasons ("", "wip", "n/a", "-", whitespace) by raising an uncaught
+        # pydantic ValidationError (a 500). Fail with the same clean 422
+        # every other bad-input path in this service uses instead.
+        try:
+            reject_trivial(reason, field="reason")
+        except ValueError as exc:
+            raise ValidationError(str(exc), field="reason") from exc
+
+        # The reason becomes one origin=ceo ledger finding — the CEO's
+        # process rejection, structurally alongside every other bounce (qa /
+        # pr_gate / pm). Round is read BEFORE the transition (this call is
+        # about to bump revision_count), mirroring the choreographer
+        # producers. The old `transition_notes.ceo_rejection` marker write is
+        # retired: nothing ever read it (only `dependency_lineage_conflict`
+        # does); `_write_handoff_journal` below is the channel a reworker
+        # actually reads.
+        actual, evidence = _ceo_reject_finding_texts(reason)
+        finding = Finding(
+            severity=Severity.BLOCKER,
+            expected="CEO sign-off on this task",
+            actual=actual,
+            evidence=evidence,
+        )
+        await ReviewFindingsRepository(self.session).insert_many(
+            task_id=task_id,
+            origin="ceo",
+            round=(task.revision_count or 0) + 1,
+            author_slug="ceo",
+            findings=[finding],
+        )
 
         # A branchless coordination root (a product integration root or a
         # MegaTask umbrella) has no developer to revise it — NEEDS_REVISION is
@@ -6370,6 +6489,7 @@ class TaskService(BaseService):
             task.assigned_to = cast("Any", main_pm_id)
             task.claimed_by = None
             reassigned_to = str(main_pm_id)
+            self._bump_coordination_ceo_reject(task)
             await self.session.flush()
             await self.admin_set_status(
                 task_id,
@@ -9405,9 +9525,17 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """QA fails the task with concrete issues.
 
-        `notes` is the QA narrative (stored on `qa_notes`); `issues` is
-        appended to `dev_notes` as a checklist for the dev's revision.
-        Asserts the actor matches claimed_by.
+        `notes` is the QA narrative (stored on `qa_notes`). `issues` no
+        longer raw-appends onto `dev_notes` — the caller (the
+        ``fail_review`` choreographer verb) already persisted the concrete
+        findings structurally (the revision-findings ledger + the QaNote's
+        `findings`/`summary`) before this call, via
+        ``apply_structured_note``, the ONLY writer of the TEXT note mirror
+        columns. The raw append used to violate that contract: the next
+        developer handoff note (`note(scope='handoff')`) fully overwrites
+        `dev_notes` via `apply_structured_note`, silently destroying the
+        QA issue list it had just appended. Asserts the actor matches
+        claimed_by.
         """
         task = await self.get(task_id)
         if task is None:
@@ -9423,8 +9551,11 @@ class TaskService(BaseService):
                 claimed_by=str(task.claimed_by),
             )
         if issues:
-            issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
-            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+            self.log.info(
+                "qa_fail issues (persisted via the ledger/QaNote, not dev_notes)",
+                task_id=str(task_id),
+                count=len(issues),
+            )
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
     async def _revision_pm_for_task(self, task: TaskTable) -> AgentTable | None:
@@ -9614,16 +9745,27 @@ class TaskService(BaseService):
 
         The merge-level reject the PM otherwise lacks at awaiting_pm_review
         (its only verbs were complete/escalate, so an AC violation caught at
-        merge review looped block→escalate). Issues are appended for the
-        dev's revision; routing mirrors a QA fail — original developer for a
-        leaf, the revision PM for an assembled task.
+        merge review looped block→escalate). ``issues`` no longer raw-appends
+        onto `dev_notes` — the caller (the ``request_changes`` choreographer
+        verb) already persisted the concrete findings structurally (the
+        revision-findings ledger + the new ``PmReviewContent`` note, its own
+        `pm_notes` mirror column) before this call. The raw append used to
+        violate `apply_structured_note`'s "ONLY writer of TEXT note columns"
+        contract — the next developer handoff note fully overwrote
+        `dev_notes`, silently destroying the reject's issue list. Routing
+        mirrors a QA fail — original developer for a leaf, the revision PM
+        for an assembled task.
         """
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
             return None
         if issues:
-            issue_block = "[PM REVIEW ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
-            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+            self.log.info(
+                "request_changes issues (persisted via the ledger/"
+                "PmReviewContent, not dev_notes)",
+                task_id=str(task_id),
+                count=len(issues),
+            )
         original_dev = extract_original_developer(task)
         if original_dev:
             task.assigned_to = cast("Any", UUID(original_dev))

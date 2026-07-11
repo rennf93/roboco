@@ -28,6 +28,7 @@ export const taskKeys = {
   subtasks: (parentId: string) =>
     [...taskKeys.all, "subtasks", parentId] as const,
   boardReview: (id: string) => [...taskKeys.all, "board-review", id] as const,
+  findings: (id: string) => [...taskKeys.all, "findings", id] as const,
   stats: () => [...taskKeys.all, "stats"] as const,
   statsByTeam: () => [...taskKeys.all, "stats-by-team"] as const,
 };
@@ -64,6 +65,18 @@ export function useBoardReview(taskId: string, enabled = true) {
     queryKey: taskKeys.boardReview(taskId),
     queryFn: () => tasksApi.getBoardReview(taskId),
     enabled: !!taskId && enabled,
+    staleTime: 30000,
+  });
+}
+
+// The revision-findings ledger for the panel's Findings tab. Cheap enough to
+// fetch eagerly alongside the task (mirrors useBoardReview's shape) so the
+// tab's badge count is available without an extra click.
+export function useTaskFindings(taskId: string) {
+  return useQuery({
+    queryKey: taskKeys.findings(taskId),
+    queryFn: () => tasksApi.getFindings(taskId),
+    enabled: !!taskId,
     staleTime: 30000,
   });
 }

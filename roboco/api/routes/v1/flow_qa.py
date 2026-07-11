@@ -90,7 +90,9 @@ async def qa_fail(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.fail_review(x_agent_id, body.task_id, body.issues)
+    env = await choreographer.fail_review(
+        x_agent_id, body.task_id, body.issues, body.findings
+    )
     return envelope_to_response(env, request)
 
 

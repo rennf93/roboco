@@ -9,7 +9,7 @@
 |------|-------------|
 | `give_me_work` | `give_me_work()` |
 | `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str, blocker_type: str | None = None, what_needed: str | None = None)` |
-| `i_am_done` | `i_am_done(task_id: UUID, notes: str = '')` |
+| `i_am_done` | `i_am_done(task_id: UUID, notes: str = '', resolved_findings: list[ResolvedFindingInput] = PydanticUndefined)` |
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `open_pr` | `open_pr(task_id: UUID)` |

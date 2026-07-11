@@ -32,12 +32,15 @@ from roboco.api.schemas.tasks import (
     SoftBlockRequest,
     SubstituteRequest,
     TaskCountResponse,
+    TaskFindingsResponse,
     TaskResponse,
     TaskSummaryResponse,
     TaskUpdate,
     TeamTasksQuery,
     ValidTransitionsResponse,
     enrich_task_with_context,
+    finding_to_response,
+    findings_summary,
     task_list_to_response,
     task_list_to_summary_response,
     task_to_response,
@@ -68,6 +71,7 @@ from roboco.services.notification_delivery import (
     get_notification_delivery_service,
 )
 from roboco.services.permissions import AgentContext, TaskAction
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.task import (
     SoftBlockInput,
     TaskCreateRequest,
@@ -1310,6 +1314,38 @@ async def get_board_review(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
     return await get_journal_service(db).board_review_brief(task_id)
+
+
+@router.get("/{task_id}/findings", response_model=TaskFindingsResponse)
+async def get_task_findings(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+) -> TaskFindingsResponse:
+    """The revision-findings ledger for a task (qa_fail / pr_fail /
+    request_changes / ceo_reject), newest round first, plus per-origin
+    status counts. Read-only feed for the panel's Findings tab.
+
+    The list is capped (repository default); ``summary``/``total`` are SQL
+    aggregates over the whole ledger, with ``truncated`` flagging a capped
+    list — so the counts are never silently wrong for a big ledger.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    repo = ReviewFindingsRepository(db)
+    rows = await repo.list_for_task(task_id)
+    counts = await repo.status_counts_for_task(task_id)
+    total = sum(count for _, _, count in counts)
+    return TaskFindingsResponse(
+        findings=[finding_to_response(r) for r in rows],
+        summary=findings_summary(counts),
+        total=total,
+        truncated=total > len(rows),
+    )
 
 
 # =============================================================================
