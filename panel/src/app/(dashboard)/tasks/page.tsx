@@ -17,6 +17,7 @@ import {
 import type { TaskFilters as TaskApiFilters } from "@/lib/api/tasks";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePageRefresh } from "@/hooks";
+import { useScrollRestorationStore } from "@/lib/stores";
 
 function TasksPageContent() {
   const router = useRouter();
@@ -157,6 +158,19 @@ function TasksPageContent() {
       });
     },
     [updateParams],
+  );
+
+  // Captures the table's live filtered/sorted order for task-detail prev/next
+  // navigation (see useScrollRestorationStore.taskListNav).
+  const setTaskListNav = useScrollRestorationStore(
+    (state) => state.setTaskListNav,
+  );
+  const searchParamsString = searchParams.toString();
+  const handleVisibleOrderChange = useCallback(
+    (items: { id: string; title: string }[]) => {
+      setTaskListNav({ items, queryString: searchParamsString });
+    },
+    [setTaskListNav, searchParamsString],
   );
 
   // Fetch tasks (server-filtered for single-select status/team) + client-side multi-select extras
@@ -342,6 +356,7 @@ function TasksPageContent() {
           onPageSizeChange={handlePageSizeChange}
           expandedIds={expandedIds}
           onExpandedChange={handleExpandedChange}
+          onVisibleOrderChange={handleVisibleOrderChange}
         />
       )}
     </div>

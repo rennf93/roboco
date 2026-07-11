@@ -3414,6 +3414,7 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
+        - playwright          browser tools (fe-qa/ux-qa only — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3512,6 +3513,45 @@ class AgentOrchestrator:
             },
         }
 
+        self._append_role_scoped_mcp_servers(
+            mcp_servers, agent_id, agent_role, agent_uuid, mcp_env
+        )
+
+        config: dict[str, Any] = {"mcpServers": mcp_servers}
+
+        # Write to shared config directory (mounted in both orchestrator and agents)
+        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            # Running in container - use shared mounted directory
+            config_dir = Path("/app/mcp-configs")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running on host - use temp directory
+            config_dir = Path(tempfile.gettempdir())
+
+        # basename-sanitized like _grok_usage_json: agent ids are orchestrator-
+        # issued slugs, but the filename must not be able to traverse anyway.
+        safe_agent_id = os.path.basename(agent_id)
+        config_path = config_dir / f"roboco-mcp-{safe_agent_id}.json"
+        config_path.write_text(json.dumps(config, indent=2))
+
+        return config_path
+
+    def _append_role_scoped_mcp_servers(
+        self,
+        mcp_servers: dict[str, dict[str, Any]],
+        agent_id: str,
+        agent_role: str,
+        agent_uuid: str,
+        mcp_env: dict[str, str],
+    ) -> None:
+        """Register the role-scoped MCP servers (docs, research, playwright).
+
+        Split from ``_generate_mcp_config`` so the base registration stays
+        within the complexity budget; each branch is fail-closed server-side
+        regardless of registration.
+        """
         # Docs server — documentation file management. Registered only for
         # roles that touch panel docs; handlers still enforce per-role
         # access so the surface is fail-closed.
@@ -3559,23 +3599,21 @@ class AgentOrchestrator:
                 "env": mcp_env,
             }
 
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
-
-        # Write to shared config directory (mounted in both orchestrator and agents)
-        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
-        # When running on host: use temp directory
-        if DATA_HOST_PATH:
-            # Running in container - use shared mounted directory
-            config_dir = Path("/app/mcp-configs")
-            config_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            # Running on host - use temp directory
-            config_dir = Path(tempfile.gettempdir())
-
-        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
-        config_path.write_text(json.dumps(config, indent=2))
-
-        return config_path
+        # Playwright MCP — structured browser tools (navigate/click/snapshot/
+        # screenshot) for QA's browser verification, replacing hand-scripted
+        # Bash+Python. Scoped to fe-qa/ux-qa only (role-gated, not
+        # image-gated: ux-dev shares agent-ux's image but never gets this),
+        # per the CEO's round-3 note on the Playwright QA-image work. The
+        # binary + wrapper entrypoint are baked into agent-qa-fe/agent-ux
+        # only (docker/agent-qa-fe.Dockerfile, docker/agent-ux.Dockerfile),
+        # so registering it for any other role would reference a command
+        # that doesn't exist in that role's image.
+        playwright_mcp_teams = ("frontend", "ux_ui")
+        if agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams:
+            mcp_servers["playwright"] = {
+                "command": "/app/scripts/playwright-mcp-entrypoint.sh",
+                "args": [],
+            }
 
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
@@ -8185,7 +8223,7 @@ Start by:
             return
         try:
             mp4_paths = await self._render_both_cuts(
-                db, draft, composition_id, str(task.id)
+                db, draft, composition_id, str(task.id), task.project_id
             )
             await self._materialize_video_post(db, task, draft, mp4_paths)
         except Exception as exc:
@@ -8230,16 +8268,29 @@ Start by:
             )
 
     async def _render_both_cuts(
-        self, db: Any, draft: dict[str, Any], composition_id: str, render_key: str
+        self,
+        db: Any,
+        draft: dict[str, Any],
+        composition_id: str,
+        render_key: str,
+        project_id: Any,
     ) -> dict[str, str]:
-        """Render the vertical + square cuts from the roboco project's merged
-        read-clone's motion/ dir; returns {"vertical": path, "square": path}.
-        ``render_key`` (the source task id) scopes each cut's output path."""
+        """Render the vertical + square cuts from the authoring task's OWN
+        project's merged read-clone's motion/ dir; returns {"vertical": path,
+        "square": path}. ``render_key`` (the source task id) scopes each
+        cut's output path. ``project_id`` is the task's own ``project_id`` —
+        never a fixed slug — so a video task authored against any opted-in
+        project renders from that project's ``motion/`` dir, not RoboCo's."""
+        from roboco.services.project import get_project_service
         from roboco.services.video_renderer_client import get_video_renderer
-        from roboco.services.workspace import get_workspace_service
+        from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        slug = (settings.self_heal_project_slug or "roboco-api").strip()
-        workspace = await get_workspace_service(db).ensure_read_clone(slug)
+        project = await get_project_service(db).get(project_id) if project_id else None
+        if project is None or not project.slug:
+            raise WorkspaceError(
+                f"video-render: task's project not resolvable ({project_id})"
+            )
+        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
         renderer = get_video_renderer()

@@ -40,6 +40,7 @@ export const projectsApi = {
         is_active: p.is_active,
         has_workspace: !!p.workspace_path,
         has_git_token: false, // Mock mode has no tokens
+        video_engine_enabled: p.video_engine_enabled,
       }));
     }
 

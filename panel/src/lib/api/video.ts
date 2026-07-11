@@ -23,6 +23,12 @@ export interface VideoPost {
   reject_reason?: string | null;
   mp4_paths?: Record<string, string>;
   source_task_id?: string | null; // the authoring task this draft rendered from
+  // The following mirror the shared `video_draft` marker's render idempotency
+  // keys (same fields as VideoPipelineItem) — optional because a draft may
+  // predate the backend exposing them on this response. Undefined reads as
+  // "not stale" everywhere below, so the re-render control degrades safely.
+  composition_id?: string | null;
+  render_status?: string | null; // null | "rendered" | "failed"
 }
 
 // One in-flight source=video authoring task — GET /video/pipeline
@@ -86,6 +92,20 @@ export function videoMediaUrl(taskId: string, cut: VideoCut): string {
   return `${API_URL}/video/posts/${taskId}/media?cut=${cut}`;
 }
 
+// GET /video/preview/{task_id}/{file_path:path} (roboco/api/routes/video.py)
+// serves a video-authoring task's composition HTML + sibling assets directly
+// from the project's merged read-clone, with iframe-permitting headers — the
+// panel's live composition preview embeds this URL as an <iframe src>
+// directly (unlike the MP4 media route, no auth-header workaround needed).
+export function compositionPreviewUrl(
+  authoringTaskId: string,
+  compositionId: string,
+  cut: VideoCut,
+): string {
+  const filePath = `motion/compositions/${compositionId}/${cut}.html`;
+  return `${API_URL}/video/preview/${authoringTaskId}/${filePath}`;
+}
+
 export const videoApi = {
   listPosts: async (): Promise<VideoPost[]> => {
     const { data } = await api.get<VideoPost[]>("/video/posts");
@@ -136,9 +156,17 @@ export const videoApi = {
     occasion: string;
     brief: string;
     platforms: string[];
+    project_id: string;
   }): Promise<VideoRequestResult> => {
     const { data } = await api.post<VideoRequestResult>("/video/request", body);
     return data;
+  },
+  // POST /video/pipeline/{task_id}/rerender (roboco/api/routes/video.py) —
+  // clears the authoring task's render idempotency keys so the render loop
+  // re-picks it up. taskId is the *authoring* task (VideoPost.source_task_id),
+  // not the held draft's own task_id.
+  rerender: async (authoringTaskId: string): Promise<void> => {
+    await api.post(`/video/pipeline/${authoringTaskId}/rerender`);
   },
   getCredentialsStatus: async (): Promise<TikTokCredentialsStatus> => {
     const { data } = await api.get<TikTokCredentialsStatus>(

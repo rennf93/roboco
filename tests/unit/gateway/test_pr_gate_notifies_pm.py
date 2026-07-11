@@ -69,10 +69,13 @@ def _stub_gate_path(
     )
     cc._gate_tracing = AsyncMock(return_value=None)
     # These tests exercise the pr_fail a2a / notify path, not the head-sha
-    # capture (which has its own suite in test_submit_root_unchanged_pr_guard).
-    # Stub the capture so it does not walk the mock session into un-awaited
-    # coroutines; the verdict still lands via the _record_gate_verdict spy.
+    # capture (which has its own suite in test_submit_root_unchanged_pr_guard)
+    # or the pr_pass CI-status guard (its own suite in
+    # test_pr_pass_ci_status_guard). Stub both so they do not walk the mock
+    # session into un-awaited coroutines; the verdict still lands via the
+    # _record_gate_verdict spy.
     cc._capture_pr_head_sha = AsyncMock(return_value=None)
+    cc._project_slug_for = AsyncMock(return_value=None)
     cc._record_gate_verdict = MagicMock()
     cc._post_gate_review_to_pr = AsyncMock()
     runner = MagicMock()

@@ -1,6 +1,7 @@
 """Schemas for the video engine's on-demand request + CEO approval surface."""
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -10,11 +11,12 @@ from roboco.services.x_client import MAX_TWEET_CHARS
 
 
 class VideoRequestBody(BaseModel):
-    """The CEO's on-demand video brief."""
+    """The CEO's on-demand video brief, scoped to a specific project."""
 
     occasion: str = Field(..., min_length=1)
     brief: str = Field(..., min_length=1)
     platforms: list[str] = Field(..., min_length=1)
+    project_id: UUID
 
 
 class VideoRequestResponse(BaseModel):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Task } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -95,6 +95,10 @@ interface TaskTableProps {
   // Controlled expanded state
   expandedIds?: Set<string>;
   onExpandedChange?: (ids: Set<string>) => void;
+  // Reports the currently visible, filtered + sorted task order (id + title
+  // pairs) — consumed by the Tasks list page to power task-detail prev/next
+  // navigation. Fires whenever the computed order changes.
+  onVisibleOrderChange?: (items: { id: string; title: string }[]) => void;
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -268,6 +272,7 @@ export function TaskTable({
   onPageSizeChange,
   expandedIds: controlledExpandedIds,
   onExpandedChange,
+  onVisibleOrderChange,
 }: TaskTableProps) {
   // Internal state (used when not controlled)
   const [internalSortConfig, setInternalSortConfig] =
@@ -383,6 +388,17 @@ export function TaskTable({
   const flattenedTasks = useMemo(() => {
     return flattenTree(sortedRoots, expandedIds);
   }, [sortedRoots, expandedIds]);
+
+  // Report the visible order to the parent so task-detail can compute
+  // prev/next within this exact filter/sort context.
+  useEffect(() => {
+    onVisibleOrderChange?.(
+      flattenedTasks.map((node) => ({
+        id: node.task.id,
+        title: node.task.title,
+      })),
+    );
+  }, [flattenedTasks, onVisibleOrderChange]);
 
   // Pagination on flattened list
   const totalItems = flattenedTasks.length;

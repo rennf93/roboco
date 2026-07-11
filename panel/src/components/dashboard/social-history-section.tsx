@@ -150,10 +150,12 @@ export function SocialHistorySection({ className }: { className?: string }) {
   const isLoading = open && (xLoading || videoLoading);
   const rows: UnifiedRow[] = [
     ...(xHistory ?? []).map((entry): UnifiedRow => ({ kind: "x", entry })),
-    ...(videoHistory ?? []).map((entry): UnifiedRow => ({
-      kind: "video",
-      entry,
-    })),
+    ...(videoHistory ?? []).map(
+      (entry): UnifiedRow => ({
+        kind: "video",
+        entry,
+      }),
+    ),
   ].sort(
     (a, b) =>
       new Date(b.entry.acted_at).getTime() -

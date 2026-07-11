@@ -194,9 +194,11 @@ class TestPrPassBlockedThreadsParent:
         cc._conventions_guard = AsyncMock(return_value=None)
         reviewer_id = uuid4()
 
-        result = await c._pr_pass_blocked(reviewer_id, uuid4(), t, "pr_reviewer", {})
+        rejection, _ci_note = await c._pr_pass_blocked(
+            reviewer_id, uuid4(), t, "pr_reviewer", {}
+        )
 
-        assert result is None
+        assert rejection is None
         cc._conventions_guard.assert_awaited_once_with(
             reviewer_id,
             t,
@@ -219,9 +221,11 @@ class TestPrPassBlockedThreadsParent:
         cc._toolchain_broken_guard = AsyncMock(return_value=None)
         cc._conventions_guard = AsyncMock(return_value=None)
 
-        result = await c._pr_pass_blocked(uuid4(), uuid4(), t, "pr_reviewer", {})
+        rejection, _ci_note = await c._pr_pass_blocked(
+            uuid4(), uuid4(), t, "pr_reviewer", {}
+        )
 
-        assert result is None
+        assert rejection is None
         task_service.get.assert_not_called()
         cc._conventions_guard.assert_awaited_once()
         assert cc._conventions_guard.await_args.kwargs.get("preferred_parent") is None

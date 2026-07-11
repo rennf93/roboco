@@ -9,6 +9,7 @@ import {
   pipelineStageColor,
   pipelineStageLabel,
 } from "./video-pipeline-utils";
+import { RerenderControl } from "@/components/dashboard/video-rerender-control";
 import {
   Card,
   CardContent,
@@ -24,9 +25,17 @@ import { Film } from "lucide-react";
 // derived (never fetched) from status + render_status/render_attempts —
 // see video-pipeline-utils.ts, unit-tested directly there. Only the
 // "awaiting your approval" stage deep-links out (the CEO decision the
-// pipeline is surfacing); every other stage is just visibility.
+// pipeline is surfacing); every other stage is just visibility. The
+// re-render control (shared with video-post-queue.tsx) shows for any item
+// carrying a proposed composition — the "rendering" and "render_failed"
+// stages are the only ones where the item's own task_id doubles as the
+// authoring task id the rerender endpoint needs, regardless of whether the
+// render is currently retrying or has failed outright.
 function PipelineRow({ item }: { item: VideoPipelineItem }) {
   const stage = derivePipelineStage(item);
+  const canRerender =
+    (stage.kind === "rendering" || stage.kind === "render_failed") &&
+    !!item.composition_id;
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
       <Film className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -45,6 +54,11 @@ function PipelineRow({ item }: { item: VideoPipelineItem }) {
             Review
           </Button>
         </Link>
+      )}
+      {canRerender && (
+        <div className="ml-auto">
+          <RerenderControl authoringTaskId={item.task_id} />
+        </div>
       )}
     </div>
   );

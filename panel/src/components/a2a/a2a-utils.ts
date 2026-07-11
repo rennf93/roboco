@@ -3,6 +3,7 @@
  */
 
 import type { A2AChatMessage } from "@/lib/api/a2a";
+import type { ConnectionState } from "@/lib/websocket/connection";
 
 /** The human CEO's fixed slug — never a valid reply target (the CEO composes
  * as itself, so it can't be its own recipient). */
@@ -46,4 +47,33 @@ export function pickDefaultRecipient(
 ): string {
   if (lastSender === agentA || lastSender === agentB) return lastSender;
   return agentA;
+}
+
+/** Label for the pane-header connection badge (design doc §3). */
+export function connectionStateLabel(state: ConnectionState): string {
+  switch (state) {
+    case "connected":
+      return "Live";
+    case "connecting":
+      return "Connecting…";
+    case "reconnecting":
+      return "Reconnecting…";
+    case "disconnected":
+      return "Offline";
+  }
+}
+
+/** Dot color for the pane-header connection badge — `connected` is static
+ * (no pulse); `connecting`/`reconnecting` share the amber pulsing family,
+ * guarded against `prefers-reduced-motion` (design doc §3). */
+export function connectionDotClasses(state: ConnectionState): string {
+  switch (state) {
+    case "connected":
+      return "bg-emerald-500";
+    case "connecting":
+    case "reconnecting":
+      return "bg-amber-500 animate-pulse motion-reduce:animate-none";
+    case "disconnected":
+      return "bg-muted-foreground/40";
+  }
 }

@@ -1,0 +1,201 @@
+name: Agent Image Smoke (Playwright)
+
+# Builds the two images that carry Playwright + chromium-headless-shell
+# (agent-qa-fe, agent-ux) with a real Docker daemon, verifies a headless
+# chromium launch actually works inside each, verifies the `playwright` MCP
+# server (registered for fe-qa/ux-qa only, see orchestrator.py
+# _generate_mcp_config) is installed and wired to the baked browser, takes a
+# real headless screenshot of a live panel page from inside the ux-qa image,
+# and reports the real before/after image size delta against origin/master.
+# This exists because dev/QA agent sandboxes have no Docker daemon of their
+# own — this workflow is the only place that can produce non-estimated
+# numbers for this change.
+
+on:
+  push:
+    paths:
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/agent-qa-fe.Dockerfile'
+      - 'docker/agent-ux.Dockerfile'
+      - 'docker/scripts/playwright-mcp-entrypoint.sh'
+      - '.github/workflows/agent-image-smoke.yml'
+  pull_request:
+    # No `branches:` filter — this repo's task hierarchy opens dev-level
+    # PRs against nested parent feature branches (e.g.
+    # feature/backend/<root>--<cell>--<subcell>), not directly against
+    # master, so a `branches: [master]` filter here would only ever fire
+    # once the assembled PR reaches root->master — too late to give QA/PM
+    # real evidence at the dev-PR review stage this task exists for.
+    paths:
+      - 'docker/agent-base.Dockerfile'
+      - 'docker/agent-qa-fe.Dockerfile'
+      - 'docker/agent-ux.Dockerfile'
+      - 'docker/scripts/playwright-mcp-entrypoint.sh'
+      - '.github/workflows/agent-image-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  playwright-smoke:
+    name: Build QA images, verify headless chromium launch + size delta
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # Need origin/master reachable to diff this branch's Dockerfiles
+          # against the pre-change baseline for the size-delta report below.
+          fetch-depth: 0
+
+      - name: Build agent-base (shared FROM target for both variants)
+        run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
+
+      - name: Build "after" images (this branch)
+        run: |
+          docker build -f docker/agent-qa-fe.Dockerfile -t agent-qa-fe:after .
+          docker build -f docker/agent-ux.Dockerfile -t agent-ux:after .
+
+      - name: Build "before" images (origin/master baseline)
+        run: |
+          mkdir -p /tmp/before
+          git show origin/master:docker/agent-qa-fe.Dockerfile > /tmp/before/agent-qa-fe.Dockerfile
+          git show origin/master:docker/agent-ux.Dockerfile > /tmp/before/agent-ux.Dockerfile
+          docker build -f /tmp/before/agent-qa-fe.Dockerfile -t agent-qa-fe:before .
+          docker build -f /tmp/before/agent-ux.Dockerfile -t agent-ux:before .
+
+      - name: Report real before/after image size delta
+        run: |
+          {
+            echo "### Playwright image size delta (real \`docker inspect\` sizes)"
+            echo
+            echo "| image | before | after | delta |"
+            echo "|---|---|---|---|"
+            for name in agent-qa-fe agent-ux; do
+              before_bytes=$(docker inspect -f '{{.Size}}' "${name}:before")
+              after_bytes=$(docker inspect -f '{{.Size}}' "${name}:after")
+              delta_mb=$(( (after_bytes - before_bytes) / 1024 / 1024 ))
+              echo "| ${name} | $(( before_bytes / 1024 / 1024 ))MB | $(( after_bytes / 1024 / 1024 ))MB | +${delta_mb}MB |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY" /tmp/smoke-report.md
+
+      - name: Headless chromium launch smoke check
+        run: |
+          {
+            echo
+            echo "### Headless chromium launch smoke check"
+            echo
+          } | tee -a /tmp/smoke-report.md
+          for name in agent-qa-fe agent-ux; do
+            echo "::group::${name} headless launch smoke"
+            docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto("about:blank")
+              assert page.title() == ""
+              browser.close()
+          print("PLAYWRIGHT_SMOKE_OK")
+          ' | tee -a /tmp/smoke-report.md
+            echo "::endgroup::"
+          done
+
+      - name: Playwright MCP server smoke check (binary + baked-chromium wiring)
+        run: |
+          {
+            echo
+            echo "### Playwright MCP server smoke check"
+            echo
+          } | tee -a /tmp/smoke-report.md
+          for name in agent-qa-fe agent-ux; do
+            echo "::group::${name} playwright-mcp binary"
+            docker run --rm --entrypoint playwright-mcp "${name}:after" --version | tee -a /tmp/smoke-report.md
+            # Confirms the exact chromium-headless-shell path the wrapper
+            # entrypoint (docker/scripts/playwright-mcp-entrypoint.sh) will
+            # resolve and pass to `playwright-mcp --executable-path` is a
+            # real, executable file baked into this image — not a second,
+            # separately-downloaded browser.
+            docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
+          import os
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              path = p.chromium.executable_path
+              assert os.path.isfile(path) and os.access(path, os.X_OK), f"not executable: {path}"
+              print("RESOLVED_CHROMIUM_PATH_OK:", path)
+          ' | tee -a /tmp/smoke-report.md
+            echo "::endgroup::"
+          done
+
+      - name: Set up Node (for the panel screenshot step below)
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Enable corepack (pnpm)
+        run: corepack enable
+
+      - name: Build & start the panel (headless browser verification target)
+        working-directory: panel
+        env:
+          # pnpm 11 prompts for confirmation on modules-purge unless CI=true
+          # (matches docker/panel.Dockerfile's build stage).
+          CI: 'true'
+        run: |
+          pnpm install --frozen-lockfile --shamefully-hoist
+          pnpm build
+          nohup pnpm start -p 3000 > /tmp/panel.log 2>&1 &
+          npx --yes wait-on http://localhost:3000/login -t 60000
+
+      - name: Headless browser verification screenshot (ux-qa image)
+        # Demonstrates the ux-qa image's browser actually renders a live
+        # panel page end-to-end, not just about:blank. /login needs no
+        # backend/auth (proxy.ts excludes it from its matcher) so this has
+        # no dependency on the orchestrator/DB being up.
+        run: |
+          mkdir -p /tmp/pw-artifacts
+          chmod 777 /tmp/pw-artifacts
+          docker run --rm --add-host=host.docker.internal:host-gateway \
+            -v /tmp/pw-artifacts:/tmp/out \
+            --entrypoint /app/.venv/bin/python agent-ux:after -c '
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page(viewport={"width": 1280, "height": 800})
+              page.goto("http://host.docker.internal:3000/login", wait_until="networkidle")
+              page.screenshot(path="/tmp/out/ux-qa-panel-login.png")
+              browser.close()
+          print("PANEL_SCREENSHOT_OK")
+          '
+          {
+            echo
+            echo "### Headless browser verification screenshot (ux-qa image)"
+            echo
+            echo "Screenshot of a live panel page (\`/login\`), taken from inside \`agent-ux:after\`. See the \`ux-qa-panel-screenshot\` build artifact."
+          } | tee -a /tmp/smoke-report.md
+
+      - name: Upload panel screenshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ux-qa-panel-screenshot
+          path: /tmp/pw-artifacts/ux-qa-panel-login.png
+
+      - name: Post results as a PR comment
+        # always() so the PR comment (the only evidence-delivery path QA/PM
+        # has, since no agent role can read the Checks tab directly) still
+        # posts a partial report even if an earlier build/smoke step failed —
+        # an `if:` that doesn't call a status function is otherwise
+        # implicitly ANDed with success(), silently swallowing the report.
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/smoke-report.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Agent Image Smoke (Playwright) results\n\n${body}`,
+            });
