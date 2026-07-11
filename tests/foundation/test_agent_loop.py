@@ -11,8 +11,8 @@ from roboco.foundation.policy import agent_loop
 # Canonical defaults the foundation guarantees. Asserting against named
 # constants keeps the contract explicit (and keeps PLR2004 happy — these
 # are not magic numbers, they are the public API surface).
-EXPECTED_TOOL_CALL_WARN_AT = 50
-EXPECTED_TOOL_CALL_HALT_AT = 150
+EXPECTED_TOOL_CALL_WARN_AT = 100
+EXPECTED_TOOL_CALL_HALT_AT = 300
 EXPECTED_LOOP_THRESHOLD = 3
 EXPECTED_LOOP_WINDOW = 10
 EXPECTED_PM_RESPAWN_MAX_UNPRODUCTIVE = 3

@@ -36,8 +36,12 @@ class BudgetPolicy:
     defaults). The dataclass holds the canonical defaults.
     """
 
-    tool_call_warn_at: int = 50
-    tool_call_halt_at: int = 150
+    # 150 interrupted legitimate multi-file dev work mid-task (repeated
+    # budget-sweep bounces — each a wasted spawn plus the resumed agent's
+    # re-verification turns); 300 keeps the cost guard while clearing a
+    # real task's footprint. Warn scales with it.
+    tool_call_warn_at: int = 100
+    tool_call_halt_at: int = 300
     loop_threshold: int = 3  # same tool+args repeats to trigger
     loop_window: int = 10  # rolling-window size
     loop_action: Literal["warn", "halt"] = "halt"  # NEW: was effectively "warn"
