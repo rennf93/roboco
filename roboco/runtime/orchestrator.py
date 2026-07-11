@@ -3532,7 +3532,8 @@ class AgentOrchestrator:
 
         # basename-sanitized like _grok_usage_json: agent ids are orchestrator-
         # issued slugs, but the filename must not be able to traverse anyway.
-        config_path = config_dir / os.path.basename(f"roboco-mcp-{agent_id}.json")
+        safe_agent_id = os.path.basename(agent_id)
+        config_path = config_dir / f"roboco-mcp-{safe_agent_id}.json"
         config_path.write_text(json.dumps(config, indent=2))
 
         return config_path
