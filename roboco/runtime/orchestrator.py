@@ -11583,10 +11583,43 @@ Start now: evidence(task_id="{task_id}")
             return self._build_main_pm_triage_prompt(task)
         return self._build_pm_triage_prompt(task)
 
+    async def _pending_claim_blocked(self, task_id: str | None) -> bool:
+        """Dispatch-time probe: is ``task_id`` held by the dependency/sequence
+        guard right now?
+
+        `_dispatch_pm_work` fetches every PENDING task each tick with no
+        sequencing filter, so a later-wave MegaTask root-subtask (or any
+        dependency-blocked task) got a doomed claim attempt every tick —
+        harmless (the claim chokepoint already refuses it) but pure churn.
+        Reuses `TaskService.is_pending_claim_blocked` (the exact claim-gate
+        predicate) so this can't drift from what the claim endpoint enforces.
+        Fails open (False) on any lookup error — the claim attempt itself is
+        the safety net and will surface a real error if something's wrong.
+        """
+        if not task_id:
+            return False
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                return await TaskService(db).is_pending_claim_blocked(UUID(task_id))
+        except Exception as exc:
+            logger.warning(
+                "Claim-block probe failed; falling through to claim attempt",
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
         """Classify and route an unassigned pending task to its target agent."""
+        if await self._pending_claim_blocked(task.get("id")):
+            return
         routing = self._classify_task_routing(task)
         agent_id = self._get_routing_target(routing, task)
 

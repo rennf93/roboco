@@ -1510,6 +1510,69 @@ async def test_claim_blocked_by_sequence_names_distinct_reason(
     assert "seq-0 blocker" in reason
 
 
+# ---------------------------------------------------------------------------
+# is_pending_claim_blocked — the public dispatch-time probe the orchestrator
+# fetch filter uses to skip a doomed claim attempt (churn reduction).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_true_for_lower_sequence_sibling(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0 blocker", parent_task_id=parent.id, sequence=0)
+    )
+    seq1 = await svc.create(
+        _req(task_setup, title="seq-1", parent_task_id=parent.id, sequence=1)
+    )
+    seq0.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc.is_pending_claim_blocked(seq1.id) is True
+
+    seq0.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.is_pending_claim_blocked(seq1.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_true_for_unmet_dependency(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    dep = await svc.create(_req(task_setup, title="dependency"))
+    task = await svc.create(_req(task_setup, title="dependent"))
+    await db_session.flush()
+    await svc.add_dependency(task.id, dep.id)
+
+    assert await svc.is_pending_claim_blocked(task.id) is True
+
+    dep.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.is_pending_claim_blocked(task.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_false_for_clear_task(
+    task_setup: dict,
+) -> None:
+    """A ready task (no dependency edge, sequence 0, no parent) is never held."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, title="ready"))
+    assert await svc.is_pending_claim_blocked(task.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_false_for_missing_task(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    assert await svc.is_pending_claim_blocked(uuid4()) is False
+
+
 @pytest.mark.asyncio
 async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     task_setup: dict, db_session: AsyncSession
