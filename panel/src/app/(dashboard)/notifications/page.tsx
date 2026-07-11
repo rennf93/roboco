@@ -29,6 +29,7 @@ import {
   MailOpen,
   BookOpen,
   AtSign,
+  ShieldCheck,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -49,6 +50,9 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   ),
   [NotificationType.DOCUMENTATION_REQUEST]: (
     <Info className="h-4 w-4 text-blue-500" />
+  ),
+  [NotificationType.APPROVAL]: (
+    <ShieldCheck className="h-4 w-4 text-emerald-500" />
   ),
   [NotificationType.ALERT]: (
     <AlertTriangle className="h-4 w-4 text-yellow-500" />
