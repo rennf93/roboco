@@ -48,6 +48,31 @@ services:
       retries: 5
 
   # ==========================================================================
+  # Backup - periodic pg_dump of the roboco DB (interim; no PITR/WAL yet)
+  # ==========================================================================
+  backup:
+    image: pgvector/pgvector:pg16
+    container_name: roboco-backup
+    restart: unless-stopped
+    # data-only network — pg_dump reaches postgres by container name, same
+    # as every other data-network consumer; never exposed to the agent mesh.
+    networks:
+      - data
+    environment:
+      POSTGRES_HOST: roboco-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: roboco
+      POSTGRES_PASSWORD: roboco
+      POSTGRES_DB: roboco
+    entrypoint: ["/bin/bash", "/scripts/backup-entrypoint.sh"]
+    volumes:
+      - ./docker/scripts/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
+      - ${ROBOCO_DATA_DIR:-./data}/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ==========================================================================
   # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
   # ==========================================================================
   minio:

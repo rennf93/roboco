@@ -163,8 +163,7 @@ Roster (col-span-4) | Stream (col-span-8)
 
 The connection badge renders in the pane header, and a dismissable banner appears above the message list when reconnecting or disconnected.
 
-**File:** `panel/src/components/a2a/a2a-connection-badge.tsx`
-**Utils:** `panel/src/components/a2a/a2a-utils.ts`
+**File:** `panel/src/components/a2a/a2a-connection-badge.tsx` **Utils:** `panel/src/components/a2a/a2a-utils.ts`
 
 ### `ConnectionState` Type (from `@/lib/websocket/connection`)
 

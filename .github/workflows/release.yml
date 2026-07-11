@@ -85,6 +85,16 @@ jobs:
             -t roboco-agent-base $(regtags roboco-agent-base) .
           echo "::endgroup::"
 
+          # roboco-agent-grok MUST build next, ahead of the loop: the two
+          # interactive Grok roles (prompter, secretary) build `FROM
+          # roboco-agent-grok` — a local tag that has to exist in the daemon
+          # before they build, and bash associative-array iteration order is
+          # unspecified, so it can't just be another entry in IMAGES below.
+          echo "::group::build roboco-agent-grok"
+          docker build -f docker/agent-grok.Dockerfile \
+            -t roboco-agent-grok $(regtags roboco-agent-grok) .
+          echo "::endgroup::"
+
           # Every other image → its Dockerfile. Names mirror docker-compose's
           # `image:` values exactly, so compose can later pull instead of build.
           declare -A IMAGES=(
@@ -101,7 +111,8 @@ jobs:
             [roboco-agent-prompter]=docker/agent-prompter.Dockerfile
             [roboco-agent-secretary]=docker/agent-secretary.Dockerfile
             [roboco-agent-pr-reviewer]=docker/agent-pr-reviewer.Dockerfile
-            [roboco-agent-grok]=docker/agent-grok.Dockerfile
+            [roboco-agent-grok-prompter]=docker/agent-grok-prompter.Dockerfile
+            [roboco-agent-grok-secretary]=docker/agent-grok-secretary.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
@@ -114,10 +125,13 @@ jobs:
           echo "::group::push roboco-agent-base"
           pushall roboco-agent-base
           echo "::endgroup::"
+          echo "::group::push roboco-agent-grok"
+          pushall roboco-agent-grok
+          echo "::endgroup::"
           for name in "${!IMAGES[@]}"; do
             echo "::group::push ${name}"
             pushall "${name}"
             echo "::endgroup::"
           done
 
-          echo "Published roboco-agent-base + ${#IMAGES[@]} more images to GHCR + Docker Hub at :${VERSION} and :latest"
+          echo "Published roboco-agent-base + roboco-agent-grok + ${#IMAGES[@]} more images to GHCR + Docker Hub at :${VERSION} and :latest"

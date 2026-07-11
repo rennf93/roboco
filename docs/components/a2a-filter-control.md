@@ -1,8 +1,6 @@
 # A2A Conversations Filter Control
 
-**Location:** `panel/src/components/a2a/`  
-**Design spec:** `docs/ux_ui/design/conversations-filter-control.md`  
-**Related:** A2A page (`panel/src/app/(dashboard)/a2a/page.tsx`)
+**Location:** `panel/src/components/a2a/` **Design spec:** `docs/ux_ui/design/conversations-filter-control.md` **Related:** A2A page (`panel/src/app/(dashboard)/a2a/page.tsx`)
 
 ## Overview
 
@@ -207,17 +205,13 @@ function A2APageContent() {
 
 ### Filter Functions
 
-**`filterConversations(conversations, filters): AdminConversationSummary[]`**  
-Applies all four dimensions (Agent, Task, Status, Date) to narrow the conversation list.
+**`filterConversations(conversations, filters): AdminConversationSummary[]`** Applies all four dimensions (Agent, Task, Status, Date) to narrow the conversation list.
 
-**`filterPairs(pairs, filters): AdminPairSummary[]`**  
-Applies Agent dimension only to narrow switchboard pair cards.
+**`filterPairs(pairs, filters): AdminPairSummary[]`** Applies Agent dimension only to narrow switchboard pair cards.
 
-**`distinctA2AAgents(conversations, pairs): string[]`**  
-Derives the checkbox option set by scanning all loaded pairs and conversations, deduping agent slugs, and sorting alphabetically. Call this in a `useMemo` in the parent whenever pairs/conversations change.
+**`distinctA2AAgents(conversations, pairs): string[]`** Derives the checkbox option set by scanning all loaded pairs and conversations, deduping agent slugs, and sorting alphabetically. Call this in a `useMemo` in the parent whenever pairs/conversations change.
 
-**`activeA2AFilterCount(filters): number`**  
-Returns the count of active filter values (one per chip). Drives the trigger's count badge. An empty fragment/date counts as 0; a set date counts as 1 per date.
+**`activeA2AFilterCount(filters): number`** Returns the count of active filter values (one per chip). Drives the trigger's count badge. An empty fragment/date counts as 0; a set date counts as 1 per date.
 
 ## Per-View Rules
 
@@ -303,14 +297,10 @@ The component follows the design spec's accessibility contract:
 
 ## Common Questions
 
-**Q: Why doesn't the fragment search the topic field anymore?**  
-A: The design spec replaced free-text search with four discrete dimensions. Task ID fragment and Agent are the most common filters; if you need to search topics, that would be a fifth dimension—raise it in design review if needed.
+**Q: Why doesn't the fragment search the topic field anymore?** A: The design spec replaced free-text search with four discrete dimensions. Task ID fragment and Agent are the most common filters; if you need to search topics, that would be a fifth dimension—raise it in design review if needed.
 
-**Q: Can I make filters persist across page reloads?**  
-A: Not in this version. To add localStorage persistence, wrap `setFilters` in the parent with `useEffect` to sync to localStorage and restore on mount. This would be a follow-up task.
+**Q: Can I make filters persist across page reloads?** A: Not in this version. To add localStorage persistence, wrap `setFilters` in the parent with `useEffect` to sync to localStorage and restore on mount. This would be a follow-up task.
 
-**Q: What happens to filtered state when new conversations arrive via WebSocket?**  
-A: Filters remain active. The `filterConversations` function is re-run against the refreshed list on every data update, so incoming messages are immediately re-evaluated against the current filters.
+**Q: What happens to filtered state when new conversations arrive via WebSocket?** A: Filters remain active. The `filterConversations` function is re-run against the refreshed list on every data update, so incoming messages are immediately re-evaluated against the current filters.
 
-**Q: Can filters be set via URL query params?**  
-A: Not currently. The state is ephemeral. To support deep-linking (e.g., `?agents=be-dev-1&status=active`), add a URL param sync layer in the parent using `useSearchParams` / `useRouter` from Next.js. This would be a follow-up task.
+**Q: Can filters be set via URL query params?** A: Not currently. The state is ephemeral. To support deep-linking (e.g., `?agents=be-dev-1&status=active`), add a URL param sync layer in the parent using `useSearchParams` / `useRouter` from Next.js. This would be a follow-up task.
