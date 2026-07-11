@@ -1,7 +1,13 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { TaskStatus, Team, TaskType, type Task } from "@/types";
 import { useScrollRestorationStore } from "@/lib/stores";
+
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush, back: vi.fn() }),
+}));
+
 import { TaskListNav } from "../task-list-nav";
 
 function buildTask(overrides: Partial<Task> = {}): Task {
@@ -21,6 +27,7 @@ function buildTask(overrides: Partial<Task> = {}): Task {
 describe("TaskListNav", () => {
   beforeEach(() => {
     useScrollRestorationStore.setState({ taskListNav: null });
+    mockPush.mockClear();
   });
 
   it("disables both buttons with an explanatory tooltip when no list context exists", () => {
@@ -84,5 +91,50 @@ describe("TaskListNav", () => {
     render(<TaskListNav task={buildTask({ id: "t1" })} />);
     expect(screen.getByLabelText("Previous task")).toBeDisabled();
     expect(screen.getByLabelText("Next task")).not.toBeDisabled();
+  });
+
+  it("navigates to the next task on Alt+ArrowRight", () => {
+    useScrollRestorationStore.setState({
+      taskListNav: {
+        items: [
+          { id: "t1", title: "Task 1" },
+          { id: "t2", title: "Task 2" },
+          { id: "t3", title: "Task 3" },
+        ],
+        queryString: "status=in_progress",
+      },
+    });
+    render(<TaskListNav task={buildTask({ id: "t2" })} />);
+
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+
+    expect(mockPush).toHaveBeenCalledWith(
+      "/tasks/t3?status=in_progress",
+    );
+  });
+
+  it("suppresses Alt+ArrowRight while an input is focused", () => {
+    useScrollRestorationStore.setState({
+      taskListNav: {
+        items: [
+          { id: "t1", title: "Task 1" },
+          { id: "t2", title: "Task 2" },
+          { id: "t3", title: "Task 3" },
+        ],
+        queryString: "",
+      },
+    });
+    render(
+      <>
+        <input aria-label="Note field" />
+        <TaskListNav task={buildTask({ id: "t2" })} />
+      </>,
+    );
+
+    const input = screen.getByLabelText("Note field");
+    input.focus();
+    fireEvent.keyDown(input, { key: "ArrowRight", altKey: true });
+
+    expect(mockPush).not.toHaveBeenCalled();
   });
 });
