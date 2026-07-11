@@ -97,7 +97,12 @@ async def i_am_done(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.i_am_done(x_agent_id, body.task_id, body.notes)
+    env = await choreographer.i_am_done(
+        x_agent_id,
+        body.task_id,
+        body.notes,
+        resolved_findings=[r.model_dump() for r in body.resolved_findings],
+    )
     return envelope_to_response(env, request)
 
 

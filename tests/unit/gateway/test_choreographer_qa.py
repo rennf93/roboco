@@ -45,6 +45,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 
 _EXPECTED_PR_NUMBER = 8
 _EXPECTED_PR_URL = "https://github.com/x/y/pull/8"
+_EXPECTED_FINDINGS_COUNT = 2
 
 
 @pytest.mark.asyncio
@@ -206,6 +207,17 @@ def _qa_agent_mock(qa_id: Any) -> MagicMock:
     return MagicMock(id=qa_id, role="qa", team="backend", slug=None)
 
 
+def _stub_empty_ledger(session: MagicMock) -> None:
+    """Configure a mock session's ``execute`` so ``ReviewFindingsRepository``
+    finds no rows — covers pass_review's verified-stamp read (list_for_task),
+    which a bare ``session.add``/``flush`` stub doesn't reach."""
+    session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_pass_review_requires_qa_notes_min_chars() -> None:
     qa_id = uuid4()
@@ -290,6 +302,7 @@ async def test_pass_review_succeeds_and_transitions() -> None:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    _stub_empty_ledger(task_svc.session)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     a2a_svc = AsyncMock()
@@ -341,6 +354,8 @@ async def test_fail_review_succeeds() -> None:
     task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     task_svc.qa_fail.return_value = after
     task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),
@@ -362,6 +377,8 @@ async def test_fail_review_succeeds() -> None:
     assert env.status == "needs_revision"
     task_svc.qa_fail.assert_awaited_once()
     a2a_svc.send.assert_awaited_once()
+    # The ledger insert ran (2 shimmed findings) before the transition.
+    assert task_svc.session.add.call_count == _EXPECTED_FINDINGS_COUNT
 
 
 @pytest.mark.asyncio
@@ -380,7 +397,7 @@ async def test_fail_review_requires_at_least_one_issue() -> None:
     env = await c.fail_review(qa_id, task_id, issues=[])
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "issue" in body["message"].lower()
+    assert "finding" in body["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -452,6 +469,7 @@ async def test_pass_review_survives_a2a_send_failure() -> None:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    _stub_empty_ledger(task_svc.session)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     a2a_svc = AsyncMock()

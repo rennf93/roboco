@@ -15,6 +15,16 @@ from typing import Any
 
 BRIEFING_LIST_CAP = 10
 
+# EvidencePayload fields that are noise when empty — dropped from as_dict()
+# rather than serialized as an empty list, matching build_task_handoff's
+# key-absent-when-empty posture (an absent section reads as "nothing here"
+# to the model, same as an empty one, at zero token cost).
+_EVIDENCE_OMIT_WHEN_EMPTY = (
+    "convention_findings",
+    "revision_findings",
+    "prior_findings",
+)
+
 
 @dataclass(frozen=True)
 class EvidencePayload:
@@ -30,9 +40,21 @@ class EvidencePayload:
     # can flag a misplaced definition / suppression. Empty when the subsystem
     # is off; a single ``could_not_run`` entry surfaces a fail-loud explicitly.
     convention_findings: list[dict[str, Any]] = field(default_factory=list)
+    # The task's OPEN revision-ledger findings (qa_fail / pr_fail /
+    # request_changes / ceo_reject) — rendered compactly, newest round
+    # first, capped. Empty for a task with no open findings (zero noise).
+    revision_findings: list[dict[str, Any]] = field(default_factory=list)
+    # claim_review / claim_gate_review only: the FULL ledger (every status),
+    # newest round first, so the round-N+1 reviewer verifies prior rounds
+    # item-by-item instead of seeing only what is still open.
+    prior_findings: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for key in _EVIDENCE_OMIT_WHEN_EMPTY:
+            if not data[key]:
+                del data[key]
+        return data
 
 
 @dataclass(frozen=True)
@@ -73,6 +95,51 @@ def truncate_diff(diff: str | None, limit: int = EVIDENCE_DIFF_CAP_CHARS) -> str
     )
 
 
+# Char cap for a single finding's ``evidence`` excerpt embedded in a
+# briefing/evidence payload — the ledger row itself can carry up to 2000
+# chars (Finding.evidence's own cap); this shrinks it for inline display.
+FINDING_EVIDENCE_EXCERPT_CAP = 300
+
+
+def _clip_with_note(text: str | None, cap: int) -> str | None:
+    """Cap a short free-text field; annotate the omission (never silent).
+
+    Sibling of ``truncate_diff``, sized for a single finding's excerpt
+    rather than a full diff.
+    """
+    if not text or len(text) <= cap:
+        return text
+    omitted = len(text) - cap
+    return text[:cap] + f"… [{omitted} chars omitted]"
+
+
+def _render_finding(row: Any) -> dict[str, Any]:
+    """One ledger row (``TaskReviewFindingTable``, duck-typed) -> a compact
+    dict for a briefing/evidence payload."""
+    return {
+        "id": str(row.id)[:8],
+        "round": row.round,
+        "origin": row.origin,
+        "status": row.status,
+        "severity": row.severity,
+        "file": row.file,
+        "line": row.line,
+        "expected": row.expected,
+        "actual": row.actual,
+        "fix": row.fix,
+        "evidence": _clip_with_note(row.evidence, FINDING_EVIDENCE_EXCERPT_CAP),
+    }
+
+
+def render_findings(
+    rows: list[Any] | None, *, cap: int = BRIEFING_LIST_CAP
+) -> list[dict[str, Any]]:
+    """Render ledger rows for a briefing/evidence payload, capped defensively
+    (the caller's own DB query is expected to already cap; this is a second,
+    cheap guard against a caller that doesn't)."""
+    return [_render_finding(r) for r in (rows or [])[:cap]]
+
+
 def build_evidence_for_task(
     task: Any,
     *,
@@ -80,8 +147,15 @@ def build_evidence_for_task(
     files_changed: list[str],
     pr_diff_summary: str | None = None,
     convention_findings: list[dict[str, Any]] | None = None,
+    revision_findings: list[Any] | None = None,
+    prior_findings: list[Any] | None = None,
 ) -> EvidencePayload:
-    """Compose an EvidencePayload from a Task model + supplemental data."""
+    """Compose an EvidencePayload from a Task model + supplemental data.
+
+    ``revision_findings`` / ``prior_findings`` take raw ledger rows (the
+    caller fetches; this module stays DB-free) and render them via
+    ``render_findings``.
+    """
     return EvidencePayload(
         pr_number=task.pr_number,
         pr_url=task.pr_url,
@@ -92,6 +166,8 @@ def build_evidence_for_task(
         journal_highlights=list(journal_highlights),
         acceptance_criteria_status=list(task.acceptance_criteria_status or []),
         convention_findings=list(convention_findings or []),
+        revision_findings=render_findings(revision_findings),
+        prior_findings=render_findings(prior_findings),
     )
 
 
@@ -112,6 +188,9 @@ def _has_prior_work(
     dev_summary: str | None,
     completed_deps: list,
     pr_review: dict[str, Any] | None,
+    qa_review: dict[str, Any] | None,
+    pm_review: dict[str, Any] | None,
+    open_findings: list,
 ) -> bool:
     """True when any resumable prior-work signal is present on the task."""
     return bool(
@@ -122,18 +201,25 @@ def _has_prior_work(
         or dev_summary
         or completed_deps
         or pr_review is not None
+        or qa_review is not None
+        or pm_review is not None
+        or open_findings
     )
 
 
 def build_task_handoff(
-    task: Any, journal_highlights: list[dict[str, Any]]
+    task: Any,
+    journal_highlights: list[dict[str, Any]],
+    open_findings: list[Any] | None = None,
 ) -> dict[str, Any] | None:
     """Compose a compact prior-work digest for the briefed task.
 
     Returns ``None`` when there is no task or no prior work worth resuming
     from, so the briefing only carries a handoff when one genuinely exists.
     DB-only by design — no git diff — so it is cheap enough to attach to
-    every task-scoped briefing.
+    every task-scoped briefing. ``open_findings`` takes raw ledger rows (the
+    caller fetches — this module stays DB-free); rendered under
+    ``revision_findings`` when non-empty.
     """
     if task is None:
         return None
@@ -145,11 +231,17 @@ def build_task_handoff(
     # Upstream dependencies that completed and were cleared — present only on a
     # just-unblocked task, so the revived dependent knows what it can build on.
     completed_deps = _typed(getattr(task, "completed_dependency_ids", None), list, [])
+    notes_structured = getattr(task, "notes_structured", None)
     # The persisted in-path PR-review gate verdict + concrete issues.
     # ``pr_fail`` writes ``notes_structured.pr_review``; surfacing it here puts
     # the concrete issues in every PM briefing so a respawned PM doesn't
     # re-submit the same PR blind.
-    pr_review = _extract_pr_review(getattr(task, "notes_structured", None))
+    pr_review = _extract_pr_review(notes_structured)
+    # The QA / PM-reject snapshots, parity with pr_review — full findings ride
+    # ``revision_findings`` below, so these carry only verdict/summary/count.
+    qa_review = _extract_qa_review(notes_structured)
+    pm_review = _extract_pm_review(notes_structured)
+    open_findings = list(open_findings or [])
     if not _has_prior_work(
         commits,
         acceptance,
@@ -158,6 +250,9 @@ def build_task_handoff(
         dev_summary,
         completed_deps,
         pr_review,
+        qa_review,
+        pm_review,
+        open_findings,
     ):
         return None
     handoff: dict[str, Any] = {
@@ -175,7 +270,23 @@ def build_task_handoff(
     }
     if pr_review is not None:
         handoff["pr_review"] = pr_review
+    if qa_review is not None:
+        handoff["qa_review"] = qa_review
+    if pm_review is not None:
+        handoff["pm_review"] = pm_review
+    if open_findings:
+        handoff["revision_findings"] = render_findings(open_findings)
     return handoff
+
+
+def _review_slot(notes_structured: Any, key: str) -> dict[str, Any] | None:
+    """The raw ``notes_structured[key]`` dict, or ``None`` when absent /
+    not a dict — shared by the ``pr_review`` / ``qa`` / ``pm_review``
+    extractors below."""
+    if not isinstance(notes_structured, dict):
+        return None
+    raw = notes_structured.get(key)
+    return raw if isinstance(raw, dict) else None
 
 
 def _extract_pr_review(notes_structured: Any) -> dict[str, Any] | None:
@@ -188,10 +299,8 @@ def _extract_pr_review(notes_structured: Any) -> dict[str, Any] | None:
     degrades to a safe default so a malformed slot never leaks a non-JSON
     object into the briefing.
     """
-    if not isinstance(notes_structured, dict):
-        return None
-    raw = notes_structured.get("pr_review")
-    if not isinstance(raw, dict):
+    raw = _review_slot(notes_structured, "pr_review")
+    if raw is None:
         return None
     verdict = _typed(raw.get("verdict"), str, None)
     summary = _typed(raw.get("summary"), str, None)
@@ -206,6 +315,46 @@ def _extract_pr_review(notes_structured: Any) -> dict[str, Any] | None:
         surface["summary"] = summary
     if head_sha:
         surface["head_sha"] = head_sha
+    return surface
+
+
+def _extract_qa_review(notes_structured: Any) -> dict[str, Any] | None:
+    """Pull the ``qa`` slot out of ``notes_structured`` — parity with
+    ``_extract_pr_review`` so a QA-bounced handoff surfaces the same way a
+    gate-bounced one does. Full findings ride ``revision_findings``; this
+    carries only verdict/summary/count so the QA snapshot isn't duplicated.
+    """
+    raw = _review_slot(notes_structured, "qa")
+    if raw is None:
+        return None
+    verdict = _typed(raw.get("verdict"), str, None)
+    summary = _typed(raw.get("summary"), str, None)
+    findings_count = len(_typed(raw.get("findings"), list, []))
+    if not (verdict or summary or findings_count):
+        return None
+    surface: dict[str, Any] = {"findings_count": findings_count}
+    if verdict:
+        surface["verdict"] = verdict
+    if summary:
+        surface["summary"] = summary
+    return surface
+
+
+def _extract_pm_review(notes_structured: Any) -> dict[str, Any] | None:
+    """Pull the ``pm_review`` slot out of ``notes_structured``
+    (``request_changes``'s ``PmReviewContent``) — no verdict field, since the
+    transition to ``needs_revision`` IS the verdict (see that model's
+    docstring)."""
+    raw = _review_slot(notes_structured, "pm_review")
+    if raw is None:
+        return None
+    summary = _typed(raw.get("summary"), str, None)
+    findings_count = len(_typed(raw.get("findings"), list, []))
+    if not (summary or findings_count):
+        return None
+    surface: dict[str, Any] = {"findings_count": findings_count}
+    if summary:
+        surface["summary"] = summary
     return surface
 
 

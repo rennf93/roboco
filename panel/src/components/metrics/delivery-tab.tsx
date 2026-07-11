@@ -204,6 +204,12 @@ function ReworkCard() {
                         <th className="py-1 font-medium text-right">
                           PR fails
                         </th>
+                        <th className="py-1 font-medium text-right">
+                          PM rejects
+                        </th>
+                        <th className="py-1 font-medium text-right">
+                          CEO rejects
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -216,6 +222,8 @@ function ReworkCard() {
                           <td className="py-1 text-right">{pct(a.rate)}</td>
                           <td className="py-1 text-right">{a.qa_fails}</td>
                           <td className="py-1 text-right">{a.pr_fails}</td>
+                          <td className="py-1 text-right">{a.pm_rejects}</td>
+                          <td className="py-1 text-right">{a.ceo_rejects}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -237,6 +245,12 @@ function ReworkCard() {
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="PR fails">
                             {a.pr_fails}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="PM rejects">
+                            {a.pm_rejects}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="CEO rejects">
+                            {a.ceo_rejects}
                           </ResponsiveTableCardRow>
                         </div>
                       </ResponsiveTableCard>

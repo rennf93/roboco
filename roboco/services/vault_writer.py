@@ -104,6 +104,36 @@ def _wikilink(ref: TaskLinkRef) -> str:
 
 
 @dataclass(frozen=True)
+class FindingRow:
+    """One revision-findings-ledger row, trimmed to what a vault note needs.
+
+    ``id8`` mirrors the ``[F-<id8>]`` rendering convention used in notes/A2A
+    bodies elsewhere so a CEO reading the vault can cross-reference the same
+    id the agents saw."""
+
+    id8: str
+    severity: str
+    file: str | None
+    line: int | None
+    expected: str
+    actual: str
+    fix: str | None
+    status: str
+    round: int
+
+
+_FINDINGS_CAP = 20
+
+
+def _finding_line(f: FindingRow) -> str:
+    loc = (f"{f.file}:{f.line}" if f.line is not None else f.file) if f.file else "—"
+    tail = f"{f.expected} → {f.actual}"
+    if f.fix:
+        tail += f" → {f.fix}"
+    return f"- [F-{f.id8}] ({f.severity}, round {f.round}, {f.status}) {loc} — {tail}"
+
+
+@dataclass(frozen=True)
 class TaskNoteData:
     """Deterministic content for one task note. ``narrative`` is None until
     the Auditor curates it (a placeholder is rendered instead). ``archive_year``
@@ -128,6 +158,9 @@ class TaskNoteData:
     batch_id: str | None = None
     narrative: str | None = None
     archive_year: int | None = None
+    # Revision-findings ledger, newest round first. Empty for a task never
+    # bounced — the section renders only when non-empty (see ``_task_body``).
+    findings: tuple[FindingRow, ...] = ()
 
 
 def _task_frontmatter(data: TaskNoteData, id8: str) -> dict[str, Any]:
@@ -143,6 +176,22 @@ def _task_frontmatter(data: TaskNoteData, id8: str) -> dict[str, Any]:
     }
 
 
+def _findings_section(findings: tuple[FindingRow, ...]) -> list[str]:
+    """The ``## Findings`` block: capped newest-first + an overflow line.
+
+    Empty (``[]``) for no findings — the caller appends unconditionally, so
+    the section's own presence check doesn't add a branch to ``_task_body``.
+    """
+    if not findings:
+        return []
+    lines = ["", "## Findings"]
+    lines += [_finding_line(f) for f in findings[:_FINDINGS_CAP]]
+    overflow = len(findings) - _FINDINGS_CAP
+    if overflow > 0:
+        lines.append(f"- … {overflow} more (see the panel Findings tab)")
+    return lines
+
+
 def _task_body(data: TaskNoteData) -> list[str]:
     body: list[str] = [f"# {data.title}", "", (data.description or "").strip()]
     if data.acceptance_criteria:
@@ -156,6 +205,7 @@ def _task_body(data: TaskNoteData) -> list[str]:
     if data.dependencies:
         body += ["", "## Dependencies"]
         body += [f"- {_wikilink(d)}" for d in data.dependencies]
+    body += _findings_section(data.findings)
     body += ["", "## Narrative", (data.narrative or _NARRATIVE_PLACEHOLDER).strip()]
     return body
 

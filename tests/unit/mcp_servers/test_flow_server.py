@@ -256,7 +256,11 @@ def test_i_am_done_sends_task_id_and_notes(flow_module: types.ModuleType) -> Non
     assert result == {"status": "awaiting_qa"}
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/flow/developer/i_am_done" in args[0]
-    assert kwargs["json"] == {"task_id": "task-abc", "notes": "all tests green"}
+    assert kwargs["json"] == {
+        "task_id": "task-abc",
+        "notes": "all tests green",
+        "resolved_findings": [],
+    }
 
 
 def test_i_am_done_notes_defaults_to_empty(flow_module: types.ModuleType) -> None:
@@ -365,7 +369,11 @@ def test_fail_review_passes_issues_list(monkeypatch: pytest.MonkeyPatch) -> None
 
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/flow/qa/fail" in args[0]
-    assert kwargs["json"] == {"task_id": "task-uuid", "issues": issues}
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "issues": issues,
+        "findings": [],
+    }
 
 
 def test_claim_doc_task_posts_to_documenter_path(

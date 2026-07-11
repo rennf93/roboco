@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Task } from "@/types";
+import { useTaskFindings } from "@/hooks/use-tasks";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -15,6 +16,7 @@ import { TabProgress } from "./tab-progress";
 import { TabCommits } from "./tab-commits";
 import { TabNotes } from "./tab-notes";
 import { TabDependencies } from "./tab-dependencies";
+import { TabFindings } from "./tab-findings";
 import {
   FileText,
   Layout,
@@ -22,6 +24,7 @@ import {
   GitCommit,
   StickyNote,
   Link2,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,6 +56,8 @@ export function TaskTabs({ task }: TaskTabsProps) {
     (task.auditor_notes ? 1 : 0) +
     (task.quick_context ? 1 : 0);
   const depsCount = task.dependency_ids.length + task.blocker_ids.length;
+  const { data: findingsData } = useTaskFindings(task.id);
+  const findingsCount = findingsData?.total ?? 0;
 
   const tabs: TabDef[] = [
     {
@@ -96,6 +101,13 @@ export function TaskTabs({ task }: TaskTabsProps) {
       hint: "Dependencies and blockers",
       count: depsCount > 0 ? depsCount : undefined,
     },
+    {
+      value: "findings",
+      label: "Findings",
+      icon: ListChecks,
+      hint: "Revision-findings ledger — QA / PR-review / PM / CEO bounce feedback",
+      count: findingsCount > 0 ? findingsCount : undefined,
+    },
   ];
 
   // The active tab lives in the URL (?tab=) so it survives reloads,
@@ -116,7 +128,7 @@ export function TaskTabs({ task }: TaskTabsProps) {
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-6">
-      <TabsList className="grid w-full grid-cols-6 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-7 lg:w-auto lg:inline-grid">
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>
@@ -153,6 +165,9 @@ export function TaskTabs({ task }: TaskTabsProps) {
         </TabsContent>
         <TabsContent value="dependencies">
           <TabDependencies task={task} />
+        </TabsContent>
+        <TabsContent value="findings">
+          <TabFindings task={task} />
         </TabsContent>
       </div>
     </Tabs>

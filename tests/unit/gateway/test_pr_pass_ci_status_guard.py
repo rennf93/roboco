@@ -39,6 +39,18 @@ def _make_choreographer() -> Choreographer:
         "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
     }
+    # pr_fail inserts its findings into the ledger before the transition;
+    # the repository needs an awaitable ``flush()`` on the mock session.
+    base["task"].session = MagicMock()
+    base["task"].session.add = MagicMock()
+    base["task"].session.flush = AsyncMock()
+    # pr_pass's verified-stamp (ReviewFindingsRepository.list_for_task) reads
+    # via session.execute — an empty scalars result (no findings).
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return Choreographer(ChoreographerDeps(**base))
 
 

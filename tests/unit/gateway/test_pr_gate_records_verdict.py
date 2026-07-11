@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+from roboco.foundation.policy.content import Finding, Severity
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -157,3 +158,39 @@ def test_pr_pass_leaves_issues_slot_empty() -> None:
     slot = t.notes_structured["pr_review"]
     assert slot["verdict"] == "passed"
     assert slot.get("issues", []) == []
+
+
+def test_pr_fail_embeds_findings_and_summary_does_not_duplicate() -> None:
+    """The revision-findings ledger's structured findings must land in the
+    format-enforced ``findings`` slot (its own render_markdown table already
+    displays them); ``summary`` stays the plain "N issue(s)" sentence — baking
+    the per-finding text into both would duplicate every line on the Task
+    Details card (the same anti-duplication the free-text ``issues`` case
+    already established)."""
+    c = _make_choreographer()
+    t = _TaskWithNoNotes()
+    findings = [
+        Finding(
+            file="roboco/api/routes/health.py",
+            line=12,
+            severity=Severity.MAJOR,
+            expected="returns 200",
+            actual="returns 500 on the timestamp branch",
+        )
+    ]
+    c._record_gate_verdict(
+        t,
+        "pr_fail",
+        "[F-abc12345] roboco/api/routes/health.py:12 (major) — returns 200 → "
+        "returns 500 on the timestamp branch",
+        findings=findings,
+    )
+    assert t.notes_structured is not None
+    slot = t.notes_structured["pr_review"]
+    assert slot["verdict"] == "failed"
+    assert len(slot["findings"]) == 1
+    assert slot["findings"][0]["actual"] == "returns 500 on the timestamp branch"
+    assert "1 issue(s) listed below" in slot["summary"]
+    assert "returns 500 on the timestamp branch" not in slot["summary"]
+    # The derived TEXT mirror renders the findings table (render_markdown).
+    assert "returns 500 on the timestamp branch" in t.pr_reviewer_notes

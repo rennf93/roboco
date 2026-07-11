@@ -10,6 +10,7 @@ export { TabProgress } from "./tab-progress";
 export { TabCommits } from "./tab-commits";
 export { TabNotes } from "./tab-notes";
 export { TabDependencies } from "./tab-dependencies";
+export { TabFindings } from "./tab-findings";
 export { AcceptanceCriteria } from "./acceptance-criteria";
 export { ProgressTimeline } from "./progress-timeline";
 export { CheckpointCard } from "./checkpoint-card";

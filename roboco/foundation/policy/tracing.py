@@ -49,6 +49,12 @@ class Requirement(StrEnum):
     DEV_NOTES_MIN_CHARS = "dev_notes>=min"
     PR_REVIEWER_NOTES_MIN_CHARS = "pr_reviewer_notes>=min"
     QUICK_CONTEXT_MIN_CHARS = "quick_context>=min"
+    # Revision-findings ledger resolution gate (i_am_done): every OPEN
+    # finding on the task (from a prior qa_fail/pr_fail/request_changes/
+    # ceo_reject) must be addressed — via i_am_done's `resolved_findings` —
+    # before the developer can resubmit. Trivially satisfied by an empty
+    # ledger (no findings ever filed).
+    FINDINGS_ADDRESSED = "findings_addressed"
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,10 @@ class GateContext:
     dev_notes_min_chars: int = 40
     pr_reviewer_notes_min_chars: int = 40
     quick_context_min_chars: int = 30
+    # 8-char ledger ids (str(finding.id)[:8]) still OPEN on the task, computed
+    # by the caller (the choreographer, which has DB access this pure module
+    # does not) AFTER applying any `resolved_findings` from this same call.
+    open_finding_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -198,6 +208,16 @@ def _check_notes_min_chars(task: Any, ctx: GateContext) -> list[str]:
     return [] if len(notes) >= ctx.notes_min_chars else ["notes>=min"]
 
 
+def _check_findings_addressed(_task: Any, ctx: GateContext) -> list[str]:
+    """One ``finding:<id8>`` miss per still-open ledger row.
+
+    Mirrors ``_check_acceptance_criteria``'s ``acceptance_criterion:<name>``
+    shape — the caller (``_build_tracing_gap``) batches these into one
+    multi-finding hint instead of a bare per-finding token.
+    """
+    return [f"finding:{fid}" for fid in ctx.open_finding_ids]
+
+
 def _check_subtasks_terminal(task: Any, _ctx: GateContext) -> list[str]:
     """Caller passes a task whose `_subtasks_all_terminal` boolean is set
     by the choreographer based on a DB query. Validator just reads it."""
@@ -229,6 +249,7 @@ _CHECKERS: dict[Requirement, Checker] = {
     Requirement.DEV_NOTES_MIN_CHARS: _check_dev_notes_min_chars,
     Requirement.PR_REVIEWER_NOTES_MIN_CHARS: _check_pr_reviewer_notes_min_chars,
     Requirement.QUICK_CONTEXT_MIN_CHARS: _check_quick_context_min_chars,
+    Requirement.FINDINGS_ADDRESSED: _check_findings_addressed,
 }
 
 
@@ -289,6 +310,10 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             # Satisfiable because the dev pre-writes dev_notes via
             # note(scope='handoff') before i_am_done (write-then-gate).
             Requirement.DEV_NOTES_MIN_CHARS,
+            # Every OPEN revision-ledger finding must be addressed (via
+            # `resolved_findings`) before resubmitting. Trivially satisfied
+            # when the ledger has no rows for this task.
+            Requirement.FINDINGS_ADDRESSED,
         }
     ),
     # QA pass/fail.
@@ -332,12 +357,16 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
         }
     ),
     # PM submit-up — adds JOURNAL_REFLECT (pre-gateway required decision AND reflect).
+    # FINDINGS_ADDRESSED closes the pr_gate/pm/ceo-origin resolution gap: a
+    # bounced coordination root had no equivalent of i_am_done's resolution
+    # gate, so a re-submit could sail past open findings unaddressed.
     "submit_up": frozenset(
         {
             Requirement.SUBTASKS_TERMINAL,
             Requirement.JOURNAL_DECISION,
             Requirement.JOURNAL_REFLECT,
             Requirement.NOTES_MIN_CHARS,
+            Requirement.FINDINGS_ADDRESSED,
         }
     ),
     # Main PM submit-root — root analogue of submit_up (opens the root→master
@@ -348,6 +377,7 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.JOURNAL_DECISION,
             Requirement.JOURNAL_REFLECT,
             Requirement.NOTES_MIN_CHARS,
+            Requirement.FINDINGS_ADDRESSED,
         }
     ),
     # PM complete — adds JOURNAL_REFLECT (parity with submit_up).

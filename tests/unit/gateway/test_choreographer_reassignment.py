@@ -44,6 +44,14 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    # cell_pm_complete / main_pm_complete's pm-origin verified-stamp reads via
+    # session.execute (ReviewFindingsRepository.list_for_task) before merging
+    # — an empty scalars result (no findings) so the stamp is a no-op here.
+    task.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -232,6 +240,16 @@ def _begin_nested_mock() -> Any:
     )
 
 
+def _empty_ledger_execute() -> AsyncMock:
+    """pass_review's verified-stamp (ReviewFindingsRepository.list_for_task)
+    reads via session.execute — an empty scalars result (no findings)."""
+    return AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_pass_review_reassigns_task_to_documenter() -> None:
     qa_id = uuid4()
@@ -252,6 +270,7 @@ async def test_pass_review_reassigns_task_to_documenter() -> None:
     task_svc.documenter_for_team.return_value = MagicMock(id=doc_id)
     task_svc.session = MagicMock()
     task_svc.session.begin_nested = _begin_nested_mock()
+    task_svc.session.execute = _empty_ledger_execute()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -285,6 +304,7 @@ async def test_pass_review_skips_reassign_when_no_documenter() -> None:
     task_svc.documenter_for_team.return_value = None
     task_svc.session = MagicMock()
     task_svc.session.begin_nested = _begin_nested_mock()
+    task_svc.session.execute = _empty_ledger_execute()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -558,6 +578,8 @@ async def test_fail_review_does_not_double_reassign() -> None:
     task_svc.agent_for.return_value = _qa_agent(qa_id)
     task_svc.qa_fail.return_value = after
     task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
     task_svc.session.begin_nested = _begin_nested_mock()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True

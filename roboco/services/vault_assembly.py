@@ -19,8 +19,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
+
 from roboco.config import settings
-from roboco.services.vault_writer import TaskLinkRef, TaskNoteData
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
+from roboco.services.vault_writer import FindingRow, TaskLinkRef, TaskNoteData
+
+logger = structlog.get_logger()
 
 _TERMINAL_STATUS_VALUES = ("completed", "cancelled")
 
@@ -78,6 +83,50 @@ async def _resolve_dependencies(
     return tuple(dependencies)
 
 
+async def _resolve_findings(task_service: Any, task: Any) -> tuple[FindingRow, ...]:
+    """Revision-findings ledger rows for the vault ``## Findings`` section.
+
+    Fetched via ``task_service.session`` rather than a threaded repository
+    argument — every real caller (the create seam, ``curate_vault``, the
+    janitor, ``rebuild``) already carries a ``TaskService`` backed by a real
+    session, so this needs no new parameter at any of the four call sites.
+    A duck-typed stub without a ``.session`` (some unit tests) yields no
+    findings rather than crashing — best-effort, matching the rest of this
+    module's DB-optional posture.
+
+    Fail-open: ANY fetch failure (a non-functional session on a stub, a
+    transient DB error) degrades to no findings — the vault seams are
+    best-effort and swallow exceptions, so a raise here would silently kill
+    the whole note materialization, not just the findings section.
+    """
+    session = getattr(task_service, "session", None)
+    if session is None:
+        return ()
+    try:
+        rows = await ReviewFindingsRepository(session).list_for_task(task.id)
+    except Exception as exc:
+        logger.warning(
+            "vault findings fetch failed — rendering note without findings",
+            task_id=str(task.id),
+            error=str(exc),
+        )
+        return ()
+    return tuple(
+        FindingRow(
+            id8=str(row.id)[:8],
+            severity=row.severity,
+            file=row.file,
+            line=row.line,
+            expected=row.expected,
+            actual=row.actual,
+            fix=row.fix,
+            status=row.status,
+            round=row.round,
+        )
+        for row in rows
+    )
+
+
 async def assemble_task_note_data(
     task_service: Any,
     project_service: Any,
@@ -105,6 +154,7 @@ async def assemble_task_note_data(
         batch_id=str(task.batch_id) if task.batch_id else None,
         narrative=narrative,
         archive_year=_archive_year(task),
+        findings=await _resolve_findings(task_service, task),
     )
 
 

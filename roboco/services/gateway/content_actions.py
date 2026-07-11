@@ -25,6 +25,7 @@ from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.services.content_notes import content_type_for_role
+from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -1920,11 +1921,15 @@ class ContentActions:
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, task_id
+        )
         ev = build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             pr_diff_summary=diff,
+            revision_findings=open_findings,
         )
         return Envelope.ok(
             status=str(t.status),

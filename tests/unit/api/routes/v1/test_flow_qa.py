@@ -161,18 +161,38 @@ async def test_fail_review_with_issues_returns_needs_revision() -> None:
     assert call_args.args[2] == ["Missing error handling", "No unit tests"]
 
 
-def test_fail_review_rejects_empty_issues_list() -> None:
-    """POST /api/v1/flow/qa/fail with empty issues list is rejected with 422."""
+@pytest.mark.asyncio
+async def test_fail_review_accepts_empty_issues_when_findings_given() -> None:
+    """POST /api/v1/flow/qa/fail with issues=[] is schema-valid — issues is now
+    optional (deprecated free-text shim); findings carries the structured
+    revision-findings ledger entry instead. The "at least one of the two"
+    rule is enforced by the choreographer, not the HTTP schema."""
     mock_chore = MagicMock()
+    mock_chore.fail_review = AsyncMock(
+        return_value=_make_envelope(status="needs_revision", task_id=_TASK_ID)
+    )
     client = TestClient(_build_app(mock_chore))
 
     resp = client.post(
         "/api/v1/flow/qa/fail",
-        json={"task_id": _TASK_ID, "issues": []},
+        json={
+            "task_id": _TASK_ID,
+            "issues": [],
+            "findings": [
+                {
+                    "expected": "returns 200",
+                    "actual": "returns 500",
+                    "severity": "major",
+                }
+            ],
+        },
         headers=_HEADERS,
     )
 
-    assert resp.status_code == _HTTP_422
+    assert resp.status_code == _HTTP_200
+    mock_chore.fail_review.assert_awaited_once()
+    call_args = mock_chore.fail_review.call_args
+    assert call_args.args[3][0]["actual"] == "returns 500"
 
 
 @pytest.mark.asyncio

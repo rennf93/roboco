@@ -216,7 +216,7 @@ async def test_spawn_pending_dev_proceeds_when_lane_clear(
     )
     monkeypatch.setattr(orch, "_validate_task_for_spawn", AsyncMock(return_value=None))
     monkeypatch.setattr(orch, "spawn_agent", spawn)
-    monkeypatch.setattr(orch, "_get_prompt_for_agent", MagicMock(return_value="prompt"))
+    monkeypatch.setattr(orch, "_get_prompt_for_agent", AsyncMock(return_value="prompt"))
     monkeypatch.setattr(orch, "_task_git_context", MagicMock(return_value={}))
 
     await orch._spawn_pending_dev(cast("Any", MagicMock()), task, "be-dev-1")

@@ -80,6 +80,8 @@ async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
     task_svc.agent_for.return_value = _pm_agent_mock(pm_id)
     task_svc.request_changes.return_value = after
     task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),
@@ -98,6 +100,8 @@ async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
     assert env.status == "needs_revision"
     task_svc.request_changes.assert_awaited_once()
     a2a_svc.send.assert_awaited_once()
+    # The ledger insert ran (findings=[the shimmed issue]) before the transition.
+    task_svc.session.add.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -114,7 +118,7 @@ async def test_request_changes_requires_at_least_one_issue() -> None:
     env = await c.request_changes(pm_id, task_id, issues=[])
     body = env.as_dict()
     assert body["error"] == "invalid_state"
-    assert "issue" in body["message"].lower()
+    assert "finding" in body["message"].lower()
 
 
 @pytest.mark.asyncio

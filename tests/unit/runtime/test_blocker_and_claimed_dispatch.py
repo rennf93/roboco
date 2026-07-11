@@ -243,36 +243,43 @@ def _task(**over: Any) -> dict[str, Any]:
         ("auditor", "AUDIT"),
     ],
 )
-def test_get_prompt_for_agent_routes_by_role(agent_slug: str, marker: str) -> None:
+@pytest.mark.asyncio
+async def test_get_prompt_for_agent_routes_by_role(
+    agent_slug: str, marker: str
+) -> None:
     orch = _orch()
-    prompt = orch._get_prompt_for_agent(agent_slug, _task())
+    prompt = await orch._get_prompt_for_agent(agent_slug, _task())
     assert marker in prompt
 
 
-def test_get_prompt_for_pm_is_not_the_dev_prompt() -> None:
+@pytest.mark.asyncio
+async def test_get_prompt_for_pm_is_not_the_dev_prompt() -> None:
     # Regression for #19: a respawned PM must NOT receive the developer prompt.
     orch = _orch()
-    pm_prompt = orch._get_prompt_for_agent("be-pm", _task())
+    pm_prompt = await orch._get_prompt_for_agent("be-pm", _task())
     assert "development task" not in pm_prompt
     assert "You do NOT code" in pm_prompt
 
 
-def test_get_prompt_for_board_is_not_the_dev_prompt() -> None:
+@pytest.mark.asyncio
+async def test_get_prompt_for_board_is_not_the_dev_prompt() -> None:
     orch = _orch()
-    board_prompt = orch._get_prompt_for_agent("product-owner", _task())
+    board_prompt = await orch._get_prompt_for_agent("product-owner", _task())
     assert "development task" not in board_prompt
     assert "do NOT build, code" in board_prompt
 
 
-def test_head_marketing_prompt_is_marketing_on_marketing_team() -> None:
+@pytest.mark.asyncio
+async def test_head_marketing_prompt_is_marketing_on_marketing_team() -> None:
     orch = _orch()
-    prompt = orch._get_prompt_for_agent("head-marketing", _task(team="marketing"))
+    prompt = await orch._get_prompt_for_agent("head-marketing", _task(team="marketing"))
     assert "marketing task" in prompt
 
 
-def test_head_marketing_prompt_is_board_off_marketing_team() -> None:
+@pytest.mark.asyncio
+async def test_head_marketing_prompt_is_board_off_marketing_team() -> None:
     orch = _orch()
-    prompt = orch._get_prompt_for_agent("head-marketing", _task(team="backend"))
+    prompt = await orch._get_prompt_for_agent("head-marketing", _task(team="backend"))
     assert "You are on the Board" in prompt
 
 
