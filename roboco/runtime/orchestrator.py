@@ -10759,7 +10759,9 @@ Start now: evidence(task_id="{task_id}")
                 if self._assignee_is_provider_parked(t):
                     continue
                 task_id = require_uuid(t.id)
-                reaped_agent = t.assigned_to or t.claimed_by
+                reaped_agent = getattr(t, "assigned_to", None) or getattr(
+                    t, "claimed_by", None
+                )
                 try:
                     await svc.unclaim_for_reaper(task_id)
                     logger.warning(
@@ -10777,7 +10779,7 @@ Start now: evidence(task_id="{task_id}")
                     await self._notify_stale_claim_reaped(task_id, reaped_agent, ts)
 
     async def _notify_stale_claim_reaped(
-        self, task_id: UUID, reaped_agent: Any, last_heartbeat: datetime | None
+        self, task_id: "UUID", reaped_agent: Any, last_heartbeat: datetime | None
     ) -> None:
         """Best-effort coordination notification for a reaped stale claim.
 
