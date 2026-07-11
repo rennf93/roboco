@@ -65,15 +65,16 @@ def _ctx(**over: Any) -> _LineageCutContext:
 async def test_no_dependencies_does_no_work() -> None:
     """Zero dependency_ids: no DB lookups, no git calls, no flush."""
     svc = _service()
-    svc.get = AsyncMock()
+    any_svc: Any = svc
+    any_svc.get = AsyncMock()
     task = _task(dependency_ids=[])
     ctx = _ctx()
 
     await svc._apply_dependency_lineage(task, ctx)
 
-    svc.get.assert_not_awaited()
+    any_svc.get.assert_not_awaited()
     ctx.git_service.merge_dependency_lineage.assert_not_called()
-    svc.session.flush.assert_not_awaited()
+    any_svc.session.flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -81,14 +82,18 @@ async def test_same_project_dependency_resolves_source_and_calls_merge() -> None
     """A same-repo dependency: resolve its real merge target (the branch its
     PR merged into) and hand it to GitService for the ancestor check/merge."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     dep_id = uuid4()
     dep_task = _task(id=dep_id, project_id=project.id)
     task = _task(project_id=project.id, dependency_ids=[dep_id])
-    svc.get = AsyncMock(return_value=dep_task)
+    any_svc.get = AsyncMock(return_value=dep_task)
 
     git_service = MagicMock()
-    git_service.merge_dependency_lineage = AsyncMock(return_value={"status": "merged"})
+    any_git_service: Any = git_service
+    any_git_service.merge_dependency_lineage = AsyncMock(
+        return_value={"status": "merged"}
+    )
     ctx = _ctx(git_service=git_service, project=project)
 
     with patch(
@@ -97,7 +102,7 @@ async def test_same_project_dependency_resolves_source_and_calls_merge() -> None
     ):
         await svc._apply_dependency_lineage(task, ctx)
 
-    git_service.merge_dependency_lineage.assert_awaited_once_with(
+    any_git_service.merge_dependency_lineage.assert_awaited_once_with(
         _WORKSPACE,
         task.id,
         _BRANCH,
@@ -111,11 +116,12 @@ async def test_cross_project_dependency_is_skipped() -> None:
     """A dependency in a DIFFERENT repo has no shared git history — skip it
     rather than attempt a meaningless cross-repo merge."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     dep_id = uuid4()
     dep_task = _task(id=dep_id, project_id=uuid4())  # different project
     task = _task(project_id=project.id, dependency_ids=[dep_id])
-    svc.get = AsyncMock(return_value=dep_task)
+    any_svc.get = AsyncMock(return_value=dep_task)
     ctx = _ctx(project=project)
 
     await svc._apply_dependency_lineage(task, ctx)
@@ -127,9 +133,10 @@ async def test_cross_project_dependency_is_skipped() -> None:
 async def test_missing_dependency_task_is_skipped() -> None:
     """A dependency id that no longer resolves to a task: skip, don't crash."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     task = _task(project_id=project.id, dependency_ids=[uuid4()])
-    svc.get = AsyncMock(return_value=None)
+    any_svc.get = AsyncMock(return_value=None)
     ctx = _ctx(project=project)
 
     await svc._apply_dependency_lineage(task, ctx)
@@ -142,14 +149,16 @@ async def test_conflict_status_notes_transition_and_warns_but_does_not_raise() -
     """A real conflict never fails the claim: it logs + leaves a task note
     naming the dependency and its branch so a human follows up."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     dep_id = uuid4()
     dep_task = _task(id=dep_id, project_id=project.id)
     task = _task(project_id=project.id, dependency_ids=[dep_id])
-    svc.get = AsyncMock(return_value=dep_task)
+    any_svc.get = AsyncMock(return_value=dep_task)
 
     git_service = MagicMock()
-    git_service.merge_dependency_lineage = AsyncMock(
+    any_git_service: Any = git_service
+    any_git_service.merge_dependency_lineage = AsyncMock(
         return_value={"status": "conflict", "files": ["src/a.py"]}
     )
     ctx = _ctx(git_service=git_service, project=project)
@@ -174,15 +183,17 @@ async def test_second_conflict_appends_rather_than_overwrites() -> None:
     the last one — set_transition_note's per-event dict would otherwise
     silently drop the first."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     dep_a, dep_b = uuid4(), uuid4()
     dep_task_a = _task(id=dep_a, project_id=project.id)
     dep_task_b = _task(id=dep_b, project_id=project.id)
     task = _task(project_id=project.id, dependency_ids=[dep_a, dep_b])
-    svc.get = AsyncMock(side_effect=[dep_task_a, dep_task_b])
+    any_svc.get = AsyncMock(side_effect=[dep_task_a, dep_task_b])
 
     git_service = MagicMock()
-    git_service.merge_dependency_lineage = AsyncMock(
+    any_git_service: Any = git_service
+    any_git_service.merge_dependency_lineage = AsyncMock(
         side_effect=[
             {"status": "conflict", "files": ["a.py"]},
             {"status": "conflict", "files": ["b.py"]},
@@ -207,14 +218,18 @@ async def test_merge_error_is_swallowed_never_raised() -> None:
     """This is a claim-time content assist, never a gate: any unexpected
     failure (network, resolver bug) is logged and swallowed."""
     svc = _service()
+    any_svc: Any = svc
     project = MagicMock(id=uuid4(), slug="roboco-api")
     dep_id = uuid4()
     dep_task = _task(id=dep_id, project_id=project.id)
     task = _task(project_id=project.id, dependency_ids=[dep_id])
-    svc.get = AsyncMock(return_value=dep_task)
+    any_svc.get = AsyncMock(return_value=dep_task)
 
     git_service = MagicMock()
-    git_service.merge_dependency_lineage = AsyncMock(side_effect=RuntimeError("boom"))
+    any_git_service: Any = git_service
+    any_git_service.merge_dependency_lineage = AsyncMock(
+        side_effect=RuntimeError("boom")
+    )
     ctx = _ctx(git_service=git_service, project=project)
 
     with patch(_MERGE_CHAIN_RESOLVE, AsyncMock(return_value="feature/x/one")):
@@ -237,8 +252,9 @@ async def test_create_branch_in_project_wires_apply_dependency_lineage() -> None
     object.__setattr__(svc, "_resolve_team_dir", MagicMock(return_value="backend"))
 
     git_service = MagicMock()
-    git_service.get_workspace = AsyncMock(return_value=_WORKSPACE)
-    git_service.create_branch = AsyncMock(return_value=("feature/x", "master"))
+    any_git_service: Any = git_service
+    any_git_service.get_workspace = AsyncMock(return_value=_WORKSPACE)
+    any_git_service.create_branch = AsyncMock(return_value=("feature/x", "master"))
 
     applied: list[tuple[Any, _LineageCutContext]] = []
 
