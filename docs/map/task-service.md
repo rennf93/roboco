@@ -15,8 +15,12 @@
 |------|------|-----------|----------------|
 | `_validate_and_set_status` | method | task.py:548 | Single chokepoint: validate transition + git requirements, set status, poke dispatcher, emit audit. |
 | `_emit_status_transition_audit` | method | task.py:652 | Write `task.<status>` audit row in caller session; bump `revision_count` on entry into `needs_revision`. |
-| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment. |
+| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment; (V2) vault materialize-on-create. |
 | `_attach_baseline_constraints` | method | task.py:971 | Append conventions baseline constraints to task prompt (gated `conventions_enabled`). |
+| `_materialize_vault_note` | method | task.py:910 | V2: best-effort vault seam called from `create` — assembles + writes a deterministic task note (narrative placeholder) so a task is visible in the vault from the moment it exists, not just at Auditor curation/rebuild. Gated `obsidian_vault_enabled`; swallows + logs any failure. |
+| `list_updated_since` | method | task.py:7101 | V2: tasks touched (`COALESCE(updated_at, created_at)`) since a timestamp, ascending, paged — the vault janitor's changed-task re-projection set. |
+| `list_archive_candidates` | method | task.py:7124 | V2: terminal tasks whose terminal timestamp falls in `[after, before)`, ascending, paged — the vault janitor's archival-pass candidate window (watermark-bounded so a sweep never rescans the whole archive). |
+| `sample_stale_tasks` | method | task.py:7154 | V2: random sample of tasks last touched before a cutoff — the vault janitor's drift-verification sample. |
 | `activate` | method | task.py:1577 | `backlog→pending` (PM only); batch-shape guard. |
 | `_ensure_branch_for_task` | method | task.py:1675 | Branch resolution for claim; `""` for branchless/umbrella. |
 | `_auto_create_branch` | method | task.py:1833 | Cut hierarchical branch + per-task worktree add (F123). |
