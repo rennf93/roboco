@@ -30,8 +30,8 @@ All controls listed below have been retrofitted to the correct pattern (verified
 | `ui/copy-button.tsx:64-74` | ✅ `aria-label` + `title` + Tooltip | ✅ Implicit (component pattern) |
 | `kanban/core/kanban-card.tsx:237-253` (move-forward button) | ✅ `aria-label` + `title` + Tooltip | ✅ `kanban-card-aria.test.tsx` |
 | `notifications/notification-bell.tsx:24-31` (bell button) | ✅ `aria-label` + `title` + Tooltip | ✅ `notification-bell.test.tsx` (NEW) |
-| `tasks/task-detail/task-header.tsx:476-478` (back-arrow button) | ✅ `aria-label` + `title` + Tooltip | ✅ `header.test.tsx` |
-| `tasks/task-actions.tsx:145-147` (overflow-menu trigger) | ✅ `aria-label` + `title` + Tooltip | ✅ `header.test.tsx` |
+| `tasks/task-detail/task-header.tsx:476-478` (back-arrow button) | ✅ `aria-label` + `title` + Tooltip | ❌ Not covered — `header.test.tsx` only renders `layout/header.tsx`, not this component |
+| `tasks/task-actions.tsx:145-147` (overflow-menu trigger) | ✅ `aria-label` + `title` + Tooltip | ❌ Not covered — `header.test.tsx` only renders `layout/header.tsx`, not this component |
 | `layout/sidebar.tsx:170-182` (collapse-rail toggle) | ✅ `aria-label` + `title` + Tooltip | ✅ `sidebar.test.tsx` |
 | `kanban/core/kanban-card.tsx:122-128` (drag handle) | ✅ `aria-label` + `title` + Tooltip | ✅ `kanban-card-aria.test.tsx` |
 | `kanban/shared/assignee-avatar.tsx` (initials badge) | ✅ `aria-label` + Tooltip with full name | ✅ `assignee-avatar.test.tsx` |
@@ -116,6 +116,6 @@ Any icon-only control shipped without an `aria-label` — including every exampl
 ## Implementation notes
 
 - **Retrofit complete (PR #476 + regression tests):** All gaps in §1a have been fixed using the existing `ui/tooltip.tsx` Radix wrapper and plain `aria-label`/`title` attributes. The pattern is now uniform across all icon-only controls.
-- **Test coverage:** Each retrofitted control has a regression test verifying the aria-label, title, and Tooltip content match per §2. See each test file for the exact test pattern.
+- **Test coverage:** Most retrofitted controls have a regression test verifying the aria-label, title, and Tooltip content match per §2 — see the coverage table above for which controls still lack a dedicated test.
 - **No new dependency:** Everything uses the existing `ui/tooltip.tsx` Radix wrapper, already in use elsewhere.
 - **Out of scope:** Recharts' internal chart-tooltip behavior (§1c) — that's a data-visualization concern, not a UI-affordance one.
