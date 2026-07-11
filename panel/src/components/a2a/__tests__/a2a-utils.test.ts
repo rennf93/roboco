@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  connectionDotClasses,
+  connectionStateLabel,
   lastSenderOf,
   pickDefaultRecipient,
   recipientOptions,
 } from "../a2a-utils";
+import type { ConnectionState } from "@/lib/websocket/connection";
 
 describe("lastSenderOf", () => {
   it("returns null for an empty transcript", () => {
@@ -50,5 +53,39 @@ describe("recipientOptions", () => {
 
   it("excludes the CEO when it's agent_b", () => {
     expect(recipientOptions("be-dev-1", "ceo")).toEqual(["be-dev-1"]);
+  });
+});
+
+describe("connectionStateLabel (design doc §3 — all four states distinct)", () => {
+  it.each([
+    ["connected", "Live"],
+    ["connecting", "Connecting…"],
+    ["reconnecting", "Reconnecting…"],
+    ["disconnected", "Offline"],
+  ] satisfies [ConnectionState, string][])(
+    "labels %s as %s",
+    (state, label) => {
+      expect(connectionStateLabel(state)).toBe(label);
+    },
+  );
+});
+
+describe("connectionDotClasses", () => {
+  it("connected is static — no pulse", () => {
+    expect(connectionDotClasses("connected")).not.toContain("animate-pulse");
+  });
+
+  it("connecting and reconnecting pulse with a motion-reduce guard", () => {
+    for (const state of ["connecting", "reconnecting"] as ConnectionState[]) {
+      const classes = connectionDotClasses(state);
+      expect(classes).toContain("animate-pulse");
+      expect(classes).toContain("motion-reduce:animate-none");
+    }
+  });
+
+  it("disconnected is static and muted", () => {
+    const classes = connectionDotClasses("disconnected");
+    expect(classes).not.toContain("animate-pulse");
+    expect(classes).toContain("muted-foreground");
   });
 });

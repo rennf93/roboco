@@ -32,7 +32,11 @@ const IN_REVIEW_STATUSES = new Set([
 export function derivePipelineStage(
   item: Pick<
     VideoPipelineItem,
-    "status" | "render_status" | "render_attempts" | "max_attempts" | "render_error"
+    | "status"
+    | "render_status"
+    | "render_attempts"
+    | "max_attempts"
+    | "render_error"
   >,
 ): PipelineStage {
   if (item.status === "completed") {
@@ -46,7 +50,8 @@ export function derivePipelineStage(
       maxAttempts: item.max_attempts,
     };
   }
-  if (item.status === "awaiting_ceo_approval") return { kind: "awaiting_approval" };
+  if (item.status === "awaiting_ceo_approval")
+    return { kind: "awaiting_approval" };
   if (IN_REVIEW_STATUSES.has(item.status)) return { kind: "in_review" };
   return { kind: "authoring" };
 }
