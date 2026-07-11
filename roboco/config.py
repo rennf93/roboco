@@ -8,6 +8,7 @@ import asyncio
 import importlib
 import ipaddress
 import os
+import posixpath
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Literal
@@ -1657,6 +1658,109 @@ class Settings(BaseSettings):
             "Rolling cap on concurrently-open held vault-note drafts; the "
             "watcher originates nothing more past it."
         ),
+    )
+
+    # Vault janitor (V2): drift repair + archival + weekly report, all folded
+    # into one daily-gated loop tick. Gated on obsidian_vault_enabled only.
+    vault_archive_days: int = Field(
+        default=30,
+        ge=0,
+        description=(
+            "Age (terminal timestamp) past which a completed/cancelled task's "
+            "note moves to RoboCo/Archive/<year>/. 0 disables archival."
+        ),
+    )
+    vault_report_enabled: bool = Field(
+        default=True,
+        description=(
+            "Materialize a weekly RoboCo/Reports/<ISO-week>.md org-report note "
+            "(deterministic, no LLM) and notify the CEO. Needs "
+            "obsidian_vault_enabled."
+        ),
+    )
+
+    # Vault KB ingest (V2 item 4): human-authored note folders become one more
+    # RAG corpus (IndexType.VAULT_NOTES) — the CEO's own notes become
+    # retrievable by the fleet. Inert unless BOTH obsidian_vault_enabled AND
+    # vault_kb_enabled are on.
+    vault_kb_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for vault KB ingest. OFF by default; when off no "
+            "note is ever embedded and the index stays empty."
+        ),
+    )
+    vault_kb_dirs: str = Field(
+        default="RoboCo/Notes",
+        description=(
+            "CSV of vault-relative folders scanned recursively for KB ingest. "
+            "Must never overlap vault_intake_dir or a reserved projection dir "
+            "(enforced at config load)."
+        ),
+    )
+    vault_kb_interval_seconds: int = Field(
+        default=900,
+        ge=60,
+        description="Seconds between vault-KB ingest scan cycles.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_vault_kb_dirs(self) -> "Settings":
+        """Reject a vault_kb_dirs entry that could escape the vault (absolute
+        path or a ``..`` segment — path traversal into the fleet-retrievable
+        corpus) or that overlaps the intake inbox or a reserved projection
+        dir — KB ingest must never double-index what's already a first-class
+        DB-backed corpus (Tasks/Journals/A2A/Agents) or the intake watcher's
+        own folder."""
+        if not self.vault_kb_enabled:
+            return self
+        reserved = (
+            "RoboCo/Tasks",
+            "RoboCo/Journals",
+            "RoboCo/A2A",
+            "RoboCo/Agents",
+            "RoboCo/Archive",
+            "RoboCo/Reports",
+            "RoboCo/_meta",
+            ".obsidian",
+            self.vault_intake_dir,
+        )
+        for kb_dir in (d.strip() for d in self.vault_kb_dirs.split(",")):
+            if not kb_dir:
+                continue
+            if kb_dir.startswith("/") or ".." in kb_dir.split("/"):
+                raise ValueError(
+                    f"ROBOCO_VAULT_KB_DIRS entry {kb_dir!r} must be a clean "
+                    "vault-relative path — no absolute paths, no '..' "
+                    "segments (KB ingest would index files outside the vault)."
+                )
+            # Overlap checks run on the normalized form so './RoboCo/Tasks'
+            # or a vault-root-equivalent '.' can't slip past the guard.
+            normalized = posixpath.normpath(kb_dir)
+            if normalized == ".":
+                raise ValueError(
+                    f"ROBOCO_VAULT_KB_DIRS entry {kb_dir!r} resolves to the "
+                    "vault root itself — KB ingest must target a subfolder, "
+                    "never the whole vault (that would double-index every "
+                    "projection dir, including private journals)."
+                )
+            for reserved_dir in reserved:
+                if _vault_dirs_overlap(normalized, reserved_dir):
+                    raise ValueError(
+                        f"ROBOCO_VAULT_KB_DIRS entry {kb_dir!r} overlaps "
+                        f"reserved vault path {reserved_dir!r} — KB ingest "
+                        "must not double-index a projection/intake dir."
+                    )
+        return self
+
+
+def _vault_dirs_overlap(a: str, b: str) -> bool:
+    """True if vault-relative dirs ``a``/``b`` are equal or one nests the other."""
+    a_norm, b_norm = a.strip("/"), b.strip("/")
+    return (
+        a_norm == b_norm
+        or a_norm.startswith(b_norm + "/")
+        or b_norm.startswith(a_norm + "/")
     )
 
 

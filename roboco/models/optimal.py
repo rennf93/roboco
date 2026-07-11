@@ -25,6 +25,9 @@ class IndexType(StrEnum):
     REVIEWS = "reviews"  # Code review feedback
     LEARNINGS = "learnings"  # Cross-agent learnings (shareable)
     PLAYBOOKS = "playbooks"  # Curated, Auditor-approved reusable procedures
+    VAULT_NOTES = (
+        "vault_notes"  # Human-authored Obsidian vault notes (CEO's own writing)
+    )
 
 
 @dataclass

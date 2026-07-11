@@ -16,7 +16,9 @@
     { "query": "tag:#status/blocked", "color": { "a": 1, "rgb": 15277667 } },
     { "query": "path:RoboCo/Journals", "color": { "a": 1, "rgb": 9807270 } },
     { "query": "path:RoboCo/A2A", "color": { "a": 1, "rgb": 12634495 } },
-    { "query": "path:RoboCo/Agents", "color": { "a": 1, "rgb": 6250335 } }
+    { "query": "path:RoboCo/Agents", "color": { "a": 1, "rgb": 6250335 } },
+    { "query": "path:RoboCo/Archive", "color": { "a": 1, "rgb": 7041664 } },
+    { "query": "path:RoboCo/Reports", "color": { "a": 1, "rgb": 1357990 } }
   ],
   "collapse-display": true,
   "showArrow": false,

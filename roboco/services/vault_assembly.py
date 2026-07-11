@@ -2,9 +2,11 @@
 
 Kept separate from ``vault_writer`` (which is a pure, DB-free materializer)
 so that module stays trivially unit-testable with tmp_path. Shared by the
-Auditor's ``curate_vault`` verb and the ``python -m roboco.vault rebuild`` CLI
-— both need "task + parent + subtasks + dependencies + project slug" turned
-into a ``TaskNoteData``.
+create-on-task seam, the Auditor's ``curate_vault`` verb, the drift janitor,
+and the ``python -m roboco.vault rebuild`` CLI — all need "task + parent +
+subtasks + dependencies + project slug (+ archive eligibility)" turned into
+a ``TaskNoteData``. ``reproject_task`` additionally bundles the "preserve the
+existing Auditor narrative" step every re-projection needs.
 
 Services are passed in as ``Any`` (duck-typed) rather than imported by type,
 so this module never needs ``roboco.services.task`` / ``roboco.services.project``
@@ -14,13 +16,32 @@ the vault seam on status transitions).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from roboco.config import settings
 from roboco.services.vault_writer import TaskLinkRef, TaskNoteData
+
+_TERMINAL_STATUS_VALUES = ("completed", "cancelled")
 
 
 def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
+
+
+def _archive_year(task: Any) -> int | None:
+    """Terminal task older than ``vault_archive_days`` -> its terminal
+    timestamp's year (the archival target); else None (stays live).
+    ``vault_archive_days=0`` disables archival outright."""
+    if settings.vault_archive_days <= 0:
+        return None
+    if _enum_value(task.status) not in _TERMINAL_STATUS_VALUES:
+        return None
+    terminal_ts = task.completed_at or task.updated_at or task.created_at
+    if terminal_ts is None:
+        return None
+    cutoff = datetime.now(UTC) - timedelta(days=settings.vault_archive_days)
+    return terminal_ts.year if terminal_ts < cutoff else None
 
 
 async def _resolve_project_slug(project_service: Any, task: Any) -> str:
@@ -83,4 +104,22 @@ async def assemble_task_note_data(
         dependencies=await _resolve_dependencies(task_service, task),
         batch_id=str(task.batch_id) if task.batch_id else None,
         narrative=narrative,
+        archive_year=_archive_year(task),
     )
+
+
+async def reproject_task(
+    writer: Any, task_service: Any, project_service: Any, task: Any
+) -> Any:
+    """Re-project one existing task, preserving its Auditor narrative.
+
+    The shared "assemble + preserve narrative + materialize" step used by
+    ``rebuild`` and every drift-janitor pass (changed/sample/archival) — one
+    code path so they can't diverge on how a task's note gets refreshed.
+    """
+    project_slug = await _resolve_project_slug(project_service, task)
+    narrative = writer.existing_narrative(project_slug, str(task.id))
+    data = await assemble_task_note_data(
+        task_service, project_service, task, narrative=narrative
+    )
+    return writer.write_task(data)

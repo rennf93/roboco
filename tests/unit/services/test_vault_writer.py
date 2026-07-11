@@ -13,9 +13,13 @@ import yaml
 from roboco.services.vault_writer import (
     A2AMessageData,
     AgentNoteData,
+    BottleneckRow,
     JournalNoteData,
+    OrgReportData,
+    StageTimingRow,
     TaskLinkRef,
     TaskNoteData,
+    TeamReworkRow,
     VaultWriter,
 )
 
@@ -233,3 +237,128 @@ def test_existing_narrative_preserved_when_curated(tmp_path: Path) -> None:
         writer.existing_narrative("roboco-api", "11112222-3333-4444-5555-666677778888")
         == "Shipped cleanly, one rework cycle."
     )
+
+
+# --- archive-awareness ------------------------------------------------------ #
+
+_ARCHIVE_YEAR = 2025
+
+
+def test_write_task_archived_lands_in_archive_year_dir(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    path = writer.write_task(_task_data(status="completed", archive_year=_ARCHIVE_YEAR))
+    assert path == (
+        tmp_path
+        / "RoboCo"
+        / "Archive"
+        / str(_ARCHIVE_YEAR)
+        / "Tasks"
+        / "roboco-api"
+        / "Add user authentication endpoint (11112222).md"
+    )
+
+
+def test_write_task_archival_moves_live_note_without_duplicate(
+    tmp_path: Path,
+) -> None:
+    writer = VaultWriter(tmp_path)
+    live = writer.write_task(_task_data())
+    archived = writer.write_task(
+        _task_data(status="completed", archive_year=_ARCHIVE_YEAR)
+    )
+    assert not live.exists()
+    assert archived.exists()
+    assert len(list(tmp_path.rglob("*(11112222).md"))) == 1
+
+
+def test_find_task_note_locates_archived_note(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    path = writer.write_task(_task_data(status="completed", archive_year=_ARCHIVE_YEAR))
+    assert writer.find_task_note("11112222-3333-4444-5555-666677778888") == path
+
+
+def test_existing_narrative_survives_archival(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    writer.write_task(_task_data(narrative="Curated before archival."))
+    writer.write_task(
+        _task_data(
+            status="completed",
+            archive_year=_ARCHIVE_YEAR,
+            narrative="Curated before archival.",
+        )
+    )
+    assert (
+        writer.existing_narrative("roboco-api", "11112222-3333-4444-5555-666677778888")
+        == "Curated before archival."
+    )
+
+
+def test_touch_task_frontmatter_reaches_archived_note(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    path = writer.write_task(_task_data(status="completed", archive_year=_ARCHIVE_YEAR))
+    touched = writer.touch_task_frontmatter(
+        task_id="11112222-3333-4444-5555-666677778888",
+        status="cancelled",
+        team="backend",
+        pr_number=None,
+        pr_url=None,
+    )
+    assert touched is True
+    assert "status: cancelled" in path.read_text(encoding="utf-8")
+
+
+# --- weekly org-report ------------------------------------------------------- #
+
+
+def _report_data() -> OrgReportData:
+    return OrgReportData(
+        week="2026-W28",
+        tasks_completed=5,
+        tasks_created=8,
+        completion_rate=0.625,
+        avg_cycle_hours=12.5,
+        rework_rate=0.2,
+        rework_cost_usd=1.23,
+        total_cost_usd=42.5,
+        total_tokens=123456,
+        stages=(StageTimingRow("in_progress", 3600.0, 4),),
+        bottlenecks=(BottleneckRow("awaiting_qa", 7200.0, 0.5),),
+        by_team_rework=(TeamReworkRow("backend", 0.1),),
+    )
+
+
+def test_write_org_report_layout_and_frontmatter(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    path = writer.write_org_report(_report_data())
+    assert path == tmp_path / "RoboCo" / "Reports" / "2026-W28.md"
+    text = path.read_text(encoding="utf-8")
+    fm, _, body = text.removeprefix("---\n").partition("\n---\n")
+    frontmatter = yaml.safe_load(fm)
+    assert frontmatter == {
+        "week": "2026-W28",
+        "tasks_completed": 5,
+        "tasks_created": 8,
+        "completion_rate": 0.625,
+        "avg_cycle_hours": 12.5,
+        "rework_rate": 0.2,
+        "rework_cost_usd": 1.23,
+        "total_cost_usd": 42.5,
+        "total_tokens": 123456,
+    }
+    assert "## Velocity" in body
+    assert "## Cycle time by stage" in body
+    assert "| in_progress | 1.0 | 4 |" in body
+    assert "## Top bottlenecks" in body
+    assert "| awaiting_qa | 50% |" in body
+    assert "## Rework" in body
+    assert "| backend | 10% |" in body
+    assert "## Cost" in body
+    assert "$42.50" in body
+
+
+def test_write_org_report_same_week_overwrites(tmp_path: Path) -> None:
+    writer = VaultWriter(tmp_path)
+    p1 = writer.write_org_report(_report_data())
+    p2 = writer.write_org_report(_report_data())
+    assert p1 == p2
+    assert len(list((tmp_path / "RoboCo" / "Reports").glob("*.md"))) == 1

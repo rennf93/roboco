@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   Lightbulb,
   ScrollText,
+  StickyNote,
 } from "lucide-react";
 
 const indexTypeConfig: Record<
@@ -54,6 +55,10 @@ const indexTypeConfig: Record<
   [KBIndexType.PLAYBOOKS]: {
     label: "Playbooks",
     icon: <ScrollText className="h-4 w-4 text-emerald-500" />,
+  },
+  [KBIndexType.VAULT_NOTES]: {
+    label: "Vault Notes",
+    icon: <StickyNote className="h-4 w-4 text-violet-500" />,
   },
 };
 

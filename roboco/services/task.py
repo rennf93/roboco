@@ -907,6 +907,34 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    async def _materialize_vault_note(self, task: TaskTable) -> None:
+        """Best-effort Obsidian-vault materialize-on-create (event seam).
+
+        Deterministic template only — the ``## Narrative`` section stays
+        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
+        swallow-and-log posture: a vault failure never blocks task creation,
+        and boards stop showing only curated/rebuilt tasks.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.project import get_project_service
+            from roboco.services.vault_assembly import assemble_task_note_data
+            from roboco.services.vault_writer import get_vault_writer
+
+            data = await assemble_task_note_data(
+                self, get_project_service(self.session), task
+            )
+            get_vault_writer().write_task(data)
+        except Exception as e:
+            self.log.warning(
+                "Vault materialize-on-create failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
     def _emit_escalation_audit(
         self, task: TaskTable, *, escalator_slug: str, target_slug: str
     ) -> None:
@@ -1173,6 +1201,7 @@ class TaskService(BaseService):
         # bypass this; they are TODO-listed at the call sites.
 
         await self._attach_baseline_constraints(task)
+        await self._materialize_vault_note(task)
         return task
 
     async def _attach_baseline_constraints(self, task: TaskTable) -> None:
@@ -7066,6 +7095,74 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at.desc())
             .limit(limit)
             .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_updated_since(
+        self,
+        since: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Tasks touched since ``since`` — the vault janitor's changed-task
+        re-projection set. Falls back to ``created_at`` since ``updated_at``
+        has no default and stays NULL on a row that's never been updated
+        (so a freshly-created, never-touched task is still caught).
+        Ascending touched-order: the janitor's capped drain advances its
+        resume marker to the last processed stamp, so oldest-first is the
+        resume contract."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at >= since)
+            .order_by(touched_at, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_archive_candidates(
+        self,
+        after: datetime,
+        before: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Terminal tasks whose terminal timestamp (``completed_at``, else
+        ``updated_at``, else ``created_at``) falls in ``[after, before)`` —
+        the vault janitor's archival-pass candidate window. Bounded by a
+        watermark (``after``) so a daily sweep never re-scans the whole
+        historical archive, only what just crossed the cutoff. Ascending
+        terminal-order: the janitor's capped drain advances the watermark to
+        the last processed stamp, so oldest-first is the resume contract."""
+        terminal_ts = func.coalesce(
+            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
+        )
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status.in_(_TERMINAL_STATES),
+                terminal_ts >= after,
+                terminal_ts < before,
+            )
+            .order_by(terminal_ts, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def sample_stale_tasks(
+        self, before: datetime, limit: int = 20
+    ) -> list[TaskTable]:
+        """Random sample of tasks last touched before ``before`` — the vault
+        janitor's drift-verification sample (excludes tasks the same sweep's
+        changed-since pass already re-projected)."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at < before)
+            .order_by(func.random())
+            .limit(limit)
         )
         return list(result.scalars().all())
 

@@ -7,6 +7,8 @@ underlying verb; the flag off must short-circuit before any writer call;
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -16,6 +18,12 @@ from roboco.models.base import JournalEntryType
 from roboco.services.a2a import A2AService
 from roboco.services.journal import JournalService
 from roboco.services.task import TaskService
+from roboco.services.vault_writer import VaultWriter
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from roboco.db.tables import TaskTable
 
 
 def _entry_row(*, is_private: bool = False, task_id: object | None = None) -> MagicMock:
@@ -185,3 +193,82 @@ def test_task_transition_seam_touches_status_team_pr(
         pr_number=7,
         pr_url="https://github.com/x/y/pull/7",
     )
+
+
+# --- materialize-on-create seam ---------------------------------------------- #
+
+
+def _fresh_task_stub() -> TaskTable:
+    stub = SimpleNamespace(
+        id=uuid4(),
+        title="Fresh task",
+        description="Just created.",
+        status="pending",
+        team="backend",
+        priority=2,
+        task_type="code",
+        acceptance_criteria=[],
+        pr_number=None,
+        pr_url=None,
+        project_id=None,
+        parent_task_id=None,
+        dependency_ids=None,
+        batch_id=None,
+        completed_at=None,
+        updated_at=None,
+        created_at=datetime.now(UTC),
+    )
+    return cast("TaskTable", stub)
+
+
+def _create_seam_service() -> TaskService:
+    svc = TaskService.__new__(TaskService)
+    svc.log = MagicMock()
+    svc.session = MagicMock()
+    object.__setattr__(svc, "get", AsyncMock(return_value=None))
+    object.__setattr__(svc, "get_subtasks", AsyncMock(return_value=[]))
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_create_seam_noop_when_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", False)
+    svc = _create_seam_service()
+    with patch("roboco.services.vault_writer.get_vault_writer") as get_writer:
+        await svc._materialize_vault_note(_fresh_task_stub())
+    get_writer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_seam_writer_failure_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
+    svc = _create_seam_service()
+    writer = MagicMock()
+    writer.write_task.side_effect = OSError("disk full")
+    with patch("roboco.services.vault_writer.get_vault_writer", return_value=writer):
+        await svc._materialize_vault_note(_fresh_task_stub())
+    writer.write_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_create_seam_materializes_note_in_tmp_vault(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
+    svc = _create_seam_service()
+    task = _fresh_task_stub()
+    with patch(
+        "roboco.services.vault_writer.get_vault_writer",
+        return_value=VaultWriter(tmp_path),
+    ):
+        await svc._materialize_vault_note(task)
+    note = VaultWriter(tmp_path).find_task_note(str(task.id))
+    assert note is not None
+    text = note.read_text(encoding="utf-8")
+    assert "status: pending" in text
+    # Narrative stays Auditor-owned: only the placeholder is rendered.
+    assert "_Pending Auditor curation._" in text

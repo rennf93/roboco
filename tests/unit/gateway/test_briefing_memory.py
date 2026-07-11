@@ -64,6 +64,40 @@ async def test_similar_memory_applies_floor_and_shapes(
 
 
 @pytest.mark.asyncio
+async def test_similar_memory_labels_vault_notes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimal = MagicMock()
+    optimal.search = AsyncMock(return_value=[_result(_HIGH, IndexType.VAULT_NOTES)])
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=optimal),
+    )
+    out = await EvidenceRepo(MagicMock()).similar_memory(
+        query="q", top_k=3, min_score=_FLOOR
+    )
+    assert out["status"] == "ok"
+    assert out["items"][0]["kind"] == "vault_note"
+
+
+@pytest.mark.asyncio
+async def test_similar_memory_queries_vault_notes_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claim-time briefing must reach the CEO's own vault notes, not just
+    learnings/playbooks — the relevance floor is the only gate against bloat."""
+    optimal = MagicMock()
+    optimal.search = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=optimal),
+    )
+    await EvidenceRepo(MagicMock()).similar_memory(query="q", top_k=3, min_score=_FLOOR)
+    _, kwargs = optimal.search.call_args
+    assert IndexType.VAULT_NOTES in kwargs["context"].index_types
+
+
+@pytest.mark.asyncio
 async def test_similar_memory_caps_at_top_k(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

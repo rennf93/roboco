@@ -1,0 +1,16 @@
+filters: file.inFolder("RoboCo/Reports")
+
+views:
+  - type: table
+    name: "Reports"
+    order:
+      - file.name
+      - week
+      - tasks_completed
+      - tasks_created
+      - completion_rate
+      - avg_cycle_hours
+      - rework_rate
+      - rework_cost_usd
+      - total_cost_usd
+      - total_tokens

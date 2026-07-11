@@ -5,7 +5,9 @@ entries, A2A threads) from the DB into the vault, plus materializing the
 shipped ``.obsidian/`` config + ``RoboCo/_meta/`` dashboards from packaged
 templates (``roboco/vault_assets/``) if not already present. A task's
 ``## Narrative`` (Auditor-authored, not derivable from DB state) is read back
-from the existing note and preserved across the rebuild.
+from the existing note and preserved across the rebuild. Archive-aware: an
+old terminal task projects straight into ``RoboCo/Archive/<year>/`` (same
+``VaultWriter.write_task`` path the drift janitor's archival pass uses).
 
 ``relocate <new-path>``: move the vault tree to a new location. Notes use
 relative/alias-based wikilinks, so nothing inside them needs rewriting. An
@@ -70,7 +72,7 @@ async def _rebuild_agents(writer: Any, agent_service: Any) -> list[Any]:
 
 
 async def _rebuild_tasks(writer: Any, task_service: Any, project_service: Any) -> None:
-    from roboco.services.vault_assembly import assemble_task_note_data
+    from roboco.services.vault_assembly import reproject_task
 
     offset = 0
     while True:
@@ -78,16 +80,7 @@ async def _rebuild_tasks(writer: Any, task_service: Any, project_service: Any) -
         if not tasks:
             break
         for task in tasks:
-            project_slug = "unassigned"
-            if task.project_id is not None:
-                project = await project_service.get(task.project_id)
-                if project is not None:
-                    project_slug = project.slug
-            narrative = writer.existing_narrative(project_slug, str(task.id))
-            data = await assemble_task_note_data(
-                task_service, project_service, task, narrative=narrative
-            )
-            writer.write_task(data)
+            await reproject_task(writer, task_service, project_service, task)
         offset += len(tasks)
 
 

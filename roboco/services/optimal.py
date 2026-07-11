@@ -42,6 +42,7 @@ from roboco.services.optimal_brain.indexes import (
     PlaybooksIndexPlugin,
     ReviewsIndexPlugin,
     StandardsIndexPlugin,
+    VaultNotesIndexPlugin,
 )
 from roboco.services.optimal_brain.indexes.base import IngestResult
 from roboco.services.optimal_brain.indexes.learnings import (
@@ -143,6 +144,7 @@ PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
     IndexType.REVIEWS: ReviewsIndexPlugin,
     IndexType.LEARNINGS: LearningsIndexPlugin,
     IndexType.PLAYBOOKS: PlaybooksIndexPlugin,
+    IndexType.VAULT_NOTES: VaultNotesIndexPlugin,
 }
 
 
@@ -882,6 +884,77 @@ class OptimalService:
             logger.warning(
                 "Playbook de-index (tracking row) failed; continuing",
                 playbook_id=playbook_id,
+                error=str(exc),
+            )
+
+    async def index_vault_note(
+        self, *, path: str, title: str, content: str, content_hash: str
+    ) -> IngestResult:
+        """Index a human-authored vault note into the VAULT_NOTES index
+        (best-effort).
+
+        Mirrors :meth:`index_playbook`: only stamps the tracking row on a
+        successful embed, so a mid-ingest Ollama hiccup doesn't leave a stale
+        tracking row pointing at chunks that were never written.
+        """
+        plugin = self._get_plugin(IndexType.VAULT_NOTES)
+        if isinstance(plugin, VaultNotesIndexPlugin):
+            result = await plugin.index_note(
+                path=path, title=title, content=content, content_hash=content_hash
+            )
+        else:
+            result = await plugin.ingest(content=content, doc_id=path, path=path)
+        if not result.success:
+            logger.warning(
+                "Vault note indexing failed; skipping tracking row",
+                path=path,
+                error=result.error,
+            )
+            return result
+        await self._track_indexed_document(
+            IndexType.VAULT_NOTES,
+            source=f"vault://{path}",
+            title=title,
+            preview=content[:500],
+            metadata={"path": path, "content_hash": content_hash},
+        )
+        return result
+
+    async def unindex_vault_note(self, path: str) -> None:
+        """De-index a deleted/moved/quarantined vault note (best-effort).
+
+        The mirror of :meth:`index_vault_note`: removes the note's embedded
+        chunks from the vector store AND drops its tracking row so it stops
+        surfacing in agent retrieval. Idempotent — a never-indexed note is a
+        clean no-op. Failures are logged and swallowed so a KB-ingest cycle
+        never errors on the de-index side.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        source = f"vault://{path}"
+        try:
+            plugin = self._get_plugin(IndexType.VAULT_NOTES)
+            if isinstance(plugin, VaultNotesIndexPlugin):
+                await plugin.delete_note(path)
+            else:
+                await plugin._require_store.delete_by_source(source)
+        except Exception as exc:
+            logger.warning(
+                "Vault note de-index (vector store) failed; continuing",
+                path=path,
+                error=str(exc),
+            )
+            return
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                await repo.delete_by_source(IndexType.VAULT_NOTES.value, source)
+        except Exception as exc:
+            logger.warning(
+                "Vault note de-index (tracking row) failed; continuing",
+                path=path,
                 error=str(exc),
             )
 

@@ -92,6 +92,9 @@ The PR-gate turn cut (when every child of an assembled parent is terminal, `_try
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | The board roadmap engine: weekly Product-Owner-authored cycle, CEO approves each item individually into BACKLOG. See "Board Roadmap Engine" below. |
 | `ROBOCO_OBSIDIAN_VAULT_ENABLED` | `false` (both compose files set `true`) | The Obsidian vault projection: tasks/journals/A2A become wikilinked markdown, rebuildable from the DB. See `docs/rag/architecture/obsidian-vault.md`. |
 | `ROBOCO_VAULT_INTAKE_ENABLED` | `false` (both compose files set `true`) | The vault's `#roboco`-tag inbox watcher — requires `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. See `docs/rag/architecture/obsidian-vault.md`. |
+| `ROBOCO_VAULT_ARCHIVE_DAYS` | `30` (`0` disables) | Age (past its terminal timestamp) a completed/cancelled task's note must reach before the vault janitor moves it to `RoboCo/Archive/<year>/`. |
+| `ROBOCO_VAULT_REPORT_ENABLED` | `true` | The vault janitor's weekly `RoboCo/Reports/<ISO-week>.md` org-report note + CEO notification (deterministic, no LLM). Needs `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. |
+| `ROBOCO_VAULT_KB_ENABLED` | `false` (NAS compose sets `true`; registry compose leaves `false`) | Master switch for vault KB ingest: embeds `ROBOCO_VAULT_KB_DIRS` note folders (default `RoboCo/Notes`) into `IndexType.VAULT_NOTES`, screened for injection attempts before indexing. Requires `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. `ROBOCO_VAULT_KB_DIRS` (CSV, default `RoboCo/Notes`) and `ROBOCO_VAULT_KB_INTERVAL_SECONDS` (default `900`) tune scope and cadence. See `docs/rag/architecture/obsidian-vault.md`. |
 
 The company-in-a-box subsystems toggle the same way: web research (`ROBOCO_RESEARCH_ENABLED`, default **on** — see "Web Research" below), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`, default off), and pitch provisioning (`ROBOCO_PROVISIONING_ENABLED`, default on but inert without a token/org configured).
 

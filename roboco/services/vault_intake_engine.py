@@ -31,7 +31,6 @@ the held-artifact pattern:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -40,7 +39,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
-import yaml
 from sqlalchemy import select
 
 from roboco.config import settings
@@ -48,6 +46,8 @@ from roboco.db.tables import VaultSeenNoteTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.injection_guard import screen_external_text
+from roboco.foundation.policy.vault_notes import content_hash as _content_hash
+from roboco.foundation.policy.vault_notes import split_frontmatter as _split_frontmatter
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.project import get_project_service
@@ -66,27 +66,10 @@ _AC_MAX_ITEM_CHARS = 200
 _TITLE_MAX_CHARS = 200
 _DEFAULT_AC = "CEO reviews and starts this drafted task"
 
-# Frontmatter block at the start of the file (mirrors vault_writer's own
-# helper — a local copy, since inbox notes are arbitrary CEO-authored
-# markdown, a different trust/shape boundary than the projection core's own
-# generated notes).
-_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 # A whole `#roboco` tag, not a prefix of a longer tag (`#roboco/idea`) or word.
 _INLINE_TAG_RE = re.compile(r"(?<![\w/-])#roboco(?![\w/-])")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _CHECKBOX_RE = re.compile(r"^\s*-\s*\[ \]\s*(.+?)\s*$", re.MULTILINE)
-# The feedback callout this engine appends (see _append_feedback_callout).
-# Stripped before hashing so appending it doesn't change the ledger key.
-_FEEDBACK_CALLOUT_RE = re.compile(r"\n?> \[!info\] RoboCo: drafted .*(?:\n|$)")
-
-
-def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Frontmatter dict + body, or ({}, text) with no frontmatter block."""
-    m = _FRONTMATTER_RE.match(text)
-    if not m:
-        return {}, text
-    loaded = yaml.safe_load(m.group(1))
-    return (loaded if isinstance(loaded, dict) else {}), text[m.end() :]
 
 
 def _has_roboco_tag(frontmatter: dict[str, Any], body: str) -> bool:
@@ -100,12 +83,6 @@ def _has_roboco_tag(frontmatter: dict[str, Any], body: str) -> bool:
     ):
         return True
     return bool(_INLINE_TAG_RE.search(body))
-
-
-def _content_hash(raw_text: str) -> str:
-    """Sha256 of the note with RoboCo's own feedback callout stripped out."""
-    stable = _FEEDBACK_CALLOUT_RE.sub("", raw_text)
-    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
 
 
 def _clamp_action_items(items: list[str]) -> list[str]:

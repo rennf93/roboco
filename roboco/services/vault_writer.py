@@ -1,4 +1,4 @@
-"""VaultWriter — pure Obsidian-vault materializer (projection core, V1).
+"""VaultWriter — pure Obsidian-vault materializer (projection core, V1+V2).
 
 Entity -> markdown note (frontmatter + body). Idempotent per entity id: the
 same input always yields the same file, and safe to re-run (rebuild/CLI,
@@ -9,9 +9,11 @@ Layout (``docs/internal/specs/2026-07-09-obsidian-vault.md`` §Vault layout)::
 
     RoboCo/
       Tasks/<project-slug>/<title> (<id8>).md
+      Archive/<year>/Tasks/<project-slug>/<title> (<id8>).md
       Journals/<agent-slug>/<date> <title> (<id8>).md
       A2A/<date> <agents> (<thread-id8>).md
       Agents/<slug>.md
+      Reports/<ISO-week>.md
       _meta/
 
 Link stability: every note carries ``aliases: [<id8>]`` in frontmatter, so a
@@ -104,7 +106,10 @@ def _wikilink(ref: TaskLinkRef) -> str:
 @dataclass(frozen=True)
 class TaskNoteData:
     """Deterministic content for one task note. ``narrative`` is None until
-    the Auditor curates it (a placeholder is rendered instead)."""
+    the Auditor curates it (a placeholder is rendered instead). ``archive_year``
+    is set (by the shared assembler) when the task is terminal and past
+    ``vault_archive_days`` — routes ``write_task`` to ``Archive/<year>/``
+    instead of ``Tasks/``; None keeps it live."""
 
     id: str
     title: str
@@ -122,6 +127,7 @@ class TaskNoteData:
     dependencies: tuple[TaskLinkRef, ...] = ()
     batch_id: str | None = None
     narrative: str | None = None
+    archive_year: int | None = None
 
 
 def _task_frontmatter(data: TaskNoteData, id8: str) -> dict[str, Any]:
@@ -184,6 +190,92 @@ class AgentNoteData:
     team: str | None = None
 
 
+@dataclass(frozen=True)
+class StageTimingRow:
+    status: str
+    avg_seconds: float
+    sample_size: int
+
+
+@dataclass(frozen=True)
+class BottleneckRow:
+    status: str
+    cumulative_seconds: float
+    pct_of_total: float
+
+
+@dataclass(frozen=True)
+class TeamReworkRow:
+    team: str
+    rate: float
+
+
+@dataclass(frozen=True)
+class OrgReportData:
+    """Plain values for one weekly org-report note. The janitor assembles
+    this from ``MetricsService``/``UsageService`` dataclasses — kept plain
+    here so ``VaultWriter`` stays DB-free."""
+
+    week: str  # ISO week, e.g. "2026-W28"
+    tasks_completed: int
+    tasks_created: int
+    completion_rate: float
+    avg_cycle_hours: float | None
+    rework_rate: float
+    rework_cost_usd: float
+    total_cost_usd: float
+    total_tokens: int
+    stages: tuple[StageTimingRow, ...] = ()
+    bottlenecks: tuple[BottleneckRow, ...] = ()
+    by_team_rework: tuple[TeamReworkRow, ...] = ()
+
+
+def _org_report_body(data: OrgReportData) -> list[str]:
+    cycle = (
+        f"{data.avg_cycle_hours:.1f}h" if data.avg_cycle_hours is not None else "n/a"
+    )
+    body = [
+        f"# Org report — {data.week}",
+        "",
+        "## Velocity",
+        f"- Tasks completed: {data.tasks_completed}",
+        f"- Tasks created: {data.tasks_created}",
+        f"- Completion rate: {data.completion_rate:.0%}",
+        f"- Avg cycle time: {cycle}",
+    ]
+    if data.stages:
+        body += [
+            "",
+            "## Cycle time by stage",
+            "",
+            "| Stage | Avg (h) | Samples |",
+            "|---|---|---|",
+        ]
+        body += [
+            f"| {s.status} | {s.avg_seconds / 3600:.1f} | {s.sample_size} |"
+            for s in data.stages
+        ]
+    if data.bottlenecks:
+        body += ["", "## Top bottlenecks", "", "| Stage | % of dwell |", "|---|---|"]
+        body += [f"| {b.status} | {b.pct_of_total:.0%} |" for b in data.bottlenecks[:3]]
+    body += [
+        "",
+        "## Rework",
+        f"- Rate: {data.rework_rate:.0%}",
+        f"- Cost: ${data.rework_cost_usd:.2f}",
+    ]
+    if data.by_team_rework:
+        body += ["", "| Team | Rate |", "|---|---|"]
+        body += [f"| {t.team} | {t.rate:.0%} |" for t in data.by_team_rework]
+    body += [
+        "",
+        "## Cost",
+        f"- Total: ${data.total_cost_usd:.2f}",
+        f"- Tokens: {data.total_tokens:,}",
+    ]
+    return body
+
+
 class VaultWriter:
     """Pure file-system materializer, rooted at ``root`` (``ROBOCO_VAULT_PATH``)."""
 
@@ -194,6 +286,12 @@ class VaultWriter:
 
     def _tasks_root(self) -> Path:
         return self.root / "RoboCo" / "Tasks"
+
+    def _archive_root(self) -> Path:
+        return self.root / "RoboCo" / "Archive"
+
+    def _reports_root(self) -> Path:
+        return self.root / "RoboCo" / "Reports"
 
     def _journals_root(self) -> Path:
         return self.root / "RoboCo" / "Journals"
@@ -206,15 +304,46 @@ class VaultWriter:
 
     # --- tasks ------------------------------------------------------------ #
 
+    def _task_directory(self, data: TaskNoteData) -> Path:
+        project = data.project_slug or "unassigned"
+        if data.archive_year is not None:
+            return self._archive_root() / str(data.archive_year) / "Tasks" / project
+        return self._tasks_root() / project
+
+    def find_task_note(self, task_id: str) -> Path | None:
+        """Locate a task's note wherever it lives (``Tasks/`` or
+        ``Archive/<year>/Tasks/``), or None if never materialized. Stable
+        across an archival move — the search is id8-keyed, not path-keyed.
+        Public: also used by the drift janitor's sample-verification pass."""
+        id8 = _id8(task_id)
+        return _rfind_by_id8(self._tasks_root(), id8) or _rfind_by_id8(
+            self._archive_root(), id8
+        )
+
+    def task_note_status(self, note_path: Path) -> str | None:
+        """Frontmatter ``status`` of an already-located note (janitor drift check)."""
+        fm, _ = _split_frontmatter(note_path.read_text(encoding="utf-8"))
+        value = fm.get("status")
+        return str(value) if value is not None else None
+
     def write_task(self, data: TaskNoteData) -> Path:
         """Full deterministic materialize (create-or-overwrite). The
         filename is stable across title renames — an existing note is found
         by id8 and its filename reused; only a brand-new note is named from
-        the current title."""
+        the current title.
+
+        Archive-aware: the target directory follows ``data.archive_year``. An
+        existing note is looked up in the target directory first (the common
+        no-op case), falling back to a full ``Tasks/``+``Archive/`` scan — if
+        that finds it somewhere else (an archival move, or data now disagrees
+        with where the note currently sits), the stale copy is removed after
+        the new one is written. This is the one place both the janitor's
+        archival pass and ``rebuild`` route through, so they can't drift.
+        """
         id8 = _id8(data.id)
-        directory = self._tasks_root() / (data.project_slug or "unassigned")
+        directory = self._task_directory(data)
         directory.mkdir(parents=True, exist_ok=True)
-        existing = _find_by_id8(directory, id8)
+        existing = _find_by_id8(directory, id8) or self.find_task_note(data.id)
         filename = (
             existing.name if existing else f"{_safe_title(data.title)} ({id8}).md"
         )
@@ -223,15 +352,20 @@ class VaultWriter:
             _render_note(_task_frontmatter(data, id8), "\n".join(_task_body(data))),
             encoding="utf-8",
         )
+        if existing is not None and existing != path:
+            existing.unlink()
         return path
 
     def existing_narrative(self, project_slug: str, task_id: str) -> str | None:
         """Read back an existing note's ``## Narrative`` section so a rebuild
         never clobbers Auditor-authored prose (it isn't derivable from DB
         state). None when the note doesn't exist yet or still carries the
-        deterministic placeholder."""
-        directory = self._tasks_root() / (project_slug or "unassigned")
-        existing = _find_by_id8(directory, _id8(task_id))
+        deterministic placeholder. Checks the live ``project_slug`` location
+        first, falling back to a full scan (the note may already be archived)."""
+        id8 = _id8(task_id)
+        existing = _find_by_id8(
+            self._tasks_root() / (project_slug or "unassigned"), id8
+        ) or self.find_task_note(task_id)
         if existing is None:
             return None
         _, body = _split_frontmatter(existing.read_text(encoding="utf-8"))
@@ -257,8 +391,7 @@ class VaultWriter:
         materialization happens at Auditor curation / CLI rebuild, per the
         vault's event-driven freshness model, so this never invents content
         it doesn't have (no extra queries — just the fields on the row)."""
-        id8 = _id8(task_id)
-        path = _rfind_by_id8(self._tasks_root(), id8)
+        path = self.find_task_note(task_id)
         if path is None:
             return False
         fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
@@ -358,6 +491,37 @@ class VaultWriter:
         frontmatter = {"role": data.role, "team": data.team}
         body = f"# {data.name}\n\nRole: {data.role}\nTeam: {data.team or '(none)'}\n"
         path.write_text(_render_note(frontmatter, body), encoding="utf-8")
+        return path
+
+    # --- reports -------------------------------------------------------------- #
+
+    def write_org_report(self, data: OrgReportData) -> Path:
+        """Deterministic weekly org-report note — one file per ISO week
+        (re-running the same week overwrites it in place, no duplicates).
+        Numbers live in frontmatter too so Dataview can chart week-over-week
+        trends."""
+        directory = self._reports_root()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{data.week}.md"
+        frontmatter = {
+            "week": data.week,
+            "tasks_completed": data.tasks_completed,
+            "tasks_created": data.tasks_created,
+            "completion_rate": round(data.completion_rate, 4),
+            "avg_cycle_hours": (
+                round(data.avg_cycle_hours, 2)
+                if data.avg_cycle_hours is not None
+                else None
+            ),
+            "rework_rate": round(data.rework_rate, 4),
+            "rework_cost_usd": round(data.rework_cost_usd, 2),
+            "total_cost_usd": round(data.total_cost_usd, 2),
+            "total_tokens": data.total_tokens,
+        }
+        path.write_text(
+            _render_note(frontmatter, "\n".join(_org_report_body(data))),
+            encoding="utf-8",
+        )
         return path
 
 
