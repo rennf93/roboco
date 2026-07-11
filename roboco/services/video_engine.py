@@ -149,23 +149,38 @@ class VideoEngine(BaseService):
     service_name = "video_engine"
 
     async def _roboco_project(self) -> ProjectTable | None:
+        """The fixed RoboCo project the release/spotlight hooks author
+        against (``self_heal_project_slug``). The on-demand caller instead
+        supplies its own ``project_id`` — see ``resolve_authoring_project``."""
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         return await get_project_service(self.session).get_by_slug(slug)
 
-    async def _opted_in_project(self, occasion: str) -> ProjectTable | None:
-        """The RoboCo project if resolvable AND opted into video, else None.
+    async def resolve_authoring_project(
+        self, *, project_id: UUID | None, occasion: str
+    ) -> ProjectTable | None:
+        """The project to author this video against, or None when
+        unresolvable or not opted into the video engine.
 
-        Two skip reasons, both logged: unresolvable project (warning — a
-        config gap) vs. project not opted in (info — the operator hasn't
-        flipped the per-project ``video_engine_enabled`` toggle). The global
-        flag arms the subsystem; the project's flag opts this repo into
-        authoring against its ``motion/`` dir (mirrors ``ci_watch_enabled``).
+        ``project_id`` (the on-demand ``/video/request`` caller, and the
+        render loop's own per-task resolution) resolves by id; omitted (the
+        release/spotlight hooks), it falls back to the fixed RoboCo project.
+        Both paths share the same two skip reasons, both logged: unresolvable
+        project (warning — a config/data gap) vs. project not opted in (info
+        — the operator hasn't flipped the per-project ``video_engine_enabled``
+        toggle). The global flag arms the subsystem; the project's flag opts
+        that repo into authoring against its own ``motion/`` dir (mirrors
+        ``ci_watch_enabled``).
         """
-        project = await self._roboco_project()
+        project = (
+            await get_project_service(self.session).get(project_id)
+            if project_id is not None
+            else await self._roboco_project()
+        )
         if project is None or project.id is None:
             self.log.warning(
-                "video-engine: RoboCo project not resolvable; skipping video task",
+                "video-engine: project not resolvable; skipping video task",
                 occasion=occasion,
+                project_id=str(project_id) if project_id else None,
             )
             return None
         if not getattr(project, "video_engine_enabled", False):
@@ -231,16 +246,22 @@ class VideoEngine(BaseService):
         platforms: list[str],
         brief: str,
         suggested_input_props: dict[str, Any] | None = None,
+        project_id: UUID | None = None,
     ) -> TaskTable | None:
         """Originate ONE UX/UI authoring task for a bespoke video, or None.
 
-        No-ops when the global flag is off, the RoboCo project hasn't opted in
-        (``video_engine_enabled``), a task for this occasion is already open
-        (authoring or held draft), the open cap is reached, or the RoboCo
-        project isn't resolvable. The opened task is a normal, ASSIGNED
-        delivery task (``source=VIDEO_SOURCE``, ``confirmed_by_human=True``)
-        — NOT held — so it dispatches straight to the assigned ux-dev like any
-        other pre-assigned code task.
+        No-ops when the global flag is off, the target project hasn't opted
+        in (``video_engine_enabled``), a task for this occasion is already
+        open (authoring or held draft), the open cap is reached, or the
+        target project isn't resolvable. The opened task is a normal,
+        ASSIGNED delivery task (``source=VIDEO_SOURCE``,
+        ``confirmed_by_human=True``) — NOT held — so it dispatches straight to
+        the assigned ux-dev like any other pre-assigned code task.
+
+        ``project_id`` scopes authoring to a specific project (the on-demand
+        ``/video/request`` caller); omitted, the release/spotlight hooks
+        default to the fixed RoboCo project — see
+        ``resolve_authoring_project``.
 
         ``brief`` is enriched (brand-voice + motion design-bar pointer
         appended) before becoming the task description and the marker's
@@ -263,7 +284,9 @@ class VideoEngine(BaseService):
                 occasion=occasion,
             )
             return None
-        project = await self._opted_in_project(occasion)
+        project = await self.resolve_authoring_project(
+            project_id=project_id, occasion=occasion
+        )
         if project is None:
             return None
         from sqlalchemy.exc import SQLAlchemyError
@@ -423,6 +446,39 @@ class VideoEngine(BaseService):
             "video-engine: video post drafted (held for CEO)",
             source_task_id=str(source_task.id),
         )
+        return task
+
+    # ---- re-render (CEO-triggered retry) -----------------------------------
+
+    async def rerender(self, task_id: UUID) -> TaskTable | None:
+        """Clear ``render_status``/``render_attempts``/``render_error`` off a
+        completed video-authoring task's ``video_draft`` marker, so the next
+        render cycle's scan (``render_status`` unset) re-picks it up and
+        re-renders it — e.g. after the CEO fixes something and wants a fresh
+        pass, or wants to retry past a terminal ``failed`` state.
+
+        None (a 404 to the route) when there is no such completed authoring
+        task, or the dev hasn't called ``propose_video`` yet (no
+        ``composition_id`` — nothing to render).
+        """
+        task = await get_task_service(self.session).get(task_id)
+        if (
+            task is None
+            or task.source != VIDEO_SOURCE
+            or task.status != TaskStatus.COMPLETED
+        ):
+            return None
+        draft = markers.get_video_draft(task) or {}
+        if not draft.get("composition_id"):
+            return None
+        cleared = {
+            k: v
+            for k, v in draft.items()
+            if k not in ("render_status", "render_attempts", "render_error")
+        }
+        markers.set_video_draft(task, cleared)
+        await self.session.flush()
+        self.log.info("video-engine: re-render requested", task_id=str(task.id))
         return task
 
 

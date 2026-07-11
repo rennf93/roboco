@@ -260,14 +260,17 @@ async def test_request_video_opens_authoring_task(
 ) -> None:
     await _seed(db_session)
     monkeypatch.setattr(cfg, "video_engine_enabled", True)
-    monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
     monkeypatch.setattr(cfg, "video_max_open_posts", 5)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
     resp = await ceo_client.post(
         "/api/video/request",
         json={
             "occasion": "CEO on-demand: launch teaser",
             "brief": "A short teaser for the new dashboard",
             "platforms": ["x", "tiktok"],
+            "project_id": str(project.id),
         },
     )
     assert resp.status_code == HTTPStatus.OK
@@ -283,6 +286,7 @@ async def test_request_video_opens_authoring_task(
         assert task is not None
         assert task.source == VIDEO_SOURCE
         assert task.status == TaskStatus.PENDING
+        assert task.project_id == project.id
     finally:
         # The route's commit durably persists this task past this test's own
         # rollback teardown — a non-terminal source=video row left behind
@@ -304,7 +308,12 @@ async def test_request_video_disabled_returns_clear_response(
     before = len(await get_task_service(db_session).list_open_video_posts())
     resp = await ceo_client.post(
         "/api/video/request",
-        json={"occasion": "occ-disabled", "brief": "brief", "platforms": ["x"]},
+        json={
+            "occasion": "occ-disabled",
+            "brief": "brief",
+            "platforms": ["x"],
+            "project_id": str(uuid4()),
+        },
     )
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
@@ -315,25 +324,89 @@ async def test_request_video_disabled_returns_clear_response(
 
 
 @pytest.mark.asyncio
-async def test_request_video_not_opened_when_project_unresolvable(
+async def test_request_video_404s_on_unresolvable_project_id(
     db_session: AsyncSession, ceo_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unresolvable project makes open_video_task no-op — a clear
-    ``not_opened`` response, not a 500 or a fabricated task."""
+    """A project_id that doesn't resolve to any project 404s — no fabricated
+    task, no silent not_opened."""
     await _seed(db_session)
     monkeypatch.setattr(cfg, "video_engine_enabled", True)
-    monkeypatch.setattr(cfg, "self_heal_project_slug", "no-such-project")
     before = len(await get_task_service(db_session).list_open_video_posts())
     resp = await ceo_client.post(
         "/api/video/request",
-        json={"occasion": "occ-unresolvable", "brief": "brief", "platforms": ["x"]},
+        json={
+            "occasion": "occ-unresolvable",
+            "brief": "brief",
+            "platforms": ["x"],
+            "project_id": str(uuid4()),
+        },
     )
-    assert resp.status_code == HTTPStatus.OK
-    body = resp.json()
-    assert body["status"] == "not_opened"
-    assert body["task_id"] is None
+    assert resp.status_code == HTTPStatus.NOT_FOUND
     after = len(await get_task_service(db_session).list_open_video_posts())
     assert after == before  # nothing new was opened
+
+
+@pytest.mark.asyncio
+async def test_request_video_404s_on_non_opted_in_project_id(
+    db_session: AsyncSession, ceo_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project that resolves but hasn't flipped video_engine_enabled also
+    404s, distinct from the unresolvable-project case above."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "video_engine_enabled", True)
+    project = ProjectTable(
+        id=uuid4(),
+        name="Not Opted In",
+        slug=f"not-opted-{uuid4().hex[:6]}",
+        git_url="https://example.com/notopted.git",
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        video_engine_enabled=False,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    resp = await ceo_client.post(
+        "/api/video/request",
+        json={
+            "occasion": "occ-not-opted",
+            "brief": "brief",
+            "platforms": ["x"],
+            "project_id": str(project.id),
+        },
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_request_video_not_opened_on_duplicate_occasion(
+    db_session: AsyncSession, ceo_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid, opted-in project_id still no-ops (not a 404) for a duplicate
+    occasion — the open-cap/dedup reasons stay a clear 200 not_opened."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "video_engine_enabled", True)
+    monkeypatch.setattr(cfg, "video_max_open_posts", 5)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    payload = {
+        "occasion": "occ-dupe",
+        "brief": "brief",
+        "platforms": ["x"],
+        "project_id": str(project.id),
+    }
+    first = await ceo_client.post("/api/video/request", json=payload)
+    assert first.status_code == HTTPStatus.OK
+    assert first.json()["status"] == "opened"
+    task_id = first.json()["task_id"]
+    try:
+        second = await ceo_client.post("/api/video/request", json=payload)
+        assert second.status_code == HTTPStatus.OK
+        assert second.json()["status"] == "not_opened"
+        assert second.json()["task_id"] is None
+    finally:
+        await db_session.execute(delete(TaskTable).where(TaskTable.id == UUID(task_id)))
+        await db_session.commit()
 
 
 @pytest.mark.asyncio
@@ -820,7 +893,12 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         request_resp = await client.post(
             "/api/video/request",
-            json={"occasion": "occ", "brief": "brief", "platforms": ["x"]},
+            json={
+                "occasion": "occ",
+                "brief": "brief",
+                "platforms": ["x"],
+                "project_id": str(uuid4()),
+            },
         )
         list_resp = await client.get("/api/video/posts")
         media_resp = await client.get(f"/api/video/posts/{task.id}/media?cut=vertical")
@@ -976,4 +1054,221 @@ async def test_media_falls_back_to_local_file_when_minio_missing(
         assert resp.status_code == HTTPStatus.OK
         assert resp.headers["content-type"] == "video/mp4"
         assert resp.content == b"local-file-bytes"  # FileResponse fallback, not MinIO
+    app.dependency_overrides.clear()
+
+
+# --- re-render (task 3, 2026-07-10) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rerender_clears_state_and_returns_pipeline_item(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={
+            "composition_id": "Intro",
+            "render_status": "failed",
+            "render_attempts": markers.MAX_VIDEO_RENDER_ATTEMPTS,
+            "render_error": "sidecar timeout",
+        },
+    )
+    resp = await ceo_client.post(f"/api/video/pipeline/{task.id}/rerender")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["task_id"] == str(task.id)
+    assert body["render_status"] is None
+    assert body["render_attempts"] == 0
+    assert body["render_error"] is None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "render_status" not in draft
+    assert "render_attempts" not in draft
+    assert "render_error" not in draft
+    assert draft["composition_id"] == "Intro"  # everything else preserved
+
+
+@pytest.mark.asyncio
+async def test_rerender_missing_task_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.post(f"/api/video/pipeline/{uuid4()}/rerender")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_rerender_non_completed_task_is_404(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        draft_extra={"composition_id": "Intro"},
+    )
+    resp = await ceo_client.post(f"/api/video/pipeline/{task.id}/rerender")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_rerender_without_composition_id_is_404(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.COMPLETED)
+    resp = await ceo_client.post(f"/api/video/pipeline/{task.id}/rerender")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_rerender_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.COMPLETED,
+        draft_extra={"composition_id": "Intro"},
+    )
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/video/pipeline/{task.id}/rerender")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+# --- preview proxy (task 3, 2026-07-10) ---------------------------------------
+
+
+def _fake_workspace_service(root: Path) -> object:
+    """A ``get_workspace_service``-shaped stub whose ``ensure_read_clone``
+    returns a fixed local dir — no real git clone touched."""
+
+    class _Svc:
+        async def ensure_read_clone(self, _slug: str, *, force: bool = False) -> Path:
+            _ = force
+            return root
+
+    return _Svc()
+
+
+def test_resolve_preview_path_serves_file_inside_root(tmp_path: Path) -> None:
+    root = (tmp_path / "clone").resolve()
+    (root / "motion" / "compositions" / "Intro").mkdir(parents=True)
+    target = root / "motion" / "compositions" / "Intro" / "vertical.html"
+    target.write_text("<html></html>")
+    resolved = video_module._resolve_preview_path(
+        root, "motion/compositions/Intro/vertical.html"
+    )
+    assert resolved == target.resolve()
+
+
+def test_resolve_preview_path_blocks_dot_dot_traversal(tmp_path: Path) -> None:
+    root = (tmp_path / "clone").resolve()
+    (root / "motion").mkdir(parents=True)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope")
+    assert video_module._resolve_preview_path(root, "../secret.txt") is None
+    assert video_module._resolve_preview_path(root, "motion/../../secret.txt") is None
+
+
+def test_resolve_preview_path_blocks_absolute_path_override(tmp_path: Path) -> None:
+    """A leading '/' in file_path would otherwise let pathlib's ``/``
+    operator discard ``root`` entirely and resolve straight to the absolute
+    path — the ``lstrip("/")`` guard neutralizes that."""
+    root = (tmp_path / "clone").resolve()
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("nope")
+    assert video_module._resolve_preview_path(root, str(outside)) is None
+
+
+def test_resolve_preview_path_missing_file_is_none(tmp_path: Path) -> None:
+    root = (tmp_path / "clone").resolve()
+    root.mkdir()
+    assert video_module._resolve_preview_path(root, "motion/nope.html") is None
+
+
+@pytest.mark.asyncio
+async def test_preview_serves_composition_html_and_sibling_kit_asset(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    comp_dir = tmp_path / "motion" / "compositions" / "Intro"
+    comp_dir.mkdir(parents=True)
+    (comp_dir / "vertical.html").write_text("<html>intro</html>")
+    kit_dir = tmp_path / "motion" / "kit"
+    kit_dir.mkdir(parents=True)
+    (kit_dir / "kit.css").write_text("body{}")
+    monkeypatch.setattr(
+        video_module,
+        "get_workspace_service",
+        lambda _db: _fake_workspace_service(tmp_path),
+    )
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        draft_extra={"composition_id": "Intro"},
+    )
+    resp = await ceo_client.get(
+        f"/api/video/preview/{task.id}/motion/compositions/Intro/vertical.html"
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.text == "<html>intro</html>"
+    assert resp.headers.get("x-frame-options") == "SAMEORIGIN"
+    assert "frame-ancestors" in resp.headers.get("content-security-policy", "")
+
+    kit_resp = await ceo_client.get(f"/api/video/preview/{task.id}/motion/kit/kit.css")
+    assert kit_resp.status_code == HTTPStatus.OK
+    assert kit_resp.text == "body{}"
+
+
+@pytest.mark.asyncio
+async def test_preview_missing_file_is_404(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "motion").mkdir()
+    monkeypatch.setattr(
+        video_module,
+        "get_workspace_service",
+        lambda _db: _fake_workspace_service(tmp_path),
+    )
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        draft_extra={"composition_id": "Intro"},
+    )
+    resp = await ceo_client.get(
+        f"/api/video/preview/{task.id}/motion/compositions/Intro/vertical.html"
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_missing_task_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.get(f"/api/video/preview/{uuid4()}/vertical.html")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_non_video_task_is_404(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_draft(db_session)  # source=video_post, not video
+    resp = await ceo_client.get(f"/api/video/preview/{task.id}/vertical.html")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        draft_extra={"composition_id": "Intro"},
+    )
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/preview/{task.id}/vertical.html")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()
