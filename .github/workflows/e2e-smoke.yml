@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - master
+      # Fleet task branches: `pull_request`'s synchronize trigger doesn't
+      # reliably fire when a revision lands on a PR head via the merge API
+      # (see ci.yml for the live-proven receipts); `push` does.
+      - 'feature/**'
+      - 'bug/**'
+      - 'chore/**'
+      - 'docs/**'
+      - 'hotfix/**'
     paths:
       - 'roboco/**'
       - 'alembic/**'
@@ -24,6 +32,17 @@ on:
       - 'uv.lock'
       - '.github/workflows/e2e-smoke.yml'
   workflow_dispatch:
+
+# A fleet branch that's also an open PR head can get both a `push` and a
+# `pull_request` run for the same commit; cancel the older one instead of
+# burning two runners on identical work. `head_ref` (set only for
+# pull_request) and `ref_name` (the short branch name, valid for push) both
+# resolve to the SAME branch name, so the two event shapes share one group —
+# plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
+# vs `refs/heads/<branch>` for push, so it'd never collapse them).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   e2e-smoke:

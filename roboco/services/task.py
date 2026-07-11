@@ -2750,6 +2750,25 @@ class TaskService(BaseService):
             return True
         return await self._claim_blocked_by_sequence(task) is not None
 
+    async def is_pending_claim_blocked(self, task_id: UUID) -> bool:
+        """Public read-only probe: would a claim on ``task_id`` be refused
+        right now by the dependency/sequence guard?
+
+        Wraps the exact `_claim_blocked_by_sequencing` predicate the claim
+        chokepoint enforces (no duplicated SQL), so dispatch-time filtering
+        can't drift from claim-time enforcement. Meant for a dispatcher to
+        skip a doomed claim attempt on a held later-wave task instead of
+        round-tripping the claim endpoint every tick — the guard queries
+        here are the same cost either way; this just avoids the wasted
+        HTTP claim call and its logging noise. False (not blocked) on a
+        missing task — nothing to hold back, the caller's claim attempt
+        will get its own real error.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return False
+        return await self._claim_blocked_by_sequencing(task)
+
     async def _validate_claim_preconditions(
         self,
         task: TaskTable,
