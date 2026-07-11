@@ -514,6 +514,9 @@ services:
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-true}
+      ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
+      ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
+      ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}
       #   - Board roadmap engine: weekly, opens ONE held exploration task for
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
@@ -603,6 +606,7 @@ services:
       - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
+      - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
       # Generated prompts directory - composed at runtime from layers
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       # Per-agent Claude settings (generated at spawn time)
