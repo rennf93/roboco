@@ -25,8 +25,16 @@ import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
+
+const SETTINGS_LABEL = "Open settings";
 
 export function CommandCenter() {
   const {
@@ -103,11 +111,23 @@ export function CommandCenter() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/settings" prefetch={false}>
-            <Button variant="ghost" size="icon">
-              <Settings className="h-5 w-5" />
-            </Button>
-          </Link>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link href="/settings" prefetch={false}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={SETTINGS_LABEL}
+                    title={SETTINGS_LABEL}
+                  >
+                    <Settings className="h-5 w-5" />
+                  </Button>
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent>{SETTINGS_LABEL}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
