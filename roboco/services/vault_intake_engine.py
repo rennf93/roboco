@@ -17,9 +17,12 @@ the held-artifact pattern:
 * **Local model only.** Extraction runs on the local LLM (MemoryDistiller
   posture) with a deterministic fallback (first heading / raw body /
   checkbox lines) on any failure — never a cloud LLM in the hot path. The
-  raw note body reaches the local model unsanitized — the same documented
-  prompt-injection surface x_engine accepts for mention text; the board +
-  CEO gates downstream are the containment, not the prompt.
+  note body is screened (``foundation.policy.injection_guard.
+  screen_external_text``, the same guard x_engine applies to mention text)
+  before it reaches the prompt or the fallback extraction, so neither the
+  local model nor the eventual board/CEO-facing draft carries raw
+  unscreened text — the board + CEO gates downstream remain the
+  containment for anything the screen doesn't catch.
 * **Dedup ledger.** ``vault_seen_notes`` keys on (vault-relative path,
   content hash) so an unchanged note is never reprocessed, but an edited one
   is eligible again. The hash excludes RoboCo's own feedback callout so
@@ -44,6 +47,7 @@ from roboco.config import settings
 from roboco.db.tables import VaultSeenNoteTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.project import get_project_service
@@ -246,7 +250,14 @@ class VaultIntakeEngine(BaseService):
         content_hash = _content_hash(raw)
         if await self._already_seen(rel_path, content_hash):
             return None
-        extraction = await self._extract(body, note_path.stem)
+        screened = screen_external_text(body, source=f"vault_note:{rel_path}")
+        if screened.flagged:
+            self.log.warning(
+                "vault-intake: injection pattern detected in note body",
+                path=rel_path,
+                hits=screened.hits,
+            )
+        extraction = await self._extract(screened.rendered, note_path.stem)
         extraction = _NoteExtraction(
             extraction.title,
             extraction.description,
@@ -265,9 +276,11 @@ class VaultIntakeEngine(BaseService):
         self._append_feedback_callout(note_path, task)
         return task
 
-    async def _extract(self, body: str, fallback_title: str) -> _NoteExtraction:
+    async def _extract(
+        self, screened_body: str, fallback_title: str
+    ) -> _NoteExtraction:
         try:
-            raw = await _chat(_extraction_prompt(body))
+            raw = await _chat(_extraction_prompt(screened_body))
         except Exception as exc:
             self.log.warning(
                 "vault-intake: local-model extraction failed (fallback)",
@@ -275,7 +288,7 @@ class VaultIntakeEngine(BaseService):
             )
             raw = None
         parsed = _parse_extraction(raw) if raw else None
-        return parsed or _deterministic_extract(body, fallback_title)
+        return parsed or _deterministic_extract(screened_body, fallback_title)
 
     async def _already_seen(self, rel_path: str, content_hash: str) -> bool:
         result = await self.session.execute(
