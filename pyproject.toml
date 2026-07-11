@@ -154,6 +154,11 @@ select = [
 # agent_id, project_ids, route, session_id) — same >5-kwarg rationale as the
 # gateway verb surfaces below.
 "roboco/services/prompter.py" = ["PLR0913"]
+# open_video_task's kwargs (occasion, script, platforms, brief,
+# suggested_input_props, project_id) are the authoring-task contract shared
+# by the release/spotlight/on-demand callers — same "bundling would just
+# relocate the same named fields behind one hop" rationale as prompter.py.
+"roboco/services/video_engine.py" = ["PLR0913"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the

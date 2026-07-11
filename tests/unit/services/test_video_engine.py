@@ -8,8 +8,9 @@ Secretary-owned and held for the CEO. Asserted against a real Postgres DB.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
@@ -305,6 +306,93 @@ async def test_open_video_task_insert_error_returns_none_session_usable(
         select(ProjectTable).where(ProjectTable.slug == SLUG)
     )
     assert check.scalar_one_or_none() is not None
+
+
+# --------------------------------------------------------------------------- #
+# open_video_task(project_id=...) — the on-demand caller's own project scope
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_with_explicit_project_id_ignores_self_heal_slug(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller-supplied project_id resolves independent of
+    self_heal_project_slug — the authoring task lands on THAT project, not
+    the fixed RoboCo one."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    other = ProjectTable(
+        name="Other Repo",
+        slug="other-repo",
+        git_url="https://github.com/x/other.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+        video_engine_enabled=True,
+    )
+    db_session.add(other)
+    await db_session.flush()
+    monkeypatch.setattr(cfg, "self_heal_project_slug", "no-such-slug")
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="on-demand other repo",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        project_id=cast("UUID", other.id),
+    )
+    assert task is not None
+    assert task.project_id == other.id
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_explicit_project_id_not_opted_in_opens_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    other = ProjectTable(
+        name="Not Opted In",
+        slug="not-opted-in",
+        git_url="https://github.com/x/notopted.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+        video_engine_enabled=False,
+    )
+    db_session.add(other)
+    await db_session.flush()
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="on-demand not opted",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        project_id=cast("UUID", other.id),
+    )
+    assert task is None
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_explicit_project_id_unresolvable_opens_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="on-demand missing project",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        project_id=uuid4(),
+    )
+    assert task is None
 
 
 # --------------------------------------------------------------------------- #
@@ -644,5 +732,89 @@ async def test_draft_release_video_dedupes_same_version(
     second = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
     assert first is not None
     assert second is None
+
+
+# --------------------------------------------------------------------------- #
+# rerender — CEO-triggered clear of the render idempotency keys
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_rerender_clears_render_state_keeps_the_rest(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="rerender-me", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(
+        task,
+        {
+            **draft,
+            "composition_id": "Intro",
+            "render_status": "failed",
+            "render_attempts": THREE,
+            "render_error": "sidecar timeout",
+        },
+    )
+    task.status = TS.COMPLETED
+    await db_session.flush()
+
+    result = await engine.rerender(cast("UUID", task.id))
+    assert result is not None
+    cleared = markers.get_video_draft(result)
+    assert cleared is not None
+    assert "render_status" not in cleared
+    assert "render_attempts" not in cleared
+    assert "render_error" not in cleared
+    assert cleared["composition_id"] == "Intro"  # everything else preserved
+
+
+@pytest.mark.asyncio
+async def test_rerender_none_for_non_completed_task(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="not-yet-done", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task) or {}
+    markers.set_video_draft(task, {**draft, "composition_id": "Intro"})
+    await db_session.flush()  # still PENDING, not COMPLETED
+
+    result = await engine.rerender(cast("UUID", task.id))
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_rerender_none_without_composition_id(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="no-composition-yet", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    task.status = TS.COMPLETED
+    await db_session.flush()  # no propose_video call yet -> no composition_id
+
+    result = await engine.rerender(cast("UUID", task.id))
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_rerender_none_for_missing_task(db_session: AsyncSession) -> None:
+    engine = video_engine_module.VideoEngine(db_session)
+    result = await engine.rerender(uuid4())
+    assert result is None
     open_tasks = await get_task_service(db_session).list_open_video_posts()
-    assert len(open_tasks) == ONE
+    assert open_tasks == []

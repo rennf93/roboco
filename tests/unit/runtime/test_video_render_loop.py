@@ -42,6 +42,7 @@ UX_DEV_2_UUID = _foundation.AGENTS["ux-dev-2"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
+FOUR = 4
 
 
 def _orch() -> Any:
@@ -334,6 +335,35 @@ async def test_render_video_task_renders_both_cuts_and_materializes_post(
 
 
 @pytest.mark.asyncio
+async def test_render_video_task_resolves_workspace_from_task_project_not_settings(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The render loop resolves the read-clone from the authoring task's OWN
+    project_id — flipping self_heal_project_slug to a bogus value AFTER the
+    task was authored must not affect the render, proving the loop no longer
+    reads that setting live."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    task = await _make_completed_video_task(
+        db_session, occasion="own-project-not-settings", composition_id="Intro"
+    )
+    monkeypatch.setattr(cfg, "self_heal_project_slug", "no-such-project-anymore")
+
+    renderer = _FakeRenderer()
+    workspace = _fake_workspace()
+    orch = _orch()
+    p1, p2 = _render_patches(renderer, workspace)
+    with p1, p2:
+        await orch._render_video_task(db_session, task)
+
+    # Still resolved via the task's own project_id -> slug "roboco", not the
+    # now-bogus self_heal_project_slug.
+    workspace.ensure_read_clone.assert_awaited_once_with(SLUG)
+    posts = await get_task_service(db_session).list_open_video_posts()
+    assert len(posts) == ONE
+
+
+@pytest.mark.asyncio
 async def test_render_video_task_second_call_is_idempotent(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -354,6 +384,45 @@ async def test_render_video_task_second_call_is_idempotent(
     assert len(renderer.calls) == TWO  # not four — the second call skipped it
     posts = await get_task_service(db_session).list_open_video_posts()
     assert len(posts) == ONE
+
+
+@pytest.mark.asyncio
+async def test_rerender_clears_state_so_next_cycle_re_renders(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CEO re-render flow end to end: a rendered task is a no-op on a second
+    render pass (idempotent); clearing render_status/render_attempts via
+    VideoEngine.rerender makes the NEXT pass pick it up and render it again."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    task = await _make_completed_video_task(
+        db_session, occasion="rerender-cycle", composition_id="Intro"
+    )
+
+    renderer = _FakeRenderer()
+    workspace = _fake_workspace()
+    orch = _orch()
+    p1, p2 = _render_patches(renderer, workspace)
+    with p1, p2:
+        await orch._render_video_task(db_session, task)
+    assert len(renderer.calls) == TWO
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["render_status"] == "rendered"
+
+    rerendered = await VideoEngine(db_session).rerender(task.id)
+    assert rerendered is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "render_status" not in draft
+    assert "render_attempts" not in draft
+
+    with p1, p2:
+        await orch._render_video_task(db_session, task)  # re-picked up
+    assert len(renderer.calls) == FOUR  # rendered a second time, not skipped
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["render_status"] == "rendered"
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -30,7 +30,8 @@ from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
 from roboco.services import minio_client
-from roboco.services.task import VIDEO_POST_SOURCE, get_task_service
+from roboco.services.project import get_project_service
+from roboco.services.task import VIDEO_POST_SOURCE, VIDEO_SOURCE, get_task_service
 from roboco.services.tiktok_client import build_tiktok_poster
 from roboco.services.tiktok_credentials import (
     TikTokCredentialsValidationError,
@@ -41,6 +42,7 @@ from roboco.services.video_post_service import (
     VideoCaptionTooLongError,
     get_video_post_service,
 )
+from roboco.services.workspace import WorkspaceError, get_workspace_service
 from roboco.services.x_credentials import get_x_credentials_service
 from roboco.services.x_video_client import build_x_video_poster
 
@@ -89,11 +91,15 @@ async def request_video(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> VideoRequestResponse:
-    """Open a UX/UI video-authoring task for the CEO's on-demand brief.
+    """Open a UX/UI video-authoring task for the CEO's on-demand brief,
+    scoped to ``data.project_id``.
 
-    Returns ``disabled`` when the video engine is off, and ``not_opened``
-    when ``open_video_task`` no-ops (a duplicate occasion, the open cap, or
-    an unresolvable project) — neither is an error, just nothing to do.
+    Returns ``disabled`` when the video engine is off. 404s when
+    ``project_id`` doesn't resolve to a project, or that project hasn't
+    opted into the video engine (``video_engine_enabled`` is off on it).
+    Returns ``not_opened`` when ``open_video_task`` no-ops for any other
+    reason (a duplicate occasion or the open-post cap) — not an error, just
+    nothing to do.
     """
     _require_ceo(agent)
     if not settings.video_engine_enabled:
@@ -101,18 +107,27 @@ async def request_video(
             status="disabled",
             detail="The video engine is disabled (video_engine_enabled is off).",
         )
-    task = await get_video_engine(db).open_video_task(
+    engine = get_video_engine(db)
+    project = await engine.resolve_authoring_project(
+        project_id=data.project_id, occasion=data.occasion
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="project not found or not opted into the video engine",
+        )
+    task = await engine.open_video_task(
         occasion=data.occasion,
         script=data.brief,
         platforms=data.platforms,
         brief=data.brief,
+        project_id=data.project_id,
     )
     if task is None:
         return VideoRequestResponse(
             status="not_opened",
             detail=(
-                "No video task was opened (a duplicate occasion, the open-post"
-                " cap, or the project isn't resolvable)."
+                "No video task was opened (a duplicate occasion or the open-post cap)."
             ),
         )
     await db.commit()
@@ -194,6 +209,84 @@ async def list_video_pipeline(
     _require_ceo(agent)
     tasks = await get_task_service(db).list_video_pipeline_tasks()
     return [_to_pipeline_item(t) for t in tasks]
+
+
+@router.post("/pipeline/{task_id}/rerender", response_model=VideoPipelineItemResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
+async def rerender_video_task(
+    task_id: UUID, db: DbSession, agent: CurrentAgentContext
+) -> VideoPipelineItemResponse:
+    """Clear a completed video-authoring task's render idempotency keys
+    (``render_status``/``render_attempts``/``render_error``) so the next
+    render cycle re-picks it up and re-renders it. 404s when there's no such
+    completed authoring task with a proposed composition."""
+    _require_ceo(agent)
+    task = await get_video_engine(db).rerender(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such completed video task with a proposed composition",
+        )
+    await db.commit()
+    return _to_pipeline_item(task)
+
+
+def _resolve_preview_path(root: Path, file_path: str) -> Path | None:
+    """Resolve ``file_path`` against the workspace ``root``, refusing
+    anything that escapes it. A leading ``/`` is stripped before joining —
+    pathlib's ``/`` operator otherwise lets an absolute right operand
+    discard ``root`` entirely — then the joined path must resolve to an
+    existing file still under ``root``. The sole confinement check for the
+    CEO preview proxy."""
+    candidate = (root / file_path.lstrip("/")).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
+
+
+@router.get("/preview/{task_id}/{file_path:path}", response_model=None)
+async def get_video_preview(
+    task_id: UUID,
+    file_path: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> FileResponse:
+    """Serve a video-authoring task's composition HTML + sibling assets
+    (kit/public/etc.) straight off its project's merged read-clone — the
+    panel's live preview iframe. ``file_path`` is relative to the resolved
+    workspace root (e.g. ``motion/compositions/<id>/vertical.html``);
+    confined there so it can't traverse out, per ``_resolve_preview_path``.
+    CEO-only; the response carries explicit iframe-permitting headers so the
+    panel can embed it.
+    """
+    _require_ceo(agent)
+    task = await get_task_service(db).get(task_id)
+    if task is None or task.source != VIDEO_SOURCE or task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such video task"
+        )
+    project = await get_project_service(db).get(cast("UUID", task.project_id))
+    if project is None or not project.slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    try:
+        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
+    except WorkspaceError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    resolved = _resolve_preview_path(workspace.resolve(), file_path)
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such preview file"
+        )
+    return FileResponse(
+        resolved,
+        headers={
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'",
+        },
+    )
 
 
 def _posted_ids(draft: dict[str, Any]) -> dict[str, str]:

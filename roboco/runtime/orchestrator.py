@@ -8185,7 +8185,7 @@ Start by:
             return
         try:
             mp4_paths = await self._render_both_cuts(
-                db, draft, composition_id, str(task.id)
+                db, draft, composition_id, str(task.id), task.project_id
             )
             await self._materialize_video_post(db, task, draft, mp4_paths)
         except Exception as exc:
@@ -8230,16 +8230,29 @@ Start by:
             )
 
     async def _render_both_cuts(
-        self, db: Any, draft: dict[str, Any], composition_id: str, render_key: str
+        self,
+        db: Any,
+        draft: dict[str, Any],
+        composition_id: str,
+        render_key: str,
+        project_id: Any,
     ) -> dict[str, str]:
-        """Render the vertical + square cuts from the roboco project's merged
-        read-clone's motion/ dir; returns {"vertical": path, "square": path}.
-        ``render_key`` (the source task id) scopes each cut's output path."""
+        """Render the vertical + square cuts from the authoring task's OWN
+        project's merged read-clone's motion/ dir; returns {"vertical": path,
+        "square": path}. ``render_key`` (the source task id) scopes each
+        cut's output path. ``project_id`` is the task's own ``project_id`` —
+        never a fixed slug — so a video task authored against any opted-in
+        project renders from that project's ``motion/`` dir, not RoboCo's."""
+        from roboco.services.project import get_project_service
         from roboco.services.video_renderer_client import get_video_renderer
-        from roboco.services.workspace import get_workspace_service
+        from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        slug = (settings.self_heal_project_slug or "roboco-api").strip()
-        workspace = await get_workspace_service(db).ensure_read_clone(slug)
+        project = await get_project_service(db).get(project_id) if project_id else None
+        if project is None or not project.slug:
+            raise WorkspaceError(
+                f"video-render: task's project not resolvable ({project_id})"
+            )
+        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
         renderer = get_video_renderer()
