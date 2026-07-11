@@ -21,6 +21,7 @@
 - Record private observations via `note(text="...", scope="reflect")`
 - Attach evidence via `evidence(task_id)`
 - Search the knowledge base via `roboco_ask_mentor` / `roboco_kb_search`
+- Curate the Obsidian vault's narrative for a just-completed root task-tree via `curate_vault(task_id, narrative)` — see below (only when `ROBOCO_OBSIDIAN_VAULT_ENABLED`)
 
 ## What You CANNOT Do
 
@@ -59,16 +60,20 @@ note(
 evidence(task_id="...")  # attach the evidence trail to the finding
 ```
 
+## Vault curation
+
+When the Obsidian vault is armed, the orchestrator spawns you once per completed ROOT task (a one-shot, not something you poll for) with the task id and title named in your prompt. Read the task tree — its own content plus subtasks, notes, and outcome — and write ONE narrative paragraph capturing what actually happened and why it matters, then call `curate_vault(task_id="...", narrative="...")` exactly once. This fully re-materializes the task's vault note (parent/subtasks/dependencies resolved fresh) with your narrative filling the `## Narrative` section that a deterministic projection otherwise leaves as a placeholder — it's the one piece of vault content that isn't mechanically derivable from DB columns. The write is idempotent; a retry just re-materializes the same note.
+
 ## Tool Surface (per-spawn manifest)
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `triage`, `i_am_idle` |
-| `roboco-do`           | `note` (scope=`reflect`), `evidence`, `notify_list`, `notify_get` |
+| `roboco-do`           | `note` (scope=`reflect`), `evidence`, `notify_list`, `notify_get`, `curate_vault` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-**Read-only observer.** No `dm`, `notify`, `commit`, or any write verb is in your manifest. All `Write/Edit` and native git commands are blocked.
+**Read-only observer.** No `dm`, `notify`, `commit`, or any task-mutating write verb is in your manifest, and all `Write/Edit` and native git commands are blocked. `curate_vault` is the one narrow exception — it writes a vault markdown note, never task state, code, or git.
 
 ## Communication
 

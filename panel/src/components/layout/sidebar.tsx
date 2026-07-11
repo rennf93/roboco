@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   ListTodo,
   Kanban,
-  Bell,
   Activity,
   ChevronLeft,
   Settings,
@@ -35,37 +34,29 @@ import {
 } from "@/components/ui/tooltip";
 import { useUIStore } from "@/store";
 
+// Flat list, in the exact order product wants the sidebar to read top to
+// bottom. Notifications lives only in the header's NotificationBell now.
 export const navItems = [
-  // Dashboard
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
-  { title: "Business", href: "/business", icon: Building2 },
-  { title: "Social", href: "/social", icon: Share2 },
-
-  // Work Management
+  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Kanban", href: "/kanban", icon: Kanban },
-  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
-
-  // Development
+  { title: "Git", href: "/git", icon: GitBranch },
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Products", href: "/products", icon: Boxes },
-  { title: "Git", href: "/git", icon: GitBranch },
-
-  // Team & Reference
-  { title: "Agents", href: "/agents", icon: Bot },
+  { title: "Social", href: "/social", icon: Share2 },
   { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
-  { title: "Auditor", href: "/auditor", icon: Shield },
-
-  // History
-  { title: "A2A Live", href: "/a2a", icon: Radio },
+  { title: "A2A", href: "/a2a", icon: Radio },
+  { title: "Agents", href: "/agents", icon: Bot },
   { title: "Journals", href: "/journals", icon: BookOpen },
-
-  // System
-  { title: "Notifications", href: "/notifications", icon: Bell },
+  { title: "Auditor", href: "/auditor", icon: Shield },
   { title: "Metrics", href: "/metrics", icon: Activity },
 ];
 
+// Business moved out of the main nav — it lives with the settings-adjacent
+// links, separated from navItems by a single Separator (see SidebarFooter).
 const footerItems = [
+  { title: "Business", href: "/business", icon: Building2 },
   { title: "AI Providers", href: "/settings/ai-providers", icon: Cpu },
   { title: "Settings", href: "/settings", icon: Settings },
 ];
@@ -87,10 +78,9 @@ export function SidebarNav({
     <nav className="space-y-1 px-2">
       {navItems.map((item) => {
         const isActive = pathname.startsWith(item.href);
-        return (
+        const link = (
           <Link
             prefetch={false}
-            key={item.href}
             href={item.href}
             onClick={onNavigate}
             className={cn(
@@ -100,11 +90,21 @@ export function SidebarNav({
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
               collapsed && "justify-center px-2",
             )}
-            title={collapsed ? item.title : undefined}
           >
             <item.icon className="h-5 w-5 shrink-0" />
             {!collapsed && <span>{item.title}</span>}
           </Link>
+        );
+        // Icon-only rail: the label moves into a tooltip.
+        return collapsed ? (
+          <Tooltip key={item.href}>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right">{item.title}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span key={item.href} className="block">
+            {link}
+          </span>
         );
       })}
     </nav>
@@ -119,24 +119,36 @@ export function SidebarFooter({
   collapsed?: boolean;
   onNavigate?: () => void;
 }) {
+  // No Separator here: both wrappers (desktop aside + mobile Sheet) already
+  // draw a border-t, and a second line reads as a rendering glitch.
   return (
     <div className="space-y-1">
-      {footerItems.map((item) => (
-        <Link
-          prefetch={false}
-          key={item.href}
-          href={item.href}
-          onClick={onNavigate}
-          className={cn(
-            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            collapsed && "justify-center px-2",
-          )}
-          title={collapsed ? item.title : undefined}
-        >
-          <item.icon className="h-5 w-5" />
-          {!collapsed && <span>{item.title}</span>}
-        </Link>
-      ))}
+      {footerItems.map((item) => {
+        const link = (
+          <Link
+            prefetch={false}
+            href={item.href}
+            onClick={onNavigate}
+            className={cn(
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              collapsed && "justify-center px-2",
+            )}
+          >
+            <item.icon className="h-5 w-5" />
+            {!collapsed && <span>{item.title}</span>}
+          </Link>
+        );
+        return collapsed ? (
+          <Tooltip key={item.href}>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right">{item.title}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span key={item.href} className="block">
+            {link}
+          </span>
+        );
+      })}
     </div>
   );
 }

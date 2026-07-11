@@ -19,6 +19,7 @@ from roboco.db.tables import (
     AgentTable,
     AuditLogTable,
     ProjectTable,
+    TaskReviewFindingTable,
     TaskTable,
 )
 from roboco.models.base import (
@@ -242,3 +243,75 @@ async def test_in_flight_open_stint_and_open_window_decompose(setup: dict) -> No
     assert m.wall_clock_seconds > 0  # open task -> now
     # The open final window (in_progress) still decomposes.
     assert "in_progress" in {s.status for s in m.stages}
+
+
+@pytest.mark.asyncio
+async def test_task_metrics_includes_pm_ceo_rejects_and_findings_counts(
+    setup: dict,
+) -> None:
+    """pm_rejects/ceo_rejects mirror qa_fails/pr_fails for the other two named
+    bounce events; findings_open/findings_total read the revision-findings
+    ledger (open vs total rows) for this task."""
+    db = setup["db"]
+    tid = uuid4()
+    db.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=TaskStatus.NEEDS_REVISION,
+            team=Team.BACKEND,
+            project_id=setup["project_id"],
+            created_by=setup["dev_id"],
+            assigned_to=setup["dev_id"],
+            revision_count=2,
+            estimated_complexity=Complexity.MEDIUM,
+            started_at=_T0,
+        )
+    )
+    db.add_all(
+        [
+            _audit(tid, "claimed", _T0),
+            _audit(tid, "needs_revision", _sec(60), event_type="task.request_changes"),
+            _audit(tid, "needs_revision", _sec(120), event_type="task.ceo_reject"),
+        ]
+    )
+    # The ledger's task_id carries a real FK (unlike audit_log.target_id /
+    # spawn_session.task_id, both plain columns) — the referenced task must
+    # be flushed first.
+    await db.flush()
+    db.add_all(
+        [
+            TaskReviewFindingTable(
+                id=uuid4(),
+                task_id=tid,
+                origin="qa",
+                round=1,
+                author_slug="be-qa",
+                severity="major",
+                expected="x",
+                actual="y",
+                status="verified",
+            ),
+            TaskReviewFindingTable(
+                id=uuid4(),
+                task_id=tid,
+                origin="pm",
+                round=2,
+                author_slug="be-pm",
+                severity="blocker",
+                expected="x",
+                actual="y",
+                status="open",
+            ),
+        ]
+    )
+    await db.flush()
+
+    m = await setup["svc"].get_task_metrics(tid)
+    assert m is not None
+    assert (m.pm_rejects, m.ceo_rejects) == (1, 1)
+    assert (m.findings_open, m.findings_total) == (1, 2)

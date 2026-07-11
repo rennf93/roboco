@@ -34,6 +34,47 @@ export interface BoardReviewEntry {
   timestamp: string | null;
 }
 
+// One row of the revision-findings ledger. Matches the backend
+// TaskFindingResponse schema (roboco/api/schemas/tasks.py).
+export interface TaskFinding {
+  id: string;
+  task_id: string;
+  origin: "qa" | "pr_gate" | "pm" | "ceo";
+  round: number;
+  author_slug: string | null;
+  file: string | null;
+  line: number | null;
+  severity: "blocker" | "major" | "minor" | "nit";
+  criterion: string | null;
+  expected: string;
+  actual: string;
+  fix: string | null;
+  evidence: string | null;
+  status: "open" | "addressed" | "verified" | "waived";
+  addressed_by_commit: string | null;
+  resolution_note: string | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+// Per-origin status counts — matches TaskFindingsSummaryRow.
+export interface TaskFindingsSummaryRow {
+  origin: string;
+  open: number;
+  addressed: number;
+  verified: number;
+  waived: number;
+}
+
+export interface TaskFindingsResponse {
+  findings: TaskFinding[];
+  summary: TaskFindingsSummaryRow[];
+  // Whole-ledger aggregates: the findings list is capped server-side, and
+  // truncated flags when it holds fewer rows than total.
+  total: number;
+  truncated: boolean;
+}
+
 // Wire shape of GET /tasks/summary (backend TaskSummaryResponse) — exactly
 // the fields list views render; everything fat stays on GET /tasks/{id}.
 interface TaskSummaryWire {
@@ -156,6 +197,18 @@ export const tasksApi = {
     if (isMockMode()) return [];
     const { data } = await api.get<BoardReviewEntry[]>(
       "/tasks/" + taskId + "/board-review",
+    );
+    return data;
+  },
+
+  // The revision-findings ledger (qa_fail/pr_fail/request_changes/ceo_reject),
+  // newest round first, plus per-origin status counts. Empty for a task
+  // never bounced.
+  getFindings: async (taskId: string): Promise<TaskFindingsResponse> => {
+    if (isMockMode())
+      return { findings: [], summary: [], total: 0, truncated: false };
+    const { data } = await api.get<TaskFindingsResponse>(
+      "/tasks/" + taskId + "/findings",
     );
     return data;
   },

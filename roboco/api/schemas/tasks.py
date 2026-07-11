@@ -14,7 +14,12 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
 from roboco.api.schemas.docs import DocRefResponse
-from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
+from roboco.db.tables import (
+    ProjectTable,
+    TaskReviewFindingTable,
+    TaskTable,
+    WorkSessionTable,
+)
 from roboco.models.base import (
     BlockerResolverType,
     Complexity,
@@ -238,6 +243,7 @@ class TaskUpdate(BaseModel):
     auditor_notes: str | None = None
     pr_reviewer_notes: str | None = None
     doc_notes: str | None = None
+    pm_notes: str | None = None
     quick_context: str | None = None
     # The structured source of truth (panel renders the verdict pill + sections
     # from this). Must be serialized or the PR-review verdict + any structured
@@ -360,6 +366,7 @@ class TaskResponse(BaseModel):
     auditor_notes: str | None = None
     pr_reviewer_notes: str | None = None
     doc_notes: str | None = None
+    pm_notes: str | None = None
     quick_context: str | None
     notes_structured: dict | None = None
     orchestration_markers: dict | None = None
@@ -367,6 +374,8 @@ class TaskResponse(BaseModel):
     # Review Status
     self_verified: bool
     qa_verified: bool | None
+    # Bounces into needs_revision — drives the task-header "bounced xN" chip.
+    revision_count: int = 0
 
     # Git/Development Context (for full traceability)
     project: ProjectSummaryInTask | None = None
@@ -624,6 +633,54 @@ class TeamTasksQuery(BaseModel):
     limit: int = Field(100, ge=1, le=500)
 
 
+class TaskFindingResponse(BaseModel):
+    """One row of the revision-findings ledger (``task_review_findings``)."""
+
+    id: str
+    task_id: str
+    origin: str
+    round: int
+    author_slug: str | None
+    file: str | None
+    line: int | None
+    severity: str
+    criterion: str | None
+    expected: str
+    actual: str
+    fix: str | None
+    evidence: str | None
+    status: str
+    addressed_by_commit: str | None
+    resolution_note: str | None
+    created_at: datetime
+    updated_at: datetime | None
+
+
+class TaskFindingsSummaryRow(BaseModel):
+    """Per-origin status counts — the Findings tab's at-a-glance badges."""
+
+    origin: str
+    open: int
+    addressed: int
+    verified: int
+    waived: int
+
+
+class TaskFindingsResponse(BaseModel):
+    """The full ledger for a task (newest round first) + the summary counts —
+    one call for the panel's Findings tab instead of two.
+
+    ``summary``/``total`` are SQL aggregates over the WHOLE ledger; the
+    ``findings`` list is capped, and ``truncated`` flags when it holds fewer
+    rows than ``total``.
+    """
+
+    findings: list[TaskFindingResponse]
+    summary: list[TaskFindingsSummaryRow]
+    total: int
+    truncated: bool
+
+
 def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
     """Convert plan JSON dict to TaskPlanResponse.
 
@@ -826,10 +883,12 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         auditor_notes=task.auditor_notes,
         pr_reviewer_notes=task.pr_reviewer_notes,
         doc_notes=task.doc_notes,
+        pm_notes=getattr(task, "pm_notes", None),
         quick_context=task.quick_context,
         notes_structured=task.notes_structured,
         self_verified=task.self_verified,
         qa_verified=task.qa_verified,
+        revision_count=getattr(task, "revision_count", 0) or 0,
         branch_name=getattr(task, "branch_name", None),
         pr_number=getattr(task, "pr_number", None),
         pr_url=getattr(task, "pr_url", None),
@@ -841,6 +900,49 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
 def task_list_to_response(tasks: list["TaskTable"]) -> list[TaskResponse]:
     """Convert list of TaskTable to list of TaskResponse."""
     return [task_to_response(t) for t in tasks]
+
+
+def finding_to_response(row: "TaskReviewFindingTable") -> TaskFindingResponse:
+    """Convert one ledger row to its API response shape."""
+    return TaskFindingResponse(
+        id=str(row.id),
+        task_id=str(row.task_id),
+        origin=row.origin,
+        round=row.round,
+        author_slug=row.author_slug,
+        file=row.file,
+        line=row.line,
+        severity=row.severity,
+        criterion=row.criterion,
+        expected=row.expected,
+        actual=row.actual,
+        fix=row.fix,
+        evidence=row.evidence,
+        status=row.status,
+        addressed_by_commit=row.addressed_by_commit,
+        resolution_note=row.resolution_note,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def findings_summary(
+    counts: list[tuple[str, str, int]],
+) -> list[TaskFindingsSummaryRow]:
+    """Per-origin status counts from ``(origin, status, count)`` SQL-aggregate
+    rows (``ReviewFindingsRepository.status_counts_for_task``) — computed over
+    the whole ledger, never a truncated fetch slice."""
+    by_origin: dict[str, dict[str, int]] = {}
+    for origin, status, count in counts:
+        by_status = by_origin.setdefault(
+            origin, {"open": 0, "addressed": 0, "verified": 0, "waived": 0}
+        )
+        if status in by_status:
+            by_status[status] += count
+    return [
+        TaskFindingsSummaryRow(origin=origin, **by_status)
+        for origin, by_status in by_origin.items()
+    ]
 
 
 async def enrich_task_with_context(

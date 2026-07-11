@@ -276,6 +276,9 @@ export interface Task {
   // Review Status
   self_verified: boolean;
   qa_verified: boolean | null;
+  // Bounces into needs_revision (task-header "bounced xN" chip). Optional:
+  // summaries and mocks omit it.
+  revision_count?: number;
   // Git/Development Context
   branch_name: string | null;
   pr_number: number | null;
@@ -649,6 +652,7 @@ export enum KBIndexType {
   REVIEWS = "reviews",
   LEARNINGS = "learnings",
   PLAYBOOKS = "playbooks",
+  VAULT_NOTES = "vault_notes",
 }
 
 export interface KBSearchRequest {
@@ -1087,6 +1091,7 @@ export interface ProjectSummary {
   is_active: boolean;
   has_workspace: boolean;
   has_git_token: boolean;
+  video_engine_enabled: boolean;
 }
 
 export interface ProductCellMapping {
@@ -1343,6 +1348,8 @@ export interface AgentReworkRate {
   rate: number;
   qa_fails: number;
   pr_fails: number;
+  pm_rejects: number;
+  ceo_rejects: number;
 }
 
 export interface TeamReworkRate {
@@ -1389,8 +1396,12 @@ export interface TaskMetrics {
   revision_count: number;
   qa_fails: number;
   pr_fails: number;
+  pm_rejects: number;
+  ceo_rejects: number;
   stints: number;
   stages: StageEffort[];
+  findings_open: number;
+  findings_total: number;
 }
 
 export interface MemberScorecard {

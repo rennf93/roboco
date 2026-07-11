@@ -37,6 +37,11 @@ SCOPE_TO_TYPE: dict[Scope, JournalEntryType] = {
     Scope.STRUGGLE: JournalEntryType.STRUGGLE,
 }
 
+# Reverse of the above — used by the vault projection to render a journal
+# entry's agent-facing scope label (not the raw SQLAlchemy enum name) into
+# frontmatter.
+TYPE_TO_SCOPE: dict[JournalEntryType, Scope] = {v: k for k, v in SCOPE_TO_TYPE.items()}
+
 
 class ReadTier(StrEnum):
     """How widely a role can read other agents' journals."""

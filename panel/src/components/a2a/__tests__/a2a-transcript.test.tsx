@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type { A2AChatMessage } from "@/lib/api/a2a";
 
 // react-markdown is heavyweight and irrelevant here — render bodies as-is.
@@ -74,5 +74,101 @@ describe("A2ATranscript", () => {
     expect(
       screen.getByText(/No messages in this conversation yet/),
     ).toBeInTheDocument();
+  });
+
+  it("shows a distinct nothing-selected hint when hasSelection is false", () => {
+    render(
+      <A2ATranscript messages={[]} isLoading={false} hasSelection={false} />,
+    );
+    expect(
+      screen.getByText("Select a conversation to view messages"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No messages in this conversation yet/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the scoped error state with a working Retry button", () => {
+    const onRetry = vi.fn();
+    render(
+      <A2ATranscript messages={[]} isLoading={false} error onRetry={onRetry} />,
+    );
+    expect(
+      screen.getByText("Couldn't load this conversation"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("error state takes precedence over the empty/nothing-selected states", () => {
+    render(<A2ATranscript messages={[]} isLoading={false} error />);
+    expect(
+      screen.queryByText(/No messages in this conversation yet/),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("A2ATranscript new-row entrance (frame -> row fades in, then settles)", () => {
+  // Deterministic rAF, same idiom as A2APairCard's pulse test.
+  let rafCallback: FrameRequestCallback | null = null;
+
+  beforeEach(() => {
+    rafCallback = null;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      rafCallback = cb;
+      return 1;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders initially-loaded messages settled (never marked new)", () => {
+    render(
+      <A2ATranscript
+        messages={[buildMessage({ id: "m1" })]}
+        isLoading={false}
+      />,
+    );
+    const rows = screen.getAllByTestId("transcript-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute("data-new", "false");
+  });
+
+  it("marks a message arriving after initial load as new, then settles it next frame", () => {
+    const { rerender } = render(
+      <A2ATranscript
+        messages={[buildMessage({ id: "m1" })]}
+        isLoading={false}
+      />,
+    );
+
+    rerender(
+      <A2ATranscript
+        messages={[
+          buildMessage({ id: "m1" }),
+          buildMessage({
+            id: "m2",
+            content: "second",
+            created_at: "2026-07-02T10:05:00Z",
+          }),
+        ]}
+        isLoading={false}
+      />,
+    );
+
+    const rows = screen.getAllByTestId("transcript-row");
+    const newRow = rows.find((r) => r.textContent?.includes("second"));
+    expect(newRow).toHaveAttribute("data-new", "true");
+
+    act(() => {
+      rafCallback?.(0);
+    });
+
+    const settledRows = screen.getAllByTestId("transcript-row");
+    for (const row of settledRows) {
+      expect(row).toHaveAttribute("data-new", "false");
+    }
   });
 });

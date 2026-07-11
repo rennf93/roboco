@@ -265,28 +265,54 @@ async def confirm_live_batch(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> dict[str, Any]:
-    """Turn the agent's confirmed MegaTask (N drafts) into a sequenced batch, reap.
+    """Turn the agent's confirmed MegaTask (N drafts) into a sequenced batch.
 
     Builds the branchless umbrella + one root-subtask per draft, wires the
     collision-derived dependency waves, and routes the umbrella per ``route``
     (Board review vs. straight to the Main PM) — each root-subtask keeps its own
     project / branch / PR. Returns the umbrella id, the root-subtask ids, and the
-    computed waves + warnings for the panel. Always terminal → the live session
-    is reaped once the drafts are tasks.
+    computed waves + warnings for the panel.
+
+    ``task_id`` set is a board-informed re-draft: updates the existing MegaTask
+    umbrella + root-subtasks in place instead of creating a new batch (mirrors
+    ``confirm_live``'s single-task re-draft), and always reaps. On a first
+    confirm (``task_id`` None), the "Board review & Start" route parks the
+    intake agent against the umbrella instead of reaping — same keep-alive
+    re-draft loop as a single-task confirm — so the board's feedback can be
+    injected in-context; every other path reaps once the drafts are tasks.
     """
     service = get_prompter_service(db)
     try:
-        result = await service.confirm_live_batch(
-            body.title,
-            body.drafts,
-            agent.agent_id,
-            project_ids=body.project_ids,
-            route=body.route,
-            session_id=session_id,
-        )
+        if body.task_id is not None:
+            result = await service.update_live_batch(
+                body.task_id,
+                body.title,
+                body.drafts,
+                agent.agent_id,
+                project_ids=body.project_ids,
+                route=body.route,
+                agent_role=str(agent.role.value),
+            )
+        else:
+            result = await service.confirm_live_batch(
+                body.title,
+                body.drafts,
+                agent.agent_id,
+                project_ids=body.project_ids or [],
+                route=body.route,
+                session_id=session_id,
+            )
     except ServiceError as e:
         raise _translate_service_error(e) from e
     await db.commit()
+
+    if (
+        body.task_id is None
+        and body.route == "board"
+        and get_live_registry().park(session_id, result["umbrella_task_id"])
+    ):
+        return result
+
     await get_orchestrator().reap_intake_session(session_id)
     return result
 
@@ -303,6 +329,45 @@ async def _intake_scope_for_task(
         proj = await get_project_service(db).get(UUID(str(task.project_id)))
         return (proj.slug if proj else None), None
     return None, None
+
+
+async def _start_batch_re_interview(
+    db: DbSession, umbrella: Any, entries: list[dict[str, Any]]
+) -> StartLiveResponse:
+    """Cold re-interview for a MegaTask umbrella.
+
+    Recovers the batch's multi-repo scope from its root-subtasks' own project /
+    cell-map targets (no single project/product lives on the branchless
+    umbrella) and seeds a batch-aware redraft message. 400 only when nothing is
+    recoverable (e.g. every root-subtask was itself cancelled).
+    """
+    from roboco.services.prompter import compose_batch_redraft_message
+    from roboco.services.task import get_task_service
+
+    task_service = get_task_service(db)
+    umbrella_id = UUID(str(umbrella.id))
+    children = await task_service.get_live_subtasks(umbrella_id)
+    project_ids = await task_service.distinct_projects_for_batch(umbrella_id)
+    if not project_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This MegaTask has no recoverable projects to re-interview against.",
+        )
+    initial_message = compose_batch_redraft_message(umbrella, children, entries)
+
+    session_id = uuid4().hex
+    try:
+        await get_orchestrator().start_intake_session(
+            session_id,
+            project_ids=[str(pid) for pid in project_ids],
+            initial_message=initial_message,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start re-interview session: {exc}",
+        ) from exc
+    return StartLiveResponse(session_id=session_id, project_ids=project_ids)
 
 
 @router.post(
@@ -322,7 +387,12 @@ async def re_interview(
     panel opens its stream and, on confirm, passes ``task_id`` so the revised
     draft updates this task instead of creating a new one. This is the cold path
     (and the resilience fallback for the keep-alive re-draft).
+
+    A MegaTask umbrella takes a separate branch (``_start_batch_re_interview``):
+    it carries no project/product of its own, so its scope is recovered from
+    its root-subtasks instead.
     """
+    from roboco.foundation.policy.batch import is_batch_umbrella
     from roboco.services.journal import get_journal_service
     from roboco.services.prompter import compose_redraft_message
     from roboco.services.task import get_task_service
@@ -333,14 +403,17 @@ async def re_interview(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Task {task_id} not found"
         )
+    entries = await get_journal_service(db).board_review_brief(task_id)
+
+    if is_batch_umbrella(batch_id=task.batch_id, parent_task_id=task.parent_task_id):
+        return await _start_batch_re_interview(db, task, entries)
+
     project_slug, product_id = await _intake_scope_for_task(db, task)
     if not project_slug and not product_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Task has no project/product scope to re-interview against.",
         )
-
-    entries = await get_journal_service(db).board_review_brief(task_id)
     initial_message = compose_redraft_message(task, entries)
 
     session_id = uuid4().hex

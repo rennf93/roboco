@@ -67,7 +67,12 @@ class ProjectResponse(BaseModel):
 
 
 class ProjectSummaryResponse(BaseModel):
-    """Compact project response for list views."""
+    """Compact project response for list views.
+
+    Returned by GET /api/projects; includes essential project metadata
+    for list-view cards. The `video_engine_enabled` field indicates
+    whether this project is opted in to the video engine subsystem.
+    """
 
     id: UUID
     name: str
@@ -78,6 +83,7 @@ class ProjectSummaryResponse(BaseModel):
     is_active: bool
     has_workspace: bool = False
     has_git_token: bool = False
+    video_engine_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -255,4 +261,5 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         is_active=bool(project.is_active),
         has_workspace=bool(project.workspace_path),
         has_git_token=bool(project.git_token_encrypted),
+        video_engine_enabled=bool(project.video_engine_enabled),
     )

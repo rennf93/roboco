@@ -37,6 +37,20 @@ def _make_choreographer() -> Choreographer:
         "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
     }
+    # pr_fail now inserts its findings into the revision-findings ledger
+    # before the transition (real _attach_pr_fail_findings runs in these
+    # tests — only the ownership/tracing plumbing is stubbed); the ledger
+    # repository needs an awaitable ``flush()``.
+    base["task"].session = MagicMock()
+    base["task"].session.add = MagicMock()
+    base["task"].session.flush = AsyncMock()
+    # pr_pass's verified-stamp (ReviewFindingsRepository.list_for_task) reads
+    # via session.execute — an empty scalars result (no findings).
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return Choreographer(ChoreographerDeps(**base))
 
 
@@ -69,10 +83,13 @@ def _stub_gate_path(
     )
     cc._gate_tracing = AsyncMock(return_value=None)
     # These tests exercise the pr_fail a2a / notify path, not the head-sha
-    # capture (which has its own suite in test_submit_root_unchanged_pr_guard).
-    # Stub the capture so it does not walk the mock session into un-awaited
-    # coroutines; the verdict still lands via the _record_gate_verdict spy.
+    # capture (which has its own suite in test_submit_root_unchanged_pr_guard)
+    # or the pr_pass CI-status guard (its own suite in
+    # test_pr_pass_ci_status_guard). Stub both so they do not walk the mock
+    # session into un-awaited coroutines; the verdict still lands via the
+    # _record_gate_verdict spy.
     cc._capture_pr_head_sha = AsyncMock(return_value=None)
+    cc._project_slug_for = AsyncMock(return_value=None)
     cc._record_gate_verdict = MagicMock()
     cc._post_gate_review_to_pr = AsyncMock()
     runner = MagicMock()

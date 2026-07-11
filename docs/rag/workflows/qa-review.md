@@ -73,18 +73,36 @@ Result:
 ```python
 fail(
     task_id="<task>",
-    issues=[
-        "Bug: 100th request also returns 429 — boundary off-by-one.",
-        "Missing: tests for Redis-down failover path; AC #3 unmet.",
+    findings=[
+        {
+            "file": "roboco/api/routes/rate_limit.py",
+            "line": 88,
+            "severity": "blocker",
+            "expected": "429 on the 101st request in the window",
+            "actual": "the 100th request also returns 429 — boundary off-by-one",
+            "fix": "use > not >= when comparing against the window limit",
+        },
+        {
+            "severity": "major",
+            "criterion": "AC #3 — Redis-down failover path",
+            "expected": "a test covering the Redis-down failover path",
+            "actual": "no such test exists in this diff",
+        },
     ],
 )
 ```
+
+Each finding is validated, persisted onto the task's append-only revision-findings ledger (`origin=qa`, `round=revision_count+1`), and rendered into `qa_notes` as `[F-xxxxxxxx] file:line (severity) — expected → actual → fix`. The old `issues=[...]` (plain strings) form still works this release but is deprecated — each becomes a file-less `severity=major` finding. A soft nudge fires above 5 findings in one call, a hard reject above 10.
 
 Result:
 
 - Task returns to `needs_revision`
 - Re-assigned to the original developer (recorded at submit-for-qa time)
-- Developer receives a notification
+- Developer receives a notification, and the open findings arrive inline via `evidence()`'s `revision_findings` and the respawn prompt — see `docs/rag/architecture/review-findings.md`
+
+## Re-reviewing a bounced task (round ≥2)
+
+If the task has failed before, `claim_review` returns `prior_findings` — the FULL ledger, every round, newest first — alongside the usual PR diff. Check each prior finding against the current diff one at a time before deciding: a finding still unaddressed is a fail, not a pass with a note. Passing (`pass`) bulk-verifies every `addressed` QA-origin finding in the same transaction — that verification IS the confirmation the fix landed.
 
 ## Reflect (recommended)
 

@@ -4,6 +4,21 @@ on:
   push:
     branches:
       - master
+      # Fleet task branches (GitService push/merge, roboco/services/git.py).
+      # A revision commit that lands on a PR's head via the merge API
+      # (squash-merging a subtask PR into a parent branch) doesn't reliably
+      # fire `pull_request`'s synchronize trigger for the PR that already
+      # has that branch as its head — proven live on PR #406, where two
+      # revision merges left CI/CodeQL absent (not red) while `push` and
+      # `pull_request_target` both fired for the same ref update. A real git
+      # push always fires `pull_request`; this redundant trigger (paired
+      # with the concurrency group below) closes the gap for merge-API
+      # revisions without double-running when both events land.
+      - 'feature/**'
+      - 'bug/**'
+      - 'chore/**'
+      - 'docs/**'
+      - 'hotfix/**'
     paths:
       - 'roboco/**'
       - 'agents/**'
@@ -34,6 +49,17 @@ on:
       - 'alembic.ini'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
+
+# A fleet branch that's also an open PR head can get both a `push` and a
+# `pull_request` run for the same commit; cancel the older one instead of
+# burning two runners on identical work. `head_ref` (set only for
+# pull_request) and `ref_name` (the short branch name, valid for push) both
+# resolve to the SAME branch name, so the two event shapes share one group —
+# plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
+# vs `refs/heads/<branch>` for push, so it'd never collapse them).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   quality:

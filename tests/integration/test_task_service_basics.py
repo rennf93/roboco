@@ -25,7 +25,7 @@ from roboco.models.base import (
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import ConflictError
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1330,6 +1330,427 @@ async def test_claim_pending_task_with_existing_branch(
 
 
 @pytest.mark.asyncio
+async def test_claim_pending_with_unmet_dependency_returns_none(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Sequence guardrail: a PENDING task with a non-terminal dependency cannot
+    be claimed — even via the raw claim path the orchestrator dispatcher uses.
+    Regression for the MegaTask "Main PM claimed every wave at once" bug."""
+    svc = task_setup["svc"]
+    dep = await svc.create(_req(task_setup, title="wave-0 dependency"))
+    task = await svc.create(_req(task_setup, title="wave-1 dependent"))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.add_dependency(task.id, dep.id)  # task depends_on dep (still PENDING)
+
+    assert await svc.claim(task.id, task_setup["agent_id"]) is None
+
+    # Once the dependency reaches a terminal state, the claim goes through.
+    dep.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    claimed = await svc.claim(task.id, task_setup["agent_id"])
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+# ---------------------------------------------------------------------------
+# Sequence claim guardrail (CEO directive: sequence is the bar, independent
+# of dependency_ids — see _claim_blocked_by_sequence).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_claim_blocked_by_lower_sequence_sibling_no_dependency_edge(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A same-parent, lower-sequence, non-terminal sibling blocks a claim even
+    with NO dependency edge wired — the live 4-revision-subtask bug: a PM
+    delegated siblings with sequence 0..3 and no depends_on edges between
+    them, so a later sequence claimed alongside an earlier one."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0 sibling", parent_task_id=parent.id, sequence=0)
+    )
+    seq2 = await svc.create(
+        _req(task_setup, title="seq-2 sibling", parent_task_id=parent.id, sequence=2)
+    )
+    seq0.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc.claim(seq2.id, task_setup["agent_id"]) is None
+
+    seq0.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    seq2.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    claimed = await svc.claim(seq2.id, task_setup["agent_id"])
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_allows_equal_sequence_siblings_in_parallel(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Ties run in parallel: two siblings at the same sequence both claim."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    a = await svc.create(
+        _req(task_setup, title="tie-a", parent_task_id=parent.id, sequence=1)
+    )
+    b = await svc.create(
+        _req(task_setup, title="tie-b", parent_task_id=parent.id, sequence=1)
+    )
+    a.branch_name = "feature/backend/aaaa1111"
+    b.branch_name = "feature/backend/bbbb2222"
+    await db_session.flush()
+
+    claimed_a = await svc.claim(a.id, task_setup["agent_id"])
+    claimed_b = await svc.claim(b.id, task_setup["agent_id"])
+    assert claimed_a is not None
+    assert claimed_b is not None
+
+
+@pytest.mark.asyncio
+async def test_claim_not_blocked_by_cancelled_lower_sequence_sibling(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A cancelled (terminal) lower-sequence sibling never holds the claim."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0 cancelled", parent_task_id=parent.id, sequence=0)
+    )
+    seq1 = await svc.create(
+        _req(task_setup, title="seq-1", parent_task_id=parent.id, sequence=1)
+    )
+    seq0.status = TaskStatus.CANCELLED
+    seq1.branch_name = "feature/backend/cccc3333"
+    await db_session.flush()
+
+    claimed = await svc.claim(seq1.id, task_setup["agent_id"])
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_blocked_by_null_sequence_sibling_coalesced_to_zero(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """COALESCE(sequence, 0): a NULL-sequence sibling is treated as sequence 0
+    and blocks a seq-1 claim, same as an explicit 0. `sequence` is NOT NULL in
+    the live schema — this defends the query anyway, matching the `sib_seq or
+    0` idiom `has_earlier_incomplete_code_sibling` already uses; the
+    constraint is relaxed transiently (rolled back at teardown) to exercise
+    it for real."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    null_seq = await svc.create(
+        _req(task_setup, title="null-seq sibling", parent_task_id=parent.id, sequence=0)
+    )
+    seq1 = await svc.create(
+        _req(task_setup, title="seq-1", parent_task_id=parent.id, sequence=1)
+    )
+    await db_session.execute(
+        text("ALTER TABLE tasks ALTER COLUMN sequence DROP NOT NULL")
+    )
+    await db_session.execute(
+        text("UPDATE tasks SET sequence = NULL WHERE id = :id"), {"id": null_seq.id}
+    )
+    await db_session.flush()
+
+    assert await svc.claim(seq1.id, task_setup["agent_id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_claim_sequence_zero_or_parentless_unaffected(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Effective sequence 0 and a parentless task are never sequence-gated,
+    regardless of other non-terminal same-parent siblings."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0", parent_task_id=parent.id, sequence=0)
+    )
+    await svc.create(
+        _req(task_setup, title="seq-1 noise", parent_task_id=parent.id, sequence=1)
+    )
+    lone = await svc.create(_req(task_setup, title="parentless", sequence=5))
+    seq0.branch_name = "feature/backend/dddd4444"
+    lone.branch_name = "feature/backend/eeee5555"
+    await db_session.flush()
+
+    assert (await svc.claim(seq0.id, task_setup["agent_id"])) is not None
+    assert (await svc.claim(lone.id, task_setup["agent_id"])) is not None
+
+
+@pytest.mark.asyncio
+async def test_claim_blocked_by_sequence_names_distinct_reason(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """`_claim_blocked_by_sequence` names the blocking sibling — a distinct
+    reason from `_claim_blocked_by_dependencies` (audit/logs tell them apart
+    since this task carries no dependency edge at all)."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0 blocker", parent_task_id=parent.id, sequence=0)
+    )
+    seq1 = await svc.create(
+        _req(task_setup, title="seq-1", parent_task_id=parent.id, sequence=1)
+    )
+    seq0.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc._claim_blocked_by_dependencies(seq1) is False
+    reason = await svc._claim_blocked_by_sequence(seq1)
+    assert reason is not None
+    assert "seq-0 blocker" in reason
+
+
+# ---------------------------------------------------------------------------
+# is_pending_claim_blocked — the public dispatch-time probe the orchestrator
+# fetch filter uses to skip a doomed claim attempt (churn reduction).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_true_for_lower_sequence_sibling(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    seq0 = await svc.create(
+        _req(task_setup, title="seq-0 blocker", parent_task_id=parent.id, sequence=0)
+    )
+    seq1 = await svc.create(
+        _req(task_setup, title="seq-1", parent_task_id=parent.id, sequence=1)
+    )
+    seq0.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc.is_pending_claim_blocked(seq1.id) is True
+
+    seq0.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.is_pending_claim_blocked(seq1.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_true_for_unmet_dependency(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    dep = await svc.create(_req(task_setup, title="dependency"))
+    task = await svc.create(_req(task_setup, title="dependent"))
+    await db_session.flush()
+    await svc.add_dependency(task.id, dep.id)
+
+    assert await svc.is_pending_claim_blocked(task.id) is True
+
+    dep.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.is_pending_claim_blocked(task.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_false_for_clear_task(
+    task_setup: dict,
+) -> None:
+    """A ready task (no dependency edge, sequence 0, no parent) is never held."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, title="ready"))
+    assert await svc.is_pending_claim_blocked(task.id) is False
+
+
+@pytest.mark.asyncio
+async def test_is_pending_claim_blocked_false_for_missing_task(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    assert await svc.is_pending_claim_blocked(uuid4()) is False
+
+
+@pytest.mark.asyncio
+async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """STRICTER than dependency edges where both exist: a wave-1 root-subtask
+    waits for EVERY wave-0 sibling, not just the one edge target the
+    collision analyzer happened to wire — no edges-exist exemption."""
+    svc = task_setup["svc"]
+    umbrella = await svc.create(_req(task_setup, title="umbrella"))
+    wave0_a = await svc.create(
+        _req(task_setup, title="wave0-a", parent_task_id=umbrella.id, sequence=0)
+    )
+    wave0_b = await svc.create(
+        _req(task_setup, title="wave0-b", parent_task_id=umbrella.id, sequence=0)
+    )
+    wave1 = await svc.create(
+        _req(task_setup, title="wave1", parent_task_id=umbrella.id, sequence=1)
+    )
+    # Only wave0_a gets an edge (the file-overlap-conditioned edge the
+    # analyzer wires) — wave0_b shares no surface with wave1, so production
+    # never wires an edge to it.
+    await svc.add_dependency(wave1.id, wave0_a.id)
+    wave0_a.status = TaskStatus.COMPLETED
+    await db_session.flush()
+
+    # The edge is satisfied, but wave0_b is still open with a lower sequence.
+    assert await svc._claim_blocked_by_dependencies(wave1) is False
+    assert await svc.claim(wave1.id, task_setup["agent_id"]) is None
+
+    wave0_b.status = TaskStatus.CANCELLED
+    wave1.branch_name = "feature/backend/ffff6666"
+    await db_session.flush()
+    claimed = await svc.claim(wave1.id, task_setup["agent_id"])
+    assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_needs_revision_reclaim_blocked_by_lower_sequence_sibling(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A needs_revision reclaim is sequence-gated too: a lower-sequence
+    sibling delegated AFTER the first claim must hold the reclaim (the gap a
+    PENDING-only scope left open). The dep guard's identical needs_revision
+    gap is pre-existing and deliberately untouched."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    low = await svc.create(
+        _req(task_setup, title="late-delegated seq-0", parent_task_id=parent.id)
+    )
+    high = await svc.create(
+        _req(
+            task_setup, title="seq-1 in revision", parent_task_id=parent.id, sequence=1
+        )
+    )
+    high.status = TaskStatus.NEEDS_REVISION
+    high.branch_name = "feature/backend/9999aaaa"
+    low.status = TaskStatus.IN_PROGRESS
+    await db_session.flush()
+
+    assert await svc.claim(high.id, task_setup["agent_id"]) is None
+
+    low.status = TaskStatus.COMPLETED
+    await db_session.flush()
+    assert await svc.claim(high.id, task_setup["agent_id"]) is not None
+
+
+# ---------------------------------------------------------------------------
+# Wave stamping at delegation (stamp_wave_sequence) — sequences derive from
+# the wired collision DAG, not a per-sibling ordinal.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_independent_siblings_tie_and_claim_parallel(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Independent siblings (no edges) share wave 0 — both claimable in
+    parallel. The raw ordinal gave them 0/1 and the claim gate then
+    serialized ALL delegated work fleet-wide."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    a = await svc.create(_req(task_setup, title="indep-a", parent_task_id=parent.id))
+    b = await svc.create(_req(task_setup, title="indep-b", parent_task_id=parent.id))
+    await svc.stamp_wave_sequence(a.id)
+    await svc.stamp_wave_sequence(b.id)
+    assert (a.sequence, b.sequence) == (0, 0)
+
+    a.branch_name = "feature/backend/aaaa0001"
+    b.branch_name = "feature/backend/bbbb0002"
+    await db_session.flush()
+    assert await svc.claim(a.id, task_setup["agent_id"]) is not None
+    assert await svc.claim(b.id, task_setup["agent_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_ascends_for_dependent_siblings(
+    task_setup: dict,
+) -> None:
+    """Colliding / ordered siblings ascend: each dependent stamps one wave
+    above the max of its same-parent dependency targets, and the claim gate
+    blocks the later wave while the earlier is open."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    t0 = await svc.create(_req(task_setup, title="wave-0", parent_task_id=parent.id))
+    t1 = await svc.create(_req(task_setup, title="wave-1", parent_task_id=parent.id))
+    t2 = await svc.create(_req(task_setup, title="wave-2", parent_task_id=parent.id))
+    await svc.stamp_wave_sequence(t0.id)
+    await svc.add_dependency(t1.id, t0.id)
+    await svc.stamp_wave_sequence(t1.id)
+    await svc.add_dependency(t2.id, t1.id)
+    await svc.stamp_wave_sequence(t2.id)
+    assert (t0.sequence, t1.sequence, t2.sequence) == (0, 1, 2)
+
+    assert await svc._claim_blocked_by_sequence(t1) is not None
+    assert await svc.claim(t1.id, task_setup["agent_id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_preserves_stamps_and_ignores_nonsibling_deps(
+    task_setup: dict,
+) -> None:
+    """Only the NEW task is stamped — an explicitly authored sibling sequence
+    (API create / prompter batch wave) is never rewritten — and a dependency
+    on a task under a DIFFERENT parent contributes no wave."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+    authored = await svc.create(
+        _req(task_setup, title="authored seq-3", parent_task_id=parent.id, sequence=3)
+    )
+    outside = await svc.create(_req(task_setup, title="other-parent task"))
+    new = await svc.create(
+        _req(
+            task_setup,
+            title="new sibling",
+            parent_task_id=parent.id,
+            dependency_ids=[outside.id],
+        )
+    )
+    await svc.stamp_wave_sequence(new.id)
+    authored_stamp = 3
+    assert new.sequence == 0  # non-sibling dep excluded from the wave
+    assert authored.sequence == authored_stamp  # PM-authored stamp untouched
+
+
+@pytest.mark.asyncio
+async def test_stamp_wave_sequence_after_collision_wiring_matches_delegate_flow(
+    task_setup: dict,
+) -> None:
+    """The delegate-flow composition end to end: create → wire the collision
+    DAG → stamp. Disjoint-surface siblings tie at wave 0; a file-overlap
+    sibling lands one wave above the sibling it collides with."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup, title="parent"))
+
+    async def _delegate(title: str, surface: list[str]) -> Any:
+        t = await svc.create(
+            _req(
+                task_setup,
+                title=title,
+                parent_task_id=parent.id,
+                intends_to_touch=surface,
+            )
+        )
+        await svc.wire_sibling_collision_dag(parent.id)
+        await svc.stamp_wave_sequence(t.id)
+        return t
+
+    a = await _delegate("touches a.py", ["roboco/api/a.py"])
+    b = await _delegate("touches b.py", ["roboco/api/b.py"])
+    c = await _delegate("touches a.py too", ["roboco/api/a.py"])
+
+    assert (a.sequence, b.sequence) == (0, 0)  # disjoint → parallel
+    assert c.sequence == 1  # collides with a → next wave
+    assert await svc._claim_blocked_by_sequence(c) is not None
+
+
+@pytest.mark.asyncio
 async def test_claim_already_claimed_by_other_returns_none(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
@@ -1866,7 +2287,6 @@ async def _seed_minimal_task(db_session: AsyncSession, tid: UUID) -> UUID:
 async def test_add_dependency_rejects_self_reference(
     db_session: AsyncSession,
 ) -> None:
-
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
     svc = get_task_service(db_session)
@@ -1876,7 +2296,6 @@ async def test_add_dependency_rejects_self_reference(
 
 @pytest.mark.asyncio
 async def test_add_dependency_rejects_cycle(db_session: AsyncSession) -> None:
-
     a, b, c = uuid4(), uuid4(), uuid4()
     await _seed_minimal_task(db_session, a)
     await _seed_minimal_task(db_session, b)
@@ -2026,7 +2445,6 @@ async def test_pass_qa_refuses_in_progress(db_session: AsyncSession) -> None:
 
 @pytest.mark.asyncio
 async def test_pass_qa_accepts_awaiting_qa(db_session: AsyncSession) -> None:
-
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
 

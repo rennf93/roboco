@@ -30,7 +30,7 @@ def _orch(
     )
     object.__setattr__(orch, "_resolve_agent_slug", MagicMock(return_value=slug))
     object.__setattr__(orch, "_is_agent_active", MagicMock(return_value=active))
-    object.__setattr__(orch, "_get_prompt_for_agent", MagicMock(return_value="p"))
+    object.__setattr__(orch, "_get_prompt_for_agent", AsyncMock(return_value="p"))
     object.__setattr__(orch, "_task_git_context", MagicMock(return_value=None))
     object.__setattr__(orch, "spawn_agent", spawn)
     return orch, spawn

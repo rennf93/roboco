@@ -162,7 +162,12 @@ async def submit_root(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.submit_root(x_agent_id, body.task_id, body.notes)
+    env = await choreographer.submit_root(
+        x_agent_id,
+        body.task_id,
+        body.notes,
+        resolved_findings=[r.model_dump() for r in body.resolved_findings],
+    )
     return envelope_to_response(env, request)
 
 
@@ -190,7 +195,9 @@ async def request_changes(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.request_changes(x_agent_id, body.task_id, body.issues)
+    env = await choreographer.request_changes(
+        x_agent_id, body.task_id, body.issues, body.findings
+    )
     return envelope_to_response(env, request)
 
 

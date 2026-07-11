@@ -272,7 +272,10 @@ class TaskTable(Base):
 
     # Relationships
     parent_task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     dependency_ids: Mapped[list[PyUUID]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list
@@ -376,6 +379,11 @@ class TaskTable(Base):
     # own slot so a review no longer overwrites qa_notes / dev_notes.
     pr_reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     doc_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PM merge-review reject slot (migration 071) — request_changes's own
+    # section, mirroring pr_reviewer_notes, so a reject no longer has nowhere
+    # structured to land (it used to raw-append onto dev_notes and get wiped
+    # by the next developer handoff note).
+    pm_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes_structured: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     orchestration_markers: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True
@@ -2202,6 +2210,66 @@ class ProjectConventionFindingTable(Base):
 
 
 # =============================================================================
+# REVISION FINDINGS LEDGER (migration 071)
+# =============================================================================
+
+
+class TaskReviewFindingTable(Base):
+    """One structured revision-feedback finding — the append-only ledger.
+
+    Persists every qa_fail / pr_fail / request_changes / ceo_reject finding
+    across every revision round. Unlike ``notes_structured`` (which
+    ``apply_structured_note`` overwrites in place per content type — one
+    snapshot, no history), rows here are never overwritten: only ``status``
+    /``addressed_by_commit``/``resolution_note`` are updated as a finding
+    moves through its lifecycle (``open`` -> ``addressed`` -> ``verified``,
+    or ``waived`` by a PM/CEO). ``origin``/``severity``/``status`` are plain
+    ``String`` columns (not a Postgres ENUM) — mirrors
+    ``ProjectConventionFindingTable``, sidestepping the native-enum
+    ``create_type=False`` migration gotcha for a value set the ledger owns
+    at the Python layer.
+    """
+
+    __tablename__ = "task_review_findings"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    task_id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    origin: Mapped[str] = mapped_column(String(20), nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    author_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    file: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    criterion: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    expected: Mapped[str] = mapped_column(String(300), nullable=False)
+    actual: Mapped[str] = mapped_column(String(300), nullable=False)
+    fix: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    evidence: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+    addressed_by_commit: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_task_review_findings_task_status", "task_id", "status"),
+    )
+
+
+# =============================================================================
 # CLOUD AUTH USERS TABLE (FastAPI Users schema)
 # =============================================================================
 
@@ -2302,6 +2370,30 @@ class XSeenFeatureTable(Base):
     feature_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class VaultSeenNoteTable(Base):
+    """Dedup ledger for the vault-intake watcher — one row per (vault-relative
+    path, content hash) pair already turned into a held draft. Unique on both
+    columns together (not just path): an unchanged note never reprocesses, but
+    an edited note (new hash) is eligible again. Mirrors XSeenMentionTable."""
+
+    __tablename__ = "vault_seen_notes"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    note_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "note_path", "content_hash", name="uq_vault_seen_notes_path_hash"
+        ),
     )
 
 

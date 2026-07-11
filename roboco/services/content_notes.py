@@ -27,6 +27,7 @@ _MIRROR_COLUMN: dict[str, str] = {
     "doc": "doc_notes",
     "pr_review": "pr_reviewer_notes",
     "resumption": "quick_context",
+    "pm_review": "pm_notes",
 }
 
 # Agent role -> the content type / section it authors via note(scope='handoff').

@@ -224,6 +224,33 @@ async def test_list_projects_includes_default_branch(
 
 
 @pytest.mark.asyncio
+async def test_list_projects_includes_video_engine_enabled(
+    project_client: AsyncClient,
+) -> None:
+    payload = _payload()
+    create = await project_client.post("/api/projects", json=payload, headers=_HDR)
+    assert create.status_code == HTTPStatus.CREATED
+
+    default_listed = {
+        p["slug"]: p
+        for p in (await project_client.get("/api/projects", headers=_HDR)).json()
+    }
+    assert default_listed[payload["slug"]]["video_engine_enabled"] is False
+
+    patched = await project_client.patch(
+        f"/api/projects/{payload['slug']}",
+        json={"video_engine_enabled": True},
+        headers=_HDR,
+    )
+    assert patched.status_code == HTTPStatus.OK
+
+    response = await project_client.get("/api/projects", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    listed = {p["slug"]: p for p in response.json()}
+    assert listed[payload["slug"]]["video_engine_enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_project_by_slug_not_found(project_client: AsyncClient) -> None:
     response = await project_client.get(
         "/api/projects/ghost-project-slug", headers=_HDR

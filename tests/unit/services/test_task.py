@@ -34,6 +34,7 @@ from roboco.services.task import (
     VIDEO_SOURCE,
     GatewayAgentView,
     TaskService,
+    _ceo_reject_finding_texts,
     get_task_service,
 )
 from sqlalchemy import select
@@ -538,7 +539,12 @@ async def test_qa_pass_delegates_to_pass_qa() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qa_fail_appends_issues_to_dev_notes() -> None:
+async def test_qa_fail_does_not_touch_dev_notes() -> None:
+    """qa_fail must NOT raw-append issues onto dev_notes (the data-loss bug the
+    revision-findings ledger fix retires) — the choreographer's fail_review verb
+    already persisted the concrete findings structurally (the ledger + the
+    QaNote) before this call. The next developer handoff note must be free to
+    fully overwrite dev_notes without destroying anything qa_fail wrote."""
     qa_id = uuid4()
     task = _build_task(dev_notes=None, claimed_by=qa_id)
     svc = TaskService(MagicMock(flush=AsyncMock()))
@@ -547,9 +553,7 @@ async def test_qa_fail_appends_issues_to_dev_notes() -> None:
     _bind(svc, "fail_qa", fail_qa_mock)
     issues = ["missing test", "no docstring"]
     await svc.qa_fail(qa_id, task.id, "blocking", issues)
-    assert task.dev_notes is not None
-    assert "missing test" in task.dev_notes
-    assert "no docstring" in task.dev_notes
+    assert task.dev_notes is None
     fail_qa_mock.assert_awaited_once_with(task.id, notes="blocking", agent_role="qa")
 
 
@@ -896,9 +900,12 @@ async def test_admin_set_status_non_blocked_source_keeps_claim() -> None:
 
 @pytest.mark.asyncio
 async def test_request_changes_routes_leaf_back_to_original_dev() -> None:
-    """PM merge-review reject: awaiting_pm_review -> needs_revision, issues
-    appended for the dev, task re-owned by the original developer (the QA-fail
-    routing), stale claimant cleared."""
+    """PM merge-review reject: awaiting_pm_review -> needs_revision, task
+    re-owned by the original developer (the QA-fail routing), stale claimant
+    cleared. Issues no longer raw-append onto dev_notes (the data-loss bug the
+    revision-findings ledger fix retires — the choreographer's request_changes
+    verb persists them structurally, into pm_notes + the ledger, before this
+    call) so dev_notes stays exactly as it was."""
     dev = uuid4()
     pm = uuid4()
     task = _build_task(
@@ -919,8 +926,7 @@ async def test_request_changes_routes_leaf_back_to_original_dev() -> None:
     assert task.assigned_to == dev
     assert task.claimed_by == dev
     assert task.active_claimant_id is None
-    assert "[PM REVIEW ISSUES]" in (task.dev_notes or "")
-    assert "frontend/CLAUDE.md modified out of scope" in (task.dev_notes or "")
+    assert task.dev_notes is None
 
 
 @pytest.mark.asyncio
@@ -1352,9 +1358,12 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
 
 
 def _svc_with_sibling_status_seq(rows: list[tuple]) -> TaskService:
-    """TaskService whose execute() yields (status, sequence) sibling rows."""
+    """TaskService whose execute() yields (status, sequence[, created_at])
+    sibling rows; 2-tuples are padded with created_at=None (only compared on
+    a sequence tie)."""
+    row_width = 3  # (status, sequence, created_at)
     res = MagicMock()
-    res.all.return_value = rows
+    res.all.return_value = [r if len(r) == row_width else (*r, None) for r in rows]
     return TaskService(MagicMock(execute=AsyncMock(return_value=res)))
 
 
@@ -1383,6 +1392,25 @@ async def test_earlier_incomplete_code_sibling_false_when_earlier_terminal() -> 
     svc = _svc_with_sibling_status_seq(
         [(TaskStatus.COMPLETED, 0), (TaskStatus.CANCELLED, 1)]
     )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_tie_breaks_by_created_at() -> None:
+    # Wave ties (equal sequence) order by created_at: the earlier-created
+    # tied sibling holds the later one; a later-created one does not.
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=1,
+        created_at=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+    )
+    earlier = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    later = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, earlier)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is True
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 1, later)])
     assert await svc.has_earlier_incomplete_code_sibling(task) is False
 
 
@@ -2112,3 +2140,42 @@ async def test_list_completed_video_tasks_bounded_to_scan_limit(
     assert not missing_new, (
         f"{len(missing_new)} newest unrendered tasks dropped by the bound"
     )
+
+
+# ---------------------------------------------------------------------------
+# _ceo_reject_finding_texts — caller-side truncation for the ceo_reject finding
+# ---------------------------------------------------------------------------
+
+_CEO_ACTUAL_CAP = 300
+_CEO_EVIDENCE_CAP = 2000
+
+
+def test_ceo_reject_finding_texts_short_reason_untruncated() -> None:
+    actual, evidence = _ceo_reject_finding_texts("redo the auth flow")
+    assert actual == "redo the auth flow"
+    assert evidence is None
+
+
+def test_ceo_reject_finding_texts_truncates_over_actual_cap() -> None:
+    reason = "x" * (_CEO_ACTUAL_CAP + 50)
+    actual, evidence = _ceo_reject_finding_texts(reason)
+    assert len(actual) <= _CEO_ACTUAL_CAP
+    assert actual.endswith("]")
+    assert "chars omitted" in actual
+    # The untruncated reason survives in evidence (well under its own cap).
+    assert evidence == reason
+
+
+def test_ceo_reject_finding_texts_caps_evidence_too() -> None:
+    reason = "y" * (_CEO_EVIDENCE_CAP + 500)
+    actual, evidence = _ceo_reject_finding_texts(reason)
+    assert len(actual) <= _CEO_ACTUAL_CAP
+    assert evidence is not None
+    assert len(evidence) <= _CEO_EVIDENCE_CAP
+    assert "chars omitted" in evidence
+
+
+def test_ceo_reject_finding_texts_strips_whitespace() -> None:
+    actual, evidence = _ceo_reject_finding_texts("  redo it  ")
+    assert actual == "redo it"
+    assert evidence is None

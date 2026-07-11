@@ -15,7 +15,7 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 |------|-------------|
 | `give_me_work` | `give_me_work()` |
 | `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str, blocker_type: str | None = None, what_needed: str | None = None)` |
-| `i_am_done` | `i_am_done(task_id: UUID, notes: str = '')` |
+| `i_am_done` | `i_am_done(task_id: UUID, notes: str = '', resolved_findings: list[ResolvedFindingInput] = PydanticUndefined)` |
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_work_on` | `i_will_work_on(task_id: UUID, plan: str | None = None, steps: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `open_pr` | `open_pr(task_id: UUID)` |
@@ -49,7 +49,7 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 | Verb | Body schema |
 |------|-------------|
 | `claim_review` | `claim_review(task_id: UUID)` |
-| `fail_review` | `fail_review(task_id: UUID, issues: list[str])` |
+| `fail_review` | `fail_review(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str, blocker_type: str | None = None, what_needed: str | None = None)` |
 | `i_am_idle` | `i_am_idle()` |
@@ -117,9 +117,9 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[SubTaskCreate] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[RiskCreate] = PydanticUndefined, open_questions: list[OpenQuestionCreate] = PydanticUndefined)` |
 | `reassign` | `reassign(task_id: UUID, new_assignee: str)` |
-| `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
+| `request_changes` | `request_changes(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `resume` | `resume(task_id: UUID)` |
-| `submit_up` | `submit_up(task_id: UUID, notes: str)` |
+| `submit_up` | `submit_up(task_id: UUID, notes: str, resolved_findings: list[ResolvedFindingInput] = PydanticUndefined)` |
 | `triage` | `triage()` |
 | `unblock` | `unblock(task_id: UUID, reason: str, restore: bool = True)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
@@ -154,9 +154,9 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[SubTaskCreate] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[RiskCreate] = PydanticUndefined, open_questions: list[OpenQuestionCreate] = PydanticUndefined)` |
-| `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
+| `request_changes` | `request_changes(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `resume` | `resume(task_id: UUID)` |
-| `submit_root` | `submit_root(task_id: UUID, notes: str)` |
+| `submit_root` | `submit_root(task_id: UUID, notes: str, resolved_findings: list[ResolvedFindingInput] = PydanticUndefined)` |
 | `triage` | `triage()` |
 | `triage_all` | `triage_all()` |
 | `unblock` | `unblock(task_id: UUID, reason: str, restore: bool = True)` |
@@ -248,6 +248,7 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 | `approve_playbook` | `approve_playbook(playbook_id: UUID)` |
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
+| `curate_vault` | `curate_vault(task_id: UUID, narrative: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 
@@ -262,7 +263,7 @@ Driver-based roles (prompter, secretary) are intentionally omitted — their rea
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES', findings: list[str | Any] = PydanticUndefined)` |
-| `pr_fail` | `pr_fail(task_id: UUID, issues: list[str])` |
+| `pr_fail` | `pr_fail(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 

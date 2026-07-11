@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Task, SubTask, TaskPlan } from "@/types";
 import { useUpdateTask } from "@/hooks/use-tasks";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
+import { CollapsibleSection } from "./collapsible-section";
 import {
   Select,
   SelectContent,
@@ -58,6 +59,7 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
+  const [sectionOpen, setSectionOpen] = useState(true);
 
   // Display prop value when not editing, local value when editing
   const editValue = isEditing ? localEditValue : plan.approach;
@@ -102,88 +104,89 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            Approach
-          </CardTitle>
-          {isEditing ? (
-            <div className="flex items-center gap-2">
-              <Tabs
-                value={editMode}
-                onValueChange={(v) => setEditMode(v as "write" | "preview")}
-              >
-                <TabsList className="h-8">
-                  <TabsTrigger value="write" className="text-xs px-2 h-6">
-                    <Edit3 className="h-3 w-3 mr-1" />
-                    Write
-                  </TabsTrigger>
-                  <TabsTrigger value="preview" className="text-xs px-2 h-6">
-                    <Eye className="h-3 w-3 mr-1" />
-                    Preview
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <Button size="sm" variant="ghost" onClick={handleCancel}>
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSave}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={updateTask.isPending}
-              >
-                <Check className="h-4 w-4 mr-1" />
-                Save
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant="ghost" onClick={startEditing}>
-              <Edit3 className="h-4 w-4 mr-1" />
-              Edit
+    <CollapsibleSection
+      title={
+        <>
+          <FileText className="h-5 w-5" />
+          Approach
+        </>
+      }
+      open={isEditing || sectionOpen}
+      onOpenChange={setSectionOpen}
+      actions={
+        isEditing ? (
+          <>
+            <Tabs
+              value={editMode}
+              onValueChange={(v) => setEditMode(v as "write" | "preview")}
+            >
+              <TabsList className="h-8">
+                <TabsTrigger value="write" className="text-xs px-2 h-6">
+                  <Edit3 className="h-3 w-3 mr-1" />
+                  Write
+                </TabsTrigger>
+                <TabsTrigger value="preview" className="text-xs px-2 h-6">
+                  <Eye className="h-3 w-3 mr-1" />
+                  Preview
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Button size="sm" variant="ghost" onClick={handleCancel}>
+              <X className="h-4 w-4" />
             </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {isEditing ? (
-          <div className="space-y-2">
-            {editMode === "write" ? (
-              <Textarea
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Describe the approach..."
-                className="min-h-[150px] font-mono text-sm"
-                autoFocus
-              />
-            ) : (
-              <div className="min-h-[150px] p-3 border rounded-md bg-muted/30">
-                {editValue ? (
-                  <Markdown>{editValue}</Markdown>
-                ) : (
-                  <p className="text-muted-foreground italic">
-                    Nothing to preview
-                  </p>
-                )}
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Markdown supported. Ctrl/Cmd + Enter to save.
-            </p>
-          </div>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={updateTask.isPending}
+            >
+              <Check className="h-4 w-4 mr-1" />
+              Save
+            </Button>
+          </>
         ) : (
-          <div
-            className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2"
-            onClick={startEditing}
-          >
-            <Markdown>{plan.approach}</Markdown>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          <Button size="sm" variant="ghost" onClick={startEditing}>
+            <Edit3 className="h-4 w-4 mr-1" />
+            Edit
+          </Button>
+        )
+      }
+    >
+      {isEditing ? (
+        <div className="space-y-2">
+          {editMode === "write" ? (
+            <Textarea
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Describe the approach..."
+              className="min-h-[150px] font-mono text-sm"
+              autoFocus
+            />
+          ) : (
+            <div className="min-h-[150px] p-3 border rounded-md bg-muted/30">
+              {editValue ? (
+                <Markdown>{editValue}</Markdown>
+              ) : (
+                <p className="text-muted-foreground italic">
+                  Nothing to preview
+                </p>
+              )}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Markdown supported. Ctrl/Cmd + Enter to save.
+          </p>
+        </div>
+      ) : (
+        <div
+          className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2"
+          onClick={startEditing}
+        >
+          <Markdown>{plan.approach}</Markdown>
+        </div>
+      )}
+    </CollapsibleSection>
   );
 }
 
@@ -269,140 +272,135 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <ListChecks className="h-5 w-5" />
-            Sub-Tasks
-          </CardTitle>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">
-              {completedCount}/{subTasks.length} completed
-            </span>
-            {!isAdding && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsAdding(true)}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add
-              </Button>
-            )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          {subTasks
-            .sort((a, b) => a.order - b.order)
-            .map((subtask) => (
-              <div
-                key={subtask.id}
-                className="flex items-center gap-3 py-2 group"
-              >
-                <Checkbox
-                  checked={subtask.completed}
-                  onCheckedChange={() => handleToggle(subtask.id)}
-                  disabled={updateTask.isPending}
-                />
-                {editingId === subtask.id ? (
-                  <div className="flex-1 flex items-center gap-2">
-                    <Input
-                      ref={editRef}
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleEdit(subtask.id);
-                        if (e.key === "Escape") setEditingId(null);
-                      }}
-                      onBlur={() => handleEdit(subtask.id)}
-                      className="h-8 text-sm"
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <span
-                      className={`flex-1 cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded ${
-                        subtask.completed
-                          ? "line-through text-muted-foreground"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setEditingId(subtask.id);
-                        setEditTitle(subtask.title);
-                      }}
-                    >
-                      {subtask.title}
-                      {subtask.estimated_hours && (
-                        <Badge variant="outline" className="ml-2 text-xs">
-                          ~{subtask.estimated_hours}h
-                        </Badge>
-                      )}
-                    </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleDelete(subtask.id)}
-                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            ))}
-          {isAdding && (
-            <div className="flex items-center gap-3 py-2">
-              <Checkbox checked={false} disabled />
-              <Input
-                ref={inputRef}
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") {
-                    setNewTitle("");
-                    setIsAdding(false);
-                  }
-                }}
-                placeholder="Add sub-task..."
-                className="h-8 text-sm flex-1"
+    <CollapsibleSection
+      title={
+        <>
+          <ListChecks className="h-5 w-5" />
+          Sub-Tasks
+        </>
+      }
+      actions={
+        <>
+          <span className="text-sm text-muted-foreground">
+            {completedCount}/{subTasks.length} completed
+          </span>
+          {!isAdding && (
+            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-2">
+        {subTasks
+          .sort((a, b) => a.order - b.order)
+          .map((subtask) => (
+            <div
+              key={subtask.id}
+              className="flex items-center gap-3 py-2 group"
+            >
+              <Checkbox
+                checked={subtask.completed}
+                onCheckedChange={() => handleToggle(subtask.id)}
+                disabled={updateTask.isPending}
               />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
+              {editingId === subtask.id ? (
+                <div className="flex-1 flex items-center gap-2">
+                  <Input
+                    ref={editRef}
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleEdit(subtask.id);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    onBlur={() => handleEdit(subtask.id)}
+                    className="h-8 text-sm"
+                  />
+                </div>
+              ) : (
+                <>
+                  <span
+                    className={`flex-1 cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded ${
+                      subtask.completed
+                        ? "line-through text-muted-foreground"
+                        : ""
+                    }`}
+                    onClick={() => {
+                      setEditingId(subtask.id);
+                      setEditTitle(subtask.title);
+                    }}
+                  >
+                    {subtask.title}
+                    {subtask.estimated_hours && (
+                      <Badge variant="outline" className="ml-2 text-xs">
+                        ~{subtask.estimated_hours}h
+                      </Badge>
+                    )}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleDelete(subtask.id)}
+                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </>
+              )}
+            </div>
+          ))}
+        {isAdding && (
+          <div className="flex items-center gap-3 py-2">
+            <Checkbox checked={false} disabled />
+            <Input
+              ref={inputRef}
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+                if (e.key === "Escape") {
                   setNewTitle("");
                   setIsAdding(false);
-                }}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!newTitle.trim()}
-                className="h-7 w-7 p-0"
-              >
-                <Check className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          {subTasks.length === 0 && !isAdding && (
-            <p
-              className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
-              onClick={() => setIsAdding(true)}
+                }
+              }}
+              placeholder="Add sub-task..."
+              className="h-8 text-sm flex-1"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setNewTitle("");
+                setIsAdding(false);
+              }}
+              className="h-7 w-7 p-0"
             >
-              No sub-tasks. Click to add one.
-            </p>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+              <X className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={!newTitle.trim()}
+              className="h-7 w-7 p-0"
+            >
+              <Check className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+        {subTasks.length === 0 && !isAdding && (
+          <p
+            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+            onClick={() => setIsAdding(true)}
+          >
+            No sub-tasks. Click to add one.
+          </p>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }
 
@@ -476,113 +474,112 @@ function TechConsiderationsSection({
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Lightbulb className="h-5 w-5" />
-            Technical Considerations
-          </CardTitle>
-          {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <ul className="space-y-2">
-          {items.map((item, idx) => (
-            <li key={idx} className="flex items-start gap-2 group">
-              <span className="mt-2 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
-              {editingIdx === idx ? (
-                <div className="flex-1 flex items-center gap-2">
-                  <Input
-                    ref={editRef}
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleEdit(idx);
-                      if (e.key === "Escape") setEditingIdx(null);
-                    }}
-                    onBlur={() => handleEdit(idx)}
-                    className="h-8 text-sm"
-                  />
-                </div>
-              ) : (
-                <>
-                  <span
-                    className="flex-1 text-sm cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded"
-                    onClick={() => {
-                      setEditingIdx(idx);
-                      setEditValue(item);
-                    }}
-                  >
-                    {item}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleDelete(idx)}
-                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </>
-              )}
-            </li>
-          ))}
-          {isAdding && (
-            <li className="flex items-center gap-2">
-              <span className="mt-2 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
-              <Input
-                ref={inputRef}
-                value={newItem}
-                onChange={(e) => setNewItem(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") {
-                    setNewItem("");
-                    setIsAdding(false);
-                  }
-                }}
-                placeholder="Add consideration..."
-                className="h-8 text-sm flex-1"
-              />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
+    <CollapsibleSection
+      title={
+        <>
+          <Lightbulb className="h-5 w-5" />
+          Technical Considerations
+        </>
+      }
+      actions={
+        !isAdding && (
+          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add
+          </Button>
+        )
+      }
+    >
+      <ul className="space-y-2">
+        {items.map((item, idx) => (
+          <li key={idx} className="flex items-start gap-2 group">
+            <span className="mt-2 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
+            {editingIdx === idx ? (
+              <div className="flex-1 flex items-center gap-2">
+                <Input
+                  ref={editRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleEdit(idx);
+                    if (e.key === "Escape") setEditingIdx(null);
+                  }}
+                  onBlur={() => handleEdit(idx)}
+                  className="h-8 text-sm"
+                />
+              </div>
+            ) : (
+              <>
+                <span
+                  className="flex-1 text-sm cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded"
+                  onClick={() => {
+                    setEditingIdx(idx);
+                    setEditValue(item);
+                  }}
+                >
+                  {item}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => handleDelete(idx)}
+                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </>
+            )}
+          </li>
+        ))}
+        {isAdding && (
+          <li className="flex items-center gap-2">
+            <span className="mt-2 h-1.5 w-1.5 rounded-full bg-foreground shrink-0" />
+            <Input
+              ref={inputRef}
+              value={newItem}
+              onChange={(e) => setNewItem(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+                if (e.key === "Escape") {
                   setNewItem("");
                   setIsAdding(false);
-                }}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!newItem.trim()}
-                className="h-7 w-7 p-0"
-              >
-                <Check className="h-4 w-4" />
-              </Button>
-            </li>
-          )}
-        </ul>
-        {items.length === 0 && !isAdding && (
-          <p
-            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
-            onClick={() => setIsAdding(true)}
-          >
-            No technical considerations. Click to add one.
-          </p>
+                }
+              }}
+              placeholder="Add consideration..."
+              className="h-8 text-sm flex-1"
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setNewItem("");
+                setIsAdding(false);
+              }}
+              className="h-7 w-7 p-0"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              onMouseDown={(e) => e.preventDefault()}
+              disabled={!newItem.trim()}
+              className="h-7 w-7 p-0"
+            >
+              <Check className="h-4 w-4" />
+            </Button>
+          </li>
         )}
-      </CardContent>
-    </Card>
+      </ul>
+      {items.length === 0 && !isAdding && (
+        <p
+          className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+          onClick={() => setIsAdding(true)}
+        >
+          No technical considerations. Click to add one.
+        </p>
+      )}
+    </CollapsibleSection>
   );
 }
 
@@ -667,125 +664,41 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5" />
-            Risks
-          </CardTitle>
-          {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {risks.map((risk, idx) =>
-            editingIdx === idx ? (
-              <div key={idx} className="border rounded-lg p-4 space-y-3">
-                <Input
-                  ref={editDescRef}
-                  value={editDesc}
-                  onChange={(e) => setEditDesc(e.target.value)}
-                  placeholder="Risk description..."
-                  className="text-sm"
-                />
-                <Input
-                  value={editMit}
-                  onChange={(e) => setEditMit(e.target.value)}
-                  placeholder="Mitigation strategy..."
-                  className="text-sm"
-                />
-                <div className="flex items-center gap-2">
-                  <Select value={editSeverity} onValueChange={setEditSeverity}>
-                    <SelectTrigger className="w-32 h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Low</SelectItem>
-                      <SelectItem value="medium">Medium</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <div className="flex-1" />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setEditingIdx(null)}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleEdit}
-                    onMouseDown={(e) => e.preventDefault()}
-                  >
-                    <Check className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div
-                key={idx}
-                className="border rounded-lg p-4 cursor-pointer hover:bg-muted/30 transition-colors group"
-                onClick={() => {
-                  setEditingIdx(idx);
-                  setEditDesc(risk.description);
-                  setEditMit(risk.mitigation);
-                  setEditSeverity(risk.severity ?? "medium");
-                }}
-              >
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <span className="font-medium text-sm">
-                    {risk.description}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {risk.severity && (
-                      <Badge className={severityColors[risk.severity]}>
-                        {risk.severity}
-                      </Badge>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(idx);
-                      }}
-                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  <span className="font-medium">Mitigation:</span>{" "}
-                  {risk.mitigation || "Not specified"}
-                </div>
-              </div>
-            ),
-          )}
-          {isAdding && (
-            <div className="border rounded-lg p-4 space-y-3">
+    <CollapsibleSection
+      title={
+        <>
+          <AlertTriangle className="h-5 w-5" />
+          Risks
+        </>
+      }
+      actions={
+        !isAdding && (
+          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add
+          </Button>
+        )
+      }
+    >
+      <div className="space-y-4">
+        {risks.map((risk, idx) =>
+          editingIdx === idx ? (
+            <div key={idx} className="border rounded-lg p-4 space-y-3">
               <Input
-                ref={descRef}
-                value={newDesc}
-                onChange={(e) => setNewDesc(e.target.value)}
+                ref={editDescRef}
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
                 placeholder="Risk description..."
                 className="text-sm"
               />
               <Input
-                value={newMit}
-                onChange={(e) => setNewMit(e.target.value)}
+                value={editMit}
+                onChange={(e) => setEditMit(e.target.value)}
                 placeholder="Mitigation strategy..."
                 className="text-sm"
               />
               <div className="flex items-center gap-2">
-                <Select value={newSeverity} onValueChange={setNewSeverity}>
+                <Select value={editSeverity} onValueChange={setEditSeverity}>
                   <SelectTrigger className="w-32 h-8">
                     <SelectValue />
                   </SelectTrigger>
@@ -799,36 +712,117 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => {
-                    setNewDesc("");
-                    setNewMit("");
-                    setIsAdding(false);
-                  }}
+                  onClick={() => setEditingIdx(null)}
                 >
                   <X className="h-4 w-4" />
                 </Button>
                 <Button
                   size="sm"
-                  onClick={handleAdd}
+                  onClick={handleEdit}
                   onMouseDown={(e) => e.preventDefault()}
-                  disabled={!newDesc.trim()}
                 >
                   <Check className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-          )}
-        </div>
-        {risks.length === 0 && !isAdding && (
-          <p
-            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
-            onClick={() => setIsAdding(true)}
-          >
-            No risks identified. Click to add one.
-          </p>
+          ) : (
+            <div
+              key={idx}
+              className="border rounded-lg p-4 cursor-pointer hover:bg-muted/30 transition-colors group"
+              onClick={() => {
+                setEditingIdx(idx);
+                setEditDesc(risk.description);
+                setEditMit(risk.mitigation);
+                setEditSeverity(risk.severity ?? "medium");
+              }}
+            >
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <span className="font-medium text-sm">{risk.description}</span>
+                <div className="flex items-center gap-2">
+                  {risk.severity && (
+                    <Badge className={severityColors[risk.severity]}>
+                      {risk.severity}
+                    </Badge>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(idx);
+                    }}
+                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+              <div className="text-sm text-muted-foreground">
+                <span className="font-medium">Mitigation:</span>{" "}
+                {risk.mitigation || "Not specified"}
+              </div>
+            </div>
+          ),
         )}
-      </CardContent>
-    </Card>
+        {isAdding && (
+          <div className="border rounded-lg p-4 space-y-3">
+            <Input
+              ref={descRef}
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
+              placeholder="Risk description..."
+              className="text-sm"
+            />
+            <Input
+              value={newMit}
+              onChange={(e) => setNewMit(e.target.value)}
+              placeholder="Mitigation strategy..."
+              className="text-sm"
+            />
+            <div className="flex items-center gap-2">
+              <Select value={newSeverity} onValueChange={setNewSeverity}>
+                <SelectTrigger className="w-32 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex-1" />
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewDesc("");
+                  setNewMit("");
+                  setIsAdding(false);
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newDesc.trim()}
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+      {risks.length === 0 && !isAdding && (
+        <p
+          className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+          onClick={() => setIsAdding(true)}
+        >
+          No risks identified. Click to add one.
+        </p>
+      )}
+    </CollapsibleSection>
   );
 }
 
@@ -909,156 +903,153 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <HelpCircle className="h-5 w-5" />
-            Open Questions
-          </CardTitle>
-          {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {questions.map((q, idx) =>
-            editingIdx === idx ? (
-              <div key={idx} className="border rounded-lg p-4 space-y-3">
-                <Input
-                  ref={editRef}
-                  value={editQuestion}
-                  onChange={(e) => setEditQuestion(e.target.value)}
-                  placeholder="Question..."
-                  className="text-sm"
-                />
-                <Textarea
-                  value={editAnswer}
-                  onChange={(e) => setEditAnswer(e.target.value)}
-                  placeholder="Answer (optional)..."
-                  className="text-sm min-h-[80px]"
-                />
-                <div className="flex items-center gap-2">
-                  <div className="flex-1" />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setEditingIdx(null)}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleEdit}
-                    onMouseDown={(e) => e.preventDefault()}
-                  >
-                    <Check className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div
-                key={idx}
-                className="border rounded-lg p-4 cursor-pointer hover:bg-muted/30 transition-colors group"
-                onClick={() => {
-                  setEditingIdx(idx);
-                  setEditQuestion(q.question);
-                  setEditAnswer(q.answer ?? "");
-                }}
-              >
-                <div className="flex items-start gap-2 mb-2">
-                  <HelpCircle className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
-                  <span className="font-medium text-sm flex-1">
-                    {q.question}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(idx);
-                    }}
-                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </div>
-                {q.answer ? (
-                  <div className="ml-7 text-sm">
-                    <div className="bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 rounded-lg p-3">
-                      <p className="font-medium mb-1">
-                        Answered by {q.answered_by?.slice(0, 12) ?? "Unknown"}
-                      </p>
-                      <p>{q.answer}</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="ml-7">
-                    <Badge
-                      variant="outline"
-                      className="text-yellow-600 border-yellow-300"
-                    >
-                      Awaiting Answer
-                    </Badge>
-                  </div>
-                )}
-              </div>
-            ),
-          )}
-          {isAdding && (
-            <div className="border rounded-lg p-4 space-y-3">
+    <CollapsibleSection
+      title={
+        <>
+          <HelpCircle className="h-5 w-5" />
+          Open Questions
+        </>
+      }
+      actions={
+        !isAdding && (
+          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+            <Plus className="h-4 w-4 mr-1" />
+            Add
+          </Button>
+        )
+      }
+    >
+      <div className="space-y-4">
+        {questions.map((q, idx) =>
+          editingIdx === idx ? (
+            <div key={idx} className="border rounded-lg p-4 space-y-3">
               <Input
-                ref={inputRef}
-                value={newQuestion}
-                onChange={(e) => setNewQuestion(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
-                  if (e.key === "Escape") {
-                    setNewQuestion("");
-                    setIsAdding(false);
-                  }
-                }}
-                placeholder="Add a question..."
+                ref={editRef}
+                value={editQuestion}
+                onChange={(e) => setEditQuestion(e.target.value)}
+                placeholder="Question..."
                 className="text-sm"
+              />
+              <Textarea
+                value={editAnswer}
+                onChange={(e) => setEditAnswer(e.target.value)}
+                placeholder="Answer (optional)..."
+                className="text-sm min-h-[80px]"
               />
               <div className="flex items-center gap-2">
                 <div className="flex-1" />
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => {
-                    setNewQuestion("");
-                    setIsAdding(false);
-                  }}
+                  onClick={() => setEditingIdx(null)}
                 >
                   <X className="h-4 w-4" />
                 </Button>
                 <Button
                   size="sm"
-                  onClick={handleAdd}
+                  onClick={handleEdit}
                   onMouseDown={(e) => e.preventDefault()}
-                  disabled={!newQuestion.trim()}
                 >
                   <Check className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-          )}
-        </div>
-        {questions.length === 0 && !isAdding && (
-          <p
-            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
-            onClick={() => setIsAdding(true)}
-          >
-            No open questions. Click to add one.
-          </p>
+          ) : (
+            <div
+              key={idx}
+              className="border rounded-lg p-4 cursor-pointer hover:bg-muted/30 transition-colors group"
+              onClick={() => {
+                setEditingIdx(idx);
+                setEditQuestion(q.question);
+                setEditAnswer(q.answer ?? "");
+              }}
+            >
+              <div className="flex items-start gap-2 mb-2">
+                <HelpCircle className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
+                <span className="font-medium text-sm flex-1">{q.question}</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(idx);
+                  }}
+                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+              {q.answer ? (
+                <div className="ml-7 text-sm">
+                  <div className="bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 rounded-lg p-3">
+                    <p className="font-medium mb-1">
+                      Answered by {q.answered_by?.slice(0, 12) ?? "Unknown"}
+                    </p>
+                    <p>{q.answer}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="ml-7">
+                  <Badge
+                    variant="outline"
+                    className="text-yellow-600 border-yellow-300"
+                  >
+                    Awaiting Answer
+                  </Badge>
+                </div>
+              )}
+            </div>
+          ),
         )}
-      </CardContent>
-    </Card>
+        {isAdding && (
+          <div className="border rounded-lg p-4 space-y-3">
+            <Input
+              ref={inputRef}
+              value={newQuestion}
+              onChange={(e) => setNewQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAdd();
+                if (e.key === "Escape") {
+                  setNewQuestion("");
+                  setIsAdding(false);
+                }
+              }}
+              placeholder="Add a question..."
+              className="text-sm"
+            />
+            <div className="flex items-center gap-2">
+              <div className="flex-1" />
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewQuestion("");
+                  setIsAdding(false);
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newQuestion.trim()}
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+      {questions.length === 0 && !isAdding && (
+        <p
+          className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+          onClick={() => setIsAdding(true)}
+        >
+          No open questions. Click to add one.
+        </p>
+      )}
+    </CollapsibleSection>
   );
 }
 

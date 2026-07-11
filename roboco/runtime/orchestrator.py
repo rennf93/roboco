@@ -503,6 +503,25 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
     return str(inner) if inner else None
 
 
+def _created_before(sib_created: Any, task_created: Any) -> bool:
+    """True if ``sib_created`` (a datetime row value) precedes ``task_created``
+    (an ISO string from the API task payload, or a datetime).
+
+    The equal-sequence tiebreak for the merge / lane dispatch barriers: wave-
+    stamped independent siblings share a sequence, so creation order decides
+    who merges first. Fail-open (False) on any missing/unparseable value —
+    a tie that can't be ordered must not wedge dispatch.
+    """
+    if sib_created is None or not task_created:
+        return False
+    try:
+        if isinstance(task_created, str):
+            task_created = datetime.fromisoformat(task_created)
+        return bool(sib_created < task_created)
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_coordination_task(task: dict[str, Any]) -> bool:
     """True for a task that does no git of its own.
 
@@ -766,7 +785,10 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     External-PR review (owned by the PR dispatcher), release proposals, X
     posts/replies, and video-post drafts (all CEO-HELD, acted on only by
     their own routes), and a self-heal fix task until the CEO's
-    approve_and_start flips ``confirmed_by_human``. Module-level (not a
+    approve_and_start flips ``confirmed_by_human``. A ``vault_note`` draft is
+    NOT held: it is a board-assigned intake draft, so this dispatcher's board
+    branch routes it to the board review (its start gate is the CEO's
+    approve_and_start, like any board-routed draft). Module-level (not a
     method) so the dispatcher's unit tests, which drive it with a
     wholesale-mocked ``self``, exercise the real skip logic rather than an
     auto-mocked stub.
@@ -791,6 +813,21 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
+
+
+# Cap on findings rendered inline in a dispatch prompt (REVISION_REQUIRED /
+# the PM bounced-block) — beyond this, an overflow line points at evidence().
+_PROMPT_FINDINGS_CAP = 10
+
+
+def _render_open_finding_prompt_line(row: Any) -> str:
+    """One ``task_review_findings`` row -> a single dispatch-prompt line.
+    Module-level (not a method), mirroring ``_is_non_dev_dispatch_source``."""
+    loc = row.file or "—"
+    if row.line is not None:
+        loc += f":{row.line}"
+    fix = f" → {row.fix}" if row.fix else ""
+    return f"[F-{str(row.id)[:8]}] {loc} — {row.expected} → {row.actual}{fix}"
 
 
 # Bounded retry for the video render loop — single source of truth lives in
@@ -906,17 +943,7 @@ class AgentOrchestrator:
         self._last_image_prune: datetime | None = None
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
-        self._rate_limit_probe_task: asyncio.Task | None = None
-        self._strategy_engine_task: asyncio.Task | None = None
-        self._external_pr_poll_task: asyncio.Task | None = None
-        self._self_heal_task: asyncio.Task | None = None
-        self._ci_watch_task: asyncio.Task | None = None
-        self._dep_update_task: asyncio.Task | None = None
-        self._release_manager_task: asyncio.Task | None = None
-        self._x_mentions_task: asyncio.Task | None = None
-        self._roadmap_engine_task: asyncio.Task | None = None
-        self._x_feature_spotlight_task: asyncio.Task | None = None
-        self._video_render_task: asyncio.Task | None = None
+        self._init_engine_loop_task_slots()
         # per-engine-loop heartbeat (monotonic last-success, interval) so
         # _check_loop_liveness can alert when a cycle task dies silently.
         self._loop_heartbeats: dict[str, tuple[float, float]] = {}
@@ -1041,6 +1068,25 @@ class AgentOrchestrator:
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
 
+    def _init_engine_loop_task_slots(self) -> None:
+        """Task handles for the default-off engine loops. Split out of
+        __init__ (rather than inlined) to keep it under the statement budget
+        as more engine loops accrete over time."""
+        self._rate_limit_probe_task: asyncio.Task | None = None
+        self._strategy_engine_task: asyncio.Task | None = None
+        self._external_pr_poll_task: asyncio.Task | None = None
+        self._self_heal_task: asyncio.Task | None = None
+        self._ci_watch_task: asyncio.Task | None = None
+        self._dep_update_task: asyncio.Task | None = None
+        self._release_manager_task: asyncio.Task | None = None
+        self._x_mentions_task: asyncio.Task | None = None
+        self._roadmap_engine_task: asyncio.Task | None = None
+        self._x_feature_spotlight_task: asyncio.Task | None = None
+        self._video_render_task: asyncio.Task | None = None
+        self._vault_intake_task: asyncio.Task | None = None
+        self._vault_janitor_task: asyncio.Task | None = None
+        self._vault_kb_task: asyncio.Task | None = None
+
     def _record_loop_heartbeat(self, name: str, interval: float) -> None:
         self._loop_heartbeats[name] = (time.monotonic(), interval)
 
@@ -1113,6 +1159,11 @@ class AgentOrchestrator:
 
         await sweep_orphan_release_locks()
 
+        # Obsidian vault: materialize the shipped .obsidian/ + _meta/ template
+        # assets on first enable (idempotent — never overwrites an operator's
+        # own edits). No-op when the flag is off.
+        self._ensure_vault_assets_on_startup()
+
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
@@ -1130,12 +1181,28 @@ class AgentOrchestrator:
             self._x_feature_spotlight_loop()
         )
         self._video_render_task = asyncio.create_task(self._video_render_loop())
+        self._vault_intake_task = asyncio.create_task(self._vault_intake_loop())
+        self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
+        self._vault_kb_task = asyncio.create_task(self._vault_kb_loop())
 
         logger.info(
             "Orchestrator started",
             dispatcher_interval=self.dispatcher_interval,
             internal_api_url=self._api_url,
         )
+
+    def _ensure_vault_assets_on_startup(self) -> None:
+        """Best-effort, gated: never blocks/fails startup on a vault error."""
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from pathlib import Path
+
+            from roboco.vault import ensure_vault_assets
+
+            ensure_vault_assets(Path(settings.vault_path))
+        except Exception as e:
+            logger.warning("Vault asset bootstrap failed at startup", error=str(e))
 
     async def _cancel_background_task(self, task: asyncio.Task | None) -> None:
         """Cancel one background loop task and await its teardown (idempotent)."""
@@ -1228,6 +1295,9 @@ class AgentOrchestrator:
             self._roadmap_engine_task,
             self._x_feature_spotlight_task,
             self._video_render_task,
+            self._vault_intake_task,
+            self._vault_janitor_task,
+            self._vault_kb_task,
         ):
             await self._cancel_background_task(task)
 
@@ -3365,6 +3435,7 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
+        - playwright          browser tools (fe-qa/ux-qa only — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3463,6 +3534,45 @@ class AgentOrchestrator:
             },
         }
 
+        self._append_role_scoped_mcp_servers(
+            mcp_servers, agent_id, agent_role, agent_uuid, mcp_env
+        )
+
+        config: dict[str, Any] = {"mcpServers": mcp_servers}
+
+        # Write to shared config directory (mounted in both orchestrator and agents)
+        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
+        # When running on host: use temp directory
+        if DATA_HOST_PATH:
+            # Running in container - use shared mounted directory
+            config_dir = Path("/app/mcp-configs")
+            config_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Running on host - use temp directory
+            config_dir = Path(tempfile.gettempdir())
+
+        # basename-sanitized like _grok_usage_json: agent ids are orchestrator-
+        # issued slugs, but the filename must not be able to traverse anyway.
+        safe_agent_id = os.path.basename(agent_id)
+        config_path = config_dir / f"roboco-mcp-{safe_agent_id}.json"
+        config_path.write_text(json.dumps(config, indent=2))
+
+        return config_path
+
+    def _append_role_scoped_mcp_servers(
+        self,
+        mcp_servers: dict[str, dict[str, Any]],
+        agent_id: str,
+        agent_role: str,
+        agent_uuid: str,
+        mcp_env: dict[str, str],
+    ) -> None:
+        """Register the role-scoped MCP servers (docs, research, playwright).
+
+        Split from ``_generate_mcp_config`` so the base registration stays
+        within the complexity budget; each branch is fail-closed server-side
+        regardless of registration.
+        """
         # Docs server — documentation file management. Registered only for
         # roles that touch panel docs; handlers still enforce per-role
         # access so the surface is fail-closed.
@@ -3510,23 +3620,21 @@ class AgentOrchestrator:
                 "env": mcp_env,
             }
 
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
-
-        # Write to shared config directory (mounted in both orchestrator and agents)
-        # When running in container: /app/mcp-configs -> host's ./data/mcp-configs
-        # When running on host: use temp directory
-        if DATA_HOST_PATH:
-            # Running in container - use shared mounted directory
-            config_dir = Path("/app/mcp-configs")
-            config_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            # Running on host - use temp directory
-            config_dir = Path(tempfile.gettempdir())
-
-        config_path = config_dir / f"roboco-mcp-{agent_id}.json"
-        config_path.write_text(json.dumps(config, indent=2))
-
-        return config_path
+        # Playwright MCP — structured browser tools (navigate/click/snapshot/
+        # screenshot) for QA's browser verification, replacing hand-scripted
+        # Bash+Python. Scoped to fe-qa/ux-qa only (role-gated, not
+        # image-gated: ux-dev shares agent-ux's image but never gets this),
+        # per the CEO's round-3 note on the Playwright QA-image work. The
+        # binary + wrapper entrypoint are baked into agent-qa-fe/agent-ux
+        # only (docker/agent-qa-fe.Dockerfile, docker/agent-ux.Dockerfile),
+        # so registering it for any other role would reference a command
+        # that doesn't exist in that role's image.
+        playwright_mcp_teams = ("frontend", "ux_ui")
+        if agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams:
+            mcp_servers["playwright"] = {
+                "command": "/app/scripts/playwright-mcp-entrypoint.sh",
+                "args": [],
+            }
 
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
@@ -4307,7 +4415,7 @@ class AgentOrchestrator:
         await self.spawn_agent(
             agent_id=dev_slug,
             task_id=task["id"],
-            initial_prompt=self._build_dev_prompt(task),
+            initial_prompt=await self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
             spawned_by="_respawn_dev_for_pr_half",
         )
@@ -8016,6 +8124,98 @@ Start by:
             await get_roadmap_engine(db).run_cycle()
             await db.commit()
 
+    async def _vault_intake_loop(self) -> None:
+        """Vault intake: on an interval, turn tagged notes into held drafts.
+
+        Dormant unless BOTH ``obsidian_vault_enabled`` AND
+        ``vault_intake_enabled`` are on — a standard deployment scans nothing.
+        Every draft is held for the CEO; this loop never starts anything.
+        """
+        if not (settings.obsidian_vault_enabled and settings.vault_intake_enabled):
+            return
+        interval = settings.vault_intake_interval_seconds
+        self._record_loop_heartbeat("vault_intake", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_intake_cycle()
+                self._record_loop_heartbeat("vault_intake", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-intake cycle failed")
+
+    async def _run_vault_intake_cycle(self) -> None:
+        """One vault-intake pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_intake_engine import get_vault_intake_engine
+
+        async with get_db_context() as db:
+            await get_vault_intake_engine(db).run_cycle()
+            await db.commit()
+
+    async def _vault_janitor_loop(self) -> None:
+        """Vault drift janitor: hourly tick, daily sweep + weekly report, both
+        gated by a restart-proof state file rather than the loop's own
+        cadence (see ``roboco.services.vault_janitor``).
+
+        Dormant unless ``obsidian_vault_enabled`` — the umbrella flag.
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        from roboco.services.vault_janitor import JANITOR_LOOP_INTERVAL_SECONDS
+
+        interval = JANITOR_LOOP_INTERVAL_SECONDS
+        self._record_loop_heartbeat("vault_janitor", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_janitor_cycle()
+                self._record_loop_heartbeat("vault_janitor", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-janitor cycle failed")
+
+    async def _run_vault_janitor_cycle(self) -> None:
+        """One vault-janitor pass: run the service, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_janitor import get_vault_janitor
+
+        async with get_db_context() as db:
+            await get_vault_janitor(db).run_cycle()
+            await db.commit()
+
+    async def _vault_kb_loop(self) -> None:
+        """Vault KB ingest: on an interval, embed changed notes under the
+        allowlisted vault_kb_dirs into IndexType.VAULT_NOTES.
+
+        Dormant unless BOTH ``obsidian_vault_enabled`` AND ``vault_kb_enabled``
+        are on — a standard deployment embeds nothing.
+        """
+        if not (settings.obsidian_vault_enabled and settings.vault_kb_enabled):
+            return
+        interval = settings.vault_kb_interval_seconds
+        self._record_loop_heartbeat("vault_kb", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_kb_cycle()
+                self._record_loop_heartbeat("vault_kb", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-kb cycle failed")
+
+    async def _run_vault_kb_cycle(self) -> None:
+        """One vault-KB pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_kb_engine import get_vault_kb_engine
+
+        async with get_db_context() as db:
+            await get_vault_kb_engine(db).run_cycle()
+            await db.commit()
+
     async def _x_feature_spotlight_loop(self) -> None:
         """X engine: on an interval, open ONE held feature-spotlight exploration
         for the Head of Marketing.
@@ -8106,7 +8306,7 @@ Start by:
             return
         try:
             mp4_paths = await self._render_both_cuts(
-                db, draft, composition_id, str(task.id)
+                db, draft, composition_id, str(task.id), task.project_id
             )
             await self._materialize_video_post(db, task, draft, mp4_paths)
         except Exception as exc:
@@ -8151,16 +8351,29 @@ Start by:
             )
 
     async def _render_both_cuts(
-        self, db: Any, draft: dict[str, Any], composition_id: str, render_key: str
+        self,
+        db: Any,
+        draft: dict[str, Any],
+        composition_id: str,
+        render_key: str,
+        project_id: Any,
     ) -> dict[str, str]:
-        """Render the vertical + square cuts from the roboco project's merged
-        read-clone's motion/ dir; returns {"vertical": path, "square": path}.
-        ``render_key`` (the source task id) scopes each cut's output path."""
+        """Render the vertical + square cuts from the authoring task's OWN
+        project's merged read-clone's motion/ dir; returns {"vertical": path,
+        "square": path}. ``render_key`` (the source task id) scopes each
+        cut's output path. ``project_id`` is the task's own ``project_id`` —
+        never a fixed slug — so a video task authored against any opted-in
+        project renders from that project's ``motion/`` dir, not RoboCo's."""
+        from roboco.services.project import get_project_service
         from roboco.services.video_renderer_client import get_video_renderer
-        from roboco.services.workspace import get_workspace_service
+        from roboco.services.workspace import WorkspaceError, get_workspace_service
 
-        slug = (settings.self_heal_project_slug or "roboco-api").strip()
-        workspace = await get_workspace_service(db).ensure_read_clone(slug)
+        project = await get_project_service(db).get(project_id) if project_id else None
+        if project is None or not project.slug:
+            raise WorkspaceError(
+                f"video-render: task's project not resolvable ({project_id})"
+            )
+        workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
         renderer = get_video_renderer()
@@ -9811,14 +10024,26 @@ Start by:
         )
         return "main-pm"
 
-    def _build_main_pm_triage_prompt(self, task: dict[str, Any]) -> str:
-        """Build prompt for MAIN PM to triage and distribute to Cell PMs."""
+    def _build_main_pm_triage_prompt(
+        self, task: dict[str, Any], *, bounced_block: str = ""
+    ) -> str:
+        """Build prompt for MAIN PM to triage and distribute to Cell PMs.
+
+        ``bounced_block`` (pre-rendered by the async caller — this method
+        stays sync) prepends a "THIS ROOT BOUNCED" section when the root is
+        ``needs_revision`` — everything else here is static.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         complexity = task.get("complexity", "medium")
         description = task.get("description", "")
+        bounced_section = (
+            f"## THIS ROOT BOUNCED — needs_revision\n\n{bounced_block}\n\n"
+            if bounced_block
+            else ""
+        )
 
-        return f"""You are the MAIN PM at RoboCo. This task is assigned to YOU.
+        body = f"""You are the MAIN PM at RoboCo. This task is assigned to YOU.
 
 TASK: {task_id}
 TITLE: {title}
@@ -9889,9 +10114,17 @@ Gateway verbs (already loaded):
 
 Start now: evidence(task_id="{task_id}")
 """
+        return bounced_section + body
 
-    def _build_pm_triage_prompt(self, task: dict[str, Any]) -> str:
-        """Build prompt for CELL PM to triage and delegate a task."""
+    def _build_pm_triage_prompt(
+        self, task: dict[str, Any], *, bounced_block: str = ""
+    ) -> str:
+        """Build prompt for CELL PM to triage and delegate a task.
+
+        ``bounced_block`` (pre-rendered by the async caller — this method
+        stays sync) prepends a "THIS ROOT BOUNCED" section when the task is
+        ``needs_revision`` — everything else here is static.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         complexity = task.get("complexity", "medium")
@@ -9906,8 +10139,13 @@ Start now: evidence(task_id="{task_id}")
         devs = dev_map.get(team, ("be-dev-1",))
         primary_dev = devs[0]
         dev_options = " or ".join(devs)
+        bounced_section = (
+            f"## THIS TASK BOUNCED — needs_revision\n\n{bounced_block}\n\n"
+            if bounced_block
+            else ""
+        )
 
-        return f"""You are the PM for {team} team. This task is assigned to YOU.
+        body = f"""You are the PM for {team} team. This task is assigned to YOU.
 
 TASK: {task_id}
 TITLE: {title}
@@ -9975,6 +10213,7 @@ Gateway verbs (already loaded):
 
 Start now: evidence(task_id="{task_id}")
 """
+        return bounced_section + body
 
     # =========================================================================
     # SMART DISPATCHER - MAIN LOOP
@@ -10836,6 +11075,7 @@ Start now: evidence(task_id="{task_id}")
                 ("approval_work", self._dispatch_approval_work(client)),
                 ("a2a_work", self._dispatch_a2a_work(client)),
                 ("audit_work", self._dispatch_audit_work(client)),
+                ("vault_curation_work", self._dispatch_vault_curation_work(client)),
                 ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
             ]
             for name, coro in dispatchers:
@@ -11381,6 +11621,35 @@ Start now: evidence(task_id="{task_id}")
         # in-context. Best-effort; the cold "Re-draft" path covers the rest.
         await self._inject_board_brief_into_parked_intake(task_id)
 
+    async def _compose_parked_intake_redraft(
+        self, db: "AsyncSession", task_id: str
+    ) -> str | None:
+        """The redraft seed message for a parked intake session, or None if the
+        task is gone. A MegaTask umbrella gets its batch-aware composer (every
+        LIVE root-subtask's snapshot); a normal task gets the single-task one.
+        """
+        from uuid import UUID
+
+        from roboco.foundation.policy.batch import is_batch_umbrella
+        from roboco.services.journal import get_journal_service
+        from roboco.services.prompter import (
+            compose_batch_redraft_message,
+            compose_redraft_message,
+        )
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(db)
+        task = await task_service.get(UUID(task_id))
+        if task is None:
+            return None
+        entries = await get_journal_service(db).board_review_brief(UUID(task_id))
+        if is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            children = await task_service.get_live_subtasks(UUID(task_id))
+            return compose_batch_redraft_message(task, children, entries)
+        return compose_redraft_message(task, entries)
+
     async def _inject_board_brief_into_parked_intake(self, task_id: str) -> None:
         """Inject the board's review into a parked intake session, if one exists.
 
@@ -11393,22 +11662,13 @@ Start now: evidence(task_id="{task_id}")
         session = get_live_registry().find_by_task(task_id)
         if session is None:
             return
-        from uuid import UUID
-
         from roboco.db.base import get_db_context
-        from roboco.services.journal import get_journal_service
-        from roboco.services.prompter import compose_redraft_message
-        from roboco.services.task import get_task_service
 
         try:
             async with get_db_context() as db:
-                task = await get_task_service(db).get(UUID(task_id))
-                if task is None:
-                    return
-                entries = await get_journal_service(db).board_review_brief(
-                    UUID(task_id)
-                )
-                message = compose_redraft_message(task, entries)
+                message = await self._compose_parked_intake_redraft(db, task_id)
+            if message is None:
+                return
             delivered = await get_live_registry().deliver(session.session_id, message)
             logger.info(
                 "Injected board feedback into parked intake",
@@ -11422,20 +11682,53 @@ Start now: evidence(task_id="{task_id}")
                 error=str(exc),
             )
 
-    def _pm_spawn_prompt(
+    async def _pm_spawn_prompt(
         self, routing: str, agent_id: str, task: dict[str, Any]
     ) -> str:
         """Pick the correct prompt for a classified spawn."""
         if routing == "dev":
-            return self._build_dev_prompt(task)
+            return await self._build_dev_prompt(task)
         if routing == "main_pm" or agent_id == "main-pm":
             return self._build_main_pm_triage_prompt(task)
         return self._build_pm_triage_prompt(task)
+
+    async def _pending_claim_blocked(self, task_id: str | None) -> bool:
+        """Dispatch-time probe: is ``task_id`` held by the dependency/sequence
+        guard right now?
+
+        `_dispatch_pm_work` fetches every PENDING task each tick with no
+        sequencing filter, so a later-wave MegaTask root-subtask (or any
+        dependency-blocked task) got a doomed claim attempt every tick —
+        harmless (the claim chokepoint already refuses it) but pure churn.
+        Reuses `TaskService.is_pending_claim_blocked` (the exact claim-gate
+        predicate) so this can't drift from what the claim endpoint enforces.
+        Fails open (False) on any lookup error — the claim attempt itself is
+        the safety net and will surface a real error if something's wrong.
+        """
+        if not task_id:
+            return False
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                return await TaskService(db).is_pending_claim_blocked(UUID(task_id))
+        except Exception as exc:
+            logger.warning(
+                "Claim-block probe failed; falling through to claim attempt",
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
 
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
         """Classify and route an unassigned pending task to its target agent."""
+        if await self._pending_claim_blocked(task.get("id")):
+            return
         routing = self._classify_task_routing(task)
         agent_id = self._get_routing_target(routing, task)
 
@@ -11488,7 +11781,7 @@ Start now: evidence(task_id="{task_id}")
             return
 
         if await self._claim_task_for_agent(client, task["id"], agent_id):
-            prompt = self._pm_spawn_prompt(routing, agent_id, task)
+            prompt = await self._pm_spawn_prompt(routing, agent_id, task)
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=task["id"],
@@ -11573,7 +11866,7 @@ Start now: evidence(task_id="{task_id}")
             await self.spawn_agent(
                 agent_id=agent_slug,
                 task_id=task["id"],
-                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_revision_coordination_roots",
             )
@@ -11870,6 +12163,82 @@ Start now: evidence(task_id="{task_id}")
             for task in tasks:
                 await self._maybe_spawn_pm_closure(client, task)
 
+    async def _dispatch_vault_curation_work(self, _client: httpx.AsyncClient) -> None:
+        """Obsidian-vault root-completion hook: spawn the Auditor to write a
+        just-completed root task-tree's narrative.
+
+        Gated on ``ROBOCO_OBSIDIAN_VAULT_ENABLED``; a no-op scan otherwise.
+        Owns ONLY this vault-curation trigger — distinct from
+        ``_dispatch_audit_work`` (scheduled sweeps + alert producers, owned by
+        a separate, queued fleet task). ``_client`` is accepted for
+        dispatcher-tuple shape parity but unused — this reads the DB
+        directly (see ``TaskService.list_completed_roots_pending_vault_curation``).
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        async with get_db_context() as db:
+            candidates = await TaskService(
+                db
+            ).list_completed_roots_pending_vault_curation()
+            for task in candidates:
+                await self._maybe_spawn_vault_curation(str(task.id), task.title)
+
+    async def _maybe_spawn_vault_curation(self, task_id: str, title: str) -> None:
+        """One-shot Auditor spawn for one completed root task.
+
+        Mirrors ``_dispatch_board_reviewer``'s guard shape: an in-memory
+        one-shot tracker (reuses ``_board_dispatched``) for the same-process
+        race, plus a durable ``vault_curation_dispatched`` marker so a
+        restart can't re-spawn a root another process instance already
+        handled. Spawned WITHOUT a bound task_id (mirrors
+        ``_dispatch_audit_work``'s alert spawn) — the root task is
+        `completed`, so binding it would trip the readiness gate's
+        role-for-status check; the task id is named in the prompt instead,
+        and ``curate_vault`` takes it as an explicit argument.
+        """
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        self._board_dispatched.add(key)
+        await self._mark_vault_curation_dispatched(task_id)
+        logger.info("Spawning Auditor for vault curation", task_id=task_id)
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            initial_prompt=self._build_vault_curation_prompt(task_id, title),
+            spawned_by="_maybe_spawn_vault_curation",
+        )
+
+    @staticmethod
+    async def _mark_vault_curation_dispatched(task_id: str) -> None:
+        """Persist the one-shot marker so a restart never re-spawns this
+        root. Best-effort: a failure here only risks a harmless duplicate
+        Auditor spawn (curate_vault's write is idempotent), never a crash."""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                task = await svc.get(UUID(task_id))
+                if task is not None:
+                    markers.mark_vault_curation_dispatched(task)
+                    await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist vault_curation_dispatched marker",
+                task_id=task_id,
+                error=str(exc),
+            )
+
     async def _fetch_subtasks(
         self, client: httpx.AsyncClient, parent_id: str
     ) -> list[dict[str, Any]]:
@@ -12009,7 +12378,7 @@ PROMOTION TARGET: {target_line}
 Never `commit`, never write code, never run `git`. PMs coordinate.
 """
 
-    def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
+    async def _get_prompt_for_agent(self, agent_slug: str, task: dict[str, Any]) -> str:
         """Get the prompt appropriate to the agent's ACTUAL role.
 
         A respawn must hand each role the prompt it can act on — a PM or board
@@ -12017,11 +12386,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         it does not own. Reuses the same per-role prompt builders the role
         dispatchers use so a respawn matches a fresh dispatch:
 
-          developer      → dev prompt
+          developer      → dev prompt (REVISION_REQUIRED findings inline)
           qa             → QA prompt
           documenter     → doc prompt
-          cell_pm        → cell-PM triage prompt
-          main_pm        → main-PM triage prompt
+          cell_pm        → cell-PM triage prompt (+ bounced-block if needs_revision)
+          main_pm        → main-PM triage prompt (+ bounced-block if needs_revision)
           product_owner  → board-review prompt
           head_marketing → marketing prompt for a marketing task, else board
           auditor        → audit prompt
@@ -12036,18 +12405,26 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             if task.get("team") == "marketing":
                 return self._build_marketing_prompt(task)
             return self._build_board_prompt(task)
+        if role == "cell_pm":
+            return self._build_pm_triage_prompt(
+                task, bounced_block=await self._revision_bounced_block(task)
+            )
+        if role == "main_pm":
+            return self._build_main_pm_triage_prompt(
+                task, bounced_block=await self._revision_bounced_block(task)
+            )
         builders: dict[str, Callable[[dict[str, Any]], str]] = {
-            "developer": self._build_dev_prompt,
             "qa": self._build_qa_prompt,
             "documenter": self._build_doc_prompt,
-            "cell_pm": self._build_pm_triage_prompt,
-            "main_pm": self._build_main_pm_triage_prompt,
             "product_owner": self._build_board_prompt,
             "auditor": lambda _task: self._build_audit_prompt(),
             "pr_reviewer": self._build_pr_review_prompt,
         }
-        builder = builders.get(role, self._build_dev_prompt)
-        return builder(task)
+        if role in builders:
+            return builders[role](task)
+        # "developer" plus every unknown role: the dev prompt is the safe
+        # default for an executable task.
+        return await self._build_dev_prompt(task)
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -12102,7 +12479,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         await self.spawn_agent(
             agent_id=agent_slug,
             task_id=task["id"],
-            initial_prompt=self._build_dev_prompt(task),
+            initial_prompt=await self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
             spawned_by="_respawn_dev_if_inactive",
         )
@@ -12138,7 +12515,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         await self.spawn_agent(
             agent_id=agent_slug,
             task_id=task["id"],
-            initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+            initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
             git_context=self._task_git_context(task),
             spawned_by="_spawn_pending_dev",
         )
@@ -12528,7 +12905,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         a later sibling before an earlier one diverges the branch and wedges the
         loser. Hold a higher-sequence sibling's review/merge dispatch until the
         earlier ones land (or are cancelled). Loop-free: the task simply isn't
-        dispatched this tick — no reject, no respawn churn.
+        dispatched this tick — no reject, no respawn churn. Equal sequences
+        (wave-stamped independent siblings — parallel to CLAIM and build) tie-
+        break by ``created_at`` so the shared-branch merge stays serialized.
 
         Only same-team siblings block (they target the same branch). Terminal
         siblings (completed/cancelled) never block, so a cancelled sibling can't
@@ -12559,18 +12938,39 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 error=str(exc),
             )
             return False
-        for sib in siblings:
-            sib_seq = getattr(sib, "sequence", 0) or 0
-            sib_team = getattr(sib, "team", None)
-            sib_status = getattr(sib, "status", None)
-            sib_team_val = getattr(sib_team, "value", sib_team)
-            if (
-                str(sib_team_val) == str(team)
-                and sib_seq < seq
-                and sib_status not in terminal
-            ):
-                return True
-        return False
+        task_created = task.get("created_at")
+        return any(
+            self._is_earlier_live_team_sibling(
+                sib,
+                team=str(team),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
+            )
+            for sib in siblings
+        )
+
+    @staticmethod
+    def _is_earlier_live_team_sibling(
+        sib: Any, *, team: str, seq: int, terminal: set[Any], task_created: Any
+    ) -> bool:
+        """True if ``sib`` is an earlier non-terminal same-team sibling.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak that keeps the shared-branch merge serialized).
+        """
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        sib_team = getattr(sib, "team", None)
+        sib_team_val = getattr(sib_team, "value", sib_team)
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
+        return (
+            str(sib_team_val) == team
+            and earlier
+            and getattr(sib, "status", None) not in terminal
+        )
 
     async def _blocked_by_earlier_lane_sibling(self, task: dict[str, Any]) -> bool:
         """True if the SAME dev has an earlier non-terminal code sibling.
@@ -12586,6 +12986,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         keyed on team): this is keyed on the assignee and only gates ``code``.
         Loop-free (skip this tick — no reject, no respawn churn) and best-effort
         (any lookup failure falls through to dispatch so the check never wedges).
+        Equal sequences tie-break by ``created_at``, mirroring the merge
+        barrier, so a dev's wave-tied queue keeps a deterministic order.
         """
         if str(task.get("task_type") or "") != "code":
             return False
@@ -12614,26 +13016,47 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
             return False
         task_id = str(task.get("id"))
+        task_created = task.get("created_at")
         return any(
             self._is_earlier_live_lane_sibling(
-                sib, task_id=task_id, owner=str(owner), seq=seq, terminal=terminal
+                sib,
+                task_id=task_id,
+                owner=str(owner),
+                seq=seq,
+                terminal=terminal,
+                task_created=task_created,
             )
             for sib in siblings
         )
 
     @staticmethod
     def _is_earlier_live_lane_sibling(
-        sib: Any, *, task_id: str, owner: str, seq: int, terminal: set[Any]
+        sib: Any,
+        *,
+        task_id: str,
+        owner: str,
+        seq: int,
+        terminal: set[Any],
+        task_created: Any = None,
     ) -> bool:
-        """True if ``sib`` is a lower-sequence non-terminal code task for ``owner``."""
+        """True if ``sib`` is an earlier non-terminal code task for ``owner``.
+
+        Earlier = lower sequence, or an equal sequence created first (the
+        wave-tie tiebreak mirroring the merge barrier).
+        """
         if str(sib.id) == task_id:
             return False
         sib_type = getattr(sib, "task_type", None)
         sib_type_val = getattr(sib_type, "value", sib_type)
+        sib_seq = getattr(sib, "sequence", 0) or 0
+        earlier = sib_seq < seq or (
+            sib_seq == seq
+            and _created_before(getattr(sib, "created_at", None), task_created)
+        )
         return (
             str(getattr(sib, "assigned_to", None)) == owner
             and str(sib_type_val) == "code"
-            and (getattr(sib, "sequence", 0) or 0) < seq
+            and earlier
             and getattr(sib, "status", None) not in terminal
         )
 
@@ -12898,7 +13321,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             await self.spawn_agent(
                 agent_id=agent_slug,
                 task_id=str(task_id),
-                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
                 spawned_by="_dispatch_claimed_without_agent",
             )
@@ -13317,6 +13740,48 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
     # SMART DISPATCHER - PROMPT BUILDERS
     # =========================================================================
 
+    async def _open_findings_prompt_block(self, task_id: str) -> str:
+        """Render up to ``_PROMPT_FINDINGS_CAP`` open revision-ledger findings
+        for a dispatch prompt: one ``[F-<id8>] file:line — expected -> actual
+        -> fix`` line each, plus a "+N more" overflow line past the cap.
+
+        Returns "" for no task_id, no open findings, or any DB error
+        (fail-open — the agent still has evidence()/triage() to read the
+        full ledger).
+        """
+        if not task_id:
+            return ""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.repositories.review_findings import (
+            STATUS_OPEN,
+            ReviewFindingsRepository,
+        )
+
+        try:
+            async with get_db_context() as db:
+                rows = await ReviewFindingsRepository(db).list_for_task(
+                    UUID(task_id), status=STATUS_OPEN, limit=_PROMPT_FINDINGS_CAP + 1
+                )
+        except Exception:
+            logger.warning("open findings prompt fetch failed", task_id=task_id)
+            return ""
+        if not rows:
+            return ""
+        shown = rows[:_PROMPT_FINDINGS_CAP]
+        lines = [_render_open_finding_prompt_line(row) for row in shown]
+        if len(rows) > _PROMPT_FINDINGS_CAP:
+            lines.append(f"... +{len(rows) - _PROMPT_FINDINGS_CAP} more via evidence()")
+        return "\n".join(lines)
+
+    async def _revision_bounced_block(self, task: dict[str, Any]) -> str:
+        """The rendered open-findings block for a bounced PM prompt, or ""
+        when the task isn't needs_revision (skips the DB fetch otherwise)."""
+        if task.get("status") != "needs_revision":
+            return ""
+        return await self._open_findings_prompt_block(str(task.get("id") or ""))
+
     def _get_workflow_state(
         self,
         status: str,
@@ -13349,16 +13814,26 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
         return status.upper()
 
-    def _get_workflow_instructions(self, state: str, task_id: str) -> str:
+    def _get_workflow_instructions(
+        self, state: str, task_id: str, open_findings_block: str = ""
+    ) -> str:
         """Get workflow instructions for the given state.
 
         Args:
             state: Workflow state (NEEDS_PLAN, READY_TO_START, etc.)
             task_id: Task ID for tool call examples
+            open_findings_block: pre-rendered open-findings text for
+                REVISION_REQUIRED (fetched by the async caller — this method
+                stays sync and just threads the string through).
 
         Returns:
             Markdown-formatted instructions for the current state
         """
+        findings_section = (
+            f"\nOpen findings:\n{open_findings_block}\n"
+            if open_findings_block
+            else "\n(no findings on the ledger for this task)\n"
+        )
         instructions = {
             "NEEDS_PLAN": f"""## NEXT STEP: Claim + Plan + Start
 
@@ -13393,13 +13868,16 @@ i_am_blocked(task_id="...",
     reason="<blocked_external|low_context|...>").
 """,
             "REVISION_REQUIRED": f"""## REVISION REQUESTED
+{findings_section}
+1. i_will_work_on(task_id="{task_id}",
+   plan="<revised plan addressing each finding>")
+2. commit() the fixes, then
+   i_am_done(task_id="{task_id}", notes="<what was fixed>",
+   resolved_findings=[{{"finding_id": "<id>", "commit": "<sha>",
+   "note": "<what changed>"}}, ...])
 
-QA or PM requested changes:
-1. evidence(task_id="{task_id}") — read qa_notes / pm_notes / inline diff
-2. i_will_work_on(task_id="{task_id}",
-   plan="<revised plan addressing each issue>")
-3. commit() the fixes, then
-   i_am_done(task_id="{task_id}", notes="<what was fixed>")
+evidence(task_id="{task_id}") for the full diff + revision_findings if you
+need more than the excerpt above.
 """,
             "VERIFYING": f"""## SELF-VERIFICATION
 
@@ -13416,7 +13894,7 @@ Run the project's quality checks against acceptance criteria:
             state, f'Call evidence(task_id="{task_id}") to check status.'
         )
 
-    def _build_dev_prompt(self, task: dict[str, Any]) -> str:
+    async def _build_dev_prompt(self, task: dict[str, Any]) -> str:
         """Build state-aware initial prompt for a developer."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
@@ -13425,7 +13903,12 @@ Run the project's quality checks against acceptance criteria:
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
         workflow_state = self._get_workflow_state(status, has_plan)
-        instructions = self._get_workflow_instructions(workflow_state, task_id)
+        open_findings_block = ""
+        if workflow_state == "REVISION_REQUIRED":
+            open_findings_block = await self._open_findings_prompt_block(str(task_id))
+        instructions = self._get_workflow_instructions(
+            workflow_state, task_id, open_findings_block
+        )
 
         return f"""You have been assigned a development task.
 
@@ -13900,6 +14383,21 @@ Your job:
 3. Identify any concerns or patterns
 4. Compile audit report for CEO
 5. Call i_am_idle() when complete
+"""
+
+    def _build_vault_curation_prompt(self, task_id: str, title: str) -> str:
+        """Build initial prompt for a root-completion Obsidian-vault curation."""
+        return f"""Root task COMPLETED — Obsidian-vault curation requested.
+
+TASK: {title} ({task_id})
+
+Your job:
+
+1. Review this task's full tree (description, subtasks, PR, journal trail,
+   decisions, any rework story).
+2. Call curate_vault(task_id="{task_id}", narrative=...) EXACTLY ONCE with a
+   concise narrative: what happened, key decisions, rework if any.
+3. Call i_am_idle() when complete.
 """
 
     def _build_a2a_prompt(self, notification: dict[str, Any]) -> str:

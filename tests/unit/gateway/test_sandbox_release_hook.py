@@ -54,6 +54,13 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         )
     )
     task.session.flush = AsyncMock()
+    # pass_review's verified-stamp (ReviewFindingsRepository.list_for_task)
+    # reads via session.execute — an empty scalars result (no findings).
+    task.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     repo = base["evidence_repo"]
     for method in (
         "list_unread_a2a",
@@ -406,6 +413,9 @@ async def test_fail_review_success_releases_sandbox(
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
     task_svc.qa_fail.return_value = after
+    task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
     deps = _make_deps(task=task_svc, journal=journal_svc)

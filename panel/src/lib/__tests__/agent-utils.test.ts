@@ -3,8 +3,11 @@ import {
   resolveToSlug,
   getAgentDisplayName,
   getAgentInitials,
+  getAgentTeamColor,
   isKnownAgent,
   registerAgentRoster,
+  TEAM_COLOR_CLASSES,
+  type AgentTeamColor,
 } from "@/lib/agent-utils";
 
 // Canonical UUIDs from the backend roster (roboco/foundation/identity.py).
@@ -85,5 +88,53 @@ describe("agent-utils existing roster (regression guard)", () => {
 
   it("returns Unassigned for null", () => {
     expect(getAgentDisplayName(null)).toBe("Unassigned");
+  });
+});
+
+describe("getAgentTeamColor (design doc §2 — six buckets)", () => {
+  it.each([
+    ["be-dev-1", "backend"],
+    ["be-pm", "backend"],
+    ["fe-dev-2", "frontend"],
+    ["fe-qa", "frontend"],
+    ["ux-dev-1", "ux_ui"],
+    ["ux-doc", "ux_ui"],
+    ["main-pm", "board"],
+    ["product-owner", "board"],
+    ["head-marketing", "board"],
+    ["auditor", "board"],
+    ["ceo", "ceo"],
+    ["CEO", "ceo"],
+    ["intake-1", "system"],
+    ["secretary-1", "system"],
+    ["pr-reviewer-1", "system"],
+  ] satisfies [string, AgentTeamColor][])(
+    "buckets %s as %s",
+    (slug, expected) => {
+      expect(getAgentTeamColor(slug)).toBe(expected);
+    },
+  );
+
+  it("resolves a UUID to its team bucket via the slug map", () => {
+    expect(getAgentTeamColor(BE_DEV_1_UUID)).toBe("backend");
+  });
+
+  it("falls back to system for an unrecognized id, never throwing", () => {
+    expect(getAgentTeamColor("some-unknown-agent")).toBe("system");
+    expect(getAgentTeamColor(null)).toBe("system");
+  });
+
+  it("gives every bucket a class string with no new color families beyond the six", () => {
+    const buckets: AgentTeamColor[] = [
+      "backend",
+      "frontend",
+      "ux_ui",
+      "board",
+      "ceo",
+      "system",
+    ];
+    for (const bucket of buckets) {
+      expect(TEAM_COLOR_CLASSES[bucket]).toBeTruthy();
+    }
   });
 });

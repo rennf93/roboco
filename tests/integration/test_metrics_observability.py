@@ -242,6 +242,50 @@ async def test_rework_rate_and_attribution(obs_setup: dict) -> None:
     assert report.rework_cost_usd == pytest.approx(0.42)
     qa_row = next(a for a in report.by_agent if a.qa_fails > 0)
     assert qa_row.qa_fails == 1
+    assert qa_row.pm_rejects == 0
+    assert qa_row.ceo_rejects == 0
+
+
+@pytest.mark.asyncio
+async def test_rework_rate_attributes_pm_and_ceo_rejects(obs_setup: dict) -> None:
+    """task.request_changes / task.ceo_reject attribute to their rejector
+    exactly like task.qa_fail / task.pr_fail — the PM-merge-review reject and
+    the CEO reject are rework causes too, not just QA/PR-gate."""
+    db = obs_setup["db"]
+    pid, dev_id, qa_id = (
+        obs_setup["project_id"],
+        obs_setup["dev_id"],
+        obs_setup["qa_id"],
+    )
+    pm_reworked = _task(pid, dev_id, assigned_to=dev_id, revision_count=1)
+    ceo_reworked = _task(pid, dev_id, assigned_to=dev_id, revision_count=1)
+    db.add_all([pm_reworked, ceo_reworked])
+    await db.flush()
+    db.add_all(
+        [
+            _audit(
+                pm_reworked.id,
+                "needs_revision",
+                datetime.now(UTC) - timedelta(hours=1),
+                agent_id=qa_id,
+                event_type="task.request_changes",
+            ),
+            _audit(
+                ceo_reworked.id,
+                "needs_revision",
+                datetime.now(UTC) - timedelta(hours=1),
+                agent_id=qa_id,
+                event_type="task.ceo_reject",
+            ),
+        ]
+    )
+    await db.flush()
+
+    report = await obs_setup["svc"].get_rework_metrics(days=30)
+    # Both named events landed on the same rejector (qa_id) — one aggregate row.
+    combined = next(a for a in report.by_agent if a.pm_rejects or a.ceo_rejects)
+    assert combined.pm_rejects == 1
+    assert combined.ceo_rejects == 1
 
 
 @pytest.mark.asyncio

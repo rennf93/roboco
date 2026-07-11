@@ -4,6 +4,11 @@ import { use, useEffect } from "react";
 import { useJournalEntry } from "@/hooks/use-journals";
 import { usePageRefresh } from "@/hooks";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -103,11 +108,16 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
       {/* Header */}
       <div className="flex items-center justify-between border-b pb-4">
         <div className="flex items-center gap-4">
-          <Link href="/journals" prefetch={false}>
-            <Button variant="ghost" size="icon">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          </Link>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link href="/journals" prefetch={false}>
+                <Button variant="ghost" size="icon">
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent>Back to journals</TooltipContent>
+          </Tooltip>
           <div>
             <div className="flex items-center gap-2 mb-1">
               <EntryTypeBadge type={entry.type} />

@@ -43,6 +43,16 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
     _ldef = base["journal"].latest_decision_at.return_value
     if type(_ldef).__name__ in ("MagicMock", "AsyncMock"):
         base["journal"].latest_decision_at.return_value = datetime.now(UTC)
+    # cell_pm_complete / main_pm_complete's pm-origin verified-stamp reads via
+    # session.execute (ReviewFindingsRepository.list_for_task) before merging
+    # — an empty scalars result (no findings) so the stamp is a no-op here.
+    # Additive (not a session replacement) so a test's own session.begin_nested
+    # setup (e.g. submit_root's savepoint) is untouched.
+    base["task"].session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return ChoreographerDeps(**base)
 
 

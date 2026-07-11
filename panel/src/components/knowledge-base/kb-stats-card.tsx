@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Lightbulb,
   ScrollText,
+  StickyNote,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -29,6 +30,7 @@ const indexIcons: Record<KBIndexType, React.ReactNode> = {
   [KBIndexType.REVIEWS]: <ClipboardCheck className="h-4 w-4 text-pink-500" />,
   [KBIndexType.LEARNINGS]: <Lightbulb className="h-4 w-4 text-yellow-500" />,
   [KBIndexType.PLAYBOOKS]: <ScrollText className="h-4 w-4 text-emerald-500" />,
+  [KBIndexType.VAULT_NOTES]: <StickyNote className="h-4 w-4 text-violet-500" />,
 };
 
 const indexLabels: Record<KBIndexType, string> = {
@@ -41,6 +43,7 @@ const indexLabels: Record<KBIndexType, string> = {
   [KBIndexType.REVIEWS]: "Reviews",
   [KBIndexType.LEARNINGS]: "Learnings",
   [KBIndexType.PLAYBOOKS]: "Playbooks",
+  [KBIndexType.VAULT_NOTES]: "Vault Notes",
 };
 
 interface KBStatsCardProps {

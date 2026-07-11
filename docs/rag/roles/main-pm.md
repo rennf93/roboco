@@ -75,7 +75,7 @@ triage_all()      # actionable tasks across all teams (Main PM only)
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `submit_root`, `complete`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
+| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `submit_root`, `complete`, `request_changes`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
 | `roboco-do`           | `note`, `dm`, `notify`, `evidence`, `pr_update` |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
@@ -111,7 +111,29 @@ master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ← 
 ```
 
 - A cell PM's `complete` merges a leaf PR into its cell branch; after the cell gate, its `complete` merges the cell→root PR into your root branch. You do not merge cell branches.
-- Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`). The reviewer's verdict + issues are carried in your task handoff, and re-`submit_root` is refused if the root PR is **unchanged** since the last `pr_fail` — fix and commit before re-submitting.
+- Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`). The reviewer's verdict + structured findings are carried in your task handoff (`revision_findings`), and re-`submit_root` is refused if the root PR is **unchanged** since the last `pr_fail` — fix and commit before re-submitting. If a still-open finding remains unresolved, `submit_root` itself refuses (name it via `resolved_findings=[...]` first — see `docs/rag/architecture/review-findings.md`).
+
+### Rejecting a cell PM's merge review
+
+When a cell PM's parent lands in `awaiting_pm_review` and the work violates an acceptance criterion or scope boundary, reject it instead of completing it — same shape as the Cell PM's own reject path:
+
+```python
+note(scope="decision", text="Rejecting — cross-cell contract violated")
+request_changes(
+    task_id="<cell-pm-task>",
+    findings=[
+        {
+            "severity": "blocker",
+            "criterion": "<parent-ac-id>",
+            "expected": "the agreed API contract",
+            "actual": "response shape diverges from what the frontend cell expects",
+            "fix": "align the response schema to the contract doc before re-submitting",
+        },
+    ],
+)
+```
+
+Persisted to the revision-findings ledger (`origin=pm`) and rendered into `pm_notes`; the task returns to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated.
 - **The system may call `submit_root` for you.** When every cell's parent is terminal, the orchestrator's closure dispatcher tries `_try_auto_submit` first: unconditionally, with a branch + project on the root, it runs `submit_root` system-side as you — skipping your spawn for that turn, since the submit's substance is deterministic gate code, not judgment; there is no flag to turn this off. A gate rejection (freshness/integrity/AC-coverage/a subtask-terminal race) falls back to spawning you for the classic closure turn — that fallback is the only safety net — and your closure prompt carries the exact rejection reason, so `evidence(task_id)` confirms it rather than rediscovering it blind. Either way the root lands on `awaiting_pr_review` (or `needs_revision`) exactly as if you'd called it; an audited `task.auto_submitted` event marks the cut. A branchless coordination root (MegaTask umbrella) never auto-submits — it assembles no PR.
 - After `pr_pass`, `complete(root_task_id, notes)` escalates the root to the CEO (`awaiting_ceo_approval`) — it does **not** merge. A branchless coordination root (product fan-out, no repo) skips the gate and `complete` escalates directly.
 - The CEO approves and merges the root→master PR from the panel. Only the CEO ever merges to `master`.

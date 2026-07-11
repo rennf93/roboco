@@ -10,6 +10,7 @@ Keyed on the assignee (not the team like the merge barrier) and gates only
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -128,6 +129,27 @@ async def test_higher_sequence_same_dev_sibling_does_not_block() -> None:
 
 
 @pytest.mark.asyncio
+async def test_equal_sequence_same_dev_tiebreaks_by_created_at() -> None:
+    """Wave ties in a dev's own lane order by created_at (mirroring the merge
+    barrier): the earlier-created tied sibling holds the later one; the
+    later-created one does not hold the earlier."""
+    orch = _new_orchestrator()
+    task = _task(0, "be-dev-1")
+    task["created_at"] = "2026-07-10T12:00:00+00:00"
+    earlier = _sibling(0, "be-dev-1", TaskStatus.IN_PROGRESS)
+    earlier.created_at = datetime(2026, 7, 10, 11, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([earlier])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is True
+
+    later = _sibling(0, "be-dev-1", TaskStatus.IN_PROGRESS)
+    later.created_at = datetime(2026, 7, 10, 13, 0, tzinfo=UTC)
+    p1, p2 = _patch_siblings([later])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is False
+
+
+@pytest.mark.asyncio
 async def test_non_code_task_is_never_gated_without_db() -> None:
     orch = _new_orchestrator()
     # A planning/doc task short-circuits before any lookup.
@@ -194,7 +216,7 @@ async def test_spawn_pending_dev_proceeds_when_lane_clear(
     )
     monkeypatch.setattr(orch, "_validate_task_for_spawn", AsyncMock(return_value=None))
     monkeypatch.setattr(orch, "spawn_agent", spawn)
-    monkeypatch.setattr(orch, "_get_prompt_for_agent", MagicMock(return_value="prompt"))
+    monkeypatch.setattr(orch, "_get_prompt_for_agent", AsyncMock(return_value="prompt"))
     monkeypatch.setattr(orch, "_task_git_context", MagicMock(return_value={}))
 
     await orch._spawn_pending_dev(cast("Any", MagicMock()), task, "be-dev-1")

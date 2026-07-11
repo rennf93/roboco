@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   Lightbulb,
   ScrollText,
+  StickyNote,
 } from "lucide-react";
 
 const indexTypeConfig: Record<
@@ -66,6 +67,12 @@ const indexTypeConfig: Record<
     color:
       "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
     icon: <ScrollText className="h-3 w-3" />,
+  },
+  [KBIndexType.VAULT_NOTES]: {
+    label: "Vault Notes",
+    color:
+      "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300",
+    icon: <StickyNote className="h-3 w-3" />,
   },
 };
 

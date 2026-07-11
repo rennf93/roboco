@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import httpx
 from tests.e2e_smoke.arcs import (
     dispatcher_assign,
+    open_finding_ids,
     origin_commit,
     origin_file,
     reviewer_gate_pass_arc,
@@ -137,6 +138,11 @@ def test_pr_fail_revision_loop(e2e_stack: E2EStack) -> None:
         "Hello from the merge chain, with tidy newline conventions!\n",
         f"[{str(h['child_id'])[:8]}] fix: normalize hello.txt trailing newline",
     )
+    # pr_fail's shimmed issue landed as an open ledger finding; the resubmit
+    # is gated by FINDINGS_ADDRESSED, so the PM resolves it — the ledger
+    # contract every real coordinator now follows.
+    open_ids = open_finding_ids(stack, h["cell_id"])
+    assert open_ids, "pr_fail must persist its issue as an open ledger finding"
     expect_ok(
         pm.flow(
             "submit_up",
@@ -145,10 +151,17 @@ def test_pr_fail_revision_loop(e2e_stack: E2EStack) -> None:
                 "Revision addressed: file conventions verified against the "
                 "root branch; re-assembling the cell PR for the gate."
             ),
+            resolved_findings=[
+                {"finding_id": fid, "note": "trailing newline normalized"}
+                for fid in open_ids
+            ],
         ),
         "pm submit_up (resubmit)",
     )
     assert task_state(stack, h["cell_id"])["status"] == "awaiting_pr_review"
+    assert not open_finding_ids(stack, h["cell_id"]), (
+        "resolved findings must leave the open set"
+    )
 
     reviewer_gate_pass_arc(stack, company, h["cell_id"])
     _pm_merges_cell(stack, company, pm, h)

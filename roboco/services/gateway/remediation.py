@@ -33,6 +33,17 @@ def hint_for_unaddressed_acceptance_criteria(
     )
 
 
+def hint_for_open_findings(*, finding_ids: list[str], task_id: str) -> str:
+    ids = ", ".join(finding_ids)
+    return (
+        f"open revision findings block i_am_done for task {task_id}: {ids}. "
+        "Fix each, then call i_am_done(resolved_findings=[{'finding_id': "
+        "'<id>', 'commit': '<sha>', 'note': '<what you changed>'}, ...]) "
+        "naming every id (the id shown is the 8-char prefix from the "
+        "'[F-xxxxxxxx]' rendering in your qa_notes/pm_notes/pr_reviewer_notes)."
+    )
+
+
 def hint_for_missing_journal_decision() -> str:
     return (
         "call note(scope='decision', text='<your decision and rationale>') "

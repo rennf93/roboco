@@ -15,6 +15,7 @@ from .models import (
     DeveloperNote,
     DocNote,
     Finding,
+    PmReviewContent,
     PrReviewContent,
     QaNote,
     ResumptionNote,
@@ -23,6 +24,7 @@ from .models import (
     pr_review_conflict,
     required_shape,
     validate_content,
+    validate_findings,
 )
 from .models import _Content as ContentModel
 from .validators import ContentValidationError
@@ -36,6 +38,7 @@ __all__ = [
     "DeveloperNote",
     "DocNote",
     "Finding",
+    "PmReviewContent",
     "PrReviewContent",
     "QaNote",
     "ResumptionNote",
@@ -46,4 +49,5 @@ __all__ = [
     "pr_review_conflict",
     "required_shape",
     "validate_content",
+    "validate_findings",
 ]

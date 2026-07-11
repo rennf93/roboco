@@ -15,6 +15,7 @@ from roboco.api.schemas.v1.do import (
     ApprovePlaybookRequest,
     ArchivePlaybookRequest,
     CommitRequest,
+    CurateVaultRequest,
     DmRequest,
     DraftPlaybookRequest,
     EvidenceRequest,
@@ -458,5 +459,23 @@ async def do_archive_playbook(
 ) -> dict:
     env = await actions.archive_playbook(
         agent_id=x_agent_id, playbook_id=body.playbook_id
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/curate_vault")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_curate_vault(
+    request: Request,
+    body: CurateVaultRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.curate_vault(
+        agent_id=x_agent_id, task_id=body.task_id, narrative=body.narrative
     )
     return envelope_to_response(env, request)

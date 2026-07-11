@@ -22,8 +22,14 @@ import structlog
 from roboco.exceptions import MergeConflictError
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.batch import is_batch_root_subtask, is_batch_umbrella
-from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.content import (
+    ContentValidationError,
+    markers,
+    validate_findings,
+)
 from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.services.content_notes import apply_structured_note
+from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
@@ -48,11 +54,16 @@ from roboco.services.gateway.remediation import (
     hint_for_missing_progress,
     hint_for_missing_qa_notes,
     hint_for_missing_reflect,
+    hint_for_open_findings,
     hint_for_short_dev_notes,
     hint_for_short_doc_notes,
     hint_for_short_pr_reviewer_notes,
     hint_for_short_quick_context,
     hint_for_unaddressed_acceptance_criteria,
+)
+from roboco.services.repositories.review_findings import (
+    STATUS_OPEN,
+    ReviewFindingsRepository,
 )
 
 logger = structlog.get_logger()
@@ -298,6 +309,7 @@ class _IAmDoneContext:
     role_str: str
     briefing: dict[str, Any]
     notes: str
+    resolved_findings: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -1013,7 +1025,10 @@ class Choreographer:
             # resumes from the previous worker's PR + commits + journal rather
             # than re-exploring the codebase cold on every lifecycle hand-off.
             handoff_highlights = await repo.journal_highlights_for_task(task_id)
-            task_handoff = build_task_handoff(task, handoff_highlights)
+            open_findings = await findings_lib.open_findings_for_task(
+                self.task.session, task_id
+            )
+            task_handoff = build_task_handoff(task, handoff_highlights, open_findings)
         return {
             "recent_team_activity": await repo.recent_team_activity(agent_id),
             "blockers_in_my_lane": await repo.blockers_in_lane(agent_id),
@@ -1940,7 +1955,13 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
-    async def i_am_done(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
+    async def i_am_done(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        resolved_findings: list[dict[str, Any]] | None = None,
+    ) -> Envelope:
         """Submit work for QA.
 
         Atomic: ``spec.can_invoke_intent`` runs first and enforces the
@@ -1950,9 +1971,17 @@ class Choreographer:
         run as defense-in-depth (the spec doesn't yet model them):
 
           - tracing-gate preconditions (progress entry, journal:reflect,
-            acceptance criteria addressed)
+            acceptance criteria addressed, revision-findings-ledger
+            addressed)
           - field-level submit-qa gates (currently: PR open; commits and
             ownership are already covered by the spec extras above)
+
+        ``resolved_findings`` ({finding_id, commit?, note?} entries) marks
+        open ledger rows ``addressed`` BEFORE the tracing gate runs (in
+        ``_i_am_done_gate``, shared by both the fresh path and the
+        resume-from-verifying recovery path below) — a write-then-gate
+        pattern mirroring ``dev_notes``: apply the resolution, then check
+        whether the task's open-findings count is now zero.
 
         Once all gates pass, ``VerbRunner.run_intent("i_am_done", ...)``
         dispatches the (submit_verification, submit_qa) atomic chain
@@ -1987,6 +2016,7 @@ class Choreographer:
             role_str=role_str,
             briefing=briefing,
             notes=notes,
+            resolved_findings=resolved_findings,
         )
         try:
             role = spec_module.Role(role_str)
@@ -2056,6 +2086,40 @@ class Choreographer:
             env, agent_id=ctx.agent_id, task_id=ctx.task_id, verb="i_am_done"
         )
 
+    async def _apply_resolved_findings(self, ctx: _IAmDoneContext) -> None:
+        """Best-effort: mark ledger findings 'addressed' from resolved_findings.
+
+        Write-then-gate (mirrors dev_notes / the a2a warning pattern): this
+        runs BEFORE ``_check_tracing_gates``, so a resolution applied here is
+        immediately reflected in that gate's open-findings count. A malformed
+        entry (bad ref, wrong task, already non-open) is silently skipped —
+        the FINDINGS_ADDRESSED gate below re-surfaces anything that didn't
+        actually get marked, naming the id, so nothing is lost quietly.
+        """
+        await self._apply_resolved_findings_for(ctx.task_id, ctx.resolved_findings)
+
+    async def _apply_resolved_findings_for(
+        self, task_id: UUID, resolved_findings: list[dict[str, Any]] | None
+    ) -> None:
+        """Task-id-keyed sibling of ``_apply_resolved_findings`` — shared by
+        ``submit_up`` / ``submit_root``, which have no ``_IAmDoneContext`` of
+        their own. Same write-then-gate posture: mark ledger rows 'addressed'
+        BEFORE the FINDINGS_ADDRESSED gate re-reads open_finding_ids.
+        """
+        if not resolved_findings:
+            return
+        repo = ReviewFindingsRepository(self.task.session)
+        for item in resolved_findings:
+            ref = str(item.get("finding_id") or "").strip()
+            if not ref:
+                continue
+            await repo.mark_addressed(
+                task_id,
+                ref,
+                commit=item.get("commit"),
+                note=item.get("note"),
+            )
+
     async def _i_am_done_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
         """Run defense-in-depth tracing + field-level gates the spec doesn't model.
 
@@ -2064,6 +2128,7 @@ class Choreographer:
         Returns the rejection envelope if any gate fails; None on pass. Shared
         by the normal and resume-from-verifying paths so both push.
         """
+        await self._apply_resolved_findings(ctx)
         guards = (
             lambda: self._check_tracing_gates(ctx.agent_id, ctx.task_id, ctx.task),
             lambda: self._check_submit_qa_field_gates(
@@ -2215,7 +2280,11 @@ class Choreographer:
             )
 
     async def _conventions_guard(
-        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+        self,
+        agent_id: UUID,
+        task: Any,
+        briefing: dict[str, Any],
+        preferred_parent: str | None = None,
     ) -> Envelope | None:
         """Run the conventions validator on the actor's changed files (gated).
 
@@ -2225,12 +2294,19 @@ class Choreographer:
         flag is off. This is the pr_pass (reviewer) path — the remediation is
         reviewer-aware (``pr_fail``, not ``i_am_blocked`` which a reviewer
         lacks) via ``_conventions_rejection(..., reviewer=True)``.
+
+        ``preferred_parent`` is the assembled task's real parent branch (see
+        ``PRGateMixin._gate_diff_parent``) — the same cross-team-correct base
+        the gate's own diff evidence uses, so a misplaced-definition finding
+        can't be raised against inherited base-branch content.
         """
         from roboco.config import settings as _settings
 
         if not _settings.conventions_enabled:
             return None
-        result = await self.git.conventions_check_for_task(agent_id, task)
+        result = await self.git.conventions_check_for_task(
+            agent_id, task, preferred_parent=preferred_parent
+        )
         return self._conventions_rejection(result, briefing, reviewer=True)
 
     @staticmethod
@@ -2642,6 +2718,28 @@ class Choreographer:
         await self._touch(ctx.task_id)
         return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
+    async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
+        """8-char ids of the task's still-OPEN revision-ledger findings.
+
+        Read AFTER ``_apply_resolved_findings`` has already run for this
+        call (see ``_i_am_done_gate``), so a resolution supplied in THIS
+        i_am_done call is already reflected. Empty for a task with no
+        findings at all — the FINDINGS_ADDRESSED gate is then trivially
+        satisfied. Fails OPEN (treats a lookup failure as "nothing open")
+        on any error — a transient ledger-read hiccup must never turn a new
+        guardrail into an i_am_done outage, mirroring every other
+        best-effort DB/git lookup in this module (e.g. ``_resolve_ci_status``).
+        """
+        try:
+            repo = ReviewFindingsRepository(self.task.session)
+            open_rows = await repo.list_for_task(task_id, status=STATUS_OPEN)
+        except Exception:
+            logger.warning(
+                "open_finding_ids lookup failed — failing open", task_id=str(task_id)
+            )
+            return ()
+        return tuple(str(row.id)[:8] for row in open_rows)
+
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope | None:
@@ -2662,6 +2760,7 @@ class Choreographer:
         has_learning = await self.journal.has_learning_for_task(agent_id, task_id)
         has_struggle = await self.journal.has_struggle_for_task(agent_id, task_id)
         during_work_count = sum([has_decision, has_learning, has_struggle])
+        open_finding_ids = await self._open_finding_ids(task_id)
 
         ctx = _tr.GateContext(
             journal_reflect_present=has_reflect,
@@ -2672,6 +2771,7 @@ class Choreographer:
             # DEV_NOTES_MIN_CHARS reads the persisted task.dev_notes — the dev
             # pre-writes it via note(scope='handoff') before i_am_done.
             dev_notes_min_chars=_settings.dev_notes_min_chars,
+            open_finding_ids=open_finding_ids,
         )
         requirements: list[_tr.Requirement] = [
             r
@@ -2893,12 +2993,15 @@ class Choreographer:
         """Tracing gate for ``submit_up`` (cell PM bubble-up).
 
         VERB_REQUIREMENTS["submit_up"] = SUBTASKS_TERMINAL + JOURNAL_DECISION
-        + JOURNAL_REFLECT + NOTES_MIN_CHARS. The notes value is threaded
-        through a SimpleNamespace shim because the verb hasn't persisted
-        it to the task yet. ``SUBTASKS_TERMINAL`` is filtered out here
-        because the inline ``_subtasks_not_terminal_envelope`` that
+        + JOURNAL_REFLECT + NOTES_MIN_CHARS + FINDINGS_ADDRESSED. The notes
+        value is threaded through a SimpleNamespace shim because the verb
+        hasn't persisted it to the task yet. ``SUBTASKS_TERMINAL`` is filtered
+        out here because the inline ``_subtasks_not_terminal_envelope`` that
         follows enumerates the non-terminal subtask ids — strictly richer
-        remediation than the generic foundation hint.
+        remediation than the generic foundation hint. Shared verbatim by
+        ``submit_root`` (both route through ``_submit_up_guard``), so
+        ``open_finding_ids`` covers pr_gate/pm/ceo-origin findings on either
+        a cell root or a Main-PM root.
         """
         from types import SimpleNamespace
 
@@ -2907,6 +3010,7 @@ class Choreographer:
 
         has_decision = await self.journal.has_decision_for_task(agent_id, task_id)
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
+        open_finding_ids = await self._open_finding_ids(task_id)
         task_view = SimpleNamespace(notes=notes)
         ctx = _tr.GateContext(
             journal_decision_present=has_decision,
@@ -2919,6 +3023,7 @@ class Choreographer:
             # stays documented — only the redundant second-artifact demand drops.
             journal_reflect_present=has_reflect or has_decision,
             notes_min_chars=getattr(_settings, "notes_min_chars", 20),
+            open_finding_ids=open_finding_ids,
         )
         requirements: list[_tr.Requirement] = [
             r
@@ -2983,10 +3088,17 @@ class Choreographer:
         files_changed: list[str] = []
         if t.branch_name:
             files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
+        # Normally empty here — i_am_done's FINDINGS_ADDRESSED gate already
+        # required every open finding resolved before this point — but wired
+        # in for consistency with every other evidence call site.
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, task_id
+        )
         evidence = build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
+            revision_findings=open_findings,
         )
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else "developer"
@@ -3087,30 +3199,25 @@ class Choreographer:
         }
         return simple_hints.get(missing_key)
 
-    async def _build_tracing_gap(
-        self,
-        agent_id: UUID,
-        task_id: UUID,
-        missing: list[str],
-        *,
-        task: Any | None = None,
-    ) -> Envelope:
-        """Translate missing requirement keys into agent-facing hints.
+    def _tracing_gap_hints(self, missing: list[str], task_id: UUID) -> list[str]:
+        """Categorize missing requirement keys into agent-facing hints.
 
-        Multi-missing remediate uses a numbered list so the
-        agent sees each requirement as a distinct step instead of a
-        single semicolon-joined sentence the model parses as one
-        instruction. Each missing key with no hint in
-        ``_hint_for_missing_key`` still surfaces as a literal
-        ``missing[]`` entry (defense-in-depth: the agent gets at least
-        the key name even if no hint is registered).
+        ``acceptance_criterion:<name>`` and ``finding:<id8>`` are prefix-based
+        tokens batched into ONE hint each (not one per item); every other key
+        maps through ``_hint_for_missing_key``, falling back to a generic
+        hint (defense-in-depth: the agent gets at least the key name even
+        when no hint is registered) when unrecognized.
         """
         hints: list[str] = []
         unaddressed: list[str] = []
+        open_findings: list[str] = []
         unhinted: list[str] = []
         for m in missing:
             if m.startswith("acceptance_criterion:"):
                 unaddressed.append(m.split(":", 1)[1])
+                continue
+            if m.startswith("finding:"):
+                open_findings.append(m.split(":", 1)[1])
                 continue
             hint = self._hint_for_missing_key(m, task_id)
             if hint is not None:
@@ -3124,14 +3231,33 @@ class Choreographer:
                     task_id=str(task_id),
                 )
             )
-        # Fallback hints for missing keys without a registered hint —
-        # the agent at least sees the literal token instead of nothing.
+        if open_findings:
+            hints.append(
+                hint_for_open_findings(finding_ids=open_findings, task_id=str(task_id))
+            )
         for token in unhinted:
             hints.append(
                 f"requirement {token!r} not satisfied — see lifecycle docs "
                 f"or escalate via i_am_blocked if you do not know how to "
                 f"satisfy this."
             )
+        return hints
+
+    async def _build_tracing_gap(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        missing: list[str],
+        *,
+        task: Any | None = None,
+    ) -> Envelope:
+        """Translate missing requirement keys into agent-facing hints.
+
+        Multi-missing remediate uses a numbered list so the agent sees each
+        requirement as a distinct step instead of a single semicolon-joined
+        sentence the model parses as one instruction.
+        """
+        hints = self._tracing_gap_hints(missing, task_id)
         if len(hints) <= 1:
             remediate = hints[0] if hints else ""
         else:
@@ -5568,17 +5694,33 @@ class Choreographer:
         return value.value if hasattr(value, "value") else str(value)
 
     async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
-        """Cross-cell sequencing: in a product fan-out the implementation cells
+        """Cross-cell sequencing: in a multi-cell fan-out the implementation cells
         (FRONTEND and BACKEND) depend on the UX/UI cell task — UX design defines
         the screens and API contracts both cells build against, so it is upstream
         of implementation. Wires the dependency in either delegation order. A
         dev/code subtask delegated under a cell task that is itself still waiting
         on that dependency inherits it, so the developer is held until UX is done
         instead of coding ahead of the design. Best-effort: never breaks delegate.
+
+        Fires for a product fan-out (``product_id`` set) AND a MegaTask
+        root-subtask (a batch item that fans out to its own cells via
+        ``cell_projects`` and carries no ``product_id``) — without the latter the
+        cross-cell edges were never wired for MegaTask cells, so they ran fully
+        in parallel and the sequence was ignored (divergent branches).
         """
-        if parent is None or getattr(parent, "product_id", None) is None:
+        if parent is None:
             return
         from roboco.foundation.identity import Team
+        from roboco.foundation.policy.batch import is_batch_root_subtask
+
+        is_fanout = getattr(
+            parent, "product_id", None
+        ) is not None or is_batch_root_subtask(
+            batch_id=getattr(parent, "batch_id", None),
+            parent_task_id=getattr(parent, "parent_task_id", None),
+        )
+        if not is_fanout:
+            return
 
         nt_team = self._team_value(new_task.team)
         try:
@@ -5600,7 +5742,13 @@ class Choreographer:
             )
 
     async def _depend_frontend_on_ux(self, fe_task: Any, parent_id: Any) -> None:
-        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new FRONTEND cell task wait on its non-terminal UX/UI sibling.
+
+        The wire is followed by a wave restamp (not a hand-rolled ``ux+1``
+        write) so the sequence reflects EVERY same-parent dependency the task
+        carries — a relative write could undercut a collision-derived stamp
+        and invert the claim gate's order against a wired edge.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5618,12 +5766,13 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(fe_task.id, ux.id)
-            await self.task.set_sequence(
-                fe_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(fe_task.id)
 
     async def _depend_backend_on_ux(self, be_task: Any, parent_id: Any) -> None:
-        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling."""
+        """Make a new BACKEND cell task wait on its non-terminal UX/UI sibling.
+
+        Wire + wave restamp, mirroring :meth:`_depend_frontend_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
@@ -5641,19 +5790,22 @@ class Choreographer:
         )
         if ux is not None:
             await self.task.add_dependency(be_task.id, ux.id)
-            await self.task.set_sequence(
-                be_task.id, (getattr(ux, "sequence", 0) or 0) + 1
-            )
+            await self.task.stamp_wave_sequence(be_task.id)
 
     async def _depend_pending_frontends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started FRONTEND siblings onto a new UX/UI task.
+
+        Each retro-wired sibling is wave-restamped so it lands above the UX
+        task's OWN stamped wave (the new task is stamped before this runs) —
+        a relative ``ux+1`` write here read the pre-stamp sequence and could
+        invert the order.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for fe in siblings:
             if (
@@ -5662,17 +5814,20 @@ class Choreographer:
                 and fe.status in not_started
             ):
                 await self.task.add_dependency(fe.id, ux_task.id)
-                await self.task.set_sequence(fe.id, ux_sequence)
+                await self.task.stamp_wave_sequence(fe.id)
 
     async def _depend_pending_backends_on_ux(
         self, ux_task: Any, parent_id: Any
     ) -> None:
-        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task."""
+        """Retro-wire not-yet-started BACKEND siblings onto a new UX/UI task.
+
+        Wire + wave restamp per sibling, mirroring
+        :meth:`_depend_pending_frontends_on_ux`.
+        """
         from roboco.foundation.identity import Team
         from roboco.models.base import TaskStatus
 
         not_started = {TaskStatus.BACKLOG, TaskStatus.PENDING}
-        ux_sequence = (getattr(ux_task, "sequence", 0) or 0) + 1
         siblings = await self.task.get_subtasks(parent_id)
         for be in siblings:
             if (
@@ -5681,7 +5836,7 @@ class Choreographer:
                 and be.status in not_started
             ):
                 await self.task.add_dependency(be.id, ux_task.id)
-                await self.task.set_sequence(be.id, ux_sequence)
+                await self.task.stamp_wave_sequence(be.id)
 
     async def _resolve_subtask_project(
         self, parent: Any, inputs: DelegateInputs
@@ -5820,14 +5975,6 @@ class Choreographer:
             dependency_ids=list(inputs.depends_on) if inputs.depends_on else [],
         )
         new_task = await self.task.create_subtask(req)
-        # Assign a distinct ordinal within the parent's siblings so the merge
-        # order is deterministic. Within-cell siblings were all left at the
-        # default sequence 0 — which is why two leaf PRs raced into the same
-        # cell branch and the second wedged. Each new sibling takes the next
-        # ordinal (the count of pre-existing siblings).
-        siblings = await self.task.get_subtasks(parent_task_id)
-        next_seq = len([s for s in siblings if s.id != new_task.id])
-        await self.task.set_sequence(new_task.id, next_seq)
         # Wire the dev-task collision DAG (multi-level sequencing edge kind 3):
         # run the deterministic analyzer over the parent's surfaced siblings
         # and add_dependency each collision edge so a later dev task stays
@@ -5857,6 +6004,16 @@ class Choreographer:
             Team.UX_UI.value,
         ):
             await self.task.wire_by_osmosis_edge(new_task.id)
+        # Post-wiring wave stamp: sequence = 1 + max(same-parent dependency
+        # sequences), 0 when independent — so independent siblings tie (and
+        # run in parallel under the sequence claim gate) while colliding /
+        # ordered ones ascend. Replaces the raw per-sibling ordinal, which
+        # gave independent siblings distinct sequences and serialized ALL
+        # delegated work fleet-wide. The cross-cell UX wiring (in the caller)
+        # restamps any task it re-wires, so every sequence write in the
+        # delegate flow is this one wave computation; merge order for wave
+        # ties falls back to created_at in the merge/lane dispatch barriers.
+        await self.task.stamp_wave_sequence(new_task.id)
         return new_task
 
     @staticmethod
@@ -5890,7 +6047,13 @@ class Choreographer:
             return None
         return f"role {pm_role!r} cannot delegate"
 
-    async def submit_up(self, pm_agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
+    async def submit_up(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        resolved_findings: list[dict[str, Any]] | None = None,
+    ) -> Envelope:
         """Cell PM bubbles a finished cell-scope task up to the Main PM.
 
         Spec gate runs first and enforces role membership (cell_pm only)
@@ -5899,10 +6062,14 @@ class Choreographer:
         verb-specific ``_submit_up_guard`` runs the rest of the
         preflight checks the spec doesn't model: ownership, notes
         length, journal:decision presence, subtasks-terminal, branch
-        present. Then ``VerbRunner.run_intent("submit_up", ...)``
-        dispatches the (submit_pm_review,) atomic chain plus the
-        (create_pr,) side effect inside a savepoint. After the runner
-        returns, the task is handed off to the Main PM (reassign + a2a).
+        present, and — via FINDINGS_ADDRESSED — every open pr_gate/pm/
+        ceo-origin ledger finding on this root. ``resolved_findings``
+        ({finding_id, commit?, note?} entries) marks ledger rows
+        addressed BEFORE that gate runs (mirrors ``i_am_done``). Then
+        ``VerbRunner.run_intent("submit_up", ...)`` dispatches the
+        (submit_pm_review,) atomic chain plus the (create_pr,) side
+        effect inside a savepoint. After the runner returns, the task
+        is handed off to the Main PM (reassign + a2a).
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(
@@ -5948,6 +6115,13 @@ class Choreographer:
                 verb="submit_up",
             )
 
+        # Write-then-gate: resolve findings before the guard's
+        # FINDINGS_ADDRESSED check re-reads open_finding_ids (mirrors
+        # i_am_done's _apply_resolved_findings). Owner-gated: a stale
+        # non-owner PM's resolutions must not mutate the ledger — the
+        # ownership guard below rejects it, but the session still commits.
+        if t.assigned_to == pm_agent_id:
+            await self._apply_resolved_findings_for(task_id, resolved_findings)
         # Verb-specific preflight: ownership + notes-length + journal:decision
         # + subtasks-terminal + branch-present. None of these are modelled by
         # the spec yet — keep them in the verb body.
@@ -6435,6 +6609,33 @@ class Choreographer:
             )
         return None
 
+    async def _stamp_pm_findings_verified_or_rejection(
+        self, t: Any, *, agent_id: UUID, task_id: UUID, role_str: str, verb: str
+    ) -> Envelope | None:
+        """PM merge's same-transaction verified-stamp for pm-origin addressed
+        findings — parity with ``QAMixin.pass_review`` / ``PRGateMixin.pr_pass``:
+        the merge IS the confirmation that a PM's own ``request_changes``
+        findings on this root were resolved. Not best-effort — a repo error
+        here fails the merge cleanly (returned as a rejection) rather than
+        landing a completed task against a stale ledger.
+        """
+        try:
+            await findings_lib.stamp_addressed_verified(
+                self.task.session, t.id, origin="pm"
+            )
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verified-stamp failed: {exc}",
+                    remediate="retry complete; if persistent, escalate to the CEO",
+                    context_briefing=await self._briefing_for(agent_id, task_id),
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
+        return None
+
     async def cell_pm_complete(
         self, pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
@@ -6464,6 +6665,14 @@ class Choreographer:
                 task_id=task_id,
                 verb="cell_pm_complete",
             )
+        if stamp_rejection := await self._stamp_pm_findings_verified_or_rejection(
+            t,
+            agent_id=pm_agent_id,
+            task_id=task_id,
+            role_str="cell_pm",
+            verb="cell_pm_complete",
+        ):
+            return stamp_rejection
         # Resolve the merge target from the PARENT task's real
         # branch_name. For a leaf this is the cell branch (same team — no
         # change); for a cell task it is the root branch (feature/main_pm/…),
@@ -6868,17 +7077,25 @@ class Choreographer:
         )
 
     async def submit_root(
-        self, main_pm_agent_id: UUID, task_id: UUID, notes: str
+        self,
+        main_pm_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        resolved_findings: list[dict[str, Any]] | None = None,
     ) -> Envelope:
         """Main PM opens the root→master PR and enters the in-path review gate.
 
         The root analogue of the cell PM's submit_up: the spec gate (main_pm +
         in_progress) runs first, then the same preflight guard (ownership, notes
-        length, journal:decision, subtasks-terminal, branch present). Then
-        ``VerbRunner.run_intent("submit_root", ...)`` opens the root→master PR
-        (the ``create_root_pr`` pre-side-effect) and transitions in_progress →
-        awaiting_pr_review. The main reviewer then reviews the assembled
-        root→master diff; after pr_pass, ``complete`` escalates to the CEO.
+        length, journal:decision, subtasks-terminal, branch present, and every
+        open pr_gate/pm/ceo-origin ledger finding via FINDINGS_ADDRESSED).
+        ``resolved_findings`` ({finding_id, commit?, note?} entries) marks
+        ledger rows addressed BEFORE that gate runs (mirrors ``i_am_done`` /
+        ``submit_up``). Then ``VerbRunner.run_intent("submit_root", ...)``
+        opens the root→master PR (the ``create_root_pr`` pre-side-effect) and
+        transitions in_progress → awaiting_pr_review. The main reviewer then
+        reviews the assembled root→master diff; after pr_pass, ``complete``
+        escalates to the CEO.
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(
@@ -6919,6 +7136,12 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_root",
             )
+        # Write-then-gate: resolve findings before the guard's
+        # FINDINGS_ADDRESSED check re-reads open_finding_ids. Owner-gated:
+        # a stale non-owner PM's resolutions must not mutate the ledger —
+        # the ownership guard below rejects it, but the session still commits.
+        if t.assigned_to == main_pm_agent_id:
+            await self._apply_resolved_findings_for(task_id, resolved_findings)
         # Same preflight as submit_up — ownership + notes-length +
         # journal:decision + subtasks-terminal + branch-present. submit_root's
         # tracing requirements mirror submit_up's, so the shared guard applies.
@@ -7138,6 +7361,14 @@ class Choreographer:
                 task_id=root_task_id,
                 verb="main_pm_complete",
             )
+        if stamp_rejection := await self._stamp_pm_findings_verified_or_rejection(
+            t,
+            agent_id=main_pm_agent_id,
+            task_id=root_task_id,
+            role_str="main_pm",
+            verb="main_pm_complete",
+        ):
+            return stamp_rejection
 
         # A branchless coordination root (product fan-out, no repo/PR) skips the
         # in-path gate: it never went through submit_root / pr_pass, so walk it
@@ -7301,17 +7532,96 @@ class Choreographer:
         # role_str == "main_pm" — spec._PM_ROLES has only these two members.
         return await self.main_pm_complete(agent_id, task_id, notes)
 
+    @staticmethod
+    def _validate_request_changes_findings(
+        t: Any, issues: list[str] | None, findings: list[dict[str, Any]] | None
+    ) -> tuple[list[Any], Envelope | None]:
+        """Normalize + validate request_changes's findings — mirrors QA's
+        fail_review / the in-path gate's pr_fail helpers.
+
+        Returns ``(validated, rejection)``; the caller attaches
+        ``context_briefing``/introspection (this helper has no ``self``).
+        """
+        raw = findings_lib.merge_findings_and_issues(findings, issues)
+        if not raw:
+            return [], Envelope.invalid_state(
+                message="request_changes requires at least one finding",
+                remediate=(
+                    "pass findings=[{file, severity, expected, actual}, ...] "
+                    "(issues=['...'] is still accepted this release, deprecated)"
+                ),
+            )
+        if cap := findings_lib.findings_count_guard(raw):
+            return [], cap
+        try:
+            validated = validate_findings(raw)
+        except ContentValidationError as exc:
+            return [], Envelope.invalid_state(
+                message=f"malformed finding: {exc.field} — {exc.reason}",
+                remediate=(
+                    "each finding needs expected + actual (file/line/severity/"
+                    "criterion/fix/evidence optional)"
+                ),
+            )
+        if unknown := findings_lib.unknown_finding_criteria(t, validated):
+            return [], findings_lib.criterion_mismatch_rejection(t, unknown)
+        return validated, None
+
+    async def _attach_request_changes_findings(
+        self, t: Any, agent: Any, role_str: str, validated: list[Any]
+    ) -> str:
+        """Insert request_changes's findings into the ledger, write the
+        ``PmReviewContent`` note (``pm_notes``), and return the id-prefixed
+        rendering used for the a2a body to the new owner."""
+        # GatewayAgentView carries no slug field — falls back to the role
+        # string (mirrors _post_gate_review's reviewer_slug fallback).
+        actor_slug = (
+            getattr(agent, "slug", None) or role_str if agent is not None else role_str
+        )
+        _, summary = await findings_lib.insert_and_render(
+            self.task.session,
+            task_id=t.id,
+            origin="pm",
+            round=findings_lib.next_round(t),
+            author_slug=actor_slug,
+            findings=validated,
+        )
+        try:
+            apply_structured_note(
+                t,
+                "pm_review",
+                {
+                    "summary": summary,
+                    "findings": [f.model_dump(mode="json") for f in validated],
+                },
+            )
+        except ContentValidationError:
+            logger.warning(
+                "request_changes pm_review note skipped (invalid content)",
+                task_id=str(t.id),
+            )
+        return summary
+
     async def request_changes(
-        self, pm_agent_id: UUID, task_id: UUID, issues: list[str]
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        issues: list[str] | None = None,
+        findings: list[dict[str, Any]] | None = None,
     ) -> Envelope:
-        """PM rejects the merge review with concrete issues; → needs_revision.
+        """PM rejects the merge review with concrete findings; → needs_revision.
 
         The merge-level reject at awaiting_pm_review (the PM's only other
         verbs there are complete/escalate — an AC violation caught at merge
-        review used to loop block→escalate). Spec gate enforces role + source
-        status; the composed ``request_changes`` atomic routes the revision
-        like a QA fail, then the verb body a2a-delivers the issues to the new
-        owner so the reject reason is never stranded.
+        review used to loop block→escalate). ``findings`` is the structured
+        revision-findings ledger entry (wire Pattern A); ``issues`` (free
+        text) is still accepted for one release and shimmed into file-less
+        findings (deprecated). Spec gate enforces role + source status; the
+        findings are inserted into the ledger and written as a structured
+        ``PmReviewContent`` note (``pm_notes``) BEFORE the composed
+        ``request_changes`` atomic routes the revision like a QA fail, then
+        the verb body a2a-delivers the same rendering to the new owner so
+        the reject reason is never stranded.
         """
         t = await self.task.get(task_id)
         briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
@@ -7324,24 +7634,27 @@ class Choreographer:
             )
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
-        if not issues:
+        validated, bad = self._validate_request_changes_findings(t, issues, findings)
+        if bad is not None:
+            bad.context_briefing = briefing
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="request_changes requires at least one issue",
-                    remediate="pass issues=['<concrete actionable issue>', ...]",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                bad.with_introspection(task=t, role=role_str),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="request_changes",
             )
-        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
+        # Placeholder (id-less) rendering drives the spec gate's free-text
+        # check — the ledger ids don't exist until after insert, below.
+        notes = findings_lib.render_findings_summary([(None, f) for f in validated])
         rejection, spec_gate = await self._request_changes_spec_gate(
-            pm_agent_id, task_id, t, agent, role_str, notes, issues
+            pm_agent_id, task_id, t, agent, role_str, notes, []
         )
         if rejection is not None:
             return rejection
         _role, spec_ctx = spec_gate
+        summary = await self._attach_request_changes_findings(
+            t, agent, role_str, validated
+        )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("request_changes", t, agent, spec_ctx)
@@ -7364,14 +7677,17 @@ class Choreographer:
                 to_agent=t.assigned_to,
                 skill="code_review",
                 task_id=task_id,
-                body=f"PM merge review needs changes. {notes}",
+                body=f"PM merge review needs changes.\n{summary}",
             )
-        return Envelope.ok(
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+        if hint := findings_lib.findings_count_hint(validated):
+            env.warning = hint
+        return env
 
     async def _request_changes_spec_gate(
         self,

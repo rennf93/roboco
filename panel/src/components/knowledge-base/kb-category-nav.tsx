@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   Lightbulb,
   ScrollText,
+  StickyNote,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,11 @@ const categoryConfig: Record<
     label: "Playbooks",
     description: "Curated, reusable procedures",
     icon: <ScrollText className="h-5 w-5 text-emerald-500" />,
+  },
+  [KBIndexType.VAULT_NOTES]: {
+    label: "Vault Notes",
+    description: "Human-authored notes from the Obsidian vault",
+    icon: <StickyNote className="h-5 w-5 text-violet-500" />,
   },
 };
 

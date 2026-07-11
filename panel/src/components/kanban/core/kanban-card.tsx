@@ -14,7 +14,6 @@ import {
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PriorityIndicator } from "../shared/priority-indicator";
@@ -149,36 +148,35 @@ export function KanbanCard({
             </Badge>
             <TaskTypeBadge type={task.task_type} showLabel={false} />
             {task.sequence != null && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger>
-                    <Badge variant="outline" className="text-xs gap-1">
-                      <Hash className="h-3 w-3" />
-                      {task.sequence}
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Sequence #{task.sequence}</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Badge variant="outline" className="text-xs gap-1">
+                    <Hash className="h-3 w-3" />
+                    {task.sequence}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    Sequence #{task.sequence} — lower-sequence siblings run
+                    first
+                  </p>
+                </TooltipContent>
+              </Tooltip>
             )}
             <PriorityIndicator priority={task.priority} />
             {isBlocked && <BlockedBadge />}
             {isBacklog && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger>
-                    <Badge variant="secondary" className="text-xs gap-1">
-                      <Clock className="h-3 w-3" />
-                      Backlog
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Awaiting session creation by PM</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Badge variant="secondary" className="text-xs gap-1">
+                    <Clock className="h-3 w-3" />
+                    Backlog
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Awaiting session creation by PM</p>
+                </TooltipContent>
+              </Tooltip>
             )}
           </div>
           <AssigneeAvatar agentId={task.assigned_to} />
@@ -189,18 +187,25 @@ export function KanbanCard({
           <div className="flex items-center justify-between gap-1 mt-2 pt-2 border-t">
             {/* Quick Assign */}
             <Popover open={assignOpen} onOpenChange={setAssignOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="max-sm:min-h-11 text-muted-foreground hover:text-foreground"
-                  onClick={(e) => e.stopPropagation()}
-                  disabled={isBacklog}
-                >
-                  <UserPlus className="h-3 w-3 mr-1" />
-                  Assign
-                </Button>
-              </PopoverTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="max-sm:min-h-11 text-muted-foreground hover:text-foreground"
+                      onClick={(e) => e.stopPropagation()}
+                      disabled={isBacklog}
+                    >
+                      <UserPlus className="h-3 w-3 mr-1" />
+                      Assign
+                    </Button>
+                  </PopoverTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Assign this task to an agent on its team
+                </TooltipContent>
+              </Tooltip>
               <PopoverContent
                 className="w-64 p-2"
                 onClick={(e) => e.stopPropagation()}
@@ -220,30 +225,44 @@ export function KanbanCard({
             <div className="flex items-center gap-1">
               {showQaActions ? (
                 <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="max-sm:min-h-11 text-green-600 hover:text-green-700 hover:bg-green-50"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction("pass-qa", task.id);
-                    }}
-                  >
-                    <CheckCircle className="h-3 w-3 mr-1" />
-                    Pass
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="max-sm:min-h-11 text-red-600 hover:text-red-700 hover:bg-red-50"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAction("fail-qa", task.id);
-                    }}
-                  >
-                    <XCircle className="h-3 w-3 mr-1" />
-                    Fail
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="max-sm:min-h-11 text-green-600 hover:text-green-700 hover:bg-green-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAction("pass-qa", task.id);
+                        }}
+                      >
+                        <CheckCircle className="h-3 w-3 mr-1" />
+                        Pass
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Pass QA — you&apos;ll be asked for review notes
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="max-sm:min-h-11 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAction("fail-qa", task.id);
+                        }}
+                      >
+                        <XCircle className="h-3 w-3 mr-1" />
+                        Fail
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Fail QA — returns the task to the developer with notes
+                    </TooltipContent>
+                  </Tooltip>
                 </>
               ) : (
                 task.status !== TaskStatus.COMPLETED &&

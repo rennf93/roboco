@@ -43,8 +43,11 @@ from roboco.foundation.policy.batch import (
     main_pm_cannot_own_code,
     pm_cannot_own_code,
 )
-from roboco.foundation.policy.content import markers
-from roboco.foundation.policy.content.validators import ContentValidationError
+from roboco.foundation.policy.content import Finding, Severity, markers
+from roboco.foundation.policy.content.validators import (
+    ContentValidationError,
+    reject_trivial,
+)
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -70,6 +73,7 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
@@ -378,6 +382,33 @@ def _append_capped(existing: str | None, addition: str) -> str:
     return _TRUNCATION_MARKER + joined[-keep:]
 
 
+_CEO_REJECT_ACTUAL_CAP = 300
+_CEO_REJECT_EVIDENCE_CAP = 2000
+
+
+def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
+    """Split a CEO rejection reason into a ledger Finding's (actual, evidence).
+
+    ``actual`` (the Finding field cap) gets the reason, truncated with an
+    "…[N chars omitted]" marker (caller-side truncation — the model itself
+    only caps, never truncates) when it overruns; the untruncated reason
+    (up to its own, larger cap) then lands in ``evidence`` so nothing not
+    already lost to the 2000-char ceiling is dropped silently.
+    """
+    text = reason.strip()
+    if len(text) <= _CEO_REJECT_ACTUAL_CAP:
+        return text, None
+    evidence = text
+    if len(evidence) > _CEO_REJECT_EVIDENCE_CAP:
+        omitted_ev = len(evidence) - _CEO_REJECT_EVIDENCE_CAP
+        marker_ev = f"…[{omitted_ev} chars omitted]"
+        evidence = evidence[: _CEO_REJECT_EVIDENCE_CAP - len(marker_ev)] + marker_ev
+    omitted = len(text) - _CEO_REJECT_ACTUAL_CAP
+    marker = f"…[{omitted} chars omitted]"
+    actual = text[: _CEO_REJECT_ACTUAL_CAP - len(marker)] + marker
+    return actual, evidence
+
+
 def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
     """Combine a PR-review summary with issue bullets into one body string."""
     body = (summary or "").strip()
@@ -387,6 +418,18 @@ def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
     if not bullets:
         return body
     return f"{body}\n\n{bullets}".strip() if body else bullets
+
+
+@dataclass(frozen=True)
+class _LineageCutContext:
+    """Git handles for a freshly cut branch, bundled so the dependency-
+    lineage merge helpers (``_apply_dependency_lineage`` /
+    ``_merge_one_dependency``) stay under PLR0913.
+    """
+
+    git_service: Any
+    workspace: Path
+    project: Any
 
 
 @dataclass
@@ -609,6 +652,14 @@ ROADMAP_SOURCE = "board_roadmap"
 # Source tag stamped on a task MATERIALIZED from an approved roadmap item
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
+
+# Source tag for an intake draft the vault-intake watcher originates from a
+# #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
+# dispatched — it rides the intake board-review path (PENDING, Product-Owner-
+# assigned, team=board, confirmed_by_human=True, exactly the "Board review &
+# Start" shape): the board reviews, the CEO's approve_and_start hands it to
+# the Main PM. The board routing is the start gate; no held-source skip.
+VAULT_NOTE_SOURCE = "vault_note"
 
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
@@ -854,6 +905,66 @@ class TaskService(BaseService):
                     details=dict(details),
                 )
             )
+        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _touch_vault_frontmatter(
+        self, task: TaskTable, *, to_status: str, team: str
+    ) -> None:
+        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
+
+        Only patches an EXISTING note's status/team/pr fields — no extra
+        queries (everything used here is already a plain column on ``task``).
+        A vault failure (or a not-yet-materialized note) never blocks the
+        transition; see ``VaultWriter.touch_task_frontmatter``.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.vault_writer import get_vault_writer
+
+            get_vault_writer().touch_task_frontmatter(
+                task_id=str(task.id),
+                status=to_status,
+                team=team,
+                pr_number=task.pr_number,
+                pr_url=task.pr_url,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Vault frontmatter touch failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _materialize_vault_note(self, task: TaskTable) -> None:
+        """Best-effort Obsidian-vault materialize-on-create (event seam).
+
+        Deterministic template only — the ``## Narrative`` section stays
+        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
+        swallow-and-log posture: a vault failure never blocks task creation,
+        and boards stop showing only curated/rebuilt tasks.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.project import get_project_service
+            from roboco.services.vault_assembly import assemble_task_note_data
+            from roboco.services.vault_writer import get_vault_writer
+
+            data = await assemble_task_note_data(
+                self, get_project_service(self.session), task
+            )
+            get_vault_writer().write_task(data)
+        except Exception as e:
+            self.log.warning(
+                "Vault materialize-on-create failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     def _emit_escalation_audit(
         self, task: TaskTable, *, escalator_slug: str, target_slug: str
@@ -887,10 +998,11 @@ class TaskService(BaseService):
         """Audit event types to emit for a transition.
 
         Always the generic ``task.<status>``; plus a rejector-attributed
-        ``task.qa_fail`` / ``task.pr_fail`` when a reviewer bounces a task to
-        needs_revision — so the per-agent rework scorecard can charge the
-        rejection to the QA / PR-reviewer who made it (the audit row carries
-        their agent_id), not the developer who owns the task.
+        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
+        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
+        so the per-agent rework scorecard can charge the rejection to whoever
+        made it (the audit row carries their agent_id), not the developer who
+        owns the task.
         """
         events = [f"task.{to_status}"]
         if to_status == TaskStatus.NEEDS_REVISION.value:
@@ -898,6 +1010,10 @@ class TaskService(BaseService):
                 events.append("task.pr_fail")
             elif agent_role == "qa":
                 events.append("task.qa_fail")
+            elif agent_role in ("cell_pm", "main_pm"):
+                events.append("task.request_changes")
+            elif agent_role == "ceo":
+                events.append("task.ceo_reject")
         return events
 
     # =========================================================================
@@ -1121,6 +1237,7 @@ class TaskService(BaseService):
         # bypass this; they are TODO-listed at the call sites.
 
         await self._attach_baseline_constraints(task)
+        await self._materialize_vault_note(task)
         return task
 
     async def _attach_baseline_constraints(self, task: TaskTable) -> None:
@@ -1599,6 +1716,24 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == X_FEATURE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_vault_note_drafts(self) -> list[TaskTable]:
+        """Vault-note drafts still awaiting board review / CEO approval — the
+        vault-intake watcher's open-cap basis. Keys on ``team == BOARD``:
+        ``approve_and_start`` flips the team to MAIN_PM (draft leaves the cap)
+        and a cancelled/rejected draft goes terminal (leaves too), so the cap
+        counts only drafts actually pending a human decision — it can never
+        permanently brick the engine. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VAULT_NOTE_SOURCE,
+                TaskTable.team == Team.BOARD,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
@@ -2204,6 +2339,13 @@ class TaskService(BaseService):
             await self._remove_task_worktree(workspace, require_uuid(task.id))
             raise
 
+        # Best-effort, never fails the claim: backfill dependency content
+        # outside this branch's own ancestor chain (the cross-subtree/
+        # cross-cell dependency-lineage gap).
+        await self._apply_dependency_lineage(
+            task, _LineageCutContext(git_service, workspace, project)
+        )
+
         self.log.info(
             "Auto-created hierarchical branch",
             task_id=str(task.id),
@@ -2228,6 +2370,98 @@ class TaskService(BaseService):
                 task_id=str(task_id),
             )
 
+    async def _apply_dependency_lineage(
+        self, task: TaskTable, ctx: _LineageCutContext
+    ) -> None:
+        """Merge each same-repo dependency's merged content into the freshly
+        cut branch when it lies outside the branch's own ancestor chain (see
+        ``GitService.merge_dependency_lineage`` for the why).
+
+        The dependency gate (``_claim_blocked_by_dependencies``) enforces
+        TIMING only — a dependency edge whose merge target isn't an ancestor
+        of this branch's base still lets the claim through. Scoped to
+        dependencies in the SAME repo as ``ctx.project`` — a cross-repo edge
+        has no shared git history to merge, so it is silently skipped.
+        Zero-cost when the task has no dependencies (the common case).
+        """
+        dep_ids = list(task.dependency_ids or [])
+        if not dep_ids:
+            return
+        for dep_id in dep_ids:
+            try:
+                await self._merge_one_dependency(task, ctx, dep_id)
+            except Exception:
+                self.log.warning(
+                    "dependency lineage merge errored",
+                    task_id=str(task.id),
+                    dep_id=str(dep_id),
+                    exc_info=True,
+                )
+        await self.session.flush()
+
+    async def _merge_one_dependency(
+        self, task: TaskTable, ctx: _LineageCutContext, dep_id: Any
+    ) -> None:
+        """Resolve one dependency's merge target and merge it in if needed."""
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        dep_task = await self.get(UUID(str(dep_id)))
+        if dep_task is None or dep_task.project_id != ctx.project.id:
+            return  # missing, or a cross-repo edge: no shared git history
+        source_branch = await resolve_parent_branch(dep_task, self)
+        branch_name = str(task.branch_name)
+        if not source_branch or source_branch == branch_name:
+            return
+        result = await ctx.git_service.merge_dependency_lineage(
+            ctx.workspace,
+            require_uuid(task.id),
+            branch_name,
+            source_branch,
+            project_slug=ctx.project.slug,
+        )
+        status = result.get("status")
+        if status == "conflict":
+            self._note_dependency_lineage_conflict(
+                task, dep_task, source_branch, result
+            )
+        elif status not in ("already_ancestor", "merged"):
+            self.log.warning(
+                "dependency lineage merge incomplete",
+                task_id=str(task.id),
+                dep_id=str(dep_id),
+                source_branch=source_branch,
+                status=status,
+            )
+
+    def _note_dependency_lineage_conflict(
+        self,
+        task: TaskTable,
+        dep_task: TaskTable,
+        source_branch: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Log + note a dependency-lineage merge conflict for human follow-up."""
+        files = ", ".join(result.get("files") or []) or "unknown files"
+        note = (
+            f"Dependency {dep_task.id} merged into {source_branch!r}, which "
+            f"conflicts with this branch ({task.branch_name!r}) in: {files}. "
+            f"Merge {source_branch!r} in by hand before assembling the PR."
+        )
+        existing = markers.get_transition_note(task, "dependency_lineage_conflict")
+        markers.set_transition_note(
+            task,
+            "dependency_lineage_conflict",
+            f"{existing}\n{note}" if existing else note,
+        )
+        self.log.warning(
+            "dependency lineage merge conflict",
+            task_id=str(task.id),
+            dep_task_id=str(dep_task.id),
+            branch_name=task.branch_name,
+            source_branch=source_branch,
+            files=result.get("files"),
+        )
+
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one
         ``feature/main_pm/{root}`` integration branch each.
@@ -2251,6 +2485,39 @@ class TaskService(BaseService):
         seen: dict[UUID, None] = {}
         for mapping in sorted(task.cell_projects, key=lambda m: m.team.value):
             seen.setdefault(UUID(str(mapping.project_id)), None)
+        return list(seen)
+
+    async def get_live_subtasks(self, parent_task_id: UUID) -> list[TaskTable]:
+        """Subtasks excluding CANCELLED, in ``created_at`` order.
+
+        The view every MegaTask-redraft reader uses (positional draft matching,
+        the backlog gate, the re-interview snapshot, batch scope recovery) — a
+        child cancelled by a prior redraft round (scope change / count shrink)
+        must neither refuse the next round nor mismatch its positional pairing.
+        """
+        return [
+            c
+            for c in await self.get_subtasks(parent_task_id)
+            if c.status != TaskStatus.CANCELLED
+        ]
+
+    async def distinct_projects_for_batch(self, umbrella_id: UUID) -> list[UUID]:
+        """The distinct project ids a MegaTask umbrella's LIVE root-subtasks target.
+
+        Each root-subtask carries a single project (``project_id``) or an
+        ad-hoc per-cell map (``cell_projects``) — union across every non-
+        cancelled child, de-duped, in ``created_at`` order (a repo dropped by a
+        redraft's cancel must not resurrect in a cold re-interview). Used by the
+        cold re-interview path to recover a batch's multi-repo intake scope when
+        no session is parked for it (mirrors ``_distinct_projects_for_task``,
+        which recovers a single coordination root's own product/cell-map scope).
+        """
+        seen: dict[UUID, None] = {}
+        for child in await self.get_live_subtasks(umbrella_id):
+            if child.project_id is not None:
+                seen.setdefault(UUID(str(child.project_id)), None)
+            for mapping in sorted(child.cell_projects, key=lambda m: m.team.value):
+                seen.setdefault(UUID(str(mapping.project_id)), None)
         return list(seen)
 
     async def _ensure_coordination_root_branches(
@@ -2576,6 +2843,108 @@ class TaskService(BaseService):
         TaskStatus.AWAITING_PM_REVIEW,
     }
 
+    async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:
+        """True when a PENDING task can't be claimed yet — a ``depends_on`` task
+        is still non-terminal (the sequence guardrail).
+
+        The gateway claim verbs enforce this, but the orchestrator's dispatcher
+        system-claims via the raw ``/tasks/{id}/claim`` route (which skips the
+        gateway guards), so a MegaTask root-subtask in a later wave was claimed
+        out of order (the Main PM held every wave at once). Enforcing it at the
+        claim chokepoint guardrails every path. Scoped to a PENDING start-of-work
+        claim — a mid-lifecycle claim (QA/doc on an ``awaiting_*`` task) already
+        cleared its dependencies at the original claim.
+        """
+        if task.status != TaskStatus.PENDING or not task.dependency_ids:
+            return False
+        unmet = await self.unmet_dependency_ids(list(task.dependency_ids))
+        if not unmet:
+            return False
+        self.log.warning(
+            "Cannot claim task - unmet dependencies",
+            task_id=str(task.id),
+            unmet=[str(dep_id) for dep_id in unmet],
+        )
+        return True
+
+    async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None:
+        """Non-None (naming the blocking sibling) when a same-parent sibling
+        with a strictly lower effective sequence is still non-terminal.
+
+        CEO directive: sequence is the bar, independent of ``dependency_ids``
+        — a PM can delegate siblings with ``sequence`` 0..N and wire no
+        dependency edges between them, and claim order must still hold (the
+        4-revision-subtask live failure this guards). STRICTER than
+        dependency edges where both exist: a wave-N sibling waits for EVERY
+        wave-(N-1) sibling, not just its edge targets — no edges-exist
+        exemption. Effective sequence is ``COALESCE(sequence, 0)`` on both
+        sides; ties run in parallel. Effective sequence 0 or no parent is
+        unaffected. Scoped to PENDING and NEEDS_REVISION claims — wider than
+        ``_claim_blocked_by_dependencies`` (PENDING only), deliberately: a
+        lower-sequence sibling delegated AFTER the first claim must still
+        hold a needs_revision reclaim; the dep guard's identical
+        needs_revision gap is pre-existing and left as-is.
+        """
+        if (
+            task.status not in (TaskStatus.PENDING, TaskStatus.NEEDS_REVISION)
+            or task.parent_task_id is None
+        ):
+            return None
+        seq = task.sequence or 0
+        if seq == 0:
+            return None
+        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        result = await self.session.execute(
+            select(TaskTable.title, TaskTable.sequence)
+            .where(
+                TaskTable.parent_task_id == task.parent_task_id,
+                TaskTable.id != task.id,
+                func.coalesce(TaskTable.sequence, 0) < seq,
+                TaskTable.status.notin_(terminal),
+            )
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        blocker = f"{row.title!r} (sequence {row.sequence or 0})"
+        self.log.warning(
+            "Cannot claim task - sequence_held",
+            task_id=str(task.id),
+            blocked_by=blocker,
+        )
+        return blocker
+
+    async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
+        """True when either sequencing guard blocks this PENDING claim.
+
+        One call site for both `_claim_blocked_by_dependencies` (edges) and
+        `_claim_blocked_by_sequence` (sibling order) — keeps
+        `_validate_claim_preconditions` under the return-statement budget.
+        """
+        if await self._claim_blocked_by_dependencies(task):
+            return True
+        return await self._claim_blocked_by_sequence(task) is not None
+
+    async def is_pending_claim_blocked(self, task_id: UUID) -> bool:
+        """Public read-only probe: would a claim on ``task_id`` be refused
+        right now by the dependency/sequence guard?
+
+        Wraps the exact `_claim_blocked_by_sequencing` predicate the claim
+        chokepoint enforces (no duplicated SQL), so dispatch-time filtering
+        can't drift from claim-time enforcement. Meant for a dispatcher to
+        skip a doomed claim attempt on a held later-wave task instead of
+        round-tripping the claim endpoint every tick — the guard queries
+        here are the same cost either way; this just avoids the wasted
+        HTTP claim call and its logging noise. False (not blocked) on a
+        missing task — nothing to hold back, the caller's claim attempt
+        will get its own real error.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return False
+        return await self._claim_blocked_by_sequencing(task)
+
     async def _validate_claim_preconditions(
         self,
         task: TaskTable,
@@ -2588,6 +2957,9 @@ class TaskService(BaseService):
 
         if error := self._validate_claim_status(task, agent, valid_statuses):
             self.log.warning(f"Cannot claim task - {error}", task_id=str(task.id))
+            return False
+
+        if await self._claim_blocked_by_sequencing(task):
             return False
 
         if error := self._validate_claim_team(task, agent):
@@ -5724,6 +6096,24 @@ class TaskService(BaseService):
         if notes:
             markers.set_transition_note(task, "ceo_approval", notes)
 
+        # The CEO's own approval IS the confirmation that a prior ceo_reject's
+        # findings were resolved — bulk-verify any addressed ceo-origin ledger
+        # rows (parity with pass_review / pr_pass / complete). Best-effort: a
+        # stale ledger entry is a cosmetic gap, never worth blocking the CEO's
+        # approval (and every other completion side-effect below) over.
+        try:
+            from roboco.services.gateway.choreographer.findings import (
+                stamp_addressed_verified,
+            )
+
+            await stamp_addressed_verified(self.session, task_id, origin="ceo")
+        except Exception as exc:
+            self.log.warning(
+                "ceo-origin findings verify-stamp failed (best-effort)",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
         task.completed_at = datetime.now(UTC)
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
@@ -5961,6 +6351,41 @@ class TaskService(BaseService):
             )
         )
 
+    def _bump_coordination_ceo_reject(self, task: TaskTable) -> None:
+        """Bump ``revision_count`` + emit a ``task.ceo_reject`` audit row for a
+        branchless-coordination reject.
+
+        This path routes to PENDING via ``admin_set_status`` instead of
+        NEEDS_REVISION (no developer to claim a coordination root), so
+        ``_emit_status_transition_audit``'s rework-counter bump and rejector-
+        attributed event — both gated on ``to_status == NEEDS_REVISION`` —
+        never fire on their own. Without this two consecutive rejects both
+        wrote ledger round=1 (the round always reads the same stale
+        ``revision_count``) and the rejection was invisible to rework metrics.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        task.revision_count = (task.revision_count or 0) + 1
+        self.session.add(
+            AuditLogTable(
+                event_type="task.ceo_reject",
+                agent_id=UUID(AGENT_UUIDS["ceo"]),
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={
+                    "from_status": TaskStatus.AWAITING_CEO_APPROVAL.value,
+                    "to_status": TaskStatus.PENDING.value,
+                    "agent_role": "ceo",
+                    "team": (
+                        task.team.value
+                        if hasattr(task.team, "value")
+                        else str(task.team)
+                    ),
+                },
+            )
+        )
+
     async def ceo_reject(
         self,
         task_id: UUID,
@@ -5992,8 +6417,38 @@ class TaskService(BaseService):
             )
             return None
 
-        # Store the CEO's rejection reason as a marker, not quick_context soup.
-        markers.set_transition_note(task, "ceo_rejection", reason)
+        # Validate BEFORE constructing the ledger Finding — the model's own
+        # `expected`/`actual` validator rejects the same empty/placeholder
+        # reasons ("", "wip", "n/a", "-", whitespace) by raising an uncaught
+        # pydantic ValidationError (a 500). Fail with the same clean 422
+        # every other bad-input path in this service uses instead.
+        try:
+            reject_trivial(reason, field="reason")
+        except ValueError as exc:
+            raise ValidationError(str(exc), field="reason") from exc
+
+        # The reason becomes one origin=ceo ledger finding — the CEO's
+        # process rejection, structurally alongside every other bounce (qa /
+        # pr_gate / pm). Round is read BEFORE the transition (this call is
+        # about to bump revision_count), mirroring the choreographer
+        # producers. The old `transition_notes.ceo_rejection` marker write is
+        # retired: nothing ever read it (only `dependency_lineage_conflict`
+        # does); `_write_handoff_journal` below is the channel a reworker
+        # actually reads.
+        actual, evidence = _ceo_reject_finding_texts(reason)
+        finding = Finding(
+            severity=Severity.BLOCKER,
+            expected="CEO sign-off on this task",
+            actual=actual,
+            evidence=evidence,
+        )
+        await ReviewFindingsRepository(self.session).insert_many(
+            task_id=task_id,
+            origin="ceo",
+            round=(task.revision_count or 0) + 1,
+            author_slug="ceo",
+            findings=[finding],
+        )
 
         # A branchless coordination root (a product integration root or a
         # MegaTask umbrella) has no developer to revise it — NEEDS_REVISION is
@@ -6034,6 +6489,7 @@ class TaskService(BaseService):
             task.assigned_to = cast("Any", main_pm_id)
             task.claimed_by = None
             reassigned_to = str(main_pm_id)
+            self._bump_coordination_ceo_reject(task)
             await self.session.flush()
             await self.admin_set_status(
                 task_id,
@@ -6720,6 +7176,34 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_completed_roots_pending_vault_curation(
+        self, *, limit: int = 20
+    ) -> list[TaskTable]:
+        """Root tasks (no parent) most recently completed, not yet vault-curated.
+
+        Backs the orchestrator's root-completion Auditor spawn. Ordered by
+        ``completed_at`` DESC within a small window — self-bounding without a
+        migration: ``orchestration_markers`` is a plain JSON column (no
+        server-side "key absent" filter), so the marker check runs client-side
+        over a small recency window instead of the whole completed-task table,
+        which would otherwise grow forever and could mask a fresh completion
+        behind older, already-curated rows.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.parent_task_id.is_(None),
+            )
+            .order_by(TaskTable.completed_at.desc())
+            .limit(limit)
+        )
+        return [
+            t
+            for t in result.scalars().all()
+            if not markers.is_vault_curation_dispatched(t)
+        ]
+
     async def list_all(
         self,
         limit: int = 100,
@@ -6731,6 +7215,74 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at.desc())
             .limit(limit)
             .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_updated_since(
+        self,
+        since: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Tasks touched since ``since`` — the vault janitor's changed-task
+        re-projection set. Falls back to ``created_at`` since ``updated_at``
+        has no default and stays NULL on a row that's never been updated
+        (so a freshly-created, never-touched task is still caught).
+        Ascending touched-order: the janitor's capped drain advances its
+        resume marker to the last processed stamp, so oldest-first is the
+        resume contract."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at >= since)
+            .order_by(touched_at, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_archive_candidates(
+        self,
+        after: datetime,
+        before: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Terminal tasks whose terminal timestamp (``completed_at``, else
+        ``updated_at``, else ``created_at``) falls in ``[after, before)`` —
+        the vault janitor's archival-pass candidate window. Bounded by a
+        watermark (``after``) so a daily sweep never re-scans the whole
+        historical archive, only what just crossed the cutoff. Ascending
+        terminal-order: the janitor's capped drain advances the watermark to
+        the last processed stamp, so oldest-first is the resume contract."""
+        terminal_ts = func.coalesce(
+            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
+        )
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status.in_(_TERMINAL_STATES),
+                terminal_ts >= after,
+                terminal_ts < before,
+            )
+            .order_by(terminal_ts, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def sample_stale_tasks(
+        self, before: datetime, limit: int = 20
+    ) -> list[TaskTable]:
+        """Random sample of tasks last touched before ``before`` — the vault
+        janitor's drift-verification sample (excludes tasks the same sweep's
+        changed-since pass already re-projected)."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at < before)
+            .order_by(func.random())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -7099,12 +7651,13 @@ class TaskService(BaseService):
     async def set_sequence(self, task_id: UUID, sequence: int) -> None:
         """Set a task's sibling-ordering sequence (lower = first).
 
-        `sequence` is a display / dispatch-priority field only — it orders
-        siblings in `list_pending`, `list_for_team`, and the panel and carries
-        no claim-gating semantics (dependencies gate claims). Cross-cell
-        fan-out uses it so an upstream design task sorts ahead of the
-        implementation tasks that depend on it. No-op if the task is gone or
-        already at `sequence`.
+        `sequence` orders siblings in `list_pending`, `list_for_team`, and the
+        panel, AND is claim-gated: `_claim_blocked_by_sequence` refuses to
+        claim a PENDING task while a same-parent sibling with a strictly
+        lower effective sequence is still non-terminal — independent of, and
+        stricter than, `dependency_ids`. Cross-cell fan-out uses it so an
+        upstream design task sorts ahead of the implementation tasks that
+        depend on it. No-op if the task is gone or already at `sequence`.
         """
         task = await self.get(task_id)
         if task is None:
@@ -7112,6 +7665,36 @@ class TaskService(BaseService):
         if task.sequence != sequence:
             task.sequence = sequence
             await self.session.flush()
+
+    async def stamp_wave_sequence(self, task_id: UUID) -> None:
+        """Stamp a freshly delegated subtask's sequence as its collision-DAG wave.
+
+        sequence = 1 + max(sequence of each SAME-PARENT dependency target), or
+        0 when the task depends on no sibling — so independent siblings tie
+        (parallel under `_claim_blocked_by_sequence`) and colliding / ordered
+        ones ascend. Replaces the raw per-sibling ordinal, which serialized
+        even fully independent siblings fleet-wide under the claim gate. Must
+        run POST-WIRING (after the collision DAG / explicit depends_on /
+        cross-cell edges land) so every edge source is reflected. Only the new
+        task is stamped — existing siblings' sequences (prompter batch waves,
+        API-authored values) are never rewritten here.
+        """
+        task = await self.get(task_id)
+        if task is None or task.parent_task_id is None:
+            return
+        wave = 0
+        dep_ids = list(task.dependency_ids or [])
+        if dep_ids:
+            result = await self.session.execute(
+                select(func.max(func.coalesce(TaskTable.sequence, 0))).where(
+                    TaskTable.id.in_(dep_ids),
+                    TaskTable.parent_task_id == task.parent_task_id,
+                )
+            )
+            max_seq = result.scalar()
+            if max_seq is not None:
+                wave = int(max_seq) + 1
+        await self.set_sequence(task_id, wave)
 
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]:
         """Return the subset of dependency IDs whose status is non-terminal.
@@ -7193,6 +7776,10 @@ class TaskService(BaseService):
         lane should NOT pin the dev — the orchestrator spawns it once the lane
         clears. Without this the dev can neither idle nor proceed without jumping
         its own queue order. Only ``code`` queues sequence this way.
+
+        Equal sequences (wave ties) tie-break by ``created_at`` so a dev's
+        lane keeps a deterministic order now that independent siblings share
+        a wave instead of taking distinct ordinals.
         """
         if str(getattr(task, "task_type", "")) != TaskType.CODE.value:
             return False
@@ -7202,7 +7789,7 @@ class TaskService(BaseService):
         if parent_id is None or owner is None or seq is None:
             return False
         result = await self.session.execute(
-            select(TaskTable.status, TaskTable.sequence).where(
+            select(TaskTable.status, TaskTable.sequence, TaskTable.created_at).where(
                 TaskTable.parent_task_id == parent_id,
                 TaskTable.assigned_to == owner,
                 TaskTable.task_type == TaskType.CODE,
@@ -7211,8 +7798,9 @@ class TaskService(BaseService):
         )
         terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
         return any(
-            (sib_seq or 0) < seq and status not in terminal
-            for status, sib_seq in result.all()
+            ((sib_seq or 0), sib_created) < (seq, task.created_at)
+            and status not in terminal
+            for status, sib_seq, sib_created in result.all()
         )
 
     async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
@@ -8106,7 +8694,9 @@ class TaskService(BaseService):
         reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
         treatment; the video-authoring source (``video``) is NOT held — it is
         pre-assigned to a ux-dev and must still be offered like any other
-        delegated code task.
+        delegated code task. A ``vault_note`` draft is NOT held either — like a
+        prompter board draft, its board assignment IS the gate (board roles have
+        no ``give_me_work``), so no source exclusion is needed.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -8935,9 +9525,17 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """QA fails the task with concrete issues.
 
-        `notes` is the QA narrative (stored on `qa_notes`); `issues` is
-        appended to `dev_notes` as a checklist for the dev's revision.
-        Asserts the actor matches claimed_by.
+        `notes` is the QA narrative (stored on `qa_notes`). `issues` no
+        longer raw-appends onto `dev_notes` — the caller (the
+        ``fail_review`` choreographer verb) already persisted the concrete
+        findings structurally (the revision-findings ledger + the QaNote's
+        `findings`/`summary`) before this call, via
+        ``apply_structured_note``, the ONLY writer of the TEXT note mirror
+        columns. The raw append used to violate that contract: the next
+        developer handoff note (`note(scope='handoff')`) fully overwrites
+        `dev_notes` via `apply_structured_note`, silently destroying the
+        QA issue list it had just appended. Asserts the actor matches
+        claimed_by.
         """
         task = await self.get(task_id)
         if task is None:
@@ -8953,8 +9551,11 @@ class TaskService(BaseService):
                 claimed_by=str(task.claimed_by),
             )
         if issues:
-            issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
-            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+            self.log.info(
+                "qa_fail issues (persisted via the ledger/QaNote, not dev_notes)",
+                task_id=str(task_id),
+                count=len(issues),
+            )
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
     async def _revision_pm_for_task(self, task: TaskTable) -> AgentTable | None:
@@ -9144,16 +9745,27 @@ class TaskService(BaseService):
 
         The merge-level reject the PM otherwise lacks at awaiting_pm_review
         (its only verbs were complete/escalate, so an AC violation caught at
-        merge review looped block→escalate). Issues are appended for the
-        dev's revision; routing mirrors a QA fail — original developer for a
-        leaf, the revision PM for an assembled task.
+        merge review looped block→escalate). ``issues`` no longer raw-appends
+        onto `dev_notes` — the caller (the ``request_changes`` choreographer
+        verb) already persisted the concrete findings structurally (the
+        revision-findings ledger + the new ``PmReviewContent`` note, its own
+        `pm_notes` mirror column) before this call. The raw append used to
+        violate `apply_structured_note`'s "ONLY writer of TEXT note columns"
+        contract — the next developer handoff note fully overwrote
+        `dev_notes`, silently destroying the reject's issue list. Routing
+        mirrors a QA fail — original developer for a leaf, the revision PM
+        for an assembled task.
         """
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
             return None
         if issues:
-            issue_block = "[PM REVIEW ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
-            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+            self.log.info(
+                "request_changes issues (persisted via the ledger/"
+                "PmReviewContent, not dev_notes)",
+                task_id=str(task_id),
+                count=len(issues),
+            )
         original_dev = extract_original_developer(task)
         if original_dev:
             task.assigned_to = cast("Any", UUID(original_dev))

@@ -1,4 +1,6 @@
 export { TaskHeader } from "./task-header";
+export { TaskBreadcrumb } from "./task-breadcrumb";
+export { TaskListNav } from "./task-list-nav";
 export { TaskMetadata } from "./task-metadata";
 export { TaskDescription } from "./task-description";
 export { TaskTabs } from "./task-tabs";
@@ -8,6 +10,7 @@ export { TabProgress } from "./tab-progress";
 export { TabCommits } from "./tab-commits";
 export { TabNotes } from "./tab-notes";
 export { TabDependencies } from "./tab-dependencies";
+export { TabFindings } from "./tab-findings";
 export { AcceptanceCriteria } from "./acceptance-criteria";
 export { ProgressTimeline } from "./progress-timeline";
 export { CheckpointCard } from "./checkpoint-card";

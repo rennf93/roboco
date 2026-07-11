@@ -79,5 +79,8 @@ def test_evidence_payload_includes_convention_findings() -> None:
 
 
 def test_evidence_payload_convention_findings_default_empty() -> None:
+    """An empty findings list is omitted from as_dict() entirely (zero-noise
+    posture, matching build_task_handoff) — the attribute itself stays []."""
     ev = build_evidence_for_task(_stub_task(), journal_highlights=[], files_changed=[])
-    assert ev.as_dict()["convention_findings"] == []
+    assert ev.convention_findings == []
+    assert "convention_findings" not in ev.as_dict()

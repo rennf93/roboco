@@ -9,25 +9,25 @@ const QA_COLUMNS = [
     id: "awaiting",
     status: TaskStatus.AWAITING_QA,
     title: "Awaiting Review",
-    color: "bg-yellow-100 dark:bg-yellow-900",
+    color: "bg-yellow-100 dark:bg-yellow-900/40",
   },
   {
     id: "verifying",
     status: TaskStatus.VERIFYING,
     title: "In Review",
-    color: "bg-blue-100 dark:bg-blue-900",
+    color: "bg-blue-100 dark:bg-blue-900/40",
   },
   {
     id: "passed",
     status: TaskStatus.AWAITING_DOCUMENTATION,
     title: "Passed",
-    color: "bg-green-50 dark:bg-green-950",
+    color: "bg-green-50 dark:bg-green-950/40",
   },
   {
     id: "failed",
     status: TaskStatus.NEEDS_REVISION,
     title: "Failed",
-    color: "bg-red-50 dark:bg-red-950",
+    color: "bg-red-50 dark:bg-red-950/40",
   },
 ];
 
