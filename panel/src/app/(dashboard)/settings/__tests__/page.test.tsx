@@ -1,26 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
-const { getAll, update } = vi.hoisted(() => ({
-  getAll: vi.fn(async () => ({
-    notifications_enabled: "false",
-    sound_enabled: "false",
-    auto_refresh: "false",
-    refresh_interval: "45",
-  })),
-  update: vi.fn(async () => ({})),
+// The four prefs below are CLIENT-ONLY (never sent to the backend — the
+// server's settings allowlist is transcript_retention_days + feature flags
+// only, see roboco/services/settings.py). This mock stands in for the
+// persisted UI store; mutate its fields per-test to control what the page
+// renders.
+const mockStore = vi.hoisted(() => ({
+  sidebarCollapsed: false,
+  setSidebarCollapsed: vi.fn(),
+  notificationsEnabled: true,
+  setNotificationsEnabled: vi.fn(),
+  soundEnabled: true,
+  setSoundEnabled: vi.fn(),
+  autoRefresh: false,
+  setAutoRefresh: vi.fn(),
+  refreshIntervalSeconds: 30,
+  setRefreshIntervalSeconds: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({ settingsApi: { getAll, update } }));
+vi.mock("@/store", () => ({ useUIStore: () => mockStore }));
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "dark", setTheme: vi.fn() }),
-}));
-
-vi.mock("@/store", () => ({
-  useUIStore: () => ({ sidebarCollapsed: false, setSidebarCollapsed: vi.fn() }),
 }));
 
 vi.mock("@/components/settings/transcript-retention-card", () => ({
@@ -31,18 +33,7 @@ vi.mock("@/components/settings/feature-flags-card", () => ({
   FeatureFlagsCard: () => null,
 }));
 
-vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
-}));
-
 import SettingsPage from "../page";
-
-function withQueryClient(ui: ReactNode) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
-}
 
 // The Label and Switch/Select are siblings inside a flex row, so the label
 // text doesn't associate with the control. Walk to the row to find it.
@@ -55,46 +46,74 @@ function controlFor(labelText: RegExp | string, role: string): HTMLElement {
   return el as HTMLElement;
 }
 
-describe("SettingsPage — Save persists prefs via settingsApi (H16)", () => {
+function resetStore() {
+  mockStore.sidebarCollapsed = false;
+  mockStore.notificationsEnabled = true;
+  mockStore.soundEnabled = true;
+  mockStore.autoRefresh = false;
+  mockStore.refreshIntervalSeconds = 30;
+  for (const fn of [
+    mockStore.setSidebarCollapsed,
+    mockStore.setNotificationsEnabled,
+    mockStore.setSoundEnabled,
+    mockStore.setAutoRefresh,
+    mockStore.setRefreshIntervalSeconds,
+  ]) {
+    fn.mockReset();
+  }
+}
+
+describe("SettingsPage — client-only prefs (store-driven, no server round trip)", () => {
   beforeEach(() => {
-    getAll.mockReset();
-    update.mockReset();
-    getAll.mockResolvedValue({
-      notifications_enabled: "false",
-      sound_enabled: "false",
-      auto_refresh: "false",
-      refresh_interval: "45",
-    });
-    update.mockResolvedValue({});
+    resetStore();
   });
 
-  it("initializes the prefs from the server, not the hardcoded defaults", async () => {
-    render(withQueryClient(<SettingsPage />));
+  it("has no Save Settings button — every pref is instant-apply", () => {
+    render(<SettingsPage />);
+    expect(
+      screen.queryByRole("button", { name: /save settings/i }),
+    ).not.toBeInTheDocument();
+  });
 
-    await waitFor(() =>
-      expect(controlFor("Enable Notifications", "switch")).not.toBeChecked(),
-    );
+  it("renders the four prefs from the store", () => {
+    mockStore.notificationsEnabled = false;
+    mockStore.soundEnabled = false;
+    mockStore.autoRefresh = true;
+    mockStore.refreshIntervalSeconds = 60;
+    render(<SettingsPage />);
+
+    expect(controlFor("Enable Notifications", "switch")).not.toBeChecked();
     expect(controlFor("Sound Alerts", "switch")).not.toBeChecked();
-    expect(controlFor("Auto Refresh", "switch")).not.toBeChecked();
-    // refresh_interval "45" overrides the hardcoded "30s" default.
-    expect(controlFor("Refresh Interval", "combobox")).not.toHaveTextContent(
-      "30s",
+    expect(controlFor("Auto Refresh", "switch")).toBeChecked();
+    expect(controlFor("Refresh Interval", "combobox")).toHaveTextContent(
+      "1m",
     );
   });
 
-  it("persists all four prefs when Save Settings is clicked", async () => {
-    render(withQueryClient(<SettingsPage />));
+  it("toggling Auto Refresh calls setAutoRefresh directly — no edits/save step", () => {
+    render(<SettingsPage />);
+    fireEvent.click(controlFor("Auto Refresh", "switch"));
+    expect(mockStore.setAutoRefresh).toHaveBeenCalledWith(true);
+  });
 
-    await waitFor(() =>
-      expect(controlFor("Enable Notifications", "switch")).not.toBeChecked(),
-    );
+  it("toggling Enable Notifications calls setNotificationsEnabled directly", () => {
+    render(<SettingsPage />);
+    fireEvent.click(controlFor("Enable Notifications", "switch"));
+    expect(mockStore.setNotificationsEnabled).toHaveBeenCalledWith(false);
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: /save settings/i }));
+  it("Refresh Interval select is disabled while Auto Refresh is off", () => {
+    render(<SettingsPage />);
+    expect(controlFor("Refresh Interval", "combobox")).toBeDisabled();
+  });
 
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(4));
-    expect(update).toHaveBeenCalledWith("notifications_enabled", "false");
-    expect(update).toHaveBeenCalledWith("sound_enabled", "false");
-    expect(update).toHaveBeenCalledWith("auto_refresh", "false");
-    expect(update).toHaveBeenCalledWith("refresh_interval", "45");
+  it("Sound Alerts switch stays disabled — and inert — when notifications are off", () => {
+    mockStore.notificationsEnabled = false;
+    render(<SettingsPage />);
+    const soundSwitch = controlFor("Sound Alerts", "switch");
+    expect(soundSwitch).toBeDisabled();
+
+    fireEvent.click(soundSwitch);
+    expect(mockStore.setSoundEnabled).not.toHaveBeenCalled();
   });
 });

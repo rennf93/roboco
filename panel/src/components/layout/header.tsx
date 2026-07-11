@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { NotificationBell } from "@/components/notifications/notification-bell";
+import { NotificationAlerts } from "@/components/notifications/notification-alerts";
 import { ConnectionStatus } from "./connection-status";
 import { MobileSidebar } from "./mobile-sidebar";
 import {
@@ -102,6 +103,7 @@ export function Header() {
 
         {/* Notifications with WebSocket */}
         <NotificationBell />
+        <NotificationAlerts />
 
         {/* User */}
         <div className="flex items-center gap-2 ml-2 pl-4 border-l">
