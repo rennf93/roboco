@@ -794,30 +794,6 @@ class NotificationDeliveryService(BaseService):
         )
         await self._persist_and_deliver(notification)
 
-    async def notify_assignee_of_unblock(
-        self,
-        *,
-        task: TaskTable,
-        task_id: UUID,
-        from_agent_id: UUID,
-        assignee_agent_id: UUID,
-    ) -> None:
-        """Notify the task's assigned agent that their task is unblocked."""
-        notification = NotificationTable(
-            type=NotificationType.TASK_ASSIGNMENT,
-            priority=NotificationPriority.HIGH,
-            from_agent=from_agent_id,
-            to_agents=[assignee_agent_id],
-            subject=f"Task unblocked: {task.title or 'Unknown task'}",
-            body=(
-                f"Task {task_id} has been unblocked and is ready to resume.\n\n"
-                "Review the task details in your briefing and continue work."
-            ),
-            related_task_id=task_id,
-            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
-        )
-        await self._persist_and_deliver(notification)
-
     async def notify_assignee_of_ceo_rejection(
         self,
         *,
