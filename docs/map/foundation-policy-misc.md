@@ -220,8 +220,8 @@ foundation/policy (misc slice)
 | markers accessors | roboco/foundation/policy/content/markers.py | Called by task.py, orchestrator, self_heal_engine, release_proposal, release_manager_engine whenever reading/writing orchestration_markers |
 
 ## Config Flags
-- ROBOCO_AGENT_TOOL_CALL_WARN (consumed by agent_sdk, defaults from BudgetPolicy.tool_call_warn_at=50)
-- ROBOCO_AGENT_TOOL_CALL_HALT (defaults tool_call_halt_at=150)
+- ROBOCO_AGENT_TOOL_CALL_WARN (consumed by agent_sdk, defaults from BudgetPolicy.tool_call_warn_at=100)
+- ROBOCO_AGENT_TOOL_CALL_HALT (defaults tool_call_halt_at=300; raised from 150 — the prior cap repeatedly halted legitimate multi-file work mid-task)
 - ROBOCO_AGENT_LOOP_THRESHOLD (defaults loop_threshold=3)
 - ROBOCO_AGENT_LOOP_WINDOW (defaults loop_window=10)
 - ROBOCO_AGENT_LOOP_ACTION (defaults loop_action='halt')

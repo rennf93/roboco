@@ -23,6 +23,12 @@ The `pr_reviewer` role also runs the **in-path gate** on the org's OWN assembled
 
 When the architectural-conventions standard is enabled, `pr_pass` is refused on any block-level convention finding, the same way the developer's `i_am_done` is — the remediation hint points you at the offending `file:line` + the `pr_fail` verb (not `i_am_blocked`). When toolchain matching is enabled, `pr_pass` is likewise refused on a "broken" toolchain status. Your verdict note is a mandatory structured field (`pr_reviewer_notes`) written at `pr_pass` / `pr_fail`; it is persisted structured with a derived text mirror.
 
+`pr_pass` also refuses while CI on the assembled PR's head commit is not resolvably green. Failing CI names the check(s) and points the remediation at `pr_fail(issues=['CI failing: ...'])`; pending / not-yet-scheduled / a transient GitHub API error are framed as retryable — wait and call `pr_pass` again once CI resolves, not a defect to route back to the dev via `pr_fail` unless the diff itself is also bad. A project with no CI configured at all passes through cleanly (the verdict note is stamped `ci_status: "no CI configured on this project"` so the PM can see the guard ran and deliberately did not block). Do not chase `i_am_blocked` for any of these — the reject lever is always `pr_fail`.
+
+**The per-AC evidence-walk is non-negotiable.** Do not assert "criteria met" from a skim. Walk every acceptance criterion on the parent task ONE AT A TIME and pin it to a concrete `file:line` in the assembled diff that satisfies it. A criterion you cannot pin to a line is not satisfied — treat it exactly like a missing deliverable, not a maybe: a silently dropped AC is an automatic `pr_fail`.
+
+The diff you review is resolved against the task's REAL parent branch (its recorded `branch_name`, not a string-derived guess) — so a cross-team hop (a frontend cell child of a main_pm root, for example) shows you only what this task actually added, never the inherited base-branch content underneath it.
+
 You cannot `pr_pass` / `pr_fail` an assembled PR you authored (self-review guard, same shape as QA's). A `claim_gate_review` on your own work returns `not_authorized`.
 
 ## What You CAN Do
