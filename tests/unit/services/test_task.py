@@ -461,6 +461,57 @@ async def test_reassign_returns_none_when_task_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reassign_notifies_once_not_twice_for_same_target() -> None:
+    """Repeated reassign to the SAME target must not double-fire.
+
+    `reassign` runs every time it's called (even a no-op redirect); the
+    coordination notification is guarded separately by comparing the new
+    assignee against the assignee captured before the mutation, so a second
+    call with an already-current target must skip the notification.
+    """
+    task = _build_task(assigned_to=None, claimed_by=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    new_assignee = uuid4()
+    mock_ns = MagicMock()
+    mock_ns.send_reassignment_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.reassign(task.id, new_assignee)
+        await svc.reassign(task.id, new_assignee)
+    mock_ns.send_reassignment_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unblock_notifies_once_not_twice_on_repeated_call() -> None:
+    """Repeated unblock() against the same task must not double-fire.
+
+    `unblock` only mutates + notifies a task whose status is currently
+    BLOCKED; the first call flips it to IN_PROGRESS/PENDING, so a second
+    call against the same task_id short-circuits on the status guard and
+    must not send a second notification.
+    """
+    raiser = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=raiser
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        first = await svc.unblock(task.id)
+        second = await svc.unblock(task.id)
+    assert first is task
+    assert second is None
+    mock_ns.send_unblock_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
     result = MagicMock()
