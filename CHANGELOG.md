@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **Task-detail overhaul.** Description, per-field Notes, Plan, Progress, and Acceptance Criteria now live in collapsible sections that auto-collapse past a content-length threshold (long progress/checkpoint history and long criteria lists default closed, short ones stay open) instead of forcing continuous scrolling. Progress updates and notes show an inline absolute timestamp next to the relative one, falling back to the task's creation time when a note has no timestamp of its own. A parent-task breadcrumb and prev/next buttons — with `Alt+ArrowLeft` / `Alt+ArrowRight` shortcuts — replace the old always-goes-to-`/tasks` back button, moving between the current task's parent and its neighbors in the last-visited Tasks list order. The read-only Constraints card gets a distinct amber accent, tint, and lock icon so it reads apart from the task's own authored description.
+
 ## [0.22.0] - 2026-07-10
 
 ### Added
