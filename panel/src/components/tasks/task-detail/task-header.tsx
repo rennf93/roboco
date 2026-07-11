@@ -55,6 +55,14 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { TaskTypeBadge } from "../task-type-badge";
 import { CopyButton } from "@/components/ui/copy-button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
+const BACK_LABEL = "Go back to tasks list";
 
 // Status badge colors
 const statusColors: Record<TaskStatus, string> = {
@@ -472,11 +480,24 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
             title truncates, so a long title never pushes the controls or the
             Actions menu out of place. */}
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          <Link href="/tasks" prefetch={false}>
-            <Button variant="ghost" size="icon" className="shrink-0">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          </Link>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link href="/tasks" prefetch={false}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    aria-label={BACK_LABEL}
+                    title={BACK_LABEL}
+                  >
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent>{BACK_LABEL}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <div className="min-w-0 flex-1">
             {/* Row 1: title only — editable, no UUID. Truncates on overflow. */}
             {editingTitle ? (
