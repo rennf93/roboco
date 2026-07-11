@@ -1263,6 +1263,84 @@ class GitService(BaseService):
 
         return branch_name, base_branch
 
+    async def merge_dependency_lineage(
+        self,
+        workspace: Path,
+        task_id: UUID,
+        branch_name: str,
+        source_branch: str,
+        project_slug: str,
+    ) -> dict[str, Any]:
+        """Backfill a freshly cut branch with a dependency's merged content.
+
+        The claim-time dependency gate only holds a task until every
+        ``dependency_ids`` entry is terminal (TIMING) — it never checks
+        whether that entry's merged work is actually reachable from this
+        branch's base (CONTENT). A cross-subtree/cross-cell dependency edge
+        can complete on a branch this one never descends from (e.g. a UX
+        cell task merges into the UX cell branch; a sibling frontend cell
+        task cut from the frontend cell branch has no ancestry into it until
+        the UX cell itself submits up).
+
+        No-op when ``source_branch`` is already an ancestor of
+        ``branch_name`` (the common, transitively-safe case: same-parent
+        siblings, same-project root waves — master/the shared ancestor
+        already carries the work). On a real conflict the merge is aborted
+        and the branch is left exactly at its cut point: this is a
+        claim-time content assist, never a gate, so it always returns a
+        status rather than raising.
+
+        Returns ``{"status": ...}``, one of ``already_ancestor`` /
+        ``missing_ref`` / ``merged`` / ``merged_push_failed`` / ``conflict``
+        (the last carries ``"files"``).
+        """
+        token = await self._token_for_project(project_slug)
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", source_branch],
+            check=False,
+            token=token,
+            timeout=_network_git_timeout(),
+        )
+        origin_ref = f"origin/{source_branch}"
+        if not await self._ref_exists(workspace, origin_ref):
+            return {"status": "missing_ref"}
+
+        worktree = self._worktree_for_task(workspace, task_id)
+        await self._ensure_worktree_for_commit(workspace, worktree, branch_name)
+
+        ancestor = await self._run_git(
+            worktree,
+            ["merge-base", "--is-ancestor", origin_ref, branch_name],
+            check=False,
+        )
+        if ancestor.returncode == 0:
+            return {"status": "already_ancestor"}
+
+        merge = await self._run_git(
+            worktree, ["merge", "--no-edit", origin_ref], check=False
+        )
+        if merge.returncode != 0:
+            return await self._abort_lineage_merge_conflict(worktree)
+
+        push = await self._run_git(
+            worktree,
+            ["push", "origin", branch_name],
+            check=False,
+            token=token,
+            timeout=_network_git_timeout(),
+        )
+        return {"status": "merged" if push.returncode == 0 else "merged_push_failed"}
+
+    async def _abort_lineage_merge_conflict(self, worktree: Path) -> dict[str, Any]:
+        """Collect conflicted files and abort a failed dependency-lineage merge."""
+        conflict = await self._run_git(
+            worktree, ["diff", "--name-only", "--diff-filter=U"], check=False
+        )
+        files = [f for f in conflict.stdout.splitlines() if f.strip()]
+        await self._run_git(worktree, ["merge", "--abort"], check=False)
+        return {"status": "conflict", "files": files}
+
     async def create_branch_from_pr_head(
         self,
         workspace: Path,

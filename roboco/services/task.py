@@ -389,6 +389,18 @@ def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
     return f"{body}\n\n{bullets}".strip() if body else bullets
 
 
+@dataclass(frozen=True)
+class _LineageCutContext:
+    """Git handles for a freshly cut branch, bundled so the dependency-
+    lineage merge helpers (``_apply_dependency_lineage`` /
+    ``_merge_one_dependency``) stay under PLR0913.
+    """
+
+    git_service: Any
+    workspace: Path
+    project: Any
+
+
 @dataclass
 class _CompletionSnapshot:
     """Fields copied off a TaskTable before its session detaches.
@@ -2262,6 +2274,13 @@ class TaskService(BaseService):
             await self._remove_task_worktree(workspace, require_uuid(task.id))
             raise
 
+        # Best-effort, never fails the claim: backfill dependency content
+        # outside this branch's own ancestor chain (the cross-subtree/
+        # cross-cell dependency-lineage gap).
+        await self._apply_dependency_lineage(
+            task, _LineageCutContext(git_service, workspace, project)
+        )
+
         self.log.info(
             "Auto-created hierarchical branch",
             task_id=str(task.id),
@@ -2285,6 +2304,98 @@ class TaskService(BaseService):
                 "worktree cleanup on claim rollback failed",
                 task_id=str(task_id),
             )
+
+    async def _apply_dependency_lineage(
+        self, task: TaskTable, ctx: _LineageCutContext
+    ) -> None:
+        """Merge each same-repo dependency's merged content into the freshly
+        cut branch when it lies outside the branch's own ancestor chain (see
+        ``GitService.merge_dependency_lineage`` for the why).
+
+        The dependency gate (``_claim_blocked_by_dependencies``) enforces
+        TIMING only — a dependency edge whose merge target isn't an ancestor
+        of this branch's base still lets the claim through. Scoped to
+        dependencies in the SAME repo as ``ctx.project`` — a cross-repo edge
+        has no shared git history to merge, so it is silently skipped.
+        Zero-cost when the task has no dependencies (the common case).
+        """
+        dep_ids = list(task.dependency_ids or [])
+        if not dep_ids:
+            return
+        for dep_id in dep_ids:
+            try:
+                await self._merge_one_dependency(task, ctx, dep_id)
+            except Exception:
+                self.log.warning(
+                    "dependency lineage merge errored",
+                    task_id=str(task.id),
+                    dep_id=str(dep_id),
+                    exc_info=True,
+                )
+        await self.session.flush()
+
+    async def _merge_one_dependency(
+        self, task: TaskTable, ctx: _LineageCutContext, dep_id: Any
+    ) -> None:
+        """Resolve one dependency's merge target and merge it in if needed."""
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        dep_task = await self.get(UUID(str(dep_id)))
+        if dep_task is None or dep_task.project_id != ctx.project.id:
+            return  # missing, or a cross-repo edge: no shared git history
+        source_branch = await resolve_parent_branch(dep_task, self)
+        branch_name = str(task.branch_name)
+        if not source_branch or source_branch == branch_name:
+            return
+        result = await ctx.git_service.merge_dependency_lineage(
+            ctx.workspace,
+            require_uuid(task.id),
+            branch_name,
+            source_branch,
+            project_slug=ctx.project.slug,
+        )
+        status = result.get("status")
+        if status == "conflict":
+            self._note_dependency_lineage_conflict(
+                task, dep_task, source_branch, result
+            )
+        elif status not in ("already_ancestor", "merged"):
+            self.log.warning(
+                "dependency lineage merge incomplete",
+                task_id=str(task.id),
+                dep_id=str(dep_id),
+                source_branch=source_branch,
+                status=status,
+            )
+
+    def _note_dependency_lineage_conflict(
+        self,
+        task: TaskTable,
+        dep_task: TaskTable,
+        source_branch: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Log + note a dependency-lineage merge conflict for human follow-up."""
+        files = ", ".join(result.get("files") or []) or "unknown files"
+        note = (
+            f"Dependency {dep_task.id} merged into {source_branch!r}, which "
+            f"conflicts with this branch ({task.branch_name!r}) in: {files}. "
+            f"Merge {source_branch!r} in by hand before assembling the PR."
+        )
+        existing = markers.get_transition_note(task, "dependency_lineage_conflict")
+        markers.set_transition_note(
+            task,
+            "dependency_lineage_conflict",
+            f"{existing}\n{note}" if existing else note,
+        )
+        self.log.warning(
+            "dependency lineage merge conflict",
+            task_id=str(task.id),
+            dep_task_id=str(dep_task.id),
+            branch_name=task.branch_name,
+            source_branch=source_branch,
+            files=result.get("files"),
+        )
 
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one
