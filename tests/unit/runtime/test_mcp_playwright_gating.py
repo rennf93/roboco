@@ -19,7 +19,8 @@ async def _servers_for(agent_slug: str) -> dict[str, dict]:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     config_path = await orch._generate_mcp_config(agent_slug)
     config = json.loads(Path(config_path).read_text())
-    return config["mcpServers"]
+    servers: dict[str, dict] = config["mcpServers"]
+    return servers
 
 
 async def test_fe_qa_gets_playwright_mcp() -> None:
