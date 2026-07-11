@@ -1069,6 +1069,8 @@ class AgentOrchestrator:
         self._x_feature_spotlight_task: asyncio.Task | None = None
         self._video_render_task: asyncio.Task | None = None
         self._vault_intake_task: asyncio.Task | None = None
+        self._vault_janitor_task: asyncio.Task | None = None
+        self._vault_kb_task: asyncio.Task | None = None
 
     def _record_loop_heartbeat(self, name: str, interval: float) -> None:
         self._loop_heartbeats[name] = (time.monotonic(), interval)
@@ -1165,6 +1167,8 @@ class AgentOrchestrator:
         )
         self._video_render_task = asyncio.create_task(self._video_render_loop())
         self._vault_intake_task = asyncio.create_task(self._vault_intake_loop())
+        self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
+        self._vault_kb_task = asyncio.create_task(self._vault_kb_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1277,6 +1281,8 @@ class AgentOrchestrator:
             self._x_feature_spotlight_task,
             self._video_render_task,
             self._vault_intake_task,
+            self._vault_janitor_task,
+            self._vault_kb_task,
         ):
             await self._cancel_background_task(task)
 
@@ -8131,6 +8137,68 @@ Start by:
 
         async with get_db_context() as db:
             await get_vault_intake_engine(db).run_cycle()
+            await db.commit()
+
+    async def _vault_janitor_loop(self) -> None:
+        """Vault drift janitor: hourly tick, daily sweep + weekly report, both
+        gated by a restart-proof state file rather than the loop's own
+        cadence (see ``roboco.services.vault_janitor``).
+
+        Dormant unless ``obsidian_vault_enabled`` — the umbrella flag.
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        from roboco.services.vault_janitor import JANITOR_LOOP_INTERVAL_SECONDS
+
+        interval = JANITOR_LOOP_INTERVAL_SECONDS
+        self._record_loop_heartbeat("vault_janitor", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_janitor_cycle()
+                self._record_loop_heartbeat("vault_janitor", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-janitor cycle failed")
+
+    async def _run_vault_janitor_cycle(self) -> None:
+        """One vault-janitor pass: run the service, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_janitor import get_vault_janitor
+
+        async with get_db_context() as db:
+            await get_vault_janitor(db).run_cycle()
+            await db.commit()
+
+    async def _vault_kb_loop(self) -> None:
+        """Vault KB ingest: on an interval, embed changed notes under the
+        allowlisted vault_kb_dirs into IndexType.VAULT_NOTES.
+
+        Dormant unless BOTH ``obsidian_vault_enabled`` AND ``vault_kb_enabled``
+        are on — a standard deployment embeds nothing.
+        """
+        if not (settings.obsidian_vault_enabled and settings.vault_kb_enabled):
+            return
+        interval = settings.vault_kb_interval_seconds
+        self._record_loop_heartbeat("vault_kb", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_vault_kb_cycle()
+                self._record_loop_heartbeat("vault_kb", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("vault-kb cycle failed")
+
+    async def _run_vault_kb_cycle(self) -> None:
+        """One vault-KB pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.vault_kb_engine import get_vault_kb_engine
+
+        async with get_db_context() as db:
+            await get_vault_kb_engine(db).run_cycle()
             await db.commit()
 
     async def _x_feature_spotlight_loop(self) -> None:

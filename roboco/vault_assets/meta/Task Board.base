@@ -1,0 +1,29 @@
+filters: file.inFolder("RoboCo/Tasks")
+
+views:
+  - type: table
+    name: "Board (by status)"
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - team
+      - priority
+      - pr
+  - type: table
+    name: "Open work"
+    filters:
+      and:
+        - 'status != "completed"'
+        - 'status != "cancelled"'
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - team
+      - priority
+      - pr

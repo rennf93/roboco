@@ -16,6 +16,7 @@ from roboco.services.optimal_brain.indexes.learnings import LearningsIndexPlugin
 from roboco.services.optimal_brain.indexes.playbooks import PlaybooksIndexPlugin
 from roboco.services.optimal_brain.indexes.reviews import ReviewsIndexPlugin
 from roboco.services.optimal_brain.indexes.standards import StandardsIndexPlugin
+from roboco.services.optimal_brain.indexes.vault_notes import VaultNotesIndexPlugin
 
 __all__ = [
     "BaseIndexPlugin",
@@ -29,4 +30,5 @@ __all__ = [
     "PlaybooksIndexPlugin",
     "ReviewsIndexPlugin",
     "StandardsIndexPlugin",
+    "VaultNotesIndexPlugin",
 ]
