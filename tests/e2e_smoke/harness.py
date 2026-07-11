@@ -227,6 +227,23 @@ def _fake_github_router(gh: _FakeGitHub) -> APIRouter:
         with suppress(subprocess.CalledProcessError):
             _git(gh.origin, "branch", "-D", branch)
 
+    # A minimal green check-runs signal for any commit — real-life NAS
+    # projects have CI, so the pr_pass CI-status guard should see a
+    # `success` state and exercise its pass-through branch, not the
+    # no_ci_configured 404 path.
+    @r.get("/repos/{owner}/{repo}/commits/{sha}/check-runs")
+    async def check_runs(owner: str, repo: str, sha: str) -> dict[str, Any]:
+        return {
+            "total_count": 1,
+            "check_runs": [
+                {"name": "ci", "status": "completed", "conclusion": "success"}
+            ],
+        }
+
+    @r.get("/repos/{owner}/{repo}/actions/workflows")
+    async def workflows(owner: str, repo: str) -> dict[str, Any]:
+        return {"total_count": 1, "workflows": [{"id": 1, "name": "ci"}]}
+
     return r
 
 
