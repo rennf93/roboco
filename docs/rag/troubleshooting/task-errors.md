@@ -103,6 +103,14 @@ escalate_to_ceo(task_id=parent_id, reason="...")
 1. Complete the blocking subtasks first (drive them through QA → docs → `complete(task_id, notes)`)
 2. Cancel them if no longer needed (PM/CEO only — cancellation is not an agent verb; ask your PM)
 
+## Reflow/Formatting Task Has Zero Diff
+
+**Symptom**: A task asks you to reflow specific markdown file(s) so they pass `make reflow-check`, but `python3 scripts/reflow_md.py --check` already reports "OK" with no changes, so there is no diff to commit — and `i_am_done` hard-requires at least one commit.
+
+**Cause**: `scripts/reflow_md.py` walks the whole repo tree (`ROOT.rglob("*.md")`) on every invocation; it does not scope to positional file-path arguments passed on the command line, so `--check docs/foo.md` and a bare `--check` do the same repo-wide scan. If the target file(s) were already reflowed upstream (e.g. in an earlier commit on the same branch chain), the task is satisfied-by-upstream with a structurally empty diff.
+
+**Solution**: Verify with the repo-wide check (not a scoped one, since scoping is a no-op) and record the zero-diff finding in a `decision` journal entry. If the task's acceptance criteria are already met with nothing left to change in the named files, do not keep re-running the same check — escalate once with the concrete verification so a PM can either stamp the task as satisfied-by-upstream/cancel it, or direct a small verification commit outside the target file(s) to satisfy the commit gate.
+
 ## Invalid Task Status for Operation
 
 **Error**: "Task is in [status], expected [expected_status]"
