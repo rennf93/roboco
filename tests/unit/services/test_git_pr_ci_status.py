@@ -272,3 +272,69 @@ async def test_workflows_api_error_after_zero_checks_is_error_state() -> None:
     ):
         out = await _service().get_pr_ci_status("roboco", _PR)
     assert out == {"state": "error", "head_sha": _SHA}
+
+
+# ---------------------------------------------------------------------------
+# A 404 on the check-runs or workflows endpoint means the repo has no CI
+# integration at all (e.g. the e2e harness's fake GitHub with no routes
+# mounted for either) — no_ci_configured, never mistaken for error. 500s and
+# network failures on the same two endpoints stay fail-closed (error).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_ci_configured_when_check_runs_404s() -> None:
+    checks = _resp(404, json_payload={"message": "not found"})
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_error_when_check_runs_request_times_out() -> None:
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(
+        side_effect=[_pr_head_resp(), httpx.ReadTimeout("timed out")]
+    )
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "error", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_no_ci_configured_when_workflows_404s() -> None:
+    checks = _resp(200, json_payload={"check_runs": []})
+    workflows = _resp(404, json_payload={"message": "not found"})
+    client = _client(_pr_head_resp(), checks, workflows)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "no_ci_configured", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_error_when_workflows_request_times_out() -> None:
+    checks = _resp(200, json_payload={"check_runs": []})
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(
+        side_effect=[_pr_head_resp(), checks, httpx.ReadTimeout("timed out")]
+    )
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "error", "head_sha": _SHA}

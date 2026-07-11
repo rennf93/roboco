@@ -2685,13 +2685,13 @@ class GitService(BaseService):
 
         Every unresolvable case is now classified explicitly rather than
         returning ``None``: a missing project/git_url/git-token, or an
-        unreachable/nonexistent repo or PR (a network failure or a 404
-        resolving the PR's head SHA) all classify as ``no_ci_configured`` —
-        ``pr_pass`` passes through cleanly and still stamps the evidence
-        note, instead of silently skipping the guard. A genuine GitHub API
-        failure on a real, reachable repo (any other non-2xx, or an
-        unparseable response) classifies as ``error`` so ``pr_pass`` stays
-        fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
+        unreachable/nonexistent repo or PR (a network failure or a 404 on
+        the PR-head, check-runs, or workflows lookup) all classify as
+        ``no_ci_configured`` — ``pr_pass`` passes through cleanly and still
+        stamps the evidence note, instead of silently skipping the guard. A
+        genuine GitHub API failure on a real, reachable repo (any other
+        non-2xx, or an unparseable response) classifies as ``error`` so
+        ``pr_pass`` stays fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
         ``_capture_pr_head_sha`` in spirit (never mistake a configuration gap
         for a CI signal) but resolves head-sha lookups via a dedicated helper
         so the two failure classes above stay distinguishable — the shared
@@ -2716,8 +2716,8 @@ class GitService(BaseService):
         check_runs = await self._fetch_check_runs(
             project_slug, owner, repo, head_sha, headers
         )
-        if check_runs is None:
-            return {"state": "error", "head_sha": head_sha}
+        if isinstance(check_runs, dict):
+            return check_runs
         if check_runs:
             return self._classify_check_runs(check_runs, head_sha)
         return await self._classify_zero_check_runs(
@@ -2805,8 +2805,15 @@ class GitService(BaseService):
         repo: str,
         head_sha: str,
         headers: dict[str, str],
-    ) -> list[dict[str, Any]] | None:
-        """GET the check-runs for ``head_sha``; ``None`` on any API failure."""
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """GET the check-runs for ``head_sha``.
+
+        Returns the (possibly empty) check-runs list on success, or a
+        terminal gap-state dict to return directly from the caller: a 404
+        (the repo/commit isn't reachable, e.g. no CI integration at all) is
+        ``no_ci_configured``; any other failure (network, non-2xx,
+        unparseable body) is ``error``.
+        """
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
@@ -2820,14 +2827,16 @@ class GitService(BaseService):
                 project=project_slug,
                 error=str(e),
             )
-            return None
+            return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
         if not resp.is_success:
             self.log.warning(
                 "get_pr_ci_status check-runs non-2xx",
                 project=project_slug,
                 status=resp.status_code,
             )
-            return None
+            return {"state": "error", "head_sha": head_sha}
         try:
             runs = resp.json().get("check_runs")
         except (ValueError, AttributeError) as e:
@@ -2836,7 +2845,7 @@ class GitService(BaseService):
                 project=project_slug,
                 error=str(e),
             )
-            return None
+            return {"state": "error", "head_sha": head_sha}
         return runs if isinstance(runs, list) else []
 
     @staticmethod
@@ -2865,7 +2874,11 @@ class GitService(BaseService):
         headers: dict[str, str],
     ) -> dict[str, Any]:
         """No check-runs exist yet for ``head_sha`` — tell "not scheduled" apart
-        from "no CI configured" by asking whether the repo has any workflows."""
+        from "no CI configured" by asking whether the repo has any workflows.
+
+        A 404 here (repo unreachable/nonexistent — no CI integration) is
+        ``no_ci_configured``; any other failure is ``error``.
+        """
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
@@ -2880,6 +2893,8 @@ class GitService(BaseService):
                 error=str(e),
             )
             return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
         if not resp.is_success:
             self.log.warning(
                 "get_pr_ci_status workflows non-2xx",
