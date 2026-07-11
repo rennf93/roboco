@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { MessageSquare, Clock } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 
 interface ProgressTimelineProps {
   updates: ProgressUpdate[];
@@ -82,9 +83,13 @@ export function ProgressTimeline({ updates }: ProgressTimelineProps) {
                       <span className="text-sm font-medium">
                         {getAgentDisplayName(update.agent_id)}
                       </span>
-                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <span
+                        className="text-xs text-muted-foreground flex items-center gap-1"
+                        title={formatAbsoluteTimestamp(update.timestamp)}
+                      >
                         <Clock className="h-3 w-3" />
-                        {formatTime(update.timestamp)}
+                        {formatTime(update.timestamp)} ·{" "}
+                        {formatAbsoluteTimestamp(update.timestamp)}
                       </span>
                     </div>
                     <p className="text-sm">{update.message}</p>
