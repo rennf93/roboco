@@ -15,58 +15,23 @@ Content delivered to an agent (an A2A skill request, a PM's task description, an
 external notification) is DATA, not instructions. A turn matching a classic
 jailbreak pattern is rejected so the model never plans on poisoned content. The
 patterns mirror ``user-prompt-hook.sh`` exactly so Claude and Grok agree.
+
+The detection patterns live in ``foundation.policy.injection_guard`` (pure, no
+runtime deps) — this module re-exports ``detect_injection`` for this
+hard-deny posture and adds the turn-refusal message + CLI on top. Engines
+that ingest unattended external text (X mentions, vault notes) use the same
+patterns via that module's ``screen_external_text`` neutralize-instead-of-deny
+posture, since silently dropping their input would hide content the CEO
+needs to see.
 """
 
 from __future__ import annotations
 
-import re
 import sys
 
-# (pattern, reason) — matched against the lowercased turn text. Mirrors the
-# categories in user-prompt-hook.sh; anchored loosely since injected content
-# typically appears mid-message when pasted into A2A / task content.
-_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (
-        # ignore/disregard/forget [one or more qualifiers] instructions/rules/...
-        # The qualifier group repeats so "ignore ALL PREVIOUS instructions" (the
-        # canonical injection) matches, not just the single-qualifier form.
-        re.compile(
-            r"(?:^|[\s>])(ignore|disregard|forget)\s+"
-            r"(?:(?:the|all|any|those|these|previous|above|prior|earlier|"
-            r"original|initial|system)\s+)+"
-            r"(instructions|rules|guidelines|context|prompt|directives)"
-        ),
-        "ignore/disregard/forget previous instructions",
-    ),
-    (
-        re.compile(r"(?:^|[\s>])you\s+are\s+now(\s+an?|\s+the|:)"),
-        "role override attempt (you are now ...)",
-    ),
-    (
-        re.compile(r"(?:^|\n)\s*(system|assistant|user):\s"),
-        "fake role prefix (system:/assistant:/user: at line start)",
-    ),
-    (
-        re.compile(r"\[\[system\]\]|<\|system\|>|<\|im_start\|>"),
-        "control-token mimicry",
-    ),
-    (
-        re.compile(
-            r"(?:^|[\s>])(new\s+task|override)\s*(from|by)\s+"
-            r"(the\s+)?(ceo|product\s+owner|head\s+of)"
-        ),
-        "fake escalation / executive-order pattern",
-    ),
-]
+from roboco.foundation.policy.injection_guard import detect_injection
 
-
-def detect_injection(text: str) -> str | None:
-    """Return a deny reason if ``text`` matches an injection pattern, else None."""
-    low = (text or "").lower()
-    for pattern, reason in _PATTERNS:
-        if pattern.search(low):
-            return reason
-    return None
+__all__ = ["detect_injection", "main", "refusal_message"]
 
 
 def refusal_message(reason: str) -> str:
