@@ -10,6 +10,11 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useAgentStream, ConnectionState } from "@/hooks/use-websocket";
 import { Wifi, WifiOff, Loader2, Trash2 } from "lucide-react";
 
@@ -78,9 +83,14 @@ export function AgentStreamViewer({
               {stateLabels[state]}
             </Badge>
             {streamChunks.length > 0 && (
-              <Button variant="ghost" size="icon" onClick={clearMessages}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" onClick={clearMessages}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Clear stream output</TooltipContent>
+              </Tooltip>
             )}
           </div>
         </div>

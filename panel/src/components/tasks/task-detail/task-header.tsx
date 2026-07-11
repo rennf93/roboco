@@ -53,6 +53,11 @@ import {
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
 import { CopyButton } from "@/components/ui/copy-button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // Status badge colors
 const statusColors: Record<TaskStatus, string> = {
@@ -109,9 +114,11 @@ const statusLabels: Record<TaskStatus, string> = {
 interface TaskHeaderProps {
   task: Task;
   onAction?: (action: string) => void;
+  /** Right-aligned slot rendered before the Actions menu (prev/next nav). */
+  nav?: React.ReactNode;
 }
 
-export function TaskHeader({ task, onAction }: TaskHeaderProps) {
+export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
   const router = useRouter();
   const deleteTask = useDeleteTask();
   const updateTask = useUpdateTask();
@@ -513,12 +520,20 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
                 value={task.status}
                 onValueChange={(v) => handleStatusChange(v as TaskStatus)}
               >
-                <SelectTrigger
-                  className={`w-40 shrink-0 h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}
-                  disabled={isTransitionsLoading}
-                >
-                  <SelectValue />
-                </SelectTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SelectTrigger
+                      className={`w-40 shrink-0 h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}
+                      disabled={isTransitionsLoading}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Change status — valid transitions first, the rest as forced
+                    admin overrides
+                  </TooltipContent>
+                </Tooltip>
                 <SelectContent>
                   {/* Always render the current status first so the trigger value is always present */}
                   <SelectItem key={task.status} value={task.status}>
@@ -563,9 +578,14 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
                 value={task.team}
                 onValueChange={(v) => handleTeamChange(v as Team)}
               >
-                <SelectTrigger className="w-36 shrink-0 h-7 text-sm text-muted-foreground border-0 bg-transparent hover:bg-muted/50 px-2">
-                  <SelectValue />
-                </SelectTrigger>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <SelectTrigger className="w-36 shrink-0 h-7 text-sm text-muted-foreground border-0 bg-transparent hover:bg-muted/50 px-2">
+                      <SelectValue />
+                    </SelectTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>Reassign this task to a team</TooltipContent>
+                </Tooltip>
                 <SelectContent>
                   {Object.values(Team).map((team) => (
                     <SelectItem key={team} value={team}>
@@ -588,17 +608,25 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
           </div>
         </div>
 
-        {/* Actions — pinned top-right; never moves regardless of title length
-            or a dropdown's selected-label width. */}
-        <div className="shrink-0">
+        {/* Nav + Actions — pinned top-right; never moves regardless of title
+            length or a dropdown's selected-label width. */}
+        <div className="flex shrink-0 items-center gap-2">
+          {nav}
           {actions.length > 0 && (
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline">
-                  Actions
-                  <MoreVertical className="h-4 w-4 ml-2" />
-                </Button>
-              </DropdownMenuTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline">
+                      Actions
+                      <MoreVertical className="h-4 w-4 ml-2" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Lifecycle actions available from this status
+                </TooltipContent>
+              </Tooltip>
               <DropdownMenuContent align="end">
                 {/* Lifecycle actions (non-cancel) */}
                 {actions

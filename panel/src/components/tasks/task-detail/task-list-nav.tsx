@@ -7,12 +7,11 @@ import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 interface TaskListNavProps {
   task: Task;
@@ -40,6 +39,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 // explaining why — there is no list order to fall back to, so we don't guess.
 export function TaskListNav({ task }: TaskListNavProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const context = useScrollRestorationStore((state) => state.taskListNav);
 
   const items = context?.items ?? [];
@@ -49,7 +49,14 @@ export function TaskListNav({ task }: TaskListNavProps) {
   const nextItem =
     hasContext && index < items.length - 1 ? items[index + 1] : null;
 
-  const query = context?.queryString ? `?${context.queryString}` : "";
+  // Carry the active detail tab (?tab=) into the adjacent task's URL so
+  // prev/next keeps the user on the same tab.
+  const params = new URLSearchParams(context?.queryString ?? "");
+  const activeTab = searchParams.get("tab");
+  if (activeTab) params.set("tab", activeTab);
+  else params.delete("tab");
+  const qs = params.toString();
+  const query = qs ? `?${qs}` : "";
 
   // Alt+ArrowLeft/Right mirrors the prev/next buttons above.
   useEffect(() => {
@@ -68,22 +75,20 @@ export function TaskListNav({ task }: TaskListNavProps) {
   }, [prevItem, nextItem, query, router]);
 
   return (
-    <TooltipProvider>
-      <div className="flex items-center gap-1 shrink-0">
-        <NavButton
-          direction="prev"
-          item={prevItem}
-          query={query}
-          disabledReason={!hasContext ? NO_CONTEXT_TOOLTIP : undefined}
-        />
-        <NavButton
-          direction="next"
-          item={nextItem}
-          query={query}
-          disabledReason={!hasContext ? NO_CONTEXT_TOOLTIP : undefined}
-        />
-      </div>
-    </TooltipProvider>
+    <div className="flex items-center gap-1 shrink-0">
+      <NavButton
+        direction="prev"
+        item={prevItem}
+        query={query}
+        disabledReason={!hasContext ? NO_CONTEXT_TOOLTIP : undefined}
+      />
+      <NavButton
+        direction="next"
+        item={nextItem}
+        query={query}
+        disabledReason={!hasContext ? NO_CONTEXT_TOOLTIP : undefined}
+      />
+    </div>
   );
 }
 

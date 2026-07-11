@@ -180,6 +180,9 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
       </CollapsibleSection>
       {task.constraints ? (
         <CollapsibleSection
+          // Boilerplate identical on every task in the project — always
+          // starts collapsed.
+          defaultOpen={false}
           title={
             <>
               <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" />

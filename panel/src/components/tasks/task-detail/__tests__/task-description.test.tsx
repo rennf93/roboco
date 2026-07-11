@@ -37,21 +37,22 @@ describe("TaskDescription", () => {
     render(<TaskDescription task={task} />);
 
     expect(screen.getByText("Implement the thing.")).toBeInTheDocument();
-    expect(
-      screen.getByText("Route handlers must stay thin"),
-    ).toBeInTheDocument();
 
     // Two independent toggles: one for Description, one for Constraints.
+    // Constraints is project boilerplate, so it ALWAYS starts collapsed.
     const constraintsToggle = screen.getByRole("button", {
       name: "Constraints",
     });
-    expect(constraintsToggle).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(constraintsToggle);
     expect(constraintsToggle).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.queryByText("Route handlers must stay thin"),
     ).not.toBeInTheDocument();
-    // Collapsing Constraints doesn't affect the Description section.
+    fireEvent.click(constraintsToggle);
+    expect(constraintsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByText("Route handlers must stay thin"),
+    ).toBeInTheDocument();
+    // Expanding Constraints doesn't affect the Description section.
     expect(screen.getByText("Implement the thing.")).toBeVisible();
   });
 

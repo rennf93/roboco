@@ -3,6 +3,11 @@
 import { useState, useRef, KeyboardEvent } from "react";
 import { Send, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 
 interface ChatComposerProps {
@@ -62,19 +67,24 @@ export function ChatComposer({
         rows={2}
         className="flex-1 resize-none text-sm"
       />
-      <Button
-        size="icon"
-        onClick={handleSend}
-        disabled={isDisabled}
-        className="mb-0.5 shrink-0"
-        aria-label="Send message"
-      >
-        {isSending ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Send className="h-4 w-4" />
-        )}
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            size="icon"
+            onClick={handleSend}
+            disabled={isDisabled}
+            className="mb-0.5 shrink-0"
+            aria-label="Send message"
+          >
+            {isSending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Send message (Enter)</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

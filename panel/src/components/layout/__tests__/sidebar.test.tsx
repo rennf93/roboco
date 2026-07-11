@@ -67,17 +67,17 @@ describe("SidebarFooter", () => {
     ]);
   });
 
-  it("renders exactly one Separator between the nav list and the footer, expanded and collapsed", () => {
+  it("renders no Separator — the wrapper's border-t is the single divider (a Separator doubled it)", () => {
     const expanded = render(<SidebarFooter />);
     expect(
       expanded.container.querySelectorAll('[data-slot="separator"]'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expanded.unmount();
 
     const collapsed = render(<SidebarFooter collapsed />);
     expect(
       collapsed.container.querySelectorAll('[data-slot="separator"]'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it("renders correctly when collapsed (icon-only)", () => {

@@ -16,7 +16,6 @@ import { MobileSidebar } from "./mobile-sidebar";
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -32,22 +31,20 @@ export function Header() {
       <div className="flex items-center gap-4 flex-1 max-w-md">
         {/* Mobile nav trigger — only shown below md, where the sidebar is hidden */}
         <MobileSidebar />
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="relative w-full">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="search"
-                  placeholder="Search tasks, agents..."
-                  className="pl-10"
-                  disabled={true}
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>Coming Soon</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="relative w-full">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="search"
+                placeholder="Search tasks, agents..."
+                className="pl-10"
+                disabled={true}
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>Coming Soon</TooltipContent>
+        </Tooltip>
       </div>
 
       {/* Actions */}
@@ -56,26 +53,37 @@ export function Header() {
         <ConnectionStatus />
 
         {/* Refresh current page data */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => void refresh()}
-          disabled={disabled || loading}
-          aria-label="Refresh only the current page"
-          title="Refresh only the current page"
-        >
-          <RefreshCw className={cn("h-5 w-5", loading && "animate-spin")} />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => void refresh()}
+              disabled={disabled || loading}
+              aria-label="Refresh only the current page"
+            >
+              <RefreshCw
+                className={cn("h-5 w-5", loading && "animate-spin")}
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Refresh this page&apos;s data</TooltipContent>
+        </Tooltip>
 
         {/* Theme toggle */}
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
-              <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-              <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-              <span className="sr-only">Toggle theme</span>
-            </Button>
-          </DropdownMenuTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon">
+                  <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+                  <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+                  <span className="sr-only">Toggle theme</span>
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Switch light / dark theme</TooltipContent>
+          </Tooltip>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => setTheme("light")}>
               <Sun className="h-4 w-4 mr-2" />

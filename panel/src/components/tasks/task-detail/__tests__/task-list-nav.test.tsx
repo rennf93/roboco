@@ -6,6 +6,7 @@ import { useScrollRestorationStore } from "@/lib/stores";
 const mockPush = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush, back: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 import { TaskListNav } from "../task-list-nav";

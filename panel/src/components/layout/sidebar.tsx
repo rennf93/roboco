@@ -26,7 +26,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useUIStore } from "@/store";
 
 // Flat list, in the exact order product wants the sidebar to read top to
@@ -73,10 +77,9 @@ export function SidebarNav({
     <nav className="space-y-1 px-2">
       {navItems.map((item) => {
         const isActive = pathname.startsWith(item.href);
-        return (
+        const link = (
           <Link
             prefetch={false}
-            key={item.href}
             href={item.href}
             onClick={onNavigate}
             className={cn(
@@ -86,11 +89,21 @@ export function SidebarNav({
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
               collapsed && "justify-center px-2",
             )}
-            title={collapsed ? item.title : undefined}
           >
             <item.icon className="h-5 w-5 shrink-0" />
             {!collapsed && <span>{item.title}</span>}
           </Link>
+        );
+        // Icon-only rail: the label moves into a tooltip.
+        return collapsed ? (
+          <Tooltip key={item.href}>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right">{item.title}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span key={item.href} className="block">
+            {link}
+          </span>
         );
       })}
     </nav>
@@ -105,27 +118,36 @@ export function SidebarFooter({
   collapsed?: boolean;
   onNavigate?: () => void;
 }) {
+  // No Separator here: both wrappers (desktop aside + mobile Sheet) already
+  // draw a border-t, and a second line reads as a rendering glitch.
   return (
-    <div className="space-y-2">
-      <Separator />
-      <div className="space-y-1">
-        {footerItems.map((item) => (
+    <div className="space-y-1">
+      {footerItems.map((item) => {
+        const link = (
           <Link
             prefetch={false}
-            key={item.href}
             href={item.href}
             onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
               collapsed && "justify-center px-2",
             )}
-            title={collapsed ? item.title : undefined}
           >
             <item.icon className="h-5 w-5" />
             {!collapsed && <span>{item.title}</span>}
           </Link>
-        ))}
-      </div>
+        );
+        return collapsed ? (
+          <Tooltip key={item.href}>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right">{item.title}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span key={item.href} className="block">
+            {link}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -162,19 +184,29 @@ export function Sidebar() {
             <span className="font-semibold text-lg">RoboCo</span>
           </Link>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className={cn(sidebarCollapsed && "mx-auto")}
-        >
-          <ChevronLeft
-            className={cn(
-              "h-4 w-4 transition-transform",
-              sidebarCollapsed && "rotate-180",
-            )}
-          />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className={cn(sidebarCollapsed && "mx-auto")}
+              aria-label={
+                sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
+              }
+            >
+              <ChevronLeft
+                className={cn(
+                  "h-4 w-4 transition-transform",
+                  sidebarCollapsed && "rotate-180",
+                )}
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          </TooltipContent>
+        </Tooltip>
       </div>
 
       {/* Navigation */}

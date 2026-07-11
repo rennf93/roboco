@@ -445,14 +445,16 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   return (
     <div className="space-y-6">
-      {/* Breadcrumb (parent task) + prev/next list navigation */}
-      <div className="flex items-center justify-between gap-4">
-        <TaskBreadcrumb task={task} />
-        <TaskListNav task={task} />
-      </div>
+      {/* Breadcrumb (parent task) — renders nothing for a root task */}
+      <TaskBreadcrumb task={task} />
 
-      {/* Header */}
-      <TaskHeader task={task} onAction={handleAction} />
+      {/* Header — prev/next list navigation rides top-right, next to Actions,
+          so it never occupies its own row above the title. */}
+      <TaskHeader
+        task={task}
+        onAction={handleAction}
+        nav={<TaskListNav task={task} />}
+      />
 
       {/* CEO gate #1: Approve & Start a board-reviewed task. After the Board
           finishes, the orchestrator sets board_review_complete and sends the

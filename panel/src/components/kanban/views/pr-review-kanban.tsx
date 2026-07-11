@@ -12,19 +12,19 @@ const PR_REVIEW_COLUMNS = [
     id: "awaiting",
     status: TaskStatus.AWAITING_PR_REVIEW,
     title: "Awaiting Review",
-    color: "bg-teal-100 dark:bg-teal-900",
+    color: "bg-teal-100 dark:bg-teal-900/40",
   },
   {
     id: "passed",
     status: TaskStatus.AWAITING_PM_REVIEW,
     title: "Passed",
-    color: "bg-green-50 dark:bg-green-950",
+    color: "bg-green-50 dark:bg-green-950/40",
   },
   {
     id: "changes",
     status: TaskStatus.NEEDS_REVISION,
     title: "Changes Requested",
-    color: "bg-red-50 dark:bg-red-950",
+    color: "bg-red-50 dark:bg-red-950/40",
   },
 ];
 

@@ -4,6 +4,11 @@ import { useState } from "react";
 import { useTasks } from "@/hooks/use-tasks";
 import { TaskStatus } from "@/types";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -80,15 +85,20 @@ export function DependencySelector({
                   {task.id.slice(0, 8)}
                 </Badge>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0"
-                onClick={() => removeTask(task.id)}
-              >
-                <X className="h-3 w-3" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0"
+                    onClick={() => removeTask(task.id)}
+                  >
+                    <X className="h-3 w-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Remove dependency</TooltipContent>
+              </Tooltip>
             </div>
           ))}
         </div>

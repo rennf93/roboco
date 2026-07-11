@@ -5,6 +5,11 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Table,
   TableBody,
   TableCell,
@@ -147,14 +152,19 @@ export function WorkSessionTable({
                     })}
                   </TableCell>
                   <TableCell>
-                    <Link
-                      href={`/work-sessions/${session.id}`}
-                      prefetch={false}
-                    >
-                      <Button variant="ghost" size="icon">
-                        <ExternalLink className="h-4 w-4" />
-                      </Button>
-                    </Link>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Link
+                          href={`/work-sessions/${session.id}`}
+                          prefetch={false}
+                        >
+                          <Button variant="ghost" size="icon">
+                            <ExternalLink className="h-4 w-4" />
+                          </Button>
+                        </Link>
+                      </TooltipTrigger>
+                      <TooltipContent>Open work session</TooltipContent>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               ))}
@@ -177,11 +187,19 @@ export function WorkSessionTable({
                     {session.branch_name}
                   </Link>
                 </div>
-                <Link href={`/work-sessions/${session.id}`} prefetch={false}>
-                  <Button variant="ghost" size="icon" className="shrink-0">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </Link>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Link
+                      href={`/work-sessions/${session.id}`}
+                      prefetch={false}
+                    >
+                      <Button variant="ghost" size="icon" className="shrink-0">
+                        <ExternalLink className="h-4 w-4" />
+                      </Button>
+                    </Link>
+                  </TooltipTrigger>
+                  <TooltipContent>Open work session</TooltipContent>
+                </Tooltip>
               </div>
               <div className="mt-3 divide-y">
                 <ResponsiveTableCardRow label="Task">

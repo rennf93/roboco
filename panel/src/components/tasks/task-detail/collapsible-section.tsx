@@ -6,6 +6,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -78,24 +83,31 @@ export function CollapsibleSection({
       <Collapsible open={open} onOpenChange={setOpen} className="contents">
         <CardHeader className={cn("pb-3", headerClassName)}>
           <div className="flex items-center justify-between gap-2">
-            <CollapsibleTrigger asChild>
-              <button
-                type="button"
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                aria-expanded={open}
-              >
-                <ChevronDown
-                  aria-hidden="true"
-                  className={cn(
-                    "h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200",
-                    !open && "-rotate-90",
-                  )}
-                />
-                <CardTitle className="flex min-w-0 items-center gap-2 text-lg">
-                  {title}
-                </CardTitle>
-              </button>
-            </CollapsibleTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    aria-expanded={open}
+                  >
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={cn(
+                        "h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200",
+                        !open && "-rotate-90",
+                      )}
+                    />
+                    <CardTitle className="flex min-w-0 items-center gap-2 text-lg">
+                      {title}
+                    </CardTitle>
+                  </button>
+                </CollapsibleTrigger>
+              </TooltipTrigger>
+              <TooltipContent>
+                {open ? "Collapse section" : "Expand section"}
+              </TooltipContent>
+            </Tooltip>
             {actions && (
               <div className="flex shrink-0 items-center gap-2">{actions}</div>
             )}
