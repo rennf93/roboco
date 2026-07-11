@@ -65,11 +65,10 @@ When a control's action varies by state, compute the label dynamically:
 
 ```typescript
 const toggleLabel = sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
-const moveLabel = isBacklog ? "PM must activate this task first" : "Move forward";
 
 <Button
   aria-label={toggleLabel}
-  title={moveLabel}
+  title={toggleLabel}
 >
   {/* ... */}
 </Button>
