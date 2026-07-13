@@ -268,7 +268,9 @@ async def do_request_sandbox(
     x_agent_id: _AgentIdHeader,
     actions: _ContentActionsDep,
 ) -> dict:
-    env = await actions.request_sandbox(agent_id=x_agent_id, services=body.services)
+    env = await actions.request_sandbox(
+        agent_id=x_agent_id, services=body.services, extensions=body.extensions
+    )
     return envelope_to_response(env, request)
 
 

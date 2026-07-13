@@ -51,6 +51,7 @@ class ProjectResponse(BaseModel):
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
+    sandbox_extensions: dict[str, list[str]] | None = None
 
     # Runtime state
     workspace_path: str | None = None
@@ -151,6 +152,7 @@ class ProjectUpdateRequest(BaseModel):
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
+    sandbox_extensions: dict[str, list[str]] | None = None
 
     # State
     is_active: bool | None = None
@@ -238,6 +240,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         dep_update_command=project.dep_update_command,
         dep_update_paths=project.dep_update_paths,
         sandbox_services=project.sandbox_services,
+        sandbox_extensions=project.sandbox_extensions,
         workspace_path=project.workspace_path,
         last_synced_at=project.last_synced_at,
         head_commit=project.head_commit,

@@ -543,6 +543,13 @@ class ProjectTable(Base):
     sandbox_services: Mapped[list[str] | None] = mapped_column(
         ARRAY(String), nullable=True
     )
+    # Per-service extensions/modules the sandbox should activate post-ready
+    # (e.g. {"postgres": ["vector", "postgis"], "redis": ["search"]}). Null or a
+    # service absent = bare (no enable step). Feature names are allowlist-
+    # validated by the Project pydantic model (SANDBOX_ENGINE_FEATURES).
+    sandbox_extensions: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
 
     # Access Control
     assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)

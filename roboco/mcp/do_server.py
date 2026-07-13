@@ -726,22 +726,30 @@ def evidence(task_id: str) -> dict[str, Any]:
     return _post("/api/v1/do/evidence", {"task_id": task_id})
 
 
-def request_sandbox(services: list[str] | None = None) -> dict[str, Any]:
+def request_sandbox(
+    services: list[str] | None = None,
+    extensions: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     """Provision (or reuse) a throwaway sandbox DB/Redis/Mongo for YOUR active task.
 
     On-demand — nothing is provisioned at spawn. Omit ``services`` to get the
     project's whole opted-in set; requesting a service the project didn't opt
-    into is rejected with the allowed set named. Creds come back in
+    into is rejected with the allowed set named. ``extensions`` (e.g.
+    ``{"postgres": ["vector", "postgis"]}``) is an additive per-call override
+    unioned with the project's standing ``sandbox_extensions`` and bounded by
+    the opted set + the allowlist — a name outside the allowlist (e.g.
+    ``plpython3u``) is rejected with the allowed set named. Creds come back in
     ``evidence``, one entry per service: ``{host, port, user, password,
-    database, env: {ROBOCO_TEST_*: value}}`` — export the ``env`` values
-    verbatim for gate tooling that reads them. The whole opted-in set is
-    provisioned on first call, so calling this again for any subset or
-    superset of it is a cheap no-op (same creds, no re-provisioning); a
-    project that never opted into sandbox services will reject this.
+    database, env: {ROBOCO_TEST_*: value}, available_extensions?: [...]}`` —
+    export the ``env`` values verbatim for gate tooling that reads them. The
+    whole opted-in set is provisioned on first call, so calling this again for
+    any subset or superset of it is a cheap no-op (same creds, no
+    re-provisioning); a project that never opted into sandbox services will
+    reject this.
     """
     return _post(
         "/api/v1/do/request_sandbox",
-        {"services": services},
+        {"services": services, "extensions": extensions},
         timeout=_SANDBOX_TIMEOUT,
     )
 
