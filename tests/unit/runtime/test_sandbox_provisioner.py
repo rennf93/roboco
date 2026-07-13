@@ -33,6 +33,9 @@ class _FakeRunner:
         self.calls: list[list[str]] = []
         self.run_rc = run_rc
         self.exec_rc = exec_rc
+        # exec stdout — set post-construction (mirrors inspect_rc/pull_rc) by
+        # tests that exercise the verify step's stdout interpretation.
+        self.exec_out: bytes = b""
         self.teardown_rc = teardown_rc
         self.ps_output = ps_output
         self.ps_live_output = ps_live_output
@@ -54,7 +57,7 @@ class _FakeRunner:
         if verb == "run":
             rc, out, err = self.run_rc, b"container-id\n", b""
         elif verb == "exec":
-            rc, out, err = self.exec_rc, b"", b""
+            rc, out, err = self.exec_rc, self.exec_out, b""
         elif verb in ("stop", "kill", "rm"):
             rc, out, err = self.teardown_rc, b"", b""
         elif verb == "image":
@@ -352,3 +355,186 @@ async def test_is_live_short_circuits_on_first_dead_service() -> None:
     assert await provisioner.is_live("dev-13", ["postgres", "redis"]) is False
     inspects = [c for c in runner.calls if c[0] == "inspect"]
     assert len(inspects) == 1
+
+
+# ---------------------------------------------------------------------------
+# Post-ready feature activation: enable_step + verify_step + allowlist guard.
+# All docker calls mocked; the enable/verify loop is exercised end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def _exec_calls(runner: _FakeRunner, containish: str | None = None) -> list[list[str]]:
+    calls = [c for c in runner.calls if c[0] == "exec"]
+    if containish is None:
+        return calls
+    return [c for c in calls if containish in " ".join(c)]
+
+
+@pytest.mark.asyncio
+async def test_provision_pg_features_runs_enable_then_verify() -> None:
+    # exec_out = "2\n" satisfies the pg verify (count == len(features)).
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"2\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision(
+        "dev-feat", ["postgres"], features={"postgres": ["vector", "postgis"]}
+    )
+
+    pg = info.services["postgres"]
+    assert pg.features == ("vector", "postgis")
+    # The enable exec creates both extensions; the verify exec counts them —
+    # assert each by content rather than a magic count.
+    execs = _exec_calls(runner, "psql")
+    enable = next(c for c in execs if "CREATE EXTENSION" in " ".join(c))
+    verify = next(c for c in execs if "pg_extension" in " ".join(c))
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in " ".join(enable)
+    assert "CREATE EXTENSION IF NOT EXISTS postgis" in " ".join(enable)
+    assert "ON_ERROR_STOP=1" in enable
+    assert "vector" in " ".join(verify)
+    assert "postgis" in " ".join(verify)
+
+
+@pytest.mark.asyncio
+async def test_provision_no_features_skips_enable_and_verify() -> None:
+    """Bare provision (no features) is byte-for-byte unchanged: only the base
+    readiness probe exec runs, no enable/verify."""
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision("dev-bare", ["postgres"])
+
+    assert info.services["postgres"].features == ()
+    pg_execs = _exec_calls(runner, "pg_isready")
+    assert len(pg_execs) == 1  # readiness only
+    assert _exec_calls(runner, "psql") == []
+
+
+@pytest.mark.asyncio
+async def test_provision_redis_features_loads_each_module_then_lists() -> None:
+    # MODULE LIST raw output carrying both module names.
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"search\n99999\nReJSON\n99999\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision(
+        "dev-redis", ["redis"], features={"redis": ["search", "json"]}
+    )
+
+    assert info.services["redis"].features == ("search", "json")
+    loads = [
+        c
+        for c in _exec_calls(runner)
+        if "MODULE" in " ".join(c) and "LOAD" in " ".join(c)
+    ]
+    # one MODULE LOAD per module — assert each .so is loaded, not a magic count.
+    joined = " ".join(" ".join(c) for c in loads)
+    assert "/opt/redis-stack/lib/redisearch.so" in joined
+    assert "/opt/redis-stack/lib/rejson.so" in joined
+    # verify is a single MODULE LIST
+    lists = [
+        c
+        for c in _exec_calls(runner)
+        if "MODULE" in " ".join(c) and "LIST" in " ".join(c)
+    ]
+    assert len(lists) == 1
+
+
+@pytest.mark.asyncio
+async def test_provision_mongo_features_are_a_noop() -> None:
+    """Mongo is batteries-included; features for it are accepted (allowlist is
+    empty so only [] passes) and no enable/verify exec runs."""
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision("dev-mongo-f", ["mongo"], features={"mongo": []})
+
+    assert info.services["mongo"].features == ()
+    # Only the mongosh readiness probe — no enable/verify.
+    assert all(
+        "MODULE" not in " ".join(c) and "pg_extension" not in " ".join(c)
+        for c in _exec_calls(runner)
+    )
+
+
+@pytest.mark.asyncio
+async def test_provision_rejects_unallowed_pg_extension() -> None:
+    """plpython3u is a superuser-RCE vector — the allowlist rejects it before
+    any container runs (no docker calls at all)."""
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    with pytest.raises(SandboxProvisionError, match="plpython3u"):
+        await provisioner.provision(
+            "dev-bad", ["postgres"], features={"postgres": ["vector", "plpython3u"]}
+        )
+
+    assert not any(c[0] == "run" for c in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_provision_rejects_feature_for_unknown_service() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    with pytest.raises(SandboxProvisionError, match="unknown service"):
+        await provisioner.provision(
+            "dev-x", ["postgres"], features={"mysql": ["vector"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_provision_failed_enable_tears_down_and_raises() -> None:
+    """A failed enable exec (e.g. typo'd module path) is fatal — the agent
+    never receives creds for a db missing what it asked for."""
+    runner = _FakeRunner(run_rc=0, exec_rc=1)  # every exec fails (incl. ready probe)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    with pytest.raises(SandboxProvisionError):
+        await provisioner.provision(
+            "dev-fail", ["postgres"], features={"postgres": ["vector"]}
+        )
+
+    # Teardown attempted on the failed container.
+    assert any(c[0] in ("stop", "kill", "rm") for c in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_provision_failed_verify_raises_with_image_hint() -> None:
+    """A successful enable but a verify count that's short (the image is missing
+    the extension files) is fatal with the 'image may be missing' hint."""
+    # 2 features requested but verify reports only 1 present.
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"1\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    with pytest.raises(SandboxProvisionError, match="missing the extension"):
+        await provisioner.provision(
+            "dev-verify", ["postgres"], features={"postgres": ["vector", "postgis"]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_as_payload_surfaces_available_extensions() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"1\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision(
+        "dev-payload", ["postgres"], features={"postgres": ["vector"]}
+    )
+
+    payload = info.as_payload()
+    assert payload["postgres"]["available_extensions"] == ["vector"]
+    assert "available_modules" not in payload["postgres"]
+
+
+@pytest.mark.asyncio
+async def test_as_payload_no_extensions_key_when_bare() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision("dev-bare2", ["postgres"])
+
+    payload = info.as_payload()
+    assert "available_extensions" not in payload["postgres"]

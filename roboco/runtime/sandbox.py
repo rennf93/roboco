@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from roboco.models.sandbox import (
+    SANDBOX_ENGINE_FEATURES,
     SANDBOX_ENGINES,
     VALID_SANDBOX_SERVICES,
     SandboxConnection,
@@ -126,14 +127,40 @@ class SandboxProvisioner:
                 f"{stderr.decode(errors='replace')}"
             )
 
-    async def provision(self, agent_id: str, services: list[str]) -> SandboxInfo:
-        """Provision the requested services; on any failure, tear down + raise."""
+    async def provision(
+        self,
+        agent_id: str,
+        services: list[str],
+        features: dict[str, list[str]] | None = None,
+    ) -> SandboxInfo:
+        """Provision the requested services; on any failure, tear down + raise.
+
+        ``features`` maps a service name to the extensions/modules to activate
+        in it post-ready (e.g. ``{"postgres": ["vector", "postgis"]}``). Every
+        feature name is allowlist-validated here against
+        ``SANDBOX_ENGINE_FEATURES`` — an unknown or untrusted name (e.g.
+        ``plpython3u``) is rejected before any container runs. ``None`` or an
+        empty list per service = bare (no enable step), the existing behavior.
+        """
         unknown = sorted(set(services) - VALID_SANDBOX_SERVICES)
         if unknown:
             raise SandboxProvisionError(
                 f"unknown sandbox service(s) {unknown}; valid: "
                 f"{sorted(VALID_SANDBOX_SERVICES)}"
             )
+        feat_map = features or {}
+        for svc, feats in feat_map.items():
+            if svc not in SANDBOX_ENGINES:
+                raise SandboxProvisionError(
+                    f"features given for unknown service {svc!r}; valid: "
+                    f"{sorted(VALID_SANDBOX_SERVICES)}"
+                )
+            allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
+            bad = sorted(set(feats) - allowed)
+            if bad:
+                raise SandboxProvisionError(
+                    f"unallowed {svc} feature(s) {bad}; allowed: {sorted(allowed)}"
+                )
         # Pre-clear: a same-named sandbox left by a crash-missed teardown
         # would otherwise fail `docker run` on the name conflict and burn a
         # spawn attempt (and a respawn-tracker strike).
@@ -143,14 +170,16 @@ class SandboxProvisioner:
         try:
             for service in services:
                 engine = SANDBOX_ENGINES[service]
-                connections[service] = await self._provision_engine(agent_id, engine)
+                connections[service] = await self._provision_engine(
+                    agent_id, engine, feat_map.get(service, [])
+                )
         except Exception:
             await self.teardown(agent_id)
             raise
         return SandboxInfo(services=connections)
 
     async def _provision_engine(
-        self, agent_id: str, engine: SandboxEngine
+        self, agent_id: str, engine: SandboxEngine, features: list[str]
     ) -> SandboxConnection:
         name = engine.container_name(agent_id)
         password = secrets.token_hex(16)
@@ -187,7 +216,47 @@ class SandboxProvisioner:
             raise SandboxProvisionError(
                 f"{engine.name} sandbox {name} did not become ready in time"
             )
-        return engine.connection(name, password)
+        await self._enable_features(name, engine, password, features)
+        return engine.connection(name, password, tuple(features))
+
+    async def _enable_features(
+        self,
+        container: str,
+        engine: SandboxEngine,
+        password: str,
+        features: list[str],
+    ) -> None:
+        """Run the engine's post-ready enable + verify execs, or raise.
+
+        A failed enable (e.g. a typo'd module path) or a failed verify (the
+        image is missing the extension files) is fatal — the caller tears down
+        and re-raises — so an agent never receives creds for a db missing what
+        it asked for.
+        """
+        if not features:
+            return
+        run = self._run()
+        enable_argv = engine.enable_step(password, features)
+        if enable_argv:
+            for argv in enable_argv:
+                rc, _, stderr = await run(
+                    ["exec", container, *argv], _DOCKER_EXEC_TIMEOUT_SECONDS
+                )
+                if rc != 0:
+                    raise SandboxProvisionError(
+                        f"{engine.name} sandbox {container}: enable step failed "
+                        f"for {features}: {stderr.decode(errors='replace')}"
+                    )
+        verify_argv = engine.verify_step(password, features)
+        if verify_argv:
+            rc, stdout, _ = await run(
+                ["exec", container, *verify_argv], _DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+            if rc != 0 or not engine.verify_ok(features, stdout):
+                raise SandboxProvisionError(
+                    f"{engine.name} sandbox {container} did not confirm features "
+                    f"{features} (image may be missing the extension/module files)"
+                )
 
     async def _wait_ready(
         self, container: str, probe_cmd: list[str], deadline_seconds: float
