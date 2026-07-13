@@ -270,6 +270,16 @@ _OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
 # below and roboco/agent_sdk/intake_main.py.
 INTAKE_AGENT_ID = "intake-1"
 
+# Ambient note telling the intake agent its cwd holds clones of every project in
+# the scope, so it drafts against the real trees (Grep/Glob/Read), not from memory.
+_INTAKE_WORKSPACE_AMBIENT = (
+    "## Workspace\n\n"
+    "Your working directory holds a clone of every project in this intake scope "
+    "— the primary project at your cwd, and for a multi-project scope each "
+    "sibling project's clone alongside it under /data/workspaces. All are "
+    "readable via Grep/Glob/Read; draft against the real trees, not from memory."
+)
+
 # The Secretary agent: a single seeded, persistent chief-of-staff container the
 # CEO chats with (like intake), but with gated CEO authority. One container at a
 # time. Seeded in identity.AGENTS; see roboco/agent_sdk/secretary_main.py.
@@ -3910,7 +3920,13 @@ class AgentOrchestrator:
         )
         return (
             "\n\n---\n\n".join(
-                part for part in (conventions_ambient, history_ambient) if part
+                part
+                for part in (
+                    _INTAKE_WORKSPACE_AMBIENT,
+                    conventions_ambient,
+                    history_ambient,
+                )
+                if part
             )
             or None
         )
@@ -5063,6 +5079,7 @@ class AgentOrchestrator:
         Grep/Glob/Read.
         """
         from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
         from roboco.services.workspace import WorkspaceService
 
         team = get_agent_team(INTAKE_AGENT_ID) or "board"
@@ -5071,6 +5088,15 @@ class AgentOrchestrator:
             slugs = await self._intake_scope_slugs(
                 db, project_slug, product_id, project_ids
             )
+            # ponytail: a multi-project scope may list several projects pointing
+            # at the same repo (a monorepo's cell-projects share one git_url);
+            # clone each git_url once, mirroring CI-watch's per-git_url dedupe.
+            project_svc = get_project_service(db)
+            slugs_with_urls: list[tuple[str, str | None]] = []
+            for slug in slugs:
+                project = await project_svc.get_by_slug(slug)
+                slugs_with_urls.append((slug, project.git_url if project else None))
+            slugs = AgentOrchestrator._dedupe_slugs_by_git_url(slugs_with_urls)
             ws = WorkspaceService(db)
             for slug in slugs:
                 await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
@@ -5078,6 +5104,27 @@ class AgentOrchestrator:
         # /data/workspaces inside the container, regardless of the host root).
         paths = [_agent_workspace_path(slug, team, INTAKE_AGENT_ID) for slug in slugs]
         return paths[0], paths
+
+    @staticmethod
+    def _dedupe_slugs_by_git_url(
+        slugs_with_urls: list[tuple[str, str | None]],
+    ) -> list[str]:
+        """Keep the first slug for each non-empty git_url (a monorepo's
+        cell-projects share one git_url — clone it once, mirroring CI-watch's
+        per-git_url dedupe). A slug with no/empty git_url is never collapsed
+        onto another, so each distinct local repo still clones. Order is
+        preserved; the primary (first) slug of a shared url wins.
+        """
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for slug, git_url in slugs_with_urls:
+            key = (git_url or "").strip()
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            deduped.append(slug)
+        return deduped
 
     @staticmethod
     async def _intake_scope_slugs(
