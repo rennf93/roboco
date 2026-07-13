@@ -39,6 +39,41 @@ def _agent_headers(agent_id: Any, role: str) -> dict[str, str]:
     return {"X-Agent-ID": str(agent_id), "X-Agent-Role": role}
 
 
+def _seed_system_agent(stack: E2EStack) -> None:
+    """Seed the ``system`` sentinel at its fixed foundation UUID.
+
+    Production seeds it via ``initial_data.py``; the e2e harness's
+    ``seed_company`` deliberately does NOT (seeding it globally adds
+    notification-creation latency to every test, pushing ``i_documented``
+    past its 120 s verb timeout). Only the coordination-event tests that
+    exercise ``send_unblock_notification`` / ``send_dependency_revival_notification``
+    need it — both resolve ``from_agent="system"`` to a UUID via DB lookup.
+    """
+    from roboco.db.tables import AgentTable
+    from roboco.foundation import identity as _foundation
+    from roboco.models import AgentRole, AgentStatus
+
+    async def _run(session: AsyncSession) -> None:
+        session.add(
+            AgentTable(
+                id=_foundation.AGENTS["system"].uuid,
+                name="system",
+                slug="system",
+                role=AgentRole.SYSTEM,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="system",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+        await session.flush()
+
+    stack.run_db(_run)
+
+
 def _notifications_for_task(
     stack: E2EStack, task_id: Any, notification_type: Any
 ) -> list[dict[str, Any]]:
@@ -138,6 +173,7 @@ def test_unblock_persists_alert_notification(e2e_stack: E2EStack) -> None:
     stack = e2e_stack
     company = seed_company(stack)
     project_id, _project_slug = seed_project(stack, company)
+    _seed_system_agent(stack)
 
     from roboco.models.base import TaskStatus
 
@@ -213,6 +249,7 @@ def test_dependency_revival_persists_alert_notification(e2e_stack: E2EStack) -> 
     stack = e2e_stack
     company = seed_company(stack)
     project_id, _project_slug = seed_project(stack, company)
+    _seed_system_agent(stack)
 
     from roboco.models.base import TaskStatus
 
