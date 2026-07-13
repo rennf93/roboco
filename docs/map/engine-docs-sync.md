@@ -180,6 +180,7 @@ The flag is registered in `roboco/services/settings.py`'s `FEATURE_FLAGS` tuple,
 | af2fb904 | `[687574d2] Add docs-sync engine and release-proposal publish seam` | Introduced `roboco/services/docs_sync_engine.py`, the `release_proposal.py` seam, `DOCS_SYNC_SOURCE`, `list_open_docs_sync_tasks`, the `docs_sync_release_version` marker, and `docs_sync_max_open_tasks` / `docs_sync_max_per_cycle` config caps. |
 | db919882 | `[687574d2] Restore task.py safeguards deleted by docs-sync engine commit and filter docs_sync version in SQL` | Restored unrelated `task.py` safeguards accidentally deleted by the first commit and moved the version predicate in `list_open_docs_sync_tasks` into SQL against the JSONB marker. |
 | d333dde7 | `[e6e23c1f] Enforce docs_sync_max_per_cycle cap in DocsSyncEngine` | Added a per-instance `_per_cycle_originated` counter and guard so `originate_docs_update` respects `docs_sync_max_per_cycle` in addition to the existing rolling cap. Added `test_per_cycle_cap_is_enforced`. |
+| 09f2ea64 | `[f71ac0bf] Fix Python Analyze and quality gate failures in docs-divergence engine` | Scoped Python surface was already clean; the only diff-introduced issue was `docker-compose.yaml` defaulting `ROBOCO_DOCS_SYNC_ENABLED` to `true` instead of `false`. Changed to `false`, leaving NAS compose armed at `true` and registry compose at `false`. |
 
 ## Regression Risks
 
