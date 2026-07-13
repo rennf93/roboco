@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "072_project_sandbox_extensions"
 down_revision = "071_review_findings"
@@ -28,7 +29,7 @@ depends_on: dict[str, str] | None = None
 def upgrade() -> None:
     op.add_column(
         "projects",
-        sa.Column("sandbox_extensions", sa.JSONB(), nullable=True),
+        sa.Column("sandbox_extensions", postgresql.JSONB(), nullable=True),
     )
 
 
