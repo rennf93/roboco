@@ -95,6 +95,7 @@ export const projectsApi = {
         dep_update_command: null,
         dep_update_paths: null,
         sandbox_services: null,
+        sandbox_extensions: null,
         workspace_path: null,
         last_synced_at: null,
         head_commit: null,

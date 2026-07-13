@@ -31,16 +31,20 @@ A second, per-project gate applies even when the flag is on: only a project with
 Provisioning is **on-demand**: nothing is provisioned at spawn. A developer or QA agent calls the `request_sandbox` content tool (on `roboco-do`) when it actually needs a sandboxed DB, and the orchestrator provisions it inline. Wiring: `roboco/api/schemas/v1/do.py` `RequestSandboxRequest` → `POST /api/v1/do/request_sandbox` → `ContentActions.request_sandbox` (`roboco/services/gateway/content_actions.py`) → `AgentOrchestrator.ensure_sandbox` → `roboco/mcp/do_server.py`'s `request_sandbox()` tool (1080s timeout — `ensure_sandbox` always provisions the project's full opted-in set on first call, so an all-three-engines-cold first request is the norm the timeout must cover, not a rare edge case).
 
 ```python
-request_sandbox(services: list[str] | None = None)
+request_sandbox(
+    services: list[str] | None = None,
+    extensions: dict[str, list[str]] | None = None,
+)
 ```
 
-`services` omitted means the project's whole opted-in set. Guards fire in order, each with a clean `invalid_state` envelope + `remediate`:
+`services` omitted means the project's whole opted-in set. `extensions` is an optional per-service map of extensions/modules to activate (see "Extensions and modules (on the fly)" below); it unions with the project's standing set. Guards fire in order, each with a clean `invalid_state` envelope + `remediate`:
 
 1. `ROBOCO_SANDBOX_DB_ENABLED` off → refused before any DB lookup.
 2. No active, project-bound task (agent hasn't `give_me_work`'d) → refused.
 3. Project has no `sandbox_services` opted in → refused.
 4. A requested service outside the project's opted set → refused, remediate **names the allowed set**.
-5. Orchestrator handle unavailable (e.g. mid-restart) → refused, but **retryable** — the one guard that isn't a permanent no.
+5. A requested extension outside the per-service allowlist, or for a service not opted in → refused, remediate **names the allowed extensions**.
+6. Orchestrator handle unavailable (e.g. mid-restart) → refused, but **retryable** — the one guard that isn't a permanent no.
 
 Only past all five does it call `ensure_sandbox` and provision. A genuine provisioning failure (image pull, readiness timeout) also surfaces as a retryable `invalid_state`, never a spawn refusal — sandbox trouble can no longer block a spawn or an agent's turn.
 
@@ -70,6 +74,22 @@ The `env` sub-dict (`SandboxInfo.as_payload()`, `roboco/models/sandbox.py`) carr
 `ensure_sandbox` always provisions the project's **whole opted-in set** on first call, regardless of what a given `request_sandbox` call named — so calling it again for any subset or superset of that opted set is a guaranteed cache hit (same creds, no docker calls), and a live container is never torn down mid-session by a later, broader request. `services` only scopes what comes back in this call's `evidence`; the response payload is filtered down to that subset even though the full set was provisioned. A cache hit is also re-verified live (`SandboxProvisioner.is_live`) before being trusted — a container OOM-killed or removed out-of-band evicts the stale entry and triggers a fresh full-set provision with new creds. Concurrent calls for the same agent (e.g. a client timeout + retry) are serialized behind a per-agent-slug `asyncio.Lock` so they can't race `provision()`/`teardown()` against each other. `ensure_sandbox` is always called with the **caller's own** authenticated agent slug — a caller can never reach another agent's sandbox.
 
 Only `developer` and `qa` roles carry `request_sandbox` in their spawn manifest (`roboco/services/gateway/role_config.py` `_DEV_DO` / `_QA_DO`) — the DB-needing gate roles. It is carried unconditionally on those manifests (declarative); the real gating is the project opt-in check inside the verb itself.
+
+## Extensions and modules (on the fly)
+
+A sandboxed DB/Redis can be built to a venture's declared extensions on the fly — "need a db? ok, extensions?" — instead of a fixed flavor. A project declares a per-service extension/module map in `projects.sandbox_extensions` (migration `072`, jsonb null), e.g. `{"postgres": ["vector", "postgis"], "redis": ["search"]}`. The provisioner activates them **post-ready** via `docker exec` (`CREATE EXTENSION IF NOT EXISTS <name>` for pg, `MODULE LOAD <so>` for redis) then verifies presence, so a missing extension file fails loudly at first provision rather than silently. Design spec: `docs/internal/specs/2026-07-13-sandbox-extensions-on-the-fly.md`.
+
+**The allowlist is the security containment.** `SANDBOX_PG_EXTENSIONS = {vector, postgis, pg_trgm, citext, uuid-ossp}` and `SANDBOX_REDIS_MODULES = {search, json, bloom}` (`roboco/models/sandbox.py` `SANDBOX_ENGINE_FEATURES`) are the only extensions/modules the system will ever activate. A `plpython3u` (superuser-RCE) is excluded by construction — rejected at the Project pydantic boundary before it can be persisted, and again at the verb. Mongo has no activatable features and is intentionally absent from the map. The Project model normalizes order, drops empty feature lists (a service with `[]` is bare), and rejects unknown service keys or unallowed features with the allowlist named.
+
+**No default set.** Opters set the extensions they need explicitly; an unset service is bare. Existing opted-in projects stay byte-for-byte unchanged on the bare path — no behavior change unless a venture declares a set.
+
+**Standing set + per-call override.** The project field is the trusted standing set; a `request_sandbox(extensions=…)` call unions a per-call override with it, bounded to the opted-in service set and the allowlist. The union reaches `ensure_sandbox` as the `features` kwarg. **Recommendation: set the full set the venture needs in project settings, so agents can request subsets at runtime** — a subset request is a cache hit, a feature superset re-provisions (rotates creds), mirroring the services-superset case.
+
+**Cache-by-features.** A cached `SandboxInfo` satisfies a new `ensure_sandbox` call iff the services are a subset AND every requested feature per service is already cached. A feature superset re-provisions with fresh creds (the pre-clear teardown removes the now-too-small container), exactly as a services superset does.
+
+**Feature-aware image selection.** A bare request (no features) uses the light upstream image (`postgres:16-alpine` / `redis:8-alpine`); a request with features pulls a kitchen-sink image that carries all extension/module files (`roboco-sandbox-pg:latest` — `pgvector/pgvector:pg16` + postgis; `redis/redis-stack-server:latest`). So a bare project never pays for a heavier image, and the intersection case (pgvector AND postgis in one DB) just works — flavors are inadequate because the intersection isn't a flavor. `SandboxEngine.image_for(features)` picks; the provisioner pulls whichever it resolves to.
+
+**Delivery.** The ok-envelope's per-service evidence entry carries `available_extensions` (the sorted list actually activated) so an agent doesn't guess what was turned on. The project's standing set is edited in the panel's project edit dialog (Sandbox section) — checkboxes from the allowlist grouped under each enabled service.
 
 ## Provisioning
 

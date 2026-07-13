@@ -40,6 +40,25 @@ const SANDBOX_SERVICES = [
   { id: "mongo", label: "MongoDB" },
 ] as const;
 
+// Activatable extensions/modules per service, mirroring the backend allowlist
+// (roboco/models/sandbox.py SANDBOX_ENGINE_FEATURES). The allowlist is the
+// security containment — a plpython3u (superuser-RCE) is absent by design.
+// Mongo has no activatable features and is intentionally absent here.
+const SANDBOX_EXTENSIONS: Record<string, { id: string; label: string }[]> = {
+  postgres: [
+    { id: "vector", label: "pgvector" },
+    { id: "postgis", label: "PostGIS" },
+    { id: "pg_trgm", label: "pg_trgm" },
+    { id: "citext", label: "citext" },
+    { id: "uuid-ossp", label: "uuid-ossp" },
+  ],
+  redis: [
+    { id: "search", label: "RediSearch" },
+    { id: "json", label: "RedisJSON" },
+    { id: "bloom", label: "RedisBloom" },
+  ],
+};
+
 interface EditProjectDialogProps {
   projectId: string;
   open: boolean;
@@ -95,6 +114,28 @@ function EditProjectForm({
   const [sandboxSet, setSandboxSet] = useState<Set<string>>(
     new Set(sandboxServices),
   );
+  // Per-service extension picks (only meaningful for services in sandboxSet).
+  const [sandboxExtensions, setSandboxExtensions] = useState<
+    Record<string, Set<string>>
+  >(() => {
+    const init: Record<string, Set<string>> = {};
+    for (const [svc, feats] of Object.entries(
+      project.sandbox_extensions || {},
+    )) {
+      init[svc] = new Set(feats);
+    }
+    return init;
+  });
+  const toggleExtension = (svc: string, feat: string, checked: boolean) => {
+    setSandboxExtensions((prev) => {
+      const next = { ...prev };
+      const set = new Set(next[svc] ?? []);
+      if (checked) set.add(feat);
+      else set.delete(feat);
+      next[svc] = set;
+      return next;
+    });
+  };
 
   // Token handling
   const [newToken, setNewToken] = useState("");
@@ -135,6 +176,14 @@ function EditProjectForm({
             .filter(Boolean)
         : undefined,
       sandbox_services: [...sandboxSet],
+      sandbox_extensions: (() => {
+        const extObj: Record<string, string[]> = {};
+        for (const svc of sandboxSet) {
+          const feats = sandboxExtensions[svc];
+          if (feats && feats.size > 0) extObj[svc] = [...feats].sort();
+        }
+        return extObj;
+      })(),
     };
 
     // Handle token update
@@ -486,6 +535,38 @@ function EditProjectForm({
                 project instead of the production credentials.
               </p>
             </div>
+
+            {SANDBOX_SERVICES.filter(
+              (svc) => sandboxSet.has(svc.id) && SANDBOX_EXTENSIONS[svc.id],
+            ).map((svc) => (
+              <div key={`ext_${svc.id}`} className="grid gap-2">
+                <Label>{svc.label} Extensions</Label>
+                {SANDBOX_EXTENSIONS[svc.id].map((ext) => (
+                  <div
+                    key={ext.id}
+                    className="flex items-center justify-between"
+                  >
+                    <Label
+                      htmlFor={`ext_${svc.id}_${ext.id}`}
+                      className="text-sm font-normal"
+                    >
+                      {ext.label}
+                    </Label>
+                    <Switch
+                      id={`ext_${svc.id}_${ext.id}`}
+                      checked={sandboxExtensions[svc.id]?.has(ext.id) ?? false}
+                      onCheckedChange={(checked) =>
+                        toggleExtension(svc.id, ext.id, checked)
+                      }
+                    />
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  Activated on-demand in the sandbox {svc.label} container. Set
+                  the full set here so agents can request subsets.
+                </p>
+              </div>
+            ))}
           </>
         )}
       </div>
