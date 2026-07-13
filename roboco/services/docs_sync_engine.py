@@ -9,7 +9,9 @@ divergence checklist. Conservative:
 * **Never self-deploys** — it only OPENS a task; the docs update still ships
   through the normal gates (dev -> QA -> PR review -> the CEO's merge).
 * **Bounded + deduped per release** — at most one open docs_sync task per
-  release version, plus a rolling open-task cap.
+  release version, a rolling open-task cap, and a per-invocation cap so a
+  single publish event cannot originate more than ``docs_sync_max_per_cycle``
+  tasks.
 
 The release-proposal service calls ``originate_docs_update`` from its publish-
 success path; the engine itself has no background loop.
