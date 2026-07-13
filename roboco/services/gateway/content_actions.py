@@ -1986,6 +1986,51 @@ class ContentActions:
         return requested, None
 
     @staticmethod
+    def _validate_per_call_extensions(
+        extensions: dict[str, list[str]] | None,
+        opted: frozenset[str],
+        merged: dict[str, set[str]],
+    ) -> Envelope | None:
+        """Allowlist-validate the per-call extension map and union it into
+        ``merged``; return a clean invalid_state rejection or None.
+
+        Extracted from ``_sandbox_features_scope`` so its loop's two rejection
+        branches don't push the caller over the complexity bound. A feature
+        for a non-opted service or outside the service's allowlist is rejected
+        naming the allowed set — the containment that keeps a ``plpython3u``
+        from reaching the provisioner.
+        """
+        from roboco.models.sandbox import SANDBOX_ENGINE_FEATURES
+
+        for svc, feats in (extensions or {}).items():
+            if svc not in opted:
+                return Envelope.invalid_state(
+                    message=(
+                        f"extensions given for {svc!r}, which this project has "
+                        f"not opted into"
+                    ),
+                    remediate=(
+                        f"this project's opted-in set is {sorted(opted)} — "
+                        "request extensions only for those services"
+                    ),
+                    context_briefing={},
+                )
+            allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
+            bad = sorted(set(feats or []) - allowed)
+            if bad:
+                return Envelope.invalid_state(
+                    message=f"unallowed {svc} extension(s) {bad}",
+                    remediate=(
+                        f"the allowlist for {svc} is {sorted(allowed)} — "
+                        "request a subset; plpython3u and other superuser-"
+                        "language extensions are excluded by construction"
+                    ),
+                    context_briefing={},
+                )
+            merged.setdefault(svc, set()).update(feats or [])
+        return None
+
+    @staticmethod
     def _sandbox_features_scope(
         project: Any,
         extensions: dict[str, list[str]] | None,
@@ -2004,41 +2049,55 @@ class ContentActions:
         standing extensions). Returns only services with a non-empty feature
         list — a service with no features is bare (the provisioner's default).
         """
-        from roboco.models.sandbox import SANDBOX_ENGINE_FEATURES
-
         standing = (project.sandbox_extensions if project else None) or {}
         # Union per service: standing (trusted) + per-call (validated below).
         merged: dict[str, set[str]] = {}
         for svc, feats in standing.items():
             if svc in opted:
                 merged.setdefault(svc, set()).update(feats or [])
-        for svc, feats in (extensions or {}).items():
-            if svc not in opted:
-                return {}, Envelope.invalid_state(
-                    message=(
-                        f"extensions given for {svc!r}, which this project has "
-                        f"not opted into"
-                    ),
-                    remediate=(
-                        f"this project's opted-in set is {sorted(opted)} — "
-                        "request extensions only for those services"
-                    ),
-                    context_briefing={},
-                )
-            allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
-            bad = sorted(set(feats or []) - allowed)
-            if bad:
-                return {}, Envelope.invalid_state(
-                    message=f"unallowed {svc} extension(s) {bad}",
-                    remediate=(
-                        f"the allowlist for {svc} is {sorted(allowed)} — "
-                        "request a subset; plpython3u and other superuser-"
-                        "language extensions are excluded by construction"
-                    ),
-                    context_briefing={},
-                )
-            merged.setdefault(svc, set()).update(feats or [])
+        rejection = ContentActions._validate_per_call_extensions(
+            extensions, opted, merged
+        )
+        if rejection is not None:
+            return {}, rejection
         return {svc: sorted(f) for svc, f in merged.items() if f}, None
+
+    async def _sandbox_provision_or_reject(
+        self,
+        agent_slug: str,
+        requested: frozenset[str],
+        opted: frozenset[str],
+        features: dict[str, list[str]] | None,
+        task_id: UUID,
+    ) -> tuple[Any, Envelope | None]:
+        """Run ``ensure_sandbox`` for request_sandbox; return (info, None) on
+        success or (None, rejection) when the orchestrator handle is missing
+        or provisioning raises. Extracted so ``request_sandbox``'s
+        orchestrator-None guard + try/except don't push it over the
+        complexity bound. Heartbeats the caller's task on success.
+        """
+        if self.orchestrator is None:
+            return None, Envelope.invalid_state(
+                message="orchestrator handle unavailable — cannot provision a sandbox",
+                remediate=(
+                    "retry request_sandbox shortly; the orchestrator may be restarting"
+                ),
+                context_briefing={},
+            )
+        from roboco.runtime.sandbox import SandboxProvisionError
+
+        try:
+            info = await self.orchestrator.ensure_sandbox(
+                agent_slug, sorted(requested), sorted(opted), features=features or None
+            )
+        except SandboxProvisionError as e:
+            return None, Envelope.invalid_state(
+                message=f"sandbox provisioning failed: {e}",
+                remediate="retry shortly; escalate to your PM if it keeps failing",
+                context_briefing={},
+            )
+        await self._touch_heartbeat(task_id)
+        return info, None
 
     async def request_sandbox(
         self,
@@ -2097,29 +2156,14 @@ class ContentActions:
         rejection = rej_scope or rej_features
         if rejection is not None:
             return rejection
-        if self.orchestrator is None:
-            return Envelope.invalid_state(
-                message="orchestrator handle unavailable — cannot provision a sandbox",
-                remediate=(
-                    "retry request_sandbox shortly; the orchestrator may be restarting"
-                ),
-                context_briefing={},
-            )
         from roboco.agents_config import _resolve_to_slug
-        from roboco.runtime.sandbox import SandboxProvisionError
 
         agent_slug = _resolve_to_slug(str(agent_id))
-        try:
-            info = await self.orchestrator.ensure_sandbox(
-                agent_slug, sorted(requested), sorted(opted), features=features or None
-            )
-        except SandboxProvisionError as e:
-            return Envelope.invalid_state(
-                message=f"sandbox provisioning failed: {e}",
-                remediate="retry shortly; escalate to your PM if it keeps failing",
-                context_briefing={},
-            )
-        await self._touch_heartbeat(t.id)
+        info, rej = await self._sandbox_provision_or_reject(
+            agent_slug, requested, opted, features, t.id
+        )
+        if rej is not None:
+            return rej
         # ensure_sandbox provisions the project's whole opted-in set (see its
         # docstring); the evidence payload stays scoped to what THIS call
         # asked for.
