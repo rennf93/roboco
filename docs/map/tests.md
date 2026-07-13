@@ -17,7 +17,7 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | Makefile | quality/quality-fast/panel-gate/test/test-3.10..3.14 targets wiring pytest+ruff+mypy+xenon+vulture into the merge gate | 547 |
 | tests/foundation/ | 21 structural/parity tests: agents_config parity, lifecycle consumer/generator parity, role-set parity, seed-orchestrator parity, tracing-verb parity, route-guard consolidation, smoke replay, lifecycle spec, pr_review_gate, identity, communications, journaling, cell_teams, agent_loop, validate, task_completeness |  |
 | tests/integration/ | 100 real-DB + FastAPI integration tests: full lifecycle real DB (_StubGit), task_service_*, *_routes, migrations 013-049, sequencing, conventions e2e, metrics, release, ci_watch, dep_update, prompter_live, secretary |  |
-| tests/integration/services/ | 9 autonomy-engine integration tests: ci_watch_engine/notify/source, dep_update_engine/probe/source, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping |  |
+| tests/integration/services/ | 10 autonomy-engine integration tests: ci_watch_engine/notify/source, dep_update_engine/probe/source, docs_sync_engine, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping |  |
 | tests/integration/v1/ | 1 FastAPI TestClient e2e (test_full_pending_to_completed) exercising all six v1 routers via stateful mocked Choreographer/ContentActions through the full hand-off chain |  |
 | tests/property/ | 2 deterministic property tests (no hypothesis dep): state-machine invariants (orphan/terminal/reachability/random-walk) + tracing-completeness over smoke_test_batch |  |
 | tests/unit/ | ~430 unit tests mirroring roboco/: agents, api (+routes/+schemas), billing, config, conventions, db, enforcement, events, foundation/policy, gateway (105), llm, mcp_servers, migrations, models, runtime (64), scripts, services (120), templates, utils |  |
@@ -116,7 +116,7 @@ tests/
 │   ├── test_migration_013/014/016/028 + batch_intake/ci_watch/dep_update/observability
 │   ├── test_*_routes.py (agents, dashboard, docs, git, journal, kanban, notifications, pitch, product, project, release, research, secretary, stream, tasks, work_session, orchestrator, prompter_live)
 │   ├── test_task_service_*  [basics, transitions, lifecycle_misc, misc, background, no_silent_fallback, route_orchestration]
-│   ├── services/  [ci_watch_engine/notify/source, dep_update_engine/probe/source, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping]
+│   ├── services/  [ci_watch_engine/notify/source, dep_update_engine/probe/source, docs_sync_engine, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping]
 │   ├── v1/test_full_pending_to_completed.py  [TestClient e2e, all 6 v1 routers, stateful mocks]
 │   ├── test_bash_guard_message.sh  [standalone smoke]
 │   └── test_stop_hook_verb_names.sh  [standalone smoke]
@@ -141,7 +141,7 @@ tests/
     ├── agents/ (4) — autogen_prompt_layer, briefing_cluster, conventions_ambient_injection, tool_load_directive
     ├── api/ (30) + routes/ (3) + routes/v1/ (11) + schemas/ (2) + schemas/v1/ (1) — middleware, deps, errors, websocket_*, schemas, v1 flow router tests
     ├── billing/ (1) — pricing
-    ├── config/ (5) — ci_watch/conventions/dep_update/org_memory/release_manager flag tests
+    ├── config/ (6) — ci_watch/conventions/dep_update/docs_sync/org_memory/release_manager flag tests
     ├── conventions/ (10) — classify_python/ts, cli, cli_smoke, custom, hygiene, modularity, placement, runner, scan
     ├── db/ (1) — respawn_tracker_table
     ├── enforcement/ (4) — a2a_access, journal_perms, task_lifecycle, task_ownership
@@ -154,7 +154,7 @@ tests/
     ├── models/ (7) — events, journal, llm, misc, product, task_create_completeness, transcription
     ├── runtime/ (64) — orchestrator spawn/reaper/loops; per_dev_lane_queue, respawn_persistence, readopt_running_agents, gateway_health
     ├── scripts/ (2) — bash_guard, verify_postgres_enums
-    ├── services/ (120) + optimal_brain/ (10 + conftest) — task, git (+worktree family), workspace, work_session, release_*, sequencing, conventions, playbook, notification, rate_limit, optimal_brain
+    ├── services/ (~120) + optimal_brain/ (10 + conftest) — task, git (+worktree family), workspace, work_session, release_* executor/readiness/manager/proposal + docs_sync hook, sequencing, conventions, playbook, notification, rate_limit, optimal_brain
     ├── templates/ (2) — pr_internal, pr_root
     └── utils/ (2) — converters, crypto
 ```
