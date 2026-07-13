@@ -362,6 +362,7 @@ class NotificationService:
         new_assignee: str | None,
         from_agent: str | None = None,
         to_ceo: str = "ceo",
+        db_session: AsyncSession | None = None,
     ) -> None:
         """Tell the outgoing + incoming owner (and the CEO) a task moved.
 
@@ -393,7 +394,8 @@ class NotificationService:
                 subject=f"Task {task_id} reassigned",
                 body=body,
                 related_task_id=task_id,
-            )
+            ),
+            db_session=db_session,
         )
 
     async def send_collision_sequencing_notification(
@@ -796,12 +798,13 @@ class NotificationService:
             await self._create_notification_with_session(params, db_session)
         else:
             async with get_db_context() as db:
-                await self._create_notification_with_session(params, db)
-                await db.commit()
+                created = await self._create_notification_with_session(params, db)
+                if created:
+                    await db.commit()
 
     async def _create_notification_with_session(
         self, params: CreateNotificationParams, db: AsyncSession
-    ) -> None:
+    ) -> bool:
         from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
         if from_agent_uuid is None:
             # notifications.from_agent is NOT NULL + FK to agents.id, so
@@ -814,7 +817,7 @@ class NotificationService:
                 subject=params.subject[:80],
                 to_agents=[str(a) for a in params.to_agents],
             )
-            return
+            return False
         to_agents_uuids = await self._resolve_recipients(db, params)
         if not to_agents_uuids:
             logger.warning(
@@ -823,7 +826,7 @@ class NotificationService:
                 type=self._notification_type_label(params),
                 subject=params.subject[:80],
             )
-            return
+            return False
         # Re-fire guard for loop-prone types: a 60s Redis SET-NX window
         # coalesces the per-tick re-notify storm the DB dedup below skips
         # (these types are requires_ack=False). Fail-open on Redis down.
@@ -843,7 +846,7 @@ class NotificationService:
                 else None,
                 to_agents=[str(a) for a in to_agents_uuids],
             )
-            return
+            return False
         # Purpose-based dedup (CEO directive, 2026-06-10): suppress a second
         # notification for the SAME purpose while a prior one is unacked. See
         # ``_duplicate_unacked_exists`` for the rationale + the action-only
@@ -854,7 +857,7 @@ class NotificationService:
             params=params,
             to_agents_uuids=to_agents_uuids,
         ):
-            return
+            return False
         notification = NotificationTable(
             type=params.notification_type,
             priority=params.priority,
@@ -884,3 +887,4 @@ class NotificationService:
             notification_id=str(notification.id),
             type=params.notification_type.value,
         )
+        return True

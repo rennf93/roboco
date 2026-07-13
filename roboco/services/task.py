@@ -9319,6 +9319,7 @@ class TaskService(BaseService):
                 if previous_assignee is not None
                 else None,
                 new_assignee=str(new_assignee) if new_assignee is not None else None,
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning(
