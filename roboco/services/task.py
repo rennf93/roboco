@@ -2069,7 +2069,7 @@ class TaskService(BaseService):
             )
             frontier = []
             for child in result.scalars().all():
-                child_id = cast("UUID", child.id)
+                child_id = cast(UUID, child.id)  # noqa: TC006
                 if child_id in seen:
                     continue
                 seen.add(child_id)
@@ -5199,6 +5199,12 @@ class TaskService(BaseService):
                 )
 
         await self.session.flush()
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "QA review failed",
+            actor_agent_id=to_python_uuid(qa_agent_id),
+            actor_role="qa",
+        )
 
         # Index negative QA review (fire-and-forget)
         review_task = asyncio.create_task(
@@ -9957,6 +9963,12 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "PR review failed",
+            actor_agent_id=captured,
+            actor_role="pr_reviewer",
+        )
         self.log.info("Assembled PR failed review", task_id=str(task_id))
         return task
 
@@ -10009,6 +10021,12 @@ class TaskService(BaseService):
             audit_agent_id=pm_agent_id,
         )
         await self.session.flush()
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "PM requested changes at merge review",
+            actor_agent_id=pm_agent_id,
+            actor_role=agent_role,
+        )
         self.log.info(
             "PM requested changes at merge review",
             task_id=str(task_id),
