@@ -267,6 +267,15 @@ class Settings(BaseSettings):
             "unacknowledged. 0 disables the damper (legacy every-tick respawn)."
         ),
     )
+    audit_interval_seconds: int = Field(
+        default=21600,
+        ge=0,
+        description=(
+            "Seconds between scheduled auditor sweeps (default 6 hours). The "
+            "orchestrator spawns the auditor only when the interval has elapsed "
+            "and recent delivery activity exists. 0 disables scheduled sweeps."
+        ),
+    )
     spawn_preflight_enabled: bool = Field(
         default=False,
         description=(

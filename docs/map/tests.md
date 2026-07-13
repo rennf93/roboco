@@ -24,6 +24,18 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | tests/unit/gateway/ | 105 Choreographer/verb-runner unit tests — the largest single cluster: every intent verb's guards, envelopes, evidence, claim locks, lane barrier, pr gate, conventions gate, content actions |  |
 | tests/unit/runtime/ | 64 orchestrator unit tests: spawn/manifest/cwd/worktree, reaper, respawn persistence, rate-limit/overload sweeps, ci_watch/dep_update/release/self_heal loops, no_spawn_human_roles, per_dev_lane_queue, readopt_running_agents |  |
 | tests/unit/services/ | 120 service unit tests: task, git (+worktree), workspace, work_session, release_executor/readiness/manager, sequencing, conventions, playbook, notification, rate_limit_tracker, optimal_brain/ (10) |  |
+| tests/e2e_smoke/ | Scripted-agent smoke tests against the live in-process orchestrator; separate from the default pytest collection (run by the PR/NAS smoke gate) |  |
+| tests/e2e_smoke/harness.py | E2E harness: E2EStack app + orchestrator client + per-test agent manifests; used by the e2e_smoke tier | ~520 |
+
+## E2E smoke harness
+
+The `tests/e2e_smoke/` tier runs scripted agents against a real in-process FastAPI app and orchestrator. It is **not** collected by the default `uv run pytest` invocation; it is exercised separately by the PR gate / NAS smoke run. The harness in `tests/e2e_smoke/harness.py` builds an `E2EStack`, mounts the orchestrator client, and gives each test a per-agent manifest.
+
+Recent harness hardening for the auditor-revival slice (PR #498, task `8323cd50`):
+
+- `tests/conftest.py` now catches a missing `pgvector` extension when creating the ephemeral test database and continues with a warning. The core schema does not require it and the e2e smoke suite does not exercise RAG, so lightweight Postgres sandboxes can run the suite without the pgvector package.
+- `tests/e2e_smoke/harness.py` clears any host-supplied `ROBOCO_AGENT_TOKEN` from the environment before a `ScriptedAgent` re-imports `roboco.mcp.flow_server`. The host agent may carry a real token for the test runner's identity; that token does not match the ephemeral test agent IDs and causes `401 Unauthorized` when flow_server forwards it.
+- `tests/e2e_smoke/test_auditor_triggers.py` exercises both scheduled and reactive auditor dispatch through a `_fresh_orchestrator` helper. Because the helper constructs `AgentOrchestrator` via `__new__` to bypass normal initialization, it must manually initialize the private attributes `_instances` and `_last_audit_spawn_at` that `_is_agent_active` and `_dispatch_audit_work` read. The two tests are intentionally **synchronous** (no `@pytest.mark.asyncio`) because the harness already enters an async loop via `run_db`; the test body uses `asyncio.run` on an inner coroutine. Internal API calls use the raw `_SYSTEM_API_HEADERS` (system identity only) rather than the production `_system_api_headers` helper, because dev mode rejects an `UNSIGNED` `X-Agent-Token`. Settings are patched at `api_url` (the input to the computed `internal_api_url` property), and notifications are matched with `NotificationType.ALERT` instead of the string `"ALERT"`.
 
 ## Key Symbols
 
@@ -85,6 +97,10 @@ tests/
 ├── conftest.py  [TOP-LEVEL — DB provisioning, db_session, smoke_test_batch, skip hook]
 ├── fixtures/
 │   └── 2026-05-08-smoke-trace.json  [11 synthesized bug records, replay_kind taxonomy]
+├── e2e_smoke/  (scripted-agent smoke tests against live orchestrator; not collected by default pytest run)
+│   ├── harness.py  [E2EStack + orchestrator client + per-test agent manifests]
+│   ├── arcs.py  [seed helpers for company/project/task]
+│   └── test_auditor_triggers.py  [scheduled + reactive auditor dispatch smoke tests]
 ├── foundation/  (21 tests — structural/parity gates)
 │   ├── test_lifecycle_smoke_replay.py  [consumes the JSON fixture, dispatch by replay_kind]
 │   ├── test_lifecycle_spec.py/test_lifecycle_generators.py/test_lifecycle_consumer_parity.py
@@ -107,6 +123,18 @@ tests/
 ├── property/  (2 — deterministic, no hypothesis)
 │   ├── test_state_machine_invariants.py  [6 invariants: orphan/terminal/reachability/random-walk/self-loop]
 │   └── test_tracing_completeness.py  [6-bullet tracing contract over smoke_test_batch]
+├── e2e_smoke/  (scripted-agent lifecycle smoke — env-gated)
+│   ├── conftest.py  [collection gate: skips unless ROBOCO_E2E_SMOKE=1]
+│   ├── harness.py  [in-process API, ephemeral Postgres, bare git origin, fake GitHub REST]
+│   ├── arcs.py  [canonical-company seeding + dev/qa/pm/reviewer lifecycle helpers]
+│   ├── test_dev_lifecycle.py  [scenario 1: leaf dev arc → awaiting_pm_review]
+│   ├── test_pm_merge_chain.py  [scenarios 2/2b: PR-gate turn cut + serial root merges]
+│   ├── test_root_ceo_chain.py  [scenario 3: pr_fail → rework → real approve-and-merge]
+│   ├── test_megatask_umbrella.py  [scenario 4: MegaTask sequencing + umbrella closure]
+│   ├── test_notification_coordination_events.py  [DB-truth checks for restored coordination-event ALERTs]
+│   ├── test_auditor_triggers.py  [scheduled sweep + reactive QA-fail alert paths spawn auditor]
+│   ├── test_auth_gate_coverage.py, test_background_engines.py, test_data_integrity.py, test_feature_spotlight.py, test_flow_verb_timeout.py, test_git_workflow.py, test_sandbox_image_tags.py, test_sandbox_on_demand.py, test_state_machine.py, test_video_pipeline.py  [other e2e smoke scenarios]
+│   └── test_bash_guard_message.sh / test_stop_hook_verb_names.sh  [NOT here — these live in tests/integration/]
 └── unit/  (~430 — mirrors roboco/)
     ├── test_* (11 top-level: agents_config, bootstrap, config_properties, enum_migration_parity, exceptions, logging, no_deleted_tool_names, notification_dedup, notification_dedup_refire, notification_delivery_refire, toolchain_flag)
     ├── agent_sdk/ (11) — grok_cli/intake/secretary/manifest/prompt_guard/usage_sync/verb_circuit_breaker
@@ -141,6 +169,7 @@ tests/
 |---|---|---|
 | make quality | Makefile | developer/CI merge gate — runs ruff format-check + ruff check + mypy roboco/ tests/ + pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80 + xenon + vulture |
 | make quality-fast | Makefile | pre-submit fast gate — ruff + mypy + pytest -q -x --no-cov (no coverage threshold) |
+| make e2e-smoke | Makefile | scripted-agent lifecycle smoke — `ROBOCO_E2E_SMOKE=1 uv run pytest tests/e2e_smoke -q --no-cov`; needs test Postgres + git on PATH |
 | make gate (panel-gate) | Makefile | panel pnpm lint + typecheck + vitest |
 | make test/test-3.10..3.14/test-all | Makefile | docker compose run roboco pytest -v --cov=. across Python versions |
 | uv run pytest | pyproject.toml | direct invocation — auto-applies addopts (--cov=roboco --cov-report=term-missing), testpaths=tests, asyncio_mode=auto |
@@ -180,6 +209,9 @@ tests/
 - The two .sh smoke scripts are NOT collected by pytest (no pytest collection of .sh); they must be invoked directly. They are not referenced in Makefile or .github/ workflows — likely run manually or in an unwired CI step.
 - _test_database_url is session-scoped with loop_scope=session; db_session is function-scoped with asyncio_default_fixture_loop_scope=function (pyproject). Mixing session+function loop scopes is supported but a session-scoped async fixture holds one event loop for the whole session.
 - conftest default port 15432 points at Docker's roboco-postgres (down on a bare-metal dev box). Per project memory the local-PG workflow is ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof ROBOCO_TEST_DB_PASSWORD= — without these env vars, ALL db_session tests silently skip on a non-Docker dev machine.
+- `tests/e2e_smoke/test_auditor_triggers.py` tests are sync wrappers around an async helper. The two auditor-trigger smoke tests are plain `def` tests that call `asyncio.run()` on an inner coroutine, because the harness already starts an async loop via `run_db`. Marking them with `@pytest.mark.asyncio` would conflict with that nested loop.
+- `tests/conftest.py` now tolerates a missing `pgvector` extension. `_test_database_url` catches `CREATE EXTENSION IF NOT EXISTS vector` failures and warns instead of failing. This lets the suite run in lightweight sandboxes, but it also means a sandbox with missing pgvector will pass with a warning rather than failing loudly.
+- `tests/e2e_smoke/harness.py` clears host `ROBOCO_AGENT_TOKEN` before scripted agents load `flow_server`. A `ScriptedAgent` pops `ROBOCO_AGENT_TOKEN` from `os.environ` before re-importing `roboco.mcp.flow_server`. Without this, a real host token is forwarded for an ephemeral test agent identity and causes 401s. Any new harness path that imports `flow_server` inside a scripted agent must do the same.
 
 
 ## Drift from CLAUDE.md
@@ -205,6 +237,8 @@ tests/
 > - **49526f55** test-suite quality gate unblock: fixed 12 mypy errors across 5 test files + 2 behavior corrections (child task state for cascade-cancel assertion; test_a2a_message_auth mocked to DB-free path).
 > - **76ce53e3** chat MESSAGE_SENT fix: test_websocket_bridge.py gained 3 new test functions for `_handle_message_event` (skips missing ids, skips invalid uuid, broadcasts to session+channel).
 > - **77958c1e** chat session/group/message read IDOR fix: test_messaging_service.py extended with `_make_agent` helper + IDOR access-control test coverage for get_session/get_group/list_messages.
+> - **1f129199** auditor-trigger e2e smoke test: added `tests/e2e_smoke/test_auditor_triggers.py` exercising scheduled sweep and reactive QA-fail alert paths end-to-end, plus harness mount of `/api/notifications` so `_dispatch_audit_work` can poll ALERT rows.
+> - **babffe0a** fix(e2e_smoke): repair auditor-trigger smoke tests and harden harness (#498): fixed `tests/e2e_smoke/test_auditor_triggers.py` so scheduled/reactive auditor-trigger tests reach their spawn assertions, hardened `tests/conftest.py` to tolerate missing pgvector, and cleared leaked `ROBOCO_AGENT_TOKEN` in `tests/e2e_smoke/harness.py` before scripted agents load `flow_server`. See the E2E smoke harness section above for the exact patterns.
 
 ## Regression Risks
 
@@ -218,6 +252,9 @@ tests/
 | Property random-walk seed is not pinned — state-machine holes can hide | tests/property/test_state_machine_invariants.py:95 | test_random_walks_stay_within_declared_states uses stdlib random without an explicit seed. A state-machine transition added by the gap-fill commits that violates an invariant on a rarely-walked path could pass CI on most runs and fail intermittently. Without hypothesis and without a fixed seed, the walk coverage is non-deterministic. | low |
 | JSON smoke-trace fixture is a synthesis — skip-classified bugs are not re-asserted | tests/fixtures/2026-05-08-smoke-trace.json:1 | 3 of 11 records are *_skip (schema_only_skip, audit_only_skip, behavioral_skip) and are documented NOT re-asserted at the spec layer in test_lifecycle_smoke_replay. A regression in the bug those records document (e.g. delegate.task_type default, the audit-layer fix) would not be caught by the smoke-replay test; it relies on other tests covering those layers. If those other tests were removed, the regression window re-opens silently. | low |
 | Shell smoke scripts are not wired into any CI/Makefile target | tests/integration/test_stop_hook_verb_names.sh:1 | test_bash_guard_message.sh and test_stop_hook_verb_names.sh are not referenced in Makefile or .github/workflows. They guard against pre-gateway legacy verb names leaking back into stop-hook.sh/bash-guard-hook.sh and against denial-message bloat. A regression (re-introducing an old verb name, or an 8-line denial) would not be caught by make quality or pytest; the scripts must be run manually. | low |
+| Missing pgvector is now a warning, not a failure | tests/conftest.py:189 | `_test_database_url` catches `CREATE EXTENSION IF NOT EXISTS vector` failures. A sandbox that accidentally omits pgvector will green-run the e2e smoke suite with a warning, so a regression in pgvector-dependent code could pass locally and only fail in CI. | low |
+| Host `ROBOCO_AGENT_TOKEN` can leak into scripted-agent calls | tests/e2e_smoke/harness.py:476 | The harness clears the token before loading `flow_server`, but any new scripted-agent bootstrap path that forgets this step will forward the test runner's real token and get 401s for ephemeral agent IDs. | low |
+| `_fresh_orchestrator` bypasses `__init__` and must stay in sync with private attributes | tests/e2e_smoke/test_auditor_triggers.py:115 | The helper constructs `AgentOrchestrator` via `__new__` and manually sets `_instances` and `_last_audit_spawn_at`. A refactor of `AgentOrchestrator.__init__` that adds new instance attributes read by `_dispatch_audit_work` will break the smoke tests silently until the helper is updated. | low |
 
 ## Health
 The test slice is structurally healthy and well-tiered (foundation parity/integration real-DB/property invariants/unit mirror), with a single load-bearing conftest that honestly documents its own drift from the alembic chain. The 571-file suite is async-first and coverage-gated, but two architectural facts temper confidence: (1) the coverage omit list excludes the orchestrator, git, workspace, mcp, and agents surface from the 80% gate, so make quality green does NOT mean those hot paths are covered — their regressions are deferred to NAS smoke runs; (2) the conftest builds schema via Base.metadata.create_all, which is correct today but creates a standing trap for any future NOT NULL ORM-mapped migration column. The since-baseline gap-fill commits added substantial real coverage (worktree lifecycle, respawn persistence, lane barrier, sequencing, release executor fail-closed, rate-limit atomicity), and the conftest DB-default change (5432/$USER -> 15432/roboco) fixed a real out-of-the-box failure mode but introduced silent-skip behavior on non-Docker dev boxes. The property tests lack hypothesis and a pinned seed, and the JSON smoke fixture is a synthesis with 3/11 records not re-asserted — both are documented limitations, not defects. Overall the slice is solid for a merge gate but should be supplemented by the NAS smoke run before any deploy claim, and the shell smoke scripts need wiring into CI to actually guard what they assert.
