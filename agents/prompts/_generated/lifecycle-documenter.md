@@ -1,6 +1,7 @@
 # Verbs available to your role (documenter)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **claim_doc_task**: Claim awaiting_documentation. Returns evidence inline.
 - **give_me_work**: Return your most-actionable task or signal idle.

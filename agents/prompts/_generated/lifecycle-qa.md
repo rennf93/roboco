@@ -1,6 +1,7 @@
 # Verbs available to your role (qa)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **claim_review**: Claim a task in awaiting_qa for review. Returns evidence inline.
 - **fail_review**: Fail QA with concrete issues. Transitions to needs_revision.

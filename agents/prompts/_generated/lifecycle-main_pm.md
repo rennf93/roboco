@@ -1,6 +1,7 @@
 # Verbs available to your role (main_pm)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **complete**: Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering — no trailing pr_merge side_effect is declared here.
 - **declare_coverage**: Stamp parent acceptance criteria onto an existing child's parent_ac_refs after the fact — for a replacement child whose delegate omitted covers_parent_criteria. Or, targeting your OWN root/coordination task, declare criteria as root-owned (only your own machinery satisfies them — never push these into a cell). No status change; the verb body owns ownership + criterion validation.
