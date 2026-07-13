@@ -24,6 +24,13 @@ _HANDOFF_CONTENT_CAP = 800
 _NORTH_STAR_CAP = 600
 _BRAND_VOICE_CAP = 600
 _A2A_PREVIEW_CAP = 200
+# Per-ancestor description cap in the upstream-context chain — the root's
+# intake analysis is the valuable part; a giant umbrella description can't
+# flood the evidence payload it rides.
+_ANCESTOR_DESC_CAP = 1500
+# Backstop on the parent_task_id walk so a malformed/cyclic hierarchy can't
+# loop or explode the query. Real depth is ≤4 (umbrella→root→cell→leaf).
+_HIERARCHY_DEPTH_CAP = 16
 # similar_memory's "kind" label per index type; anything absent (LEARNINGS)
 # falls back to "learning" via .get() below.
 _MEMORY_KIND_BY_INDEX = {
@@ -317,7 +324,78 @@ class EvidenceRepo:
             for row in result.all()
         ]
 
-    async def journal_highlights_for_task(self, task_id: UUID) -> list[dict[str, Any]]:
+    async def _ancestor_task_ids(self, task_id: UUID) -> list[UUID]:
+        """Walk ``parent_task_id`` up to the root, returning ancestor ids
+        (immediate parent first). Cycle-guarded + depth-capped so a malformed
+        hierarchy can't loop or explode the query. Stops clean on a missing
+        row or a root (``parent_task_id`` is NULL).
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        ancestors: list[UUID] = []
+        seen: set[str] = {str(task_id)}
+        current: UUID = task_id
+        for _ in range(_HIERARCHY_DEPTH_CAP):
+            parent_id = (
+                await self._db.execute(
+                    select(TaskTable.parent_task_id).where(TaskTable.id == current)
+                )
+            ).scalar_one_or_none()
+            if parent_id is None:
+                break  # missing row or reached a root
+            key = str(parent_id)
+            if key in seen:
+                break  # cycle guard
+            seen.add(key)
+            ancestors.append(parent_id)
+            current = parent_id
+        return ancestors
+
+    async def ancestor_context_for_task(self, task_id: UUID) -> list[dict[str, Any]]:
+        """The upstream ``description`` chain (immediate parent → root), so a
+        downstream owner — the dev or PM claiming a leaf — reads the intake's
+        original analysis and each PM's decomposition rationale verbatim
+        instead of a re-paraphrased summary. Each ancestor carries title +
+        description (capped) + depth (1 = immediate parent). Empty for a
+        parentless task. Best-effort: a missing ancestor row is skipped.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        ancestor_ids = await self._ancestor_task_ids(task_id)
+        if not ancestor_ids:
+            return []
+        rows = (
+            await self._db.execute(
+                select(
+                    TaskTable.id,
+                    TaskTable.title,
+                    TaskTable.description,
+                ).where(TaskTable.id.in_(ancestor_ids))
+            )
+        ).all()
+        by_id = {str(r.id): r for r in rows}
+        context: list[dict[str, Any]] = []
+        for depth, aid in enumerate(ancestor_ids, start=1):
+            row = by_id.get(str(aid))
+            if row is None:
+                continue
+            context.append(
+                {
+                    "task_id": str(aid),
+                    "depth": depth,
+                    "title": row.title,
+                    "description": _clip(row.description, _ANCESTOR_DESC_CAP),
+                }
+            )
+        return context
+
+    async def journal_highlights_for_task(
+        self, task_id: UUID, *, include_ancestors: bool = False
+    ) -> list[dict[str, Any]]:
         """The task's upstream handoff: every author's decision / reflection /
         note journal entry tied to this task, oldest first.
 
@@ -328,6 +406,15 @@ class EvidenceRepo:
         and struggle entries are personal and excluded. Ownership is enforced by
         the caller (``evidence`` only serves the task's assignee), so private
         task-scoped entries are surfaced to the owner who needs the full handoff.
+
+        When ``include_ancestors`` is set, the query also pulls every ancestor
+        task's handoff entries (walking ``parent_task_id`` to the root), so a
+        dev or PM claiming a leaf reads the PO / HM analysis and each PM's
+        decomposition rationale instead of re-deriving it. Oldest-first
+        ordering puts the root's analysis at the top (the "what and why"); the
+        leaf's own entries follow. Opt-in so QA's leaf-journal view (the dev's
+        intent) stays undiluted — QA gets the parent objective via a dedicated
+        evidence field instead.
         """
         from sqlalchemy import select
 
@@ -339,6 +426,10 @@ class EvidenceRepo:
             JournalEntryType.TASK_REFLECTION,
             JournalEntryType.GENERAL,
         )
+        if include_ancestors:
+            scope_ids: list[UUID] = [task_id, *await self._ancestor_task_ids(task_id)]
+        else:
+            scope_ids = [task_id]
         query = (
             select(
                 JournalEntryTable.type,
@@ -350,7 +441,7 @@ class EvidenceRepo:
             )
             .join(JournalTable, JournalEntryTable.journal_id == JournalTable.id)
             .join(AgentTable, JournalTable.agent_id == AgentTable.id)
-            .where(JournalEntryTable.task_id == task_id)
+            .where(JournalEntryTable.task_id.in_(scope_ids))
             .where(JournalEntryTable.type.in_(handoff_types))
             .order_by(JournalEntryTable.timestamp.asc())
             .limit(50)

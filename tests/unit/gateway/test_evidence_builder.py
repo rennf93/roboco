@@ -444,3 +444,68 @@ class TestExtractPmReview:
         digest = build_task_handoff(t, [])
         assert digest is not None
         assert "pm_review" not in digest
+
+
+class TestDescriptionAndParentContext:
+    """The ask (description + upstream parent_context) now rides the evidence
+    payload and the task handoff so a freshly-claimed leaf receives the intake's
+    analysis instead of an empty handoff."""
+
+    def test_payload_omits_description_when_none(self) -> None:
+        """A descriptionless task must not emit ``description: null`` in every
+        evidence payload — omitted like the other noise-when-empty fields."""
+        t = _task()
+        ev = build_evidence_for_task(t, journal_highlights=[], files_changed=[])
+        assert "description" not in ev.as_dict()
+
+    def test_payload_carries_description_when_set(self) -> None:
+        t = _task()
+        t.description = "edit prompter.py:412 to thread task_id through"
+        ev = build_evidence_for_task(t, journal_highlights=[], files_changed=[])
+        assert (
+            ev.as_dict()["description"]
+            == "edit prompter.py:412 to thread task_id through"
+        )
+
+    def test_payload_carries_parent_context(self) -> None:
+        t = _task()
+        chain = [
+            {
+                "task_id": "p",
+                "depth": 1,
+                "title": "Root",
+                "description": "intake analysis",
+            }
+        ]
+        ev = build_evidence_for_task(
+            t, journal_highlights=[], files_changed=[], parent_context=chain
+        )
+        assert ev.as_dict()["parent_context"] == chain
+
+    def test_payload_omits_parent_context_when_empty(self) -> None:
+        t = _task()
+        ev = build_evidence_for_task(t, journal_highlights=[], files_changed=[])
+        assert "parent_context" not in ev.as_dict()
+
+    def test_handoff_carries_description_and_parent_context(self) -> None:
+        """A leaf with no commits/PR yet still gets a handoff when the spec
+        (description) or the upstream chain is present — the intake analysis
+        reaches the dev at claim time."""
+        t = _task(pr_number=None, pr_url=None, commits=[], dev_notes="")
+        t.description = "the ask: edit foo.py:10"
+        chain = [
+            {"task_id": "p", "depth": 1, "title": "Root", "description": "upstream"}
+        ]
+        handoff = build_task_handoff(t, [], parent_context=chain)
+        assert handoff is not None
+        assert handoff["description"] == "the ask: edit foo.py:10"
+        assert handoff["parent_context"] == chain
+
+    def test_handoff_none_when_no_spec_and_no_prior_work(self) -> None:
+        """A bare task with no spec, no commits, no PR, no findings, no upstream
+        chain still collapses to None — no empty handoff payload."""
+        t = _task(pr_number=None, pr_url=None, commits=[], dev_notes="")
+        t.commits = []  # _task's `commits or [...]` default would re-seed one
+        t.acceptance_criteria_status = []
+        # MagicMock auto-attrs make description a non-str -> _typed -> None.
+        assert build_task_handoff(t, []) is None

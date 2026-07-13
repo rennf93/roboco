@@ -13,7 +13,25 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from roboco.services.gateway.evidence_repo import EvidenceRepo
+from roboco.services.gateway.evidence_repo import (
+    _ANCESTOR_DESC_CAP,
+    _HIERARCHY_DEPTH_CAP,
+    EvidenceRepo,
+)
+
+
+def _scalar_result(value: object) -> MagicMock:
+    """A query result whose ``scalar_one_or_none()`` returns ``value``."""
+    r = MagicMock()
+    r.scalar_one_or_none.return_value = value
+    return r
+
+
+def _rows_result(rows: list[object]) -> MagicMock:
+    """A query result whose ``all()`` returns ``rows``."""
+    r = MagicMock()
+    r.all.return_value = rows
+    return r
 
 
 def _empty_repo() -> EvidenceRepo:
@@ -233,3 +251,130 @@ async def test_journal_highlights_for_task_maps_rows_with_author() -> None:
             "timestamp": ts.isoformat(),
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# Parent-chain walk + ancestor context (the intake-analysis torch carrier).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ancestor_task_ids_walks_parent_to_root() -> None:
+    leaf, parent, grand = uuid4(), uuid4(), uuid4()
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(parent),
+            _scalar_result(grand),
+            _scalar_result(None),  # grand is a root
+        ]
+    )
+    repo = EvidenceRepo(db)
+    assert await repo._ancestor_task_ids(leaf) == [parent, grand]
+
+
+@pytest.mark.asyncio
+async def test_ancestor_task_ids_cycle_guard_stops() -> None:
+    leaf, parent = uuid4(), uuid4()
+    db = MagicMock()
+    # leaf -> parent -> leaf (cycles back to the start, already in `seen`).
+    db.execute = AsyncMock(side_effect=[_scalar_result(parent), _scalar_result(leaf)])
+    repo = EvidenceRepo(db)
+    assert await repo._ancestor_task_ids(leaf) == [parent]
+
+
+@pytest.mark.asyncio
+async def test_ancestor_task_ids_missing_row_returns_empty() -> None:
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_scalar_result(None)])
+    repo = EvidenceRepo(db)
+    assert await repo._ancestor_task_ids(uuid4()) == []
+
+
+@pytest.mark.asyncio
+async def test_ancestor_task_ids_depth_capped() -> None:
+    start = uuid4()
+    chain = [uuid4() for _ in range(_HIERARCHY_DEPTH_CAP + 5)]
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_scalar_result(p) for p in chain])
+    repo = EvidenceRepo(db)
+    result = await repo._ancestor_task_ids(start)
+    assert len(result) == _HIERARCHY_DEPTH_CAP
+    assert result == chain[:_HIERARCHY_DEPTH_CAP]
+
+
+@pytest.mark.asyncio
+async def test_ancestor_context_for_task_parentless_returns_empty() -> None:
+    db = MagicMock()
+    db.execute = AsyncMock(side_effect=[_scalar_result(None)])
+    repo = EvidenceRepo(db)
+    assert await repo.ancestor_context_for_task(uuid4()) == []
+
+
+@pytest.mark.asyncio
+async def test_ancestor_context_for_task_maps_chain_with_depth() -> None:
+    leaf, parent, grand = uuid4(), uuid4(), uuid4()
+    row_p = SimpleNamespace(id=parent, title="Cell PM slice", description="p-desc")
+    row_g = SimpleNamespace(id=grand, title="Root", description="g-desc")
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(parent),
+            _scalar_result(grand),
+            _scalar_result(None),  # end of _ancestor_task_ids
+            _rows_result([row_p, row_g]),  # the batch fetch
+        ]
+    )
+    repo = EvidenceRepo(db)
+    assert await repo.ancestor_context_for_task(leaf) == [
+        {
+            "task_id": str(parent),
+            "depth": 1,
+            "title": "Cell PM slice",
+            "description": "p-desc",
+        },
+        {"task_id": str(grand), "depth": 2, "title": "Root", "description": "g-desc"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ancestor_context_for_task_skips_missing_ancestor_row() -> None:
+    leaf, parent, grand = uuid4(), uuid4(), uuid4()
+    row_p = SimpleNamespace(id=parent, title="Cell PM slice", description="p-desc")
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(parent),
+            _scalar_result(grand),
+            _scalar_result(None),
+            _rows_result([row_p]),  # grand's row is missing from the batch
+        ]
+    )
+    repo = EvidenceRepo(db)
+    assert await repo.ancestor_context_for_task(leaf) == [
+        {
+            "task_id": str(parent),
+            "depth": 1,
+            "title": "Cell PM slice",
+            "description": "p-desc",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ancestor_context_for_task_clips_long_description() -> None:
+    leaf, parent = uuid4(), uuid4()
+    row_p = SimpleNamespace(
+        id=parent, title="P", description="x" * (_ANCESTOR_DESC_CAP + 500)
+    )
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(parent),
+            _scalar_result(None),
+            _rows_result([row_p]),
+        ]
+    )
+    repo = EvidenceRepo(db)
+    ctx = await repo.ancestor_context_for_task(leaf)
+    assert len(ctx[0]["description"]) == _ANCESTOR_DESC_CAP

@@ -4175,6 +4175,26 @@ class AgentOrchestrator:
         return block
 
     @staticmethod
+    def _description_body(description: str | None, *, cap: int = 4000) -> str:
+        """The task description as a bounded body for a prompt/briefing block.
+
+        The description is the actual ask — it travels with the spawn prompt and
+        SessionStart briefing so the dev starts with the spec instead of a bare
+        title. Capped so a giant umbrella description can't swamp the prompt;
+        the full upstream chain is still available via ``evidence()``.
+        """
+        text = (description or "").strip()
+        if not text:
+            return "(none — ask the PM before proceeding)"
+        if len(text) <= cap:
+            return text
+        omitted = len(text) - cap
+        return (
+            f"{text[:cap]}\n… [{omitted} chars omitted — evidence() carries"
+            " the full text]"
+        )
+
+    @staticmethod
     def _format_task_briefing_block(task_id: str, task: dict[str, Any]) -> str:
         """Build the ``## Current task`` markdown block from a fetched task."""
         criteria_list = task.get("acceptance_criteria") or []
@@ -4187,6 +4207,9 @@ class AgentOrchestrator:
         )
         branch = task.get("branch_name") or "(to be created)"
         project_slug = task.get("project_slug") or "(unset — ask PM)"
+        description_body = AgentOrchestrator._description_body(
+            task.get("description") or ""
+        )
         return (
             "\n## Current task\n"
             f"- **ID:** `{task.get('id', task_id)}`\n"
@@ -4196,6 +4219,8 @@ class AgentOrchestrator:
             f"- **Project slug:** `{project_slug}` "
             "(pass this as `project_slug=` on every git/task tool)\n"
             f"- **Branch:** `{branch}`\n"
+            "\n### Description (the ask — treat as ground truth)\n"
+            f"{description_body}\n"
             "\n### Acceptance criteria\n"
             f"{criteria}\n"
         )
@@ -13931,6 +13956,7 @@ Run the project's quality checks against acceptance criteria:
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled")
         status = task.get("status", "unknown")
+        description = task.get("description") or ""
 
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
@@ -13942,6 +13968,12 @@ Run the project's quality checks against acceptance criteria:
             workflow_state, task_id, open_findings_block
         )
 
+        # The task spec travels with the prompt so the dev starts with the
+        # actual ask (file:line targets, constraints, the intake's rationale)
+        # instead of hunting in the fog. evidence() carries the full upstream
+        # ancestor chain on top; this is the leaf's own brief.
+        desc_block = f"DESCRIPTION:\n{self._description_body(description)}"
+
         return f"""You have been assigned a development task.
 
 TASK ID: {task_id}
@@ -13949,9 +13981,17 @@ TITLE: {title}
 STATUS: {status}
 WORKFLOW STATE: {workflow_state}
 
+{desc_block}
+
+Treat the description and any upstream technical detail you receive via
+evidence() as authoritative ground truth — file:line targets, code examples,
+and constraints come from the intake analysis and PM decomposition. Re-articulate
+only the HOW (the solution); the WHAT is already decided upstream.
+
 {instructions}
 
-Start by calling evidence(task_id="{task_id}") for full details and acceptance criteria.
+Start by calling evidence(task_id="{task_id}") for full details, acceptance
+criteria, and the upstream parent/ancestor context (the original intake analysis).
 
 When out of work: i_am_idle().
 """

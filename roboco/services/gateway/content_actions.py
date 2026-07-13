@@ -1919,8 +1919,9 @@ class ContentActions:
                 branch_name=t.branch_name, actor_agent_id=agent_id
             )
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
+            task_id, include_ancestors=True
         )
+        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, task_id
         )
@@ -1930,6 +1931,7 @@ class ContentActions:
             files_changed=files_changed,
             pr_diff_summary=diff,
             revision_findings=open_findings,
+            parent_context=parent_context,
         )
         return Envelope.ok(
             status=str(t.status),
