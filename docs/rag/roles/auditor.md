@@ -16,13 +16,24 @@
 
 ## Reactive Dispatch Path
 
-In addition to read-only observation, the Auditor is now spawned reactively when a task bounces into `needs_revision`:
+In addition to read-only observation, the Auditor is spawned reactively when a task bounces into `needs_revision`:
 
 - `TaskService` emits a HIGH-priority `ALERT` notification addressed to the auditor agent from three rework chokepoints: `fail_qa`, `pr_fail`, and `request_changes`.
 - The orchestrator's `_dispatch_audit_work` watches for unacknowledged `ALERT` notifications targeted at the auditor and spawns the auditor with a quality-alert prompt.
 - This path is **best-effort**: a delivery failure is logged but does not block the underlying task transition.
 
 You still cannot claim tasks, message agents, or write code — the reactive spawn only gives you a timely lens on quality events.
+
+## Scheduled Sweep Path
+
+The Auditor is also spawned on a periodic sweep:
+
+- `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 6 hours) controls the cadence. `0` disables scheduled sweeps.
+- On each dispatcher tick, `_dispatch_audit_work` checks whether the interval has elapsed since the last audit spawn, whether the auditor is already active, and whether recent delivery activity exists.
+- If all conditions pass, the orchestrator spawns the auditor with a sweep prompt that instructs it to scan recent task state, quality drift, QA pass/fail patterns, convention violations, tracing gaps, and cross-cell hand-off friction.
+- This path is **best-effort** and shares the same interval throttle with reactive alert spawns.
+
+You still cannot claim tasks, message agents, or write code — the scheduled sweep is another read-only lens on delivery health.
 
 ## What You CAN Do
 

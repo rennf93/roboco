@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduled auditor sweeps.** `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 21600s / 6h, `audit_interval_seconds` in `roboco/config.py`) drives a periodic auditor spawn. `_dispatch_audit_work` now spawns the auditor on a scheduled sweep when the interval has elapsed, the auditor is not already active, and recent delivery activity exists (active delivery states or a task completed within the window). Reactive alert spawns also stamp `_last_audit_spawn_at` so the interval gate is shared. A one-tick notification sentinel and the existing active-agent breaker prevent auditor spawn storms; `0` disables scheduled sweeps. The auditor identity prompt and `_build_audit_prompt(scheduled=True)` support sweep-based reviews.
+
 ### Fixed
 
 - **Restored five coordination-event notification producers with double-fire guards.** Reassignment, collision-sequencing, unblock, dependency-revival, and stale-claim-reaped notifications are now wired at their lifecycle chokepoints in `TaskService` and the orchestrator reaper, each with an idempotent upstream guard preventing duplicate ALERT rows. The duplicate route-level `notify_assignee_of_unblock` call in `POST /api/tasks/{id}/unblock` was removed so unblock fires exactly one notification. Added `docs/backend/services/coordination-events.md` and `tests/e2e_smoke/test_notification_coordination_events.py` covering the restored producers.
