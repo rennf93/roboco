@@ -7944,7 +7944,7 @@ class TaskService(BaseService):
                 descendants.append(child)
                 # child.id is SQLAlchemy Mapped[UUID]
                 # but resolves to uuid.UUID at runtime
-                to_process.append(child.id)  # type: ignore[arg-type]
+                to_process.append(cast("UUID", child.id))
 
         return descendants
 
