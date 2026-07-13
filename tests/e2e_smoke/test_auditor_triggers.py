@@ -111,6 +111,10 @@ def _fresh_orchestrator(stack: E2EStack, monkeypatch: pytest.MonkeyPatch) -> Any
     """Return a bare orchestrator whose internal API points at the e2e app."""
     monkeypatch.setattr(settings, "internal_api_url", f"{stack.base_url}/api")
     orch: Any = AgentOrchestrator.__new__(AgentOrchestrator)
+    # __new__ bypasses __init__, so the instance attributes that
+    # _is_agent_active and _dispatch_audit_work read must be initialized here.
+    orch._instances = {}
+    orch._last_audit_spawn_at = None
     orch.spawn_agent = AsyncMock()
     return orch
 
