@@ -861,6 +861,23 @@ class Settings(BaseSettings):
             "per release tag against the roboco-website project."
         ),
     )
+    docs_sync_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open docs-sync tasks; the engine "
+            "originates nothing more while this many are still open."
+        ),
+    )
+    docs_sync_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Max docs-sync tasks the engine may originate in one invocation. "
+            "A release publish is a single invocation, so this bounds it to "
+            "one task per publish event."
+        ),
+    )
 
     # Organizational-memory loop — distill a high-signal lesson at task
     # completion, index journal reflections, and auto-inject similar past

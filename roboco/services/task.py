@@ -597,6 +597,11 @@ CI_WATCH_SOURCE = "ci_watch"
 # lifecycle (+ PR-review gate) and is never auto-merged.
 DEP_UPDATE_SOURCE = "dep_update"
 
+# Source tag for a docs-divergence sync task: opened by the docs-sync engine on a
+# successful release publish. Rides the normal delivery lifecycle and never
+# auto-merges; requires the roboco-website project to be registered.
+DOCS_SYNC_SOURCE = "docs_sync"
+
 # Source tag for a gated release proposal: opened by the release-manager engine
 # when accumulated unreleased changes pass the threshold + the gate is green.
 # Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
@@ -1566,6 +1571,31 @@ class TaskService(BaseService):
                 )
             if dep_update_command is not None:
                 stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_docs_sync_tasks(
+        self, version: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal docs_sync tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one release ``version`` via the
+        ``docs_sync_release_version`` marker so a release never gets a second
+        docs-update task while the first is still open.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DOCS_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if version is not None:
+            # Filter by marker in SQL so the database can apply JSONB indexes
+            # and avoid hauling every open docs_sync row into Python.
+            stmt = stmt.where(
+                TaskTable.orchestration_markers[
+                    markers.DOCS_SYNC_RELEASE_VERSION
+                ].astext
+                == version
+            )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -5170,13 +5200,6 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        await self._alert_auditor_of_rework(
-            task,
-            reason=notes or "QA review failed",
-            actor_agent_id=to_python_uuid(qa_agent_id),
-            actor_role="qa",
-        )
-
         # Index negative QA review (fire-and-forget)
         review_task = asyncio.create_task(
             self._index_qa_review_background(
@@ -7994,7 +8017,7 @@ class TaskService(BaseService):
                 descendants.append(child)
                 # child.id is SQLAlchemy Mapped[UUID]
                 # but resolves to uuid.UUID at runtime
-                to_process.append(cast("UUID", child.id))
+                to_process.append(child.id)  # type: ignore[arg-type]
 
         return descendants
 
@@ -9934,12 +9957,6 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
-        await self._alert_auditor_of_rework(
-            task,
-            reason=notes or "PR review failed",
-            actor_agent_id=captured,
-            actor_role="pr_reviewer",
-        )
         self.log.info("Assembled PR failed review", task_id=str(task_id))
         return task
 
@@ -9992,12 +10009,6 @@ class TaskService(BaseService):
             audit_agent_id=pm_agent_id,
         )
         await self.session.flush()
-        await self._alert_auditor_of_rework(
-            task,
-            reason=notes or "PM requested changes at merge review",
-            actor_agent_id=pm_agent_id,
-            actor_role=agent_role,
-        )
         self.log.info(
             "PM requested changes at merge review",
             task_id=str(task_id),
