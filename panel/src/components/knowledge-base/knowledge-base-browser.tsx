@@ -74,6 +74,7 @@ const INDEX_LABELS: Record<KBIndexType, string> = {
   [KBIndexType.REVIEWS]: "Code Reviews",
   [KBIndexType.LEARNINGS]: "Learnings",
   [KBIndexType.PLAYBOOKS]: "Playbooks",
+  [KBIndexType.VAULT_NOTES]: "Vault Notes",
 };
 
 // Valid KB index types for URL param validation
@@ -87,6 +88,7 @@ const VALID_INDEX_TYPES: KBIndexType[] = [
   KBIndexType.REVIEWS,
   KBIndexType.LEARNINGS,
   KBIndexType.PLAYBOOKS,
+  KBIndexType.VAULT_NOTES,
 ];
 
 function KnowledgeBaseBrowserContent() {

@@ -789,6 +789,16 @@ def archive_playbook(playbook_id: str) -> dict[str, Any]:
     return _post("/api/v1/do/archive_playbook", {"playbook_id": playbook_id})
 
 
+def curate_vault(task_id: str, narrative: str) -> dict[str, Any]:
+    """Auditor only: write a root task-tree's Obsidian-vault narrative section
+    (what happened, decisions, rework story). No-op error if the vault flag
+    is off."""
+    return _post(
+        "/api/v1/do/curate_vault",
+        {"task_id": task_id, "narrative": narrative},
+    )
+
+
 # ---------- Wave 1 — pre-gateway parity ----------
 
 
@@ -955,6 +965,7 @@ _TOOLS: dict[str, Any] = {
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,
     "archive_playbook": archive_playbook,
+    "curate_vault": curate_vault,
 }
 
 

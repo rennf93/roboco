@@ -48,7 +48,7 @@ open_pr(task_id)    → opens the PR, transitions to awaiting_qa
        └── QA fails → returns to needs_revision; fix + commit + open_pr again
 
 i_am_blocked(task_id, reason)  → external dependency; cell PM unblocks
-i_am_done(task_id, notes)      → batched verify + open_pr shortcut
+i_am_done(task_id, notes, resolved_findings?)  → batched verify + open_pr shortcut
 unclaim(task_id)               → release a task back to the queue
 resume(task_id)                → recover after compact / restart
 i_am_idle()                    → no work in your queue right now
@@ -96,6 +96,24 @@ A genuine false positive is cleared only by committing a `waiver` in `.roboco/co
 When toolchain matching is enabled, `i_am_done` is refused if the project's test suite cannot be collected under the interpreter the workspace was provisioned with (a "broken" toolchain). The fix is to call `i_am_blocked(reason='toolchain')` so the environment is rebuilt — never to pass on a source read.
 
 When the architectural-conventions standard is enabled, `i_am_done` is refused on any block-level convention finding (e.g. a model defined in a router), reported with the offending `file:line` and a fix hint. A genuine false positive is cleared by committing a waiver in `.roboco/conventions.yml`.
+
+## Recovering from a bounce (`needs_revision`)
+
+QA (`fail`), the in-path PR reviewer (`pr_fail`), your PM (`request_changes`), or the CEO (`ceo_reject`) can bounce your task back to `needs_revision` — and now the feedback is structured, not just a prose note. `evidence(task_id)` carries `revision_findings`: the OPEN entries from the revision-findings ledger, each with `file`/`line`/`severity`/`expected`/`actual`/`fix`. Read every one before you touch code — this is the actual code-level feedback, not a summary of it.
+
+Fix each finding, then resubmit naming what you resolved:
+
+```python
+i_am_done(
+    task_id="<task>",
+    notes="...",
+    resolved_findings=[
+        {"finding_id": "a1b2c3d4", "commit": "<sha>", "note": "fixed the off-by-one"},
+    ],
+)
+```
+
+`finding_id` is the 8-char id from the finding's `[F-xxxxxxxx]` rendering (visible in `qa_notes`/`pm_notes`/`pr_reviewer_notes`, or in `revision_findings` itself). `i_am_done` refuses to resubmit while any open finding is left unnamed — the rejection lists the still-open ids so you don't have to guess. See `docs/rag/architecture/review-findings.md` for the full shape.
 
 ## A2A Collaboration
 

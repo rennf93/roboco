@@ -23,6 +23,11 @@ import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
 import { Settings, AlertCircle } from "lucide-react";
@@ -103,11 +108,16 @@ export function CommandCenter() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/settings" prefetch={false}>
-            <Button variant="ghost" size="icon">
-              <Settings className="h-5 w-5" />
-            </Button>
-          </Link>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link href="/settings" prefetch={false}>
+                <Button variant="ghost" size="icon">
+                  <Settings className="h-5 w-5" />
+                </Button>
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent>Open settings</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 

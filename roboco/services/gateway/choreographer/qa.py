@@ -44,8 +44,13 @@ import structlog
 from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
-from roboco.foundation.policy.content import ContentValidationError, markers
+from roboco.foundation.policy.content import (
+    ContentValidationError,
+    markers,
+    validate_findings,
+)
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -220,12 +225,22 @@ class QAMixin(_Base):
             task_id
         )
         convention_findings = await self._qa_convention_findings(qa_agent_id, t)
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, t.id
+        )
+        # The full ledger (every status) so QA verifies prior rounds
+        # item-by-item, not just what is still open.
+        prior_findings = await findings_lib.full_ledger_for_task(
+            self.task.session, t.id
+        )
         return build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             pr_diff_summary=diff_summary,
             convention_findings=convention_findings,
+            revision_findings=open_findings,
+            prior_findings=prior_findings,
         )
 
     async def _verify_qa_owner(
@@ -411,14 +426,21 @@ class QAMixin(_Base):
 
     @staticmethod
     def _store_qa_note(
-        task: Any, notes: str, ac_verdicts: list[str] | None, *, passed: bool
+        task: Any,
+        notes: str,
+        ac_verdicts: list[str] | None,
+        *,
+        passed: bool,
+        findings: list[Any] | None = None,
     ) -> None:
         """Best-effort: persist the QA review as a structured QaNote (chokepoint).
 
         Each ac_verdict string is coerced into a structured entry (a pass means
-        every criterion verified). Falls back silently to the legacy qa_notes
-        string on any validation issue, so a QA transition is never blocked by
-        note formatting. Mirrors the PR-reviewer pattern.
+        every criterion verified). ``findings`` (fail_review's validated,
+        ledger-inserted revision findings) embed alongside — parity with
+        ``PrReviewContent.findings``. Falls back silently to the legacy
+        qa_notes string on any validation issue, so a QA transition is never
+        blocked by note formatting. Mirrors the PR-reviewer pattern.
         """
         verdicts = (
             [
@@ -440,6 +462,7 @@ class QAMixin(_Base):
                 {
                     "summary": notes,
                     "ac_verdicts": verdicts,
+                    "findings": [f.model_dump(mode="json") for f in (findings or [])],
                     "verdict": "passed" if passed else "failed",
                 },
             )
@@ -568,6 +591,14 @@ class QAMixin(_Base):
         self._store_qa_note(t, notes, ac_verdicts, passed=True)
         runner = self._verb_runner()
         try:
+            # QA passing IS the confirmation: bulk-verify every already-
+            # addressed qa-origin finding, in the same session/transaction as
+            # the pass itself (not best-effort — the ledger's integrity is
+            # the point). A failure here raises before run_intent, so the
+            # pass never lands against a stale ledger.
+            await findings_lib.stamp_addressed_verified(
+                self.task.session, t.id, origin="qa"
+            )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
@@ -627,37 +658,110 @@ class QAMixin(_Base):
             )
         return None
 
-    async def fail_review(
-        self, qa_agent_id: UUID, task_id: UUID, issues: list[str]
-    ) -> Envelope:
-        """QA fails the task with concrete issues; transitions to needs_revision.
+    @staticmethod
+    def _validate_fail_review_findings(
+        t: Any, issues: list[str] | None, findings: list[dict[str, Any]] | None
+    ) -> tuple[list[Any], Envelope | None]:
+        """Normalize + validate fail_review's findings.
 
-        Spec gate runs first and enforces role membership (qa) plus the
-        composed ``qa_fail`` action's source-status (AWAITING_QA),
+        Returns ``(validated, rejection)`` — ``validated`` is ``[]`` and
+        ``rejection`` non-None on any failure: no findings at all (after the
+        ``issues`` shim), over the hard cap, malformed structure, or a
+        ``criterion`` that matches none of the task's acceptance criteria.
+        The caller attaches ``context_briefing``/introspection (this helper
+        has no ``self``).
+        """
+        raw = findings_lib.merge_findings_and_issues(findings, issues)
+        if not raw:
+            return [], Envelope.invalid_state(
+                message="fail_review requires at least one finding",
+                remediate=(
+                    "pass findings=[{file, severity, expected, actual}, ...] "
+                    "(issues=['...'] is still accepted this release, deprecated)"
+                ),
+            )
+        if cap := findings_lib.findings_count_guard(raw):
+            return [], cap
+        try:
+            validated = validate_findings(raw)
+        except ContentValidationError as exc:
+            return [], Envelope.invalid_state(
+                message=f"malformed finding: {exc.field} — {exc.reason}",
+                remediate=(
+                    "each finding needs expected + actual (file/line/severity/"
+                    "criterion/fix/evidence optional)"
+                ),
+            )
+        if unknown := findings_lib.unknown_finding_criteria(t, validated):
+            return [], findings_lib.criterion_mismatch_rejection(t, unknown)
+        return validated, None
+
+    async def _attach_fail_review_findings(
+        self,
+        t: Any,
+        actor_slug: str | None,
+        role_str: str,
+        validated: list[Any],
+    ) -> str:
+        """Insert fail_review's findings into the ledger, write the QaNote
+        (with findings embedded), and return the id-prefixed rendering used
+        for the a2a body to the original developer."""
+        # GatewayAgentView carries no slug field — falls back to the role
+        # string (mirrors _post_gate_review's reviewer_slug fallback).
+        author_slug = actor_slug or role_str
+        _, summary = await findings_lib.insert_and_render(
+            self.task.session,
+            task_id=t.id,
+            origin="qa",
+            round=findings_lib.next_round(t),
+            author_slug=author_slug,
+            findings=validated,
+        )
+        self._store_qa_note(t, summary, None, passed=False, findings=validated)
+        return summary
+
+    async def fail_review(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        issues: list[str] | None = None,
+        findings: list[dict[str, Any]] | None = None,
+    ) -> Envelope:
+        """QA fails the task with concrete findings; transitions to needs_revision.
+
+        ``findings`` is the structured revision-findings ledger entry (wire
+        Pattern A — a loose ``list[dict]``, deep-validated here via
+        ``validate_findings``). ``issues`` (free text) is still accepted for
+        one release and shimmed into file-less findings (deprecated; logs a
+        warning). Spec gate runs first and enforces role membership (qa) plus
+        the composed ``qa_fail`` action's source-status (AWAITING_QA),
         task_type, and self-review block (same shape as ``pass_review``).
-        After the spec gate accepts, the verb-specific gates stay
-        (ownership via ``_verify_qa_owner``, ``issues`` non-empty, and
-        notes-length / journal:learning / qa_evidence_inspected via
-        ``_qa_pass_gate_check``). The composed atomic ``qa_fail`` is
-        dispatched through ``VerbRunner.run_intent``, then the verb body
-        notifies the original developer via a2a.
+        After the spec gate accepts, the verb-specific gates stay (ownership
+        via ``_verify_qa_owner`` and notes-length / journal:learning /
+        qa_evidence_inspected via ``_qa_pass_gate_check``). Findings are
+        inserted into the ledger BEFORE the composed atomic ``qa_fail`` runs
+        (mirrors ``_store_qa_note`` writing before ``run_intent``, so the
+        ledger rows and the transition commit together), then the composed
+        atomic is dispatched through ``VerbRunner.run_intent`` and the verb
+        body notifies the original developer via a2a with the same rendering.
         """
         rejection, t = await self._verify_qa_owner(qa_agent_id, task_id, "fail_review")
         if rejection is not None:
             return rejection
-        if not issues:
+        validated, bad = self._validate_fail_review_findings(t, issues, findings)
+        if bad is not None:
+            bad.context_briefing = await self._briefing_for(qa_agent_id, task_id)
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message="fail_review requires at least one issue",
-                    remediate="pass issues=['<concrete actionable issue>', ...]",
-                    context_briefing=await self._briefing_for(qa_agent_id, task_id),
-                ).with_introspection(task=t, role="qa"),
+                bad.with_introspection(task=t, role="qa"),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="fail_review",
             )
 
-        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
+        # Placeholder (id-less) rendering drives the existing gates — the
+        # ledger ids don't exist until after insert, further down.
+        notes = findings_lib.render_findings_summary([(None, f) for f in validated])
+        issues_tuple = tuple(issues or [])
         spec_rejection, agent, role_str = await self._qa_review_spec_gate(
             _QASpecGateInputs(
                 qa_agent_id=qa_agent_id,
@@ -665,7 +769,7 @@ class QAMixin(_Base):
                 task=t,
                 verb="fail_review",
                 notes=notes,
-                issues=tuple(issues),
+                issues=issues_tuple,
             )
         )
         if spec_rejection is not None:
@@ -677,7 +781,7 @@ class QAMixin(_Base):
             task=t,
             role_str=role_str,
             verb="fail_review",
-            soup_checks=(("issues", issues, 8),),
+            soup_checks=(("notes", notes, 8),),
         ):
             return gate_rejection
 
@@ -689,9 +793,11 @@ class QAMixin(_Base):
             agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
-            issues=tuple(issues),
+            issues=issues_tuple,
         )
-        self._store_qa_note(t, notes, None, passed=False)
+        summary = await self._attach_fail_review_findings(
+            t, actor_slug, role_str, validated
+        )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("fail_review", t, agent, spec_ctx)
@@ -713,12 +819,15 @@ class QAMixin(_Base):
                 to_agent=t.assigned_to,
                 skill="code_review",
                 task_id=task_id,
-                body=f"QA needs changes. Issues:\n{notes}",
+                body=f"QA needs changes.\n{summary}",
             )
         await self._teardown_sandbox_best_effort(qa_agent_id)
-        return Envelope.ok(
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["fail_review"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+        if hint := findings_lib.findings_count_hint(validated):
+            env.warning = hint
+        return env

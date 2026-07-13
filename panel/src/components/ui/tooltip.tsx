@@ -7,7 +7,17 @@ import { cn } from "@/lib/utils";
 
 const TooltipProvider = TooltipPrimitive.Provider;
 
-const Tooltip = TooltipPrimitive.Root;
+// Self-providing Root (shadcn v4 pattern): every <Tooltip> works anywhere —
+// components and tests alike — without an app-level TooltipProvider.
+function Tooltip(
+  props: React.ComponentProps<typeof TooltipPrimitive.Root>,
+): React.ReactElement {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <TooltipPrimitive.Root {...props} />
+    </TooltipProvider>
+  );
+}
 
 const TooltipTrigger = TooltipPrimitive.Trigger;
 

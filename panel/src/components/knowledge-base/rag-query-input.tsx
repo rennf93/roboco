@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Loader2, Sparkles } from "lucide-react";
 
@@ -46,18 +51,23 @@ export function RAGQueryInput({
           className="min-h-24 pr-12 resize-none"
           disabled={isLoading}
         />
-        <Button
-          size="icon"
-          className="absolute bottom-2 right-2"
-          onClick={handleSubmit}
-          disabled={!question.trim() || isLoading}
-        >
-          {isLoading ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Send className="h-4 w-4" />
-          )}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              className="absolute bottom-2 right-2"
+              onClick={handleSubmit}
+              disabled={!question.trim() || isLoading}
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Ask the knowledge base (Enter)</TooltipContent>
+        </Tooltip>
       </div>
       <p className="text-xs text-muted-foreground">
         Press Enter to send, Shift+Enter for new line

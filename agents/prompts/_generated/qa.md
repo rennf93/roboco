@@ -8,7 +8,7 @@
 | Verb | Body schema |
 |------|-------------|
 | `claim_review` | `claim_review(task_id: UUID)` |
-| `fail_review` | `fail_review(task_id: UUID, issues: list[str])` |
+| `fail_review` | `fail_review(task_id: UUID, issues: list[str] = PydanticUndefined, findings: list[str | Any] = PydanticUndefined)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_blocked` | `i_am_blocked(task_id: UUID, reason: str, blocker_type: str | None = None, what_needed: str | None = None)` |
 | `i_am_idle` | `i_am_idle()` |

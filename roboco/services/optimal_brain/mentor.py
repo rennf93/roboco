@@ -573,13 +573,15 @@ class MentorService:
                 IndexType.DECISIONS,
                 IndexType.JOURNALS,
             ]
-        # Default: search all relevant indexes
+        # Default: search all relevant indexes, including the CEO's own vault
+        # notes — the general/company bucket is where those belong.
         return [
             IndexType.STANDARDS,
             IndexType.DOCUMENTATION,
             IndexType.DECISIONS,
             IndexType.JOURNALS,
             IndexType.LEARNINGS,
+            IndexType.VAULT_NOTES,
         ]
 
     async def _search_index(
@@ -615,6 +617,7 @@ class MentorService:
             IndexType.REVIEWS: "Code Reviews",
             IndexType.DOCUMENTATION: "Documentation",
             IndexType.ERRORS: "Error Patterns",
+            IndexType.VAULT_NOTES: "Vault Notes",
         }
 
         by_type: dict[IndexType, list[SearchResult]] = {}

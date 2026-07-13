@@ -34,6 +34,7 @@ def test_requirement_enum_has_canonical_values() -> None:
         "dev_notes>=min",
         "pr_reviewer_notes>=min",
         "quick_context>=min",
+        "findings_addressed",
     }
     actual = {r.value for r in tracing.Requirement}
     assert actual == expected, f"Requirement drift: {actual ^ expected}"

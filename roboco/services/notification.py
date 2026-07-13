@@ -287,6 +287,33 @@ class NotificationService:
             )
         )
 
+    async def send_weekly_report_notification(
+        self,
+        week: str,
+        note_path: str,
+        summary_line: str,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Ping the CEO once the vault janitor materializes the weekly
+        org-report note (``roboco.services.vault_janitor``). Best-effort by
+        design — the caller swallows any failure, since a missed ping never
+        invalidates the note that's already on disk.
+        """
+        body = (
+            f"Weekly org report for {week} is ready in the vault "
+            f"({note_path}).\n\n{summary_line}"
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent="system",
+                to_agents=[to_ceo],
+                subject=f"Weekly org report: {week}",
+                body=body,
+            )
+        )
+
     async def send_external_pr_reviewed_notification(
         self,
         task_id: str,

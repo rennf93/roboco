@@ -18,6 +18,7 @@ validated model (or a ``ContentValidationError``).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import (
@@ -35,6 +36,24 @@ from .enums import Severity, Verdict
 from .validators import ContentValidationError, coerce_to_list, reject_trivial
 
 _SUMMARY_MIN = 10
+
+# Finding field caps (the structured-text guardrail discipline extended to
+# revision findings): expected/actual are a claim-equivalent (short, precise),
+# fix describes the prescribed change (never a literal patch), evidence is a
+# verbatim excerpt (failing test output / CI lines / diff hunk) — caller-side
+# truncated before it reaches the model (see EVIDENCE_DIFF_CAP_CHARS in
+# evidence_builder), so the model only ever needs to cap, never truncate.
+_FINDING_TEXT_CAP = 300
+_FINDING_FIX_CAP = 500
+_FINDING_EVIDENCE_CAP = 2000
+# Matches the ledger column (task_review_findings.criterion, String(500)) so
+# an oversized criterion fails validation, not the DB insert.
+_FINDING_CRITERION_CAP = 500
+
+# A finding's `file` must be repo-relative; reject absolute paths (Unix `/...`
+# or a Windows drive letter) so the ledger never depends on the reporting
+# agent's own filesystem layout.
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class _Base(BaseModel):
@@ -74,19 +93,52 @@ def _join(parts: list[str]) -> str:
 
 
 class Finding(_Base):
-    """One PR-review finding — file + line + expected vs actual."""
+    """One review finding — file + line + expected vs actual.
 
-    file: str
-    line: int | None = None
+    Shared by the external-PR review path (``post_pr_review``) and the
+    internal revision-findings ledger (qa_fail / pr_fail / request_changes /
+    ceo_reject). ``file`` is optional so the ``issues`` free-text shim can
+    build a file-less finding from a bare string; ``fix`` and ``evidence`` are
+    additive slots the ledger uses (a prescribed change, described — never a
+    literal patch — and a verbatim excerpt respectively).
+    """
+
+    file: str | None = Field(default=None, max_length=_FINDING_TEXT_CAP)
+    line: int | None = Field(default=None, ge=1)
     severity: Severity
-    criterion: str | None = None
-    expected: str
-    actual: str
+    criterion: str | None = Field(default=None, max_length=_FINDING_CRITERION_CAP)
+    expected: str = Field(..., max_length=_FINDING_TEXT_CAP)
+    actual: str = Field(..., max_length=_FINDING_TEXT_CAP)
+    fix: str | None = Field(default=None, max_length=_FINDING_FIX_CAP)
+    evidence: str | None = Field(default=None, max_length=_FINDING_EVIDENCE_CAP)
 
-    @field_validator("file", "expected", "actual")
+    @field_validator("expected", "actual")
     @classmethod
     def _nontrivial(cls, v: str, info: ValidationInfo) -> str:
         return reject_trivial(v, field=info.field_name or "field")
+
+    @field_validator("fix", "evidence")
+    @classmethod
+    def _nontrivial_optional(cls, v: str | None, info: ValidationInfo) -> str | None:
+        if v is None:
+            return v
+        return reject_trivial(v, field=info.field_name or "field")
+
+    @field_validator("file")
+    @classmethod
+    def _file_repo_relative(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = reject_trivial(v, field="file")
+        if v.startswith(("/", "\\")) or _WINDOWS_ABS_RE.match(v):
+            raise ValueError(
+                "file must be a repo-relative path — absolute paths are rejected"
+            )
+        if any(part == ".." for part in re.split(r"[/\\]", v)):
+            raise ValueError(
+                "file must not contain '..' path segments — repo-relative only"
+            )
+        return v
 
 
 class WorkUnit(_Base):
@@ -191,8 +243,9 @@ class PrReviewContent(_Content):
             for f in self.findings:
                 loc = str(f.line) if f.line is not None else "—"
                 crit = f" ({f.criterion})" if f.criterion else ""
+                file_disp = f"`{f.file}`" if f.file else "—"
                 rows.append(
-                    f"| `{f.file}`{crit} | {loc} | {f.severity.value} "
+                    f"| {file_disp}{crit} | {loc} | {f.severity.value} "
                     f"| {f.expected} → {f.actual} |"
                 )
             parts.append("## Findings\n" + "\n".join(rows))
@@ -364,13 +417,23 @@ class DeveloperNote(_Content):
 
 
 class QaNote(_Content):
-    """A QA review note — summary + per-criterion verdicts + outcome."""
+    """A QA review note — summary + per-criterion verdicts + outcome.
+
+    ``findings`` parity with ``PrReviewContent`` — the revision-findings
+    ledger (fail_review) embeds its structured findings here too. On a
+    findings-driven fail, ``summary`` IS the deterministic per-finding
+    rendering (built by the choreographer before the note is written), so
+    ``render_markdown`` deliberately does not re-render ``findings`` into a
+    second section — that would duplicate every line (mirrors the anti-
+    duplication precedent in ``PRGateMixin._gate_verdict_summary``).
+    """
 
     summary: str
     ac_verdicts: list[AcVerdict] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
     verdict: Verdict
 
-    @field_validator("ac_verdicts", mode="before")
+    @field_validator("ac_verdicts", "findings", mode="before")
     @classmethod
     def _coerce(cls, v: Any) -> Any:
         return coerce_to_list(v)
@@ -398,6 +461,33 @@ class QaNote(_Content):
             parts.append("## Acceptance Criteria\n" + "\n".join(rows))
         parts.append(_section("Verdict", self.verdict.value))
         return _join(parts)
+
+
+class PmReviewContent(_Content):
+    """A PM merge-review reject note (``request_changes``) — no verdict field.
+
+    Unlike ``QaNote``/``PrReviewContent`` there is no separate verdict: the
+    transition to ``needs_revision`` IS the verdict. ``summary`` is the
+    deterministic per-finding rendering the choreographer builds before the
+    note is written (see ``QaNote`` docstring for why ``findings`` is not
+    re-rendered into its own section).
+    """
+
+    summary: str
+    findings: list[Finding] = Field(default_factory=list)
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def _coerce_findings(cls, v: Any) -> Any:
+        return coerce_to_list(v)
+
+    @field_validator("summary")
+    @classmethod
+    def _nontrivial_summary(cls, v: str) -> str:
+        return reject_trivial(v, field="summary", min_chars=_SUMMARY_MIN)
+
+    def render_markdown(self) -> str:
+        return _section("Summary", self.summary)
 
 
 class DocNote(_Content):
@@ -465,6 +555,7 @@ CONTENT_MODELS: dict[str, type[_Content]] = {
     "qa": QaNote,
     "doc": DocNote,
     "auditor": AuditorNote,
+    "pm_review": PmReviewContent,
 }
 
 
@@ -487,6 +578,27 @@ def validate_content(content_type: str, payload: Any) -> _Content:
         return model_cls.model_validate(
             payload if isinstance(payload, dict) else dict(payload or {})
         )
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        loc = ".".join(str(p) for p in first.get("loc", ())) or "?"
+        raise ContentValidationError(loc, first.get("msg", "invalid")) from exc
+
+
+def validate_findings(payload: list[Any]) -> list[Finding]:
+    """Validate a raw ``list[dict]`` into ``list[Finding]`` (the ledger's unit).
+
+    Used by the revision-findings producers (fail_review / pr_fail /
+    request_changes / ceo_reject) to structurally validate findings BEFORE
+    they are inserted into the ledger (which needs typed ``Finding`` objects,
+    not the top-level ``QaNote``/``PrReviewContent``/``PmReviewContent``
+    validation — those wrap the *already-validated* findings plus a summary).
+    Raises ``ContentValidationError`` on the first invalid entry, same shape
+    as ``validate_content``.
+    """
+    try:
+        return [
+            f if isinstance(f, Finding) else Finding.model_validate(f) for f in payload
+        ]
     except ValidationError as exc:
         first = exc.errors()[0]
         loc = ".".join(str(p) for p in first.get("loc", ())) or "?"

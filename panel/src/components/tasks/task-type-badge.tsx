@@ -1,5 +1,12 @@
+"use client";
+
 import { TaskType } from "@/types";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Code,
   FileText,
@@ -64,11 +71,16 @@ export function TaskTypeBadge({
   if (!config) return null;
 
   return (
-    <Badge variant="outline" className={`${config.color} ${className}`}>
-      <span className="flex items-center gap-1">
-        {config.icon}
-        {showLabel && <span>{config.label}</span>}
-      </span>
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className={`${config.color} ${className}`}>
+          <span className="flex items-center gap-1">
+            {config.icon}
+            {showLabel && <span>{config.label}</span>}
+          </span>
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>Task type: {config.label}</TooltipContent>
+    </Tooltip>
   );
 }

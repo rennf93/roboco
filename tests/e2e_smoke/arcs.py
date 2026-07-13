@@ -161,6 +161,31 @@ def task_state(stack: E2EStack, task_id: Any) -> dict[str, Any]:
     return state
 
 
+def open_finding_ids(stack: E2EStack, task_id: Any) -> list[str]:
+    """Open revision-findings ledger row ids for a task — the ids a scripted
+    PM/dev must resolve before FINDINGS_ADDRESSED lets it resubmit."""
+    from roboco.db.tables import TaskReviewFindingTable
+    from sqlalchemy import select
+
+    async def _run(session: AsyncSession) -> list[str]:
+        rows = (
+            (
+                await session.execute(
+                    select(TaskReviewFindingTable.id).where(
+                        TaskReviewFindingTable.task_id == task_id,
+                        TaskReviewFindingTable.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [str(row) for row in rows]
+
+    ids: list[str] = stack.run_db(_run)
+    return ids
+
+
 def wait_for_status(
     stack: E2EStack,
     task_id: Any,

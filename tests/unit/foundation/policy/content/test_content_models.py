@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from roboco.foundation.policy.content import (
     AuditorNote,
     ContentValidationError,
     DeveloperNote,
     DocNote,
+    Finding,
+    PmReviewContent,
     PrReviewContent,
     QaNote,
     ResumptionNote,
     TaskDescription,
     validate_content,
+    validate_findings,
 )
 from roboco.foundation.policy.content.enums import Severity, Verdict
+from roboco.foundation.policy.content.models import CONTENT_MODELS
 
 # --------------------------------------------------------------------------- #
 # Valid construction
@@ -277,3 +282,182 @@ def test_developer_and_doc_and_auditor_models() -> None:
         ),
         AuditorNote,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Finding — revision-findings ledger caps (fix / evidence / file-relative)
+# --------------------------------------------------------------------------- #
+
+_FINDING_TEXT_CAP = 300
+
+
+def _finding(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "file": "roboco/services/task.py",
+        "line": 42,
+        "severity": "major",
+        "expected": "raises on invalid input",
+        "actual": "swallows the error silently",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_finding_accepts_fix_and_evidence() -> None:
+    f = Finding.model_validate(
+        _finding(
+            fix="raise ValueError instead", evidence="Traceback: ...\nAssertionError"
+        )
+    )
+    assert f.fix == "raise ValueError instead"
+    assert f.evidence is not None
+    assert f.evidence.startswith("Traceback")
+
+
+def test_finding_file_is_optional() -> None:
+    f = Finding.model_validate(_finding(file=None))
+    assert f.file is None
+
+
+def test_finding_rejects_absolute_unix_path() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="/etc/passwd"))
+
+
+def test_finding_rejects_absolute_windows_path() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="C:\\Windows\\system32"))
+
+
+def test_finding_rejects_dotdot_traversal_path() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="a/../../etc/passwd"))
+
+
+def test_finding_rejects_dotdot_leading_segment() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="../roboco/services/task.py"))
+
+
+def test_finding_accepts_dot_segment_and_double_dot_substring() -> None:
+    # A literal ".." SEGMENT is rejected, but a filename merely containing
+    # dots (not a traversal component) must not false-positive.
+    ok = Finding.model_validate(_finding(file="./roboco/services/foo..bar.py"))
+    assert ok.file == "./roboco/services/foo..bar.py"
+
+
+def test_finding_rejects_non_positive_line() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(line=0))
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(line=-1))
+
+
+def test_finding_expected_actual_cap_at_300() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(expected="x" * (_FINDING_TEXT_CAP + 1)))
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(actual="x" * (_FINDING_TEXT_CAP + 1)))
+    # exactly at the cap is fine
+    ok = Finding.model_validate(_finding(expected="x" * _FINDING_TEXT_CAP))
+    assert len(ok.expected) == _FINDING_TEXT_CAP
+
+
+def test_finding_fix_cap_at_500() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(fix="x" * 501))
+
+
+def test_finding_evidence_cap_at_2000() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(evidence="x" * 2001))
+
+
+def test_finding_file_cap_at_300() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="a/" * 200 + "f.py"))
+
+
+def test_finding_rejects_placeholder_fix() -> None:
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(fix="tbd"))
+
+
+# --------------------------------------------------------------------------- #
+# validate_findings — the ledger's raw list[dict] -> list[Finding] entry point
+# --------------------------------------------------------------------------- #
+
+_EXPECTED_TWO_FINDINGS = 2
+
+
+def test_validate_findings_returns_typed_list() -> None:
+    findings = validate_findings([_finding(), _finding(file=None, line=None)])
+    assert len(findings) == _EXPECTED_TWO_FINDINGS
+    assert all(isinstance(f, Finding) for f in findings)
+    assert findings[1].file is None
+
+
+def test_validate_findings_passes_through_existing_finding_instances() -> None:
+    f = Finding.model_validate(_finding())
+    assert validate_findings([f]) == [f]
+
+
+def test_validate_findings_raises_content_validation_error() -> None:
+    with pytest.raises(ContentValidationError):
+        validate_findings([_finding(severity="catastrophic")])
+
+
+# --------------------------------------------------------------------------- #
+# QaNote.findings — parity with PrReviewContent.findings
+# --------------------------------------------------------------------------- #
+
+
+def test_qa_note_accepts_findings() -> None:
+    c = QaNote.model_validate(
+        {
+            "summary": "[F-abc12345] task.py:42 (major) — expected → actual",
+            "findings": [_finding()],
+            "verdict": "failed",
+        }
+    )
+    assert len(c.findings) == 1
+    assert c.findings[0].severity is Severity.MAJOR
+    # QaNote deliberately does not re-render findings into their own section
+    # (summary already carries the deterministic per-finding rendering) —
+    # avoids the double-rendering the PR-gate summary explicitly avoids.
+    rendered = c.render_markdown()
+    assert "## Findings" not in rendered
+
+
+def test_qa_note_findings_default_empty() -> None:
+    c = QaNote.model_validate(
+        {"summary": "Everything checked out fine.", "verdict": "passed"}
+    )
+    assert c.findings == []
+
+
+# --------------------------------------------------------------------------- #
+# PmReviewContent — the request_changes note (no verdict field)
+# --------------------------------------------------------------------------- #
+
+
+def test_pm_review_content_valid() -> None:
+    c = validate_content(
+        "pm_review",
+        {
+            "summary": "[F-abc12345] file.py:10 (major) — expected → actual",
+            "findings": [_finding()],
+        },
+    )
+    assert isinstance(c, PmReviewContent)
+    assert len(c.findings) == 1
+    assert c.render_markdown() == "## Summary\n" + c.summary
+
+
+def test_pm_review_content_rejects_trivial_summary() -> None:
+    with pytest.raises(ContentValidationError):
+        validate_content("pm_review", {"summary": "wip"})
+
+
+def test_pm_review_content_registered_in_content_models() -> None:
+    assert CONTENT_MODELS["pm_review"] is PmReviewContent

@@ -3,7 +3,11 @@
 import { Task, TaskStatus } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { KanbanCard } from "./kanban-card";
 import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
@@ -41,7 +45,10 @@ export function KanbanColumn({
     <div
       ref={setNodeRef}
       className={cn(
-        "flex flex-col rounded-lg p-3 w-72 shrink-0 sm:w-80 h-full",
+        // Columns share the available width (flex-1) down to a 18rem floor —
+        // below that the board container scrolls horizontally — and cap at
+        // 24rem so a near-empty board doesn't produce comically wide columns.
+        "flex min-w-0 flex-col rounded-lg p-3 h-full shrink-0 w-72 sm:w-auto sm:flex-1 sm:min-w-72 sm:max-w-96",
         color,
         isOver && "ring-2 ring-primary ring-offset-2",
         className,
@@ -51,14 +58,26 @@ export function KanbanColumn({
         <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">
           {title}
         </h3>
-        <Badge
-          variant="secondary"
-          className="dark:bg-gray-700 dark:text-gray-100"
-        >
-          {isLoading ? "..." : tasks.length}
-        </Badge>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge
+              variant="secondary"
+              className="dark:bg-gray-700 dark:text-gray-100"
+            >
+              {isLoading ? "..." : tasks.length}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            {isLoading
+              ? "Loading…"
+              : `${tasks.length} task${tasks.length === 1 ? "" : "s"} in ${title}`}
+          </TooltipContent>
+        </Tooltip>
       </div>
-      <ScrollArea className="flex-1 min-h-0">
+      {/* Native overflow scroll: Radix ScrollArea's display:table viewport
+          let cards grow past the column width and clip — a plain div keeps
+          content constrained to the column. */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-24" />
@@ -85,7 +104,7 @@ export function KanbanColumn({
             ))}
           </div>
         )}
-      </ScrollArea>
+      </div>
     </div>
   );
 }

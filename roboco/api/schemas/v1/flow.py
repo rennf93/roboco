@@ -84,9 +84,20 @@ class OpenPrRequest(BaseModel):
     task_id: UUID
 
 
+class ResolvedFindingInput(BaseModel):
+    """One entry in ``i_am_done``'s ``resolved_findings`` — the dev's claim
+    that a ledger finding is addressed. ``finding_id`` is the id shown in the
+    rendered note/A2A body (``[F-<id8>]``) — a full UUID also matches."""
+
+    finding_id: str = Field(..., min_length=1)
+    commit: str | None = None
+    note: str | None = Field(default=None, max_length=300)
+
+
 class IAmDoneRequest(BaseModel):
     task_id: UUID
     notes: str = ""
+    resolved_findings: list[ResolvedFindingInput] = Field(default_factory=list)
 
 
 class IAmBlockedRequest(BaseModel):
@@ -199,7 +210,16 @@ class PassReviewRequest(BaseModel):
 
 class FailReviewRequest(BaseModel):
     task_id: UUID
-    issues: StrList = Field(..., min_length=1)
+    # Free text — deprecated, one release. Shimmed into file-less findings.
+    issues: StrList = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Structured revision findings — each {file?, line?, severity "
+            "(blocker|major|minor|nit), expected, actual, fix?, evidence?}. "
+            "At least one of findings/issues is required."
+        ),
+    )
 
 
 class ClaimPrReviewRequest(BaseModel):
@@ -238,7 +258,16 @@ class PrPassRequest(BaseModel):
 
 class PrFailRequest(BaseModel):
     task_id: UUID
-    issues: StrList = Field(..., min_length=1)
+    # Free text — deprecated, one release. Shimmed into file-less findings.
+    issues: StrList = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Structured revision findings — each {file?, line?, severity "
+            "(blocker|major|minor|nit), expected, actual, fix?, evidence?}. "
+            "At least one of findings/issues is required."
+        ),
+    )
 
 
 class ClaimDocTaskRequest(BaseModel):
@@ -275,7 +304,16 @@ class CompleteRequest(BaseModel):
 
 class RequestChangesRequest(BaseModel):
     task_id: UUID
-    issues: StrList = Field(..., min_length=1)
+    # Free text — deprecated, one release. Shimmed into file-less findings.
+    issues: StrList = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Structured revision findings — each {file?, line?, severity "
+            "(blocker|major|minor|nit), expected, actual, fix?, evidence?}. "
+            "At least one of findings/issues is required."
+        ),
+    )
 
 
 class EscalateUpRequest(BaseModel):
@@ -410,8 +448,10 @@ class DelegateRequest(BaseModel):
 class SubmitUpRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)
+    resolved_findings: list[ResolvedFindingInput] = Field(default_factory=list)
 
 
 class SubmitRootRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)
+    resolved_findings: list[ResolvedFindingInput] = Field(default_factory=list)

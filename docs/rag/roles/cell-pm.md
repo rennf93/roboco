@@ -23,6 +23,7 @@
 - Triage your cell's queue via `triage()`
 - Unblock blocked tasks via `unblock(task_id, reason, restore=True)` — `reason` (why the block is cleared) is recorded as your `journal:decision`, so no separate `note(scope='decision')` call is needed
 - Complete tasks via `complete(task_id, notes)` — this merges the PR (a leaf subtask's PR into your cell branch, or your assembled cell→root PR into the root branch after it clears the gate). No separate `merge_pr` tool exists; the choreographer does it.
+- Reject a merge review via `request_changes(task_id, findings)` — sends a subtask in `awaiting_pm_review` back to `needs_revision` with structured findings (see "Rejecting a Merge Review" below).
 - Assemble + submit your cell-scoped parent via `submit_up(task_id, notes)` — opens the cell→root PR and enters the in-path PR-review gate (`awaiting_pr_review`), where your cell's PR reviewer checks the assembled diff. After `pr_pass`, you `complete` it to merge.
 - Send `notify` (ack-required notifications) — devs/QA/doc cannot
 - Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
@@ -70,7 +71,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `reassign`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle` |
+| `roboco-flow`         | `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `reassign`, `complete`, `request_changes`, `escalate_up`, `unclaim`, `resume`, `i_am_idle` |
 | `roboco-do`           | `note`, `dm`, `notify`, `evidence` (no `commit`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`, default on) |
@@ -123,6 +124,28 @@ The choreographer:
 3. Merges the leaf PR into the parent branch
 4. Transitions the task to `completed` (or escalates the root parent chain upward — see Main PM)
 
+## Rejecting a Merge Review
+
+When a subtask lands in `awaiting_pm_review` and the work violates an acceptance criterion or its scope boundary (e.g. a commit touched files outside the task's declared scope), reject it instead of completing it:
+
+```python
+note(scope="decision", text="Rejecting — commit touched files outside declared scope")
+request_changes(
+    task_id="<subtask>",
+    findings=[
+        {
+            "file": "roboco/api/routes/unrelated.py",
+            "severity": "major",
+            "expected": "changes scoped to the declared files",
+            "actual": "this route was touched but was out of scope",
+            "fix": "revert the out-of-scope hunk or split it into its own task",
+        },
+    ],
+)
+```
+
+Each finding is inserted onto the task's revision-findings ledger (`origin=pm`) and rendered into the new `pm_notes` note, then the subtask goes back to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated. See `docs/rag/architecture/review-findings.md`.
+
 ## Monitoring Your Cell
 
 ```python
@@ -149,7 +172,7 @@ notify(target="be-dev-1", text="Please prioritise task X by EOD.",
 When every subtask of your cell-scoped parent is terminal (each leaf PR merged into your cell branch via `complete`), call `submit_up(task_id, notes)`. This opens the **cell→root PR** and moves the parent into the in-path PR-review gate (`awaiting_pr_review`), where your cell's **PR reviewer** reviews the assembled diff:
 
 - `pr_pass` → the parent moves to `awaiting_pm_review`; you then `complete(task_id, notes)` to merge the cell→root PR into the root branch.
-- `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's issues; fix, then re-`submit_up`. The reviewer's verdict + issues are carried in your task handoff, so you are not blind on the rework.
+- `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's structured findings; fix, then re-`submit_up`. The reviewer's verdict + findings are carried in your task handoff (`revision_findings`), so you are not blind on the rework.
 
 Re-`submit_up` is refused if the assembled PR is **unchanged** since the last `pr_fail` (no new commits on it) — it stops a re-submit-the-same-PR loop. Fix the issues and commit before re-submitting.
 

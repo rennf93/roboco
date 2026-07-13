@@ -1,8 +1,9 @@
 """TaskService._audit_events_for — the rejector-attributed audit event selection.
 
 A transition always emits the generic ``task.<status>``; a reviewer bounce to
-needs_revision additionally emits ``task.qa_fail`` / ``task.pr_fail`` keyed on
-the acting role, so the per-agent rework scorecard can attribute the rejection.
+needs_revision additionally emits ``task.qa_fail`` / ``task.pr_fail`` /
+``task.request_changes`` / ``task.ceo_reject`` keyed on the acting role, so the
+per-agent rework scorecard can attribute the rejection.
 """
 
 from __future__ import annotations
@@ -30,10 +31,24 @@ def test_pr_fail_adds_named_event() -> None:
     ]
 
 
-def test_ceo_reject_to_needs_revision_has_no_named_event() -> None:
-    # A CEO rejection is a needs_revision bounce but not a QA/PR-review fail.
+def test_request_changes_adds_named_event_for_cell_pm() -> None:
+    assert TaskService._audit_events_for("needs_revision", "cell_pm") == [
+        "task.needs_revision",
+        "task.request_changes",
+    ]
+
+
+def test_request_changes_adds_named_event_for_main_pm() -> None:
+    assert TaskService._audit_events_for("needs_revision", "main_pm") == [
+        "task.needs_revision",
+        "task.request_changes",
+    ]
+
+
+def test_ceo_reject_to_needs_revision_adds_named_event() -> None:
     assert TaskService._audit_events_for("needs_revision", "ceo") == [
-        "task.needs_revision"
+        "task.needs_revision",
+        "task.ceo_reject",
     ]
 
 

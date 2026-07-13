@@ -229,3 +229,59 @@ export function isKnownAgent(agentId: string | null | undefined): boolean {
   if (!agentId) return false;
   return liveByKey.has(agentId) || agentId in AGENT_NAMES;
 }
+
+// ---------------------------------------------------------------------------
+// Team-color identity (design doc:
+// docs/ux_ui/design/02-conversation-first-layout-agent-identity-live-stream.md
+// §2). Color is scoped to the CELL an agent belongs to, not a per-agent hue —
+// legible at 22-agent scale and needs no new bucket when a cell grows.
+// ---------------------------------------------------------------------------
+
+export type AgentTeamColor =
+  | "backend"
+  | "frontend"
+  | "ux_ui"
+  | "board"
+  | "ceo"
+  | "system";
+
+/** Every value here is an existing Tailwind color family already used
+ * elsewhere in the codebase at the same `/15` bg + `/40` border weight
+ * (`a2a-pair-card.tsx`'s pulse treatment) — no new tokens introduced. */
+export const TEAM_COLOR_CLASSES: Record<AgentTeamColor, string> = {
+  backend: "bg-blue-500/15 border-blue-500/40 text-blue-700 dark:text-blue-400",
+  frontend:
+    "bg-violet-500/15 border-violet-500/40 text-violet-700 dark:text-violet-400",
+  ux_ui:
+    "bg-fuchsia-500/15 border-fuchsia-500/40 text-fuchsia-700 dark:text-fuchsia-400",
+  board:
+    "bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-400",
+  // The one human gets the app's own accent, not a team bucket.
+  ceo: "bg-primary/15 border-primary/40 text-primary",
+  system:
+    "bg-slate-500/15 border-slate-500/40 text-slate-700 dark:text-slate-400",
+};
+
+/**
+ * Resolve an agent id (slug or UUID) to its cell color bucket, derived from
+ * the slug prefix. Unknown/unresolved slugs fall back to `system` — a color
+ * layer is a scanning aid, never something that should throw on a stray id.
+ */
+export function getAgentTeamColor(
+  agentId: string | null | undefined,
+): AgentTeamColor {
+  const slug = resolveToSlug(agentId);
+  if (slug === "ceo" || slug === "CEO") return "ceo";
+  if (slug.startsWith("be-")) return "backend";
+  if (slug.startsWith("fe-")) return "frontend";
+  if (slug.startsWith("ux-")) return "ux_ui";
+  if (
+    slug === "main-pm" ||
+    slug === "product-owner" ||
+    slug === "head-marketing" ||
+    slug === "auditor"
+  ) {
+    return "board";
+  }
+  return "system";
+}

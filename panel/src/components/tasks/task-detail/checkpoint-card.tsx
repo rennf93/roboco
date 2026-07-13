@@ -4,19 +4,10 @@ import { Checkpoint } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Bookmark, Clock, User, ListTodo, FileText } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 
 interface CheckpointCardProps {
   checkpoint: Checkpoint;
-}
-
-function formatTime(timestamp: string): string {
-  const date = new Date(timestamp);
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 export function CheckpointCard({ checkpoint }: CheckpointCardProps) {
@@ -29,7 +20,7 @@ export function CheckpointCard({ checkpoint }: CheckpointCardProps) {
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Clock className="h-3 w-3" />
-          {formatTime(checkpoint.timestamp)}
+          {formatAbsoluteTimestamp(checkpoint.timestamp)}
         </div>
       </div>
       <CardContent className="pt-4">

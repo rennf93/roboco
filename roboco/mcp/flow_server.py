@@ -592,9 +592,28 @@ def open_pr(task_id: str) -> dict[str, Any]:
     return _post(_role_path("open_pr"), {"task_id": task_id})
 
 
-def i_am_done(task_id: str, notes: str = "") -> dict[str, Any]:
-    """Submit for QA. Strict — PR must be open (call open_pr first)."""
-    return _post(_role_path("i_am_done"), {"task_id": task_id, "notes": notes})
+def i_am_done(
+    task_id: str,
+    notes: str = "",
+    resolved_findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Submit for QA. Strict — PR must be open (call open_pr first).
+
+    resolved_findings: required when the task has open revision-ledger
+    findings (from a prior qa_fail/pr_fail/request_changes/ceo_reject) —
+    one entry per finding you addressed: {finding_id, commit?, note?}.
+    finding_id is the 8-char id shown in the finding's '[F-xxxxxxxx]'
+    rendering (in qa_notes/pm_notes/pr_reviewer_notes) — a full id also
+    matches. Every open finding must be named or i_am_done rejects.
+    """
+    return _post(
+        _role_path("i_am_done"),
+        {
+            "task_id": task_id,
+            "notes": notes,
+            "resolved_findings": resolved_findings or [],
+        },
+    )
 
 
 def i_am_blocked(
@@ -697,9 +716,24 @@ def pass_review(
     return _post(_role_path("pass"), payload)
 
 
-def fail_review(task_id: str, issues: StrList) -> dict[str, Any]:
-    """QA: reject the work with issues. Each issue should be concrete and actionable."""
-    return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
+def fail_review(
+    task_id: str,
+    issues: StrList | None = None,
+    findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """QA: reject the work with structured findings — transitions to needs_revision.
+
+    findings: the structured revision-findings ledger entry — each
+    {file?, line?, severity (blocker|major|minor|nit), expected, actual,
+    fix?, evidence?}. issues (plain strings) is still accepted this release
+    but deprecated — pass findings instead. At least one of the two is
+    required. Nudge above 5 findings, hard reject above 10 — split or
+    prioritize.
+    """
+    return _post(
+        _role_path("fail"),
+        {"task_id": task_id, "issues": issues or [], "findings": findings or []},
+    )
 
 
 # ---------- PR reviewer verbs ----------
@@ -811,13 +845,23 @@ def complete(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("complete"), {"task_id": task_id, "notes": notes})
 
 
-def request_changes(task_id: str, issues: StrList) -> dict[str, Any]:
-    """PM: reject the merge review with concrete issues → needs_revision.
+def request_changes(
+    task_id: str,
+    issues: StrList | None = None,
+    findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """PM: reject the merge review with structured findings → needs_revision.
 
     Use for an AC/scope violation caught at awaiting_pm_review — never
-    i_am_blocked/escalate, which have no revision routing.
+    i_am_blocked/escalate, which have no revision routing. findings: the
+    structured revision-findings ledger entry (same shape as fail_review /
+    pr_fail). issues (plain strings) is still accepted this release but
+    deprecated. At least one of the two is required.
     """
-    return _post(_role_path("request_changes"), {"task_id": task_id, "issues": issues})
+    return _post(
+        _role_path("request_changes"),
+        {"task_id": task_id, "issues": issues or [], "findings": findings or []},
+    )
 
 
 def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
@@ -944,14 +988,46 @@ def delegate(
     )
 
 
-def submit_up(task_id: str, notes: str) -> dict[str, Any]:
-    """Cell PM: bubble a finished cell-scope task up to the Main PM."""
-    return _post(_role_path("submit_up"), {"task_id": task_id, "notes": notes})
+def submit_up(
+    task_id: str,
+    notes: str,
+    resolved_findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Cell PM: bubble a finished cell-scope task up to the Main PM.
+
+    resolved_findings: required when the root has open pr_gate/pm/ceo-origin
+    revision-ledger findings (from a prior pr_fail/request_changes/ceo_reject)
+    — one entry per finding you addressed: {finding_id, commit?, note?}. Same
+    shape as ``i_am_done``'s ``resolved_findings``.
+    """
+    return _post(
+        _role_path("submit_up"),
+        {
+            "task_id": task_id,
+            "notes": notes,
+            "resolved_findings": resolved_findings or [],
+        },
+    )
 
 
-def submit_root(task_id: str, notes: str) -> dict[str, Any]:
-    """Main PM: open the root→master PR and enter the in-path PR-review gate."""
-    return _post(_role_path("submit_root"), {"task_id": task_id, "notes": notes})
+def submit_root(
+    task_id: str,
+    notes: str,
+    resolved_findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Main PM: open the root→master PR and enter the in-path PR-review gate.
+
+    resolved_findings: same shape as ``submit_up``'s — required when the root
+    has open pr_gate/pm/ceo-origin revision-ledger findings.
+    """
+    return _post(
+        _role_path("submit_root"),
+        {
+            "task_id": task_id,
+            "notes": notes,
+            "resolved_findings": resolved_findings or [],
+        },
+    )
 
 
 def claim_gate_review(task_id: str) -> dict[str, Any]:
@@ -964,9 +1040,21 @@ def pr_pass(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("pr_pass"), {"task_id": task_id, "notes": notes})
 
 
-def pr_fail(task_id: str, issues: StrList) -> dict[str, Any]:
-    """PR reviewer: fail the assembled PR with concrete issues → needs_revision."""
-    return _post(_role_path("pr_fail"), {"task_id": task_id, "issues": issues})
+def pr_fail(
+    task_id: str,
+    issues: StrList | None = None,
+    findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """PR reviewer: fail the assembled PR with structured findings → needs_revision.
+
+    findings: the structured revision-findings ledger entry (same shape as
+    fail_review). issues (plain strings) is still accepted this release but
+    deprecated. At least one of the two is required.
+    """
+    return _post(
+        _role_path("pr_fail"),
+        {"task_id": task_id, "issues": issues or [], "findings": findings or []},
+    )
 
 
 # ---------- Tool registry ----------

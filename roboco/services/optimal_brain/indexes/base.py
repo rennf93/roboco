@@ -45,10 +45,12 @@ _MIN_CHUNK_LENGTH = 200
 # short by design (templated notes, distilled Problem->Approach->Gotcha
 # lessons) — the global 200-char floor discarded every one of them as
 # "garbage" (raw_count=1 every time), so org-memory/journal retrieval never
-# had anything to find. Every other index keeps the default.
+# had anything to find. Vault notes are the CEO's own writing, often a few
+# short lines — same floor as journals. Every other index keeps the default.
 _MIN_CHUNK_LENGTH_BY_TYPE: dict[IndexType, int] = {
     IndexType.JOURNALS: 40,
     IndexType.LEARNINGS: 80,
+    IndexType.VAULT_NOTES: 40,
 }
 
 

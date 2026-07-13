@@ -91,10 +91,8 @@ describe("Header — navbar refresh button", () => {
       "aria-label",
       "Refresh only the current page",
     );
-    expect(refreshButton).toHaveAttribute(
-      "title",
-      "Refresh only the current page",
-    );
+    // The hover hint is a Radix tooltip now (no native title attribute).
+    expect(refreshButton).not.toHaveAttribute("title");
   });
 
   it("disables the refresh button when no page has registered a refresh callback", () => {

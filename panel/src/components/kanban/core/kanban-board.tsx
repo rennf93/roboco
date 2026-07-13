@@ -11,6 +11,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -356,9 +361,14 @@ export function KanbanBoard({
               value={teamFilter || "all"}
               onValueChange={(v) => onTeamChange(v as Team | "all")}
             >
-              <SelectTrigger className="w-auto min-w-28">
-                <SelectValue placeholder="Team" />
-              </SelectTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <SelectTrigger className="w-auto min-w-28">
+                    <SelectValue placeholder="Team" />
+                  </SelectTrigger>
+                </TooltipTrigger>
+                <TooltipContent>Filter the board by team</TooltipContent>
+              </Tooltip>
               <SelectContent>
                 <SelectItem value="all">All Teams</SelectItem>
                 {Object.values(Team).map((team) => (

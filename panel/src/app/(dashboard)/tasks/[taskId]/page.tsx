@@ -7,6 +7,8 @@ import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
 import {
   TaskHeader,
+  TaskBreadcrumb,
+  TaskListNav,
   TaskMetadata,
   TaskTabs,
 } from "@/components/tasks/task-detail";
@@ -443,8 +445,16 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <TaskHeader task={task} onAction={handleAction} />
+      {/* Breadcrumb (parent task) — renders nothing for a root task */}
+      <TaskBreadcrumb task={task} />
+
+      {/* Header — prev/next list navigation rides top-right, next to Actions,
+          so it never occupies its own row above the title. */}
+      <TaskHeader
+        task={task}
+        onAction={handleAction}
+        nav={<TaskListNav task={task} />}
+      />
 
       {/* CEO gate #1: Approve & Start a board-reviewed task. After the Board
           finishes, the orchestrator sets board_review_complete and sends the

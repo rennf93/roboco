@@ -8,11 +8,15 @@ from uuid import uuid4
 
 from roboco.services.gateway.evidence_builder import (
     BRIEFING_LIST_CAP,
+    FINDING_EVIDENCE_EXCERPT_CAP,
     BriefingInputs,
     build_context_briefing,
     build_evidence_for_task,
     build_task_handoff,
+    render_findings,
 )
+
+_EXPECTED_TWO = 2
 
 
 def _task(
@@ -241,3 +245,202 @@ class TestPrReviewSurface:
         digest = build_task_handoff(t, [])
         assert digest is not None
         assert digest["pr_review"]["issues"] == ["fix the off-by-one"]
+
+
+def _finding_row(**over: Any) -> MagicMock:
+    base: dict[str, Any] = {
+        "id": uuid4(),
+        "round": 2,
+        "origin": "qa",
+        "status": "open",
+        "severity": "major",
+        "file": "roboco/services/task.py",
+        "line": 10,
+        "expected": "raises on bad input",
+        "actual": "swallows the error",
+        "fix": "add the raise",
+        "evidence": None,
+    }
+    base.update(over)
+    return MagicMock(**base)
+
+
+class TestRenderFindings:
+    def test_renders_compact_dict_with_id8_prefix(self) -> None:
+        row = _finding_row()
+        rendered = render_findings([row])
+        assert len(rendered) == 1
+        entry = rendered[0]
+        assert entry["id"] == str(row.id)[:8]
+        assert entry["round"] == row.round
+        assert entry["origin"] == "qa"
+        assert entry["status"] == "open"
+        assert entry["file"] == "roboco/services/task.py"
+        assert entry["line"] == row.line
+        assert entry["expected"] == "raises on bad input"
+        assert entry["actual"] == "swallows the error"
+        assert entry["fix"] == "add the raise"
+
+    def test_none_rows_render_empty(self) -> None:
+        assert render_findings(None) == []
+
+    def test_caps_defensively(self) -> None:
+        rows = [_finding_row() for _ in range(BRIEFING_LIST_CAP + 5)]
+        assert len(render_findings(rows)) == BRIEFING_LIST_CAP
+
+    def test_evidence_excerpt_clipped_with_omission_note(self) -> None:
+        long_evidence = "x" * (FINDING_EVIDENCE_EXCERPT_CAP + 50)
+        row = _finding_row(evidence=long_evidence)
+        entry = render_findings([row])[0]
+        assert entry["evidence"] is not None
+        assert len(entry["evidence"]) < len(long_evidence)
+        assert "chars omitted" in entry["evidence"]
+        assert entry["evidence"].startswith("x" * FINDING_EVIDENCE_EXCERPT_CAP)
+
+    def test_short_evidence_is_not_annotated(self) -> None:
+        row = _finding_row(evidence="short excerpt")
+        entry = render_findings([row])[0]
+        assert entry["evidence"] == "short excerpt"
+
+
+class TestEvidencePayloadFindings:
+    def test_revision_and_prior_findings_render(self) -> None:
+        t = _task()
+        open_row = _finding_row(status="open")
+        all_row = _finding_row(status="verified", round=1)
+        ev = build_evidence_for_task(
+            t,
+            journal_highlights=[],
+            files_changed=[],
+            revision_findings=[open_row],
+            prior_findings=[open_row, all_row],
+        )
+        assert len(ev.revision_findings) == 1
+        assert ev.revision_findings[0]["status"] == "open"
+        assert len(ev.prior_findings) == _EXPECTED_TWO
+
+    def test_findings_default_empty_no_noise(self) -> None:
+        t = _task()
+        ev = build_evidence_for_task(t, journal_highlights=[], files_changed=[])
+        assert ev.revision_findings == []
+        assert ev.prior_findings == []
+
+    def test_as_dict_omits_empty_findings_lists(self) -> None:
+        """Empty findings lists must not serialize into the envelope at all —
+        an absent key reads as 'nothing here', identical to an empty list,
+        at zero token cost (matches build_task_handoff's posture)."""
+        t = _task()
+        ev = build_evidence_for_task(t, journal_highlights=[], files_changed=[])
+        body = ev.as_dict()
+        assert "revision_findings" not in body
+        assert "prior_findings" not in body
+        assert "convention_findings" not in body
+        # Non-empty EvidencePayload fields (even empty lists like
+        # files_changed/commits) are unaffected — only the three findings
+        # fields get the omit-when-empty treatment.
+        assert "commits" in body
+        assert "files_changed" in body
+
+    def test_as_dict_keeps_non_empty_findings_lists(self) -> None:
+        t = _task()
+        open_row = _finding_row(status="open")
+        ev = build_evidence_for_task(
+            t,
+            journal_highlights=[],
+            files_changed=[],
+            revision_findings=[open_row],
+            prior_findings=[open_row],
+        )
+        body = ev.as_dict()
+        assert len(body["revision_findings"]) == 1
+        assert len(body["prior_findings"]) == 1
+
+
+class TestTaskHandoffRevisionFindings:
+    def test_open_findings_surface_under_revision_findings(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        row = _finding_row(status="open", file="api/routes/foo.py", line=17)
+        digest = build_task_handoff(t, [], [row])
+        assert digest is not None
+        assert len(digest["revision_findings"]) == 1
+        entry = digest["revision_findings"][0]
+        assert entry["file"] == "api/routes/foo.py"
+        assert entry["line"] == row.line
+
+    def test_empty_ledger_is_silent(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        digest = build_task_handoff(t, [], [])
+        assert digest is not None
+        assert "revision_findings" not in digest
+
+    def test_no_findings_arg_is_silent(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert "revision_findings" not in digest
+
+    def test_open_findings_alone_is_prior_work_worth_resuming(self) -> None:
+        """A task with no commits/dev-notes but an open finding still
+        surfaces the handoff — the bounced dev must see it."""
+        t = _task(pr_number=None, pr_url=None, dev_notes="")
+        t.commits = []
+        t.acceptance_criteria_status = []
+        digest = build_task_handoff(t, [], [_finding_row()])
+        assert digest is not None
+        assert len(digest["revision_findings"]) == 1
+
+    def test_caps_at_briefing_list_cap(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        rows = [_finding_row() for _ in range(BRIEFING_LIST_CAP + 5)]
+        digest = build_task_handoff(t, [], rows)
+        assert digest is not None
+        assert len(digest["revision_findings"]) == BRIEFING_LIST_CAP
+
+
+class TestExtractQaReview:
+    def test_surfaces_verdict_summary_and_findings_count(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = {
+            "qa": {
+                "summary": "2 findings, both blocking",
+                "verdict": "failed",
+                "findings": [{"expected": "x", "actual": "y"}, {"expected": "a"}],
+            }
+        }
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        qa_review = digest["qa_review"]
+        assert qa_review["verdict"] == "failed"
+        assert qa_review["summary"] == "2 findings, both blocking"
+        assert qa_review["findings_count"] == _EXPECTED_TWO
+
+    def test_absent_when_no_qa_slot(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = None
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert "qa_review" not in digest
+
+
+class TestExtractPmReview:
+    def test_surfaces_summary_and_findings_count_no_verdict(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = {
+            "pm_review": {
+                "summary": "merge-review reject",
+                "findings": [{"expected": "x", "actual": "y"}],
+            }
+        }
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        pm_review = digest["pm_review"]
+        assert pm_review["summary"] == "merge-review reject"
+        assert pm_review["findings_count"] == 1
+        assert "verdict" not in pm_review
+
+    def test_absent_when_no_pm_review_slot(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = {}
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert "pm_review" not in digest

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from roboco.models.optimal import IndexType
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -22,6 +24,12 @@ _HANDOFF_CONTENT_CAP = 800
 _NORTH_STAR_CAP = 600
 _BRAND_VOICE_CAP = 600
 _A2A_PREVIEW_CAP = 200
+# similar_memory's "kind" label per index type; anything absent (LEARNINGS)
+# falls back to "learning" via .get() below.
+_MEMORY_KIND_BY_INDEX = {
+    IndexType.PLAYBOOKS: "playbook",
+    IndexType.VAULT_NOTES: "vault_note",
+}
 
 
 def _clip(text: str | None, cap: int) -> str:
@@ -366,11 +374,12 @@ class EvidenceRepo:
     async def similar_memory(
         self, *, query: str, top_k: int, min_score: float
     ) -> dict[str, Any]:
-        """Top-K institutional memory (distilled lessons + approved playbooks) for
-        ``query``, above the relevance floor. Best-effort: any RAG failure (or a
-        local embed hiccup) returns ``status="error"`` so the briefing path never
-        breaks. Only results scoring >= ``min_score`` are kept — below the floor
-        nothing is injected (identical to today's briefing, no bloat).
+        """Top-K institutional memory (distilled lessons, approved playbooks, and
+        the CEO's own vault notes) for ``query``, above the relevance floor.
+        Best-effort: any RAG failure (or a local embed hiccup) returns
+        ``status="error"`` so the briefing path never breaks. Only results
+        scoring >= ``min_score`` are kept — below the floor nothing is
+        injected (identical to today's briefing, no bloat).
 
         Returns ``{"items": [...], "status": ...}`` where status is one of
         ``ok`` (at least one result met the floor), ``below_floor`` (searched,
@@ -378,7 +387,7 @@ class EvidenceRepo:
         (search raised). Lets the briefing tell "searched, nothing" from "search
         broke" — ponytail: empty conflates "index empty" with "no match"; split
         when an agent ever needs to distinguish."""
-        from roboco.models.optimal import IndexType, QueryContext
+        from roboco.models.optimal import QueryContext
         from roboco.services.optimal import get_optimal_service
 
         try:
@@ -386,7 +395,11 @@ class EvidenceRepo:
             results = await optimal.search(
                 query=query,
                 context=QueryContext(
-                    index_types=[IndexType.LEARNINGS, IndexType.PLAYBOOKS]
+                    index_types=[
+                        IndexType.LEARNINGS,
+                        IndexType.PLAYBOOKS,
+                        IndexType.VAULT_NOTES,
+                    ]
                 ),
                 top_k=top_k,
             )
@@ -400,9 +413,7 @@ class EvidenceRepo:
         for result in results:
             if result.score < min_score:
                 continue
-            kind = (
-                "playbook" if result.index_type == IndexType.PLAYBOOKS else "learning"
-            )
+            kind = _MEMORY_KIND_BY_INDEX.get(result.index_type, "learning")
             items.append(
                 {
                     "kind": kind,

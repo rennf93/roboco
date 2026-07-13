@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { VideoPipelineItem } from "@/lib/api/video";
 
-const { listPipeline } = vi.hoisted(() => ({
+const { listPipeline, rerender } = vi.hoisted(() => ({
   listPipeline: vi.fn(async (): Promise<VideoPipelineItem[]> => []),
+  rerender: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/api", () => ({
-  videoApi: { listPipeline },
+  videoApi: { listPipeline, rerender },
 }));
 
 import { VideoPipelineStrip } from "../video-pipeline-strip";
@@ -61,6 +62,7 @@ const FAILED: VideoPipelineItem = {
 describe("VideoPipelineStrip", () => {
   beforeEach(() => {
     listPipeline.mockClear();
+    rerender.mockClear();
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -98,5 +100,36 @@ describe("VideoPipelineStrip", () => {
     const reviewLinks = screen.getAllByRole("link", { name: "Review" });
     expect(reviewLinks).toHaveLength(1);
     expect(reviewLinks[0]).toHaveAttribute("href", "/tasks/vp-2");
+  });
+
+  it("shows a re-render button on rendering and render_failed rows with a composition, but not on authoring/awaiting-approval rows", async () => {
+    listPipeline.mockResolvedValueOnce([
+      AUTHORING,
+      AWAITING_APPROVAL,
+      RENDERING,
+      FAILED,
+    ]);
+    render(withQueryClient(<VideoPipelineStrip />));
+    await screen.findByText("Video Pipeline");
+
+    const rerenderButtons = screen.getAllByRole("button", {
+      name: /Re-render/,
+    });
+    expect(rerenderButtons).toHaveLength(2);
+  });
+
+  it("triggers the backend re-render action for the clicked row's authoring task id, behind a confirm dialog", async () => {
+    listPipeline.mockResolvedValueOnce([FAILED]);
+    render(withQueryClient(<VideoPipelineStrip />));
+    await screen.findByText("Video Pipeline");
+
+    fireEvent.click(screen.getByRole("button", { name: /Re-render/ }));
+    expect(rerender).not.toHaveBeenCalled();
+    const confirmButton = await screen.findByRole("button", {
+      name: /Re-render/,
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(rerender).toHaveBeenCalledWith("vp-4"));
   });
 });

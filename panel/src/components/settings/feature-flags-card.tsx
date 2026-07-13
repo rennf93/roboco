@@ -85,6 +85,10 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Also open a video-authoring task when a release publishes. Off by default even with video_engine_enabled on.",
   video_on_spotlight:
     "Also open a video-authoring task when you approve a feature-spotlight draft that requests one. Off by default even with video_engine_enabled on.",
+  vault_report_enabled:
+    "Materialize a weekly org-report note (velocity, cycle time, rework, cost) in the vault's Reports/ folder and notify you — deterministic numbers, no LLM. Needs the Obsidian vault projection on.",
+  vault_kb_enabled:
+    "Index your own vault notes (default RoboCo/Notes/) into the knowledge base so the fleet can retrieve what you write — every note is screened for injection attempts before it's indexed. Needs the Obsidian vault projection on.",
 };
 
 export function FeatureFlagsCard() {

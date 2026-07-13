@@ -33,7 +33,7 @@ When a Main PM or Board member escalates a major task via `escalate_to_ceo`, it 
 - **Approve** — merges the PR, task → `completed` (lifecycle `ceo_approve`)
 - **Request changes** — task → `needs_revision` (lifecycle `ceo_reject`)
 
-Both are panel actions; the agent that escalated simply idles until the CEO decides.
+Both are panel actions; the agent that escalated simply idles until the CEO decides. Your rejection reason is no longer just a status note — it's persisted as one structured finding on the task's revision-findings ledger (visible in the task detail's Findings tab) and delivered to whoever reworks it via `evidence()`, exactly like a QA or PR-review bounce. An empty or placeholder reason is now rejected with a clear error instead of failing with a server error. See `docs/rag/architecture/review-findings.md`.
 
 ### X posts and roadmap items (panel-only, not gateway verbs)
 

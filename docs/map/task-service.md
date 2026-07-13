@@ -15,8 +15,12 @@
 |------|------|-----------|----------------|
 | `_validate_and_set_status` | method | task.py:548 | Single chokepoint: validate transition + git requirements, set status, poke dispatcher, emit audit. |
 | `_emit_status_transition_audit` | method | task.py:652 | Write `task.<status>` audit row in caller session; bump `revision_count` on entry into `needs_revision`. |
-| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment. |
+| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment; (V2) vault materialize-on-create. |
 | `_attach_baseline_constraints` | method | task.py:971 | Append conventions baseline constraints to task prompt (gated `conventions_enabled`). |
+| `_materialize_vault_note` | method | task.py:910 | V2: best-effort vault seam called from `create` — assembles + writes a deterministic task note (narrative placeholder) so a task is visible in the vault from the moment it exists, not just at Auditor curation/rebuild. Gated `obsidian_vault_enabled`; swallows + logs any failure. |
+| `list_updated_since` | method | task.py:7101 | V2: tasks touched (`COALESCE(updated_at, created_at)`) since a timestamp, ascending, paged — the vault janitor's changed-task re-projection set. |
+| `list_archive_candidates` | method | task.py:7124 | V2: terminal tasks whose terminal timestamp falls in `[after, before)`, ascending, paged — the vault janitor's archival-pass candidate window (watermark-bounded so a sweep never rescans the whole archive). |
+| `sample_stale_tasks` | method | task.py:7154 | V2: random sample of tasks last touched before a cutoff — the vault janitor's drift-verification sample. |
 | `activate` | method | task.py:1577 | `backlog→pending` (PM only); batch-shape guard. |
 | `_ensure_branch_for_task` | method | task.py:1675 | Branch resolution for claim; `""` for branchless/umbrella. |
 | `_auto_create_branch` | method | task.py:1833 | Cut hierarchical branch + per-task worktree add (F123). |
@@ -24,9 +28,15 @@
 | `admin_set_status` | method | task.py:2060 | Privileged override (bypass validator); restores pre-block owner; still emits audit. Post-#2176: the blocked→pending/in_progress restore path now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (`forced=False, restore=True`) independent of the `force` flag. |
 | `_restore_block_ownership` | method | task.py:8526 | Factored out of `_apply_pre_block_restore` (b3558d4e complexity split): applies snapshotted status/owner restore (branchless in_progress→pending divert), returns `(pre_status, restored_status, restored_owner)`. |
 | `_emit_admin_override_audit` | method | task.py:8555 | Factored out of `_apply_pre_block_restore`: writes `task.admin_override` audit row for admin-triggered blocked restores (`forced=False, restore=True`). |
-| `claim` | method | task.py:2469 | Lock + preconditions + finalize; calls `_validate_and_set_status(claimed)`. |
-| `_finalize_claim` | method | task.py:2282 | Work-session create/inherit, branch cut, proactive-context injection. |
-| `_inject_proactive_context` | method | task.py:2511 | Briefing injection at claim (institutional memory when `org_memory_enabled`). |
+| `claim` | method | task.py:3112 | `FOR UPDATE` lock + `_validate_claim_preconditions` + `_finalize_claim`; calls `_validate_and_set_status(claimed)`. |
+| `_validate_claim_preconditions` | method | task.py:2883 | Per-claim validator chain: status, `_claim_blocked_by_sequencing` (dependency + sequence), team, pre-assignment theft, self-review. |
+| `_claim_blocked_by_sequence` | method | task.py:2805 | Strict sibling-sequence gate: a PENDING/`needs_revision` task with parent + effective `sequence` (`COALESCE(sequence, 0)`) N is held while any same-parent sibling with a strictly lower effective sequence is non-terminal — assignee-blind, independent of `dependency_ids`. Ties run parallel; cancelled siblings never block. |
+| `_claim_blocked_by_dependencies` | method | task.py:2781 | `unmet_dependency` TIMING gate: refuses claim while any `dependency_ids` entry is non-terminal. |
+| `is_pending_claim_blocked` | method | task.py:2864 | Read-only wrapper over `_claim_blocked_by_sequencing` (dependency OR sequence) so the orchestrator dispatcher can filter a doomed claim before attempting it (`_pending_claim_blocked` in orchestrator.py). |
+| `stamp_wave_sequence` | method | task.py:7452 | Stamps a freshly delegated subtask's `sequence` as `1 + max(sequence of each same-parent dependency target)`, or `0` when independent — so independent siblings tie (parallel under the sequence gate) while colliding/ordered work ascends. Runs POST-wiring (after the collision DAG / cross-cell edges land); PM-authored sequences are never rewritten. |
+| `_apply_dependency_lineage` / `_merge_one_dependency` | method | task.py:2308 / 2337 | Claim-time content assist (not a gate): merges each same-repo dependency's landed work into a freshly cut branch when it lies outside the branch's own ancestor chain (`GitService.merge_dependency_lineage`); a real conflict aborts the merge and stamps a `dependency_lineage_conflict` transition note instead of failing the claim. |
+| `_finalize_claim` | method | task.py:2925 | Work-session create/inherit, branch cut, proactive-context injection. |
+| `_inject_proactive_context` | method | task.py:3154 | Briefing injection at claim (institutional memory when `org_memory_enabled`). |
 | `_completion_learnings_for` | method | task.py:2798 | Distill one lesson (ON) vs legacy raw capture (OFF). |
 | `_extract_completion_learnings` | method | task.py:2837 | Fire-and-forget learning record + RAG indexing. |
 | `start` | method | task.py:3354 | `claimed→in_progress`. |
@@ -42,7 +52,7 @@
 | `apply_escalation` | method | task.py:4942 | `in_progress→blocked` direct status set + audit emit (bypasses validator by design). |
 | `escalate_to_ceo` | method | task.py:5064 | `awaiting_pm_review→awaiting_ceo_approval`; gained `actor_agent_id: UUID | None = None` param (stamped as `audit_agent_id` so the transition row attributes to the specific PM/Board agent, not just the role). |
 | `ceo_approve` | method | task.py:5146 | CEO merges then approves; `awaiting_ceo_approval→completed`. |
-| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status). |
+| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status); now validates `reason` (`reject_trivial` — previously an uncaught Pydantic error could 500 on empty/trivial input) and inserts one `origin=ceo` Finding onto the revision-findings ledger; the branchless-root path manually bumps `revision_count` + emits `task.ceo_reject` since it skips `_emit_status_transition_audit`. See `docs/map/review-findings.md`. |
 | `_remove_task_worktree_on_terminal` | method | task.py:5601 | Best-effort worktree cleanup on complete/ceo_approve; no-op for branchless. |
 | `cancel` | method | task.py:5644 | Cascade-cancel descendants through the validator. |
 | `reassign` / `reassign_active_claim` | method | task.py:7657 / 7807 | Reassignment with Board/Main-PM diversion guards. |
@@ -84,7 +94,7 @@ stateDiagram-v2
   - State core: `_validate_and_set_status`, `_emit_status_transition_audit`, `admin_set_status`, `_restore_block_ownership`, `_emit_admin_override_audit`
   - Create/shape: `create`, `_validate_parent_depth`, `_validate_batch_membership`, `activate`
   - Branch/worktree: `_ensure_branch_for_task`, `_auto_create_branch`, `_remove_task_worktree*`
-  - Claim: `claim`, `_finalize_claim`, `_inject_proactive_context`, `acquire_*_lock`
+  - Claim: `claim`, `_validate_claim_preconditions`, `_claim_blocked_by_sequence`, `_claim_blocked_by_dependencies`, `_finalize_claim`, `_apply_dependency_lineage`, `_inject_proactive_context`, `acquire_*_lock`
   - Lifecycle verbs: `start`, `block*`, `unblock`, `pause`, `resume`, `submit_for_qa`, `pass_qa`, `fail_qa`, `docs_complete`, `submit_for_pm_review`
   - Completion: `complete`, `_apply_complete_approval_chain`, `ceo_approve`, `ceo_reject`, `cancel`
   - Rework routing: `fail_qa`, `_resolve_revision_dev`, `ceo_reject`
@@ -122,6 +132,8 @@ stateDiagram-v2
 - Branchless/umbrella/external-review tasks are exempt from the branch gate inside `GitContext` (task.py:597-611); umbrella is also exempt from the `awaiting_pm_review→awaiting_ceo_approval` pr_number gate.
 - `complete()` requires PR merged (`_assert_pr_merged_for_complete`) EXCEPT branchless roots; `ceo_approve` separately checks `work_session.pr_status=="merged"` and refuses otherwise.
 - Background indexing/learning/cleanup tasks are tracked on `self._background_tasks` and are best-effort — a failure never blocks the transition.
+- The sequence gate (`_claim_blocked_by_sequence`) is enforced ONLY in `_validate_claim_preconditions`, i.e. inside `claim` itself — both the gateway claim verbs AND the orchestrator's raw dispatch claim cross it because they both funnel through `TaskService.claim`, unlike the pre-#382 dependency gate which briefly lived only on the gateway side. Any future claim path that bypasses `TaskService.claim` (a raw `admin_set_status`, for instance) does NOT get sequence enforcement.
+- `_apply_dependency_lineage` is scoped to SAME-REPO dependencies only (`dep_task.project_id != ctx.project.id` short-circuits) — a cross-repo dependency edge (e.g. a MegaTask root-subtask in another project) has no shared git history to merge and is silently skipped; the dependency TIMING gate still holds the claim regardless of repo.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md states ceo_reject "~4779 skips _validate_and_set_status in branchless path". Actual: branchless branch of `ceo_reject` is at task.py:5488 and routes through `admin_set_status` (which DOES emit audit at task.py:2100). The non-branchless branch DOES call `_validate_and_set_status` (task.py:5461). No audit gap — the line reference is stale.
@@ -133,7 +145,9 @@ stateDiagram-v2
 - `15effce0` Chore: 141 Gaps fill-in (#283) — bulk gap closure; transition audit chokepoint + `revision_count` centralization (task.py:685-706), branchless/umbrella git-context exemptions, fail_qa work-session fallback, ceo_reject branchless routing.
 - `3aff6e04` Chore: Close gaps (#285) — follow-on gap close (worktree-on-terminal cleanup F123 Phase C, escalation audit emit, rework routing hardening).
 
-> Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution).
+> Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution). `8f3f4236` (#452) "sequence is the bar" — adds `_claim_blocked_by_sequence` + `_validate_claim_preconditions` wiring, `stamp_wave_sequence` (replacing a raw per-sibling delegation ordinal), and migration 069 (`tasks.parent_task_id` index, the sibling probe's hot path). `f2834cf5` (#466) adds `_apply_dependency_lineage`/`_merge_one_dependency`, called from `_create_branch_in_project` right after a fresh branch cut.
+>
+> (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: `_audit_events_for` (task.py:997) gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`; `ceo_reject` gains reason validation + a ledger `Finding` insert (see above); `qa_fail` and `request_changes` drop their raw `dev_notes` appends (the mirror-column data-loss bug) in favor of the ledger + a structured note. Full detail: `docs/map/review-findings.md`.
 
 ## Regression Risks
 

@@ -1,10 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { useTheme } from "next-themes";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUIStore } from "@/store";
-import { settingsApi } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -14,7 +11,6 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -24,85 +20,25 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Settings, Palette, Bell, Server, User, Save } from "lucide-react";
-import { toast } from "sonner";
+import { Settings, Palette, Bell, Server, User } from "lucide-react";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
 
-// Settings keys persisted server-side (string values: "true"/"false" or a number).
-const KEYS = {
-  notifications: "notifications_enabled",
-  sound: "sound_enabled",
-  autoRefresh: "auto_refresh",
-  refreshInterval: "refresh_interval",
-} as const;
-
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
-  const { sidebarCollapsed, setSidebarCollapsed } = useUIStore();
-  const queryClient = useQueryClient();
-
-  const { data: settings } = useQuery({
-    queryKey: ["settings"],
-    queryFn: settingsApi.getAll,
-  });
-
-  // `edits` holds the user's in-progress changes; an unset field means "show
-  // the server value" (or the hardcoded default before the query loads).
-  // Deriving the displayed value avoids syncing query state into local state
-  // via an effect (react-hooks/set-state-in-effect).
-  const [edits, setEdits] = useState<{
-    notifications?: boolean;
-    sound?: boolean;
-    autoRefresh?: boolean;
-    refreshInterval?: string;
-  }>({});
-
-  const notificationsEnabled =
-    edits.notifications ??
-    (settings?.[KEYS.notifications] === undefined
-      ? true
-      : settings[KEYS.notifications] === "true");
-  const soundEnabled =
-    edits.sound ??
-    (settings?.[KEYS.sound] === undefined
-      ? true
-      : settings[KEYS.sound] === "true");
-  const autoRefresh =
-    edits.autoRefresh ??
-    (settings?.[KEYS.autoRefresh] === undefined
-      ? true
-      : settings[KEYS.autoRefresh] === "true");
-  const refreshInterval =
-    edits.refreshInterval ??
-    (settings?.[KEYS.refreshInterval] === undefined
-      ? "30"
-      : settings[KEYS.refreshInterval]);
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      await settingsApi.update(
-        KEYS.notifications,
-        String(notificationsEnabled),
-      );
-      await settingsApi.update(KEYS.sound, String(soundEnabled));
-      await settingsApi.update(KEYS.autoRefresh, String(autoRefresh));
-      await settingsApi.update(KEYS.refreshInterval, refreshInterval);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["settings"] });
-      setEdits({}); // re-sync to the freshly-saved server values
-      toast.success("Settings saved successfully");
-    },
-    onError: (error) => {
-      toast.error(
-        `Failed to save: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-    },
-  });
-
-  const handleSave = () => saveMutation.mutate();
+  const {
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    notificationsEnabled,
+    setNotificationsEnabled,
+    soundEnabled,
+    setSoundEnabled,
+    autoRefresh,
+    setAutoRefresh,
+    refreshIntervalSeconds,
+    setRefreshIntervalSeconds,
+  } = useUIStore();
 
   return (
     <div className="space-y-6">
@@ -193,7 +129,8 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Data & Refresh */}
+        {/* Data & Refresh — client-only prefs, instant-apply (same idiom as
+            Theme/Sidebar above); never sent to the backend. */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -207,15 +144,10 @@ export default function SettingsPage() {
               <div>
                 <Label>Auto Refresh</Label>
                 <p className="text-sm text-muted-foreground">
-                  Automatically refresh data periodically
+                  Periodically re-fetch the current page&apos;s data
                 </p>
               </div>
-              <Switch
-                checked={autoRefresh}
-                onCheckedChange={(v) =>
-                  setEdits((e) => ({ ...e, autoRefresh: v }))
-                }
-              />
+              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
             </div>
             <Separator />
             <div className="flex items-center justify-between">
@@ -226,10 +158,8 @@ export default function SettingsPage() {
                 </p>
               </div>
               <Select
-                value={refreshInterval}
-                onValueChange={(v) =>
-                  setEdits((e) => ({ ...e, refreshInterval: v }))
-                }
+                value={String(refreshIntervalSeconds)}
+                onValueChange={(v) => setRefreshIntervalSeconds(Number(v))}
                 disabled={!autoRefresh}
               >
                 <SelectTrigger className="w-auto min-w-20">
@@ -249,7 +179,7 @@ export default function SettingsPage() {
         {/* Transcript Retention (panel-tunable; persisted server-side) */}
         <TranscriptRetentionCard />
 
-        {/* Notifications */}
+        {/* Notifications — client-only prefs, instant-apply. */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -263,14 +193,12 @@ export default function SettingsPage() {
               <div>
                 <Label>Enable Notifications</Label>
                 <p className="text-sm text-muted-foreground">
-                  Receive real-time notifications from agents
+                  Toast + bell for incoming agent notifications
                 </p>
               </div>
               <Switch
                 checked={notificationsEnabled}
-                onCheckedChange={(v) =>
-                  setEdits((e) => ({ ...e, notifications: v }))
-                }
+                onCheckedChange={setNotificationsEnabled}
               />
             </div>
             <Separator />
@@ -278,12 +206,12 @@ export default function SettingsPage() {
               <div>
                 <Label>Sound Alerts</Label>
                 <p className="text-sm text-muted-foreground">
-                  Play sound for important notifications
+                  Chime on new notifications
                 </p>
               </div>
               <Switch
                 checked={soundEnabled}
-                onCheckedChange={(v) => setEdits((e) => ({ ...e, sound: v }))}
+                onCheckedChange={setSoundEnabled}
                 disabled={!notificationsEnabled}
               />
             </div>
@@ -322,14 +250,6 @@ export default function SettingsPage() {
           persisted server-side, applied on next restart). The X (Twitter)
           credentials form nests as a collapsible under the X-engine flag. */}
       <FeatureFlagsCard />
-
-      {/* Save Button */}
-      <div className="flex justify-end">
-        <Button onClick={handleSave} disabled={saveMutation.isPending}>
-          <Save className="h-4 w-4 mr-2" />
-          {saveMutation.isPending ? "Saving..." : "Save Settings"}
-        </Button>
-      </div>
     </div>
   );
 }

@@ -2,6 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Wifi, WifiOff, Loader2 } from "lucide-react";
 
 type ConnectionState = "checking" | "connected" | "disconnected";
@@ -29,17 +34,13 @@ export function ConnectionStatus() {
     return () => clearInterval(interval);
   }, []);
 
-  if (state === "checking") {
-    return (
+  const badge =
+    state === "checking" ? (
       <Badge variant="outline" className="gap-1">
         <Loader2 className="h-3 w-3 animate-spin" />
         Checking...
       </Badge>
-    );
-  }
-
-  if (state === "connected") {
-    return (
+    ) : state === "connected" ? (
       <Badge
         variant="outline"
         className="gap-1 border-green-500 text-green-600"
@@ -47,16 +48,26 @@ export function ConnectionStatus() {
         <Wifi className="h-3 w-3" />
         Connected
       </Badge>
+    ) : (
+      <Badge
+        variant="outline"
+        className="gap-1 border-orange-500 text-orange-600"
+      >
+        <WifiOff className="h-3 w-3" />
+        Offline
+      </Badge>
     );
-  }
+
+  const hint: Record<ConnectionState, string> = {
+    checking: "Checking the orchestrator API…",
+    connected: "Orchestrator API reachable — re-checked every 30s",
+    disconnected: "Orchestrator API unreachable — retrying every 30s",
+  };
 
   return (
-    <Badge
-      variant="outline"
-      className="gap-1 border-orange-500 text-orange-600"
-    >
-      <WifiOff className="h-3 w-3" />
-      Offline
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>{badge}</TooltipTrigger>
+      <TooltipContent>{hint[state]}</TooltipContent>
+    </Tooltip>
   );
 }

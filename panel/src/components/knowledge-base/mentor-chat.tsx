@@ -2,6 +2,11 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -144,14 +149,19 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
               className="min-h-20 pr-12 resize-none"
               disabled={isLoading}
             />
-            <Button
-              size="icon"
-              className="absolute bottom-2 right-2"
-              onClick={() => handleSubmit()}
-              disabled={!input.trim() || isLoading}
-            >
-              <Send className="h-4 w-4" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  size="icon"
+                  className="absolute bottom-2 right-2"
+                  onClick={() => handleSubmit()}
+                  disabled={!input.trim() || isLoading}
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Send to your mentor (Enter)</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </div>
@@ -310,18 +320,23 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
             className="min-h-16 pr-12 resize-none"
             disabled={isLoading}
           />
-          <Button
-            size="icon"
-            className="absolute bottom-2 right-2"
-            onClick={() => handleSubmit()}
-            disabled={!input.trim() || isLoading}
-          >
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                className="absolute bottom-2 right-2"
+                onClick={() => handleSubmit()}
+                disabled={!input.trim() || isLoading}
+              >
+                {isLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Send to your mentor (Enter)</TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </div>

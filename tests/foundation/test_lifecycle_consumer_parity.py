@@ -1450,6 +1450,8 @@ async def test_fail_review_matches_spec(role: str, status: str) -> None:
     )
     task_svc.qa_fail.return_value = after
     task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
     task_svc.session.begin_nested = MagicMock(
         return_value=MagicMock(
             __aenter__=AsyncMock(return_value=None),
