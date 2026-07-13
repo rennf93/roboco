@@ -222,3 +222,38 @@ async def test_open_task_cap_is_enforced(
 
     assert result is None
     task_svc.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_per_cycle_cap_is_enforced(
+    _enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the per-cycle cap is reached, further calls on the same engine no-op."""
+    monkeypatch.setattr(settings, "docs_sync_max_per_cycle", 1)
+    project_id = uuid4()
+    project = _project(
+        project_id, "roboco-website", "https://github.com/x/roboco-website.git"
+    )
+    first_task = _task(uuid4(), project_id, "0.23.0")
+    second_task = _task(uuid4(), project_id, "0.24.0")
+
+    project_svc = MagicMock()
+    project_svc.get_by_slug = AsyncMock(return_value=project)
+    task_svc = MagicMock()
+    task_svc.list_open_docs_sync_tasks = AsyncMock(
+        side_effect=lambda version=None: [first_task] if version is None else []
+    )
+    task_svc.create = AsyncMock(side_effect=[first_task, second_task])
+
+    engine, patchers = _make_engine(project_svc, task_svc)
+    try:
+        first = await engine.originate_docs_update(version="0.23.0", changelog="x")
+        second = await engine.originate_docs_update(version="0.24.0", changelog="y")
+    finally:
+        for p in patchers:
+            p.stop()
+
+    assert first is not None
+    assert first.id == first_task.id
+    assert second is None
+    task_svc.create.assert_awaited_once()

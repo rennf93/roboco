@@ -185,6 +185,8 @@ ROBOCO_CONVENTIONS_ENABLED=false        # per-project architectural conventions 
 ROBOCO_TOOLCHAIN_MATCH_ENABLED=false    # build each target project under its own Python
 ROBOCO_OVERLOAD_BREAK_ENABLED=true      # park a provider on a persistent model-API overload
 ROBOCO_DOCS_SYNC_ENABLED=false          # docs-divergence sync (release → docs-update task). Default-off; when on, a successful release publish originates one bounded, deduped docs-update task against the roboco-website project.
+ROBOCO_DOCS_SYNC_MAX_OPEN_TASKS=3       # rolling cap on concurrently-open docs-sync tasks
+ROBOCO_DOCS_SYNC_MAX_PER_CYCLE=1        # max docs-sync tasks originated per publish invocation
 
 # Auditor scheduled sweeps (default 6 hours; 0 disables)
 ROBOCO_AUDIT_INTERVAL_SECONDS=21600
