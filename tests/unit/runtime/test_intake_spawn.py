@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.config import settings
 from roboco.runtime.orchestrator import (
+    _INTAKE_WORKSPACE_AMBIENT,
     INTAKE_AGENT_ID,
     AgentInstance,
     AgentOrchestrator,
@@ -262,6 +263,58 @@ class TestIntakeScopeSlugs:
                 product_id=None,
                 project_ids=[good, bad],
             )
+
+
+# ---------------------------------------------------------------------------
+# _dedupe_slugs_by_git_url — a multi-project scope may list several projects
+# pointing at one repo (a monorepo's cell-projects); clone each git_url once.
+# ---------------------------------------------------------------------------
+
+
+class TestDedupeSlugsByGitUrl:
+    def test_keeps_first_of_shared_git_url_drops_rest(self) -> None:
+        result = AgentOrchestrator._dedupe_slugs_by_git_url(
+            [
+                ("be", "https://git.example/o.git"),
+                ("fe", "https://git.example/o.git"),
+                ("ux", "https://git.example/o.git"),
+            ]
+        )
+        assert result == ["be"]
+
+    def test_distinct_git_urls_all_kept_in_order(self) -> None:
+        result = AgentOrchestrator._dedupe_slugs_by_git_url(
+            [
+                ("a", "https://git.example/a.git"),
+                ("b", "https://git.example/b.git"),
+            ]
+        )
+        assert result == ["a", "b"]
+
+    def test_empty_or_missing_git_url_never_collapsed(self) -> None:
+        # Two projects with no git_url are distinct local repos — both clone.
+        result = AgentOrchestrator._dedupe_slugs_by_git_url(
+            [("a", None), ("b", ""), ("c", "   ")]
+        )
+        assert result == ["a", "b", "c"]
+
+    def test_mixed_local_and_shared_repos(self) -> None:
+        result = AgentOrchestrator._dedupe_slugs_by_git_url(
+            [
+                ("mono-be", "https://git.example/mono.git"),
+                ("local-a", None),
+                ("mono-fe", "https://git.example/mono.git"),
+                ("local-b", ""),
+                ("mono-ux", "  https://git.example/mono.git  "),
+            ]
+        )
+        assert result == ["mono-be", "local-a", "local-b"]
+
+    def test_whitespace_only_git_url_treated_as_empty(self) -> None:
+        result = AgentOrchestrator._dedupe_slugs_by_git_url(
+            [("a", "   "), ("b", "   ")]
+        )
+        assert result == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +692,10 @@ class TestResolveIntakeAmbientThreadsProjectIds:
             project_ids=["11111111-1111-1111-1111-111111111111"],
         )
 
-        assert result == "CONVENTIONS\n\n---\n\nHISTORY"
+        assert (
+            result
+            == f"{_INTAKE_WORKSPACE_AMBIENT}\n\n---\n\nCONVENTIONS\n\n---\n\nHISTORY"
+        )
         assert conventions_calls == [
             {
                 "product_id": None,
@@ -784,8 +840,8 @@ class TestSpawnIntakeSession:
     async def test_spawn_merges_conventions_and_history_ambient(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The composed prompt's ambient is the conventions + history-digest
-        blocks joined with compose_prompt's own layer separator."""
+        """The composed prompt's ambient is the workspace note + conventions +
+        history-digest blocks joined with compose_prompt's own layer separator."""
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
         _wire_spawn_mocks(monkeypatch, orch, run_calls)
@@ -809,12 +865,18 @@ class TestSpawnIntakeSession:
 
         await orch.spawn_intake_session("sess-merge", project_slug="roboco")
 
-        assert captured["ambient"] == "CONVENTIONS BLOCK\n\n---\n\nHISTORY BLOCK"
+        assert (
+            captured["ambient"]
+            == f"{_INTAKE_WORKSPACE_AMBIENT}\n\n---\n\nCONVENTIONS BLOCK"
+            f"\n\n---\n\nHISTORY BLOCK"
+        )
 
     @pytest.mark.asyncio
-    async def test_spawn_ambient_none_when_both_resolvers_empty(
+    async def test_spawn_ambient_is_workspace_block_when_both_resolvers_empty(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The workspace note is always present; with no conventions/history the
+        ambient is just that block (never None)."""
         orch = _make_minimal_orchestrator()
         run_calls: list[list[str]] = []
         _wire_spawn_mocks(monkeypatch, orch, run_calls)
@@ -835,7 +897,7 @@ class TestSpawnIntakeSession:
 
         await orch.spawn_intake_session("sess-no-ambient", project_slug="roboco")
 
-        assert captured["ambient"] is None
+        assert captured["ambient"] == _INTAKE_WORKSPACE_AMBIENT
 
     @pytest.mark.asyncio
     async def test_initial_message_is_scheduled(

@@ -6,9 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduled auditor sweeps.** `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 21600s / 6h, `audit_interval_seconds` in `roboco/config.py`) drives a periodic auditor spawn. `_dispatch_audit_work` now spawns the auditor on a scheduled sweep when the interval has elapsed, the auditor is not already active, and recent delivery activity exists (active delivery states or a task completed within the window). Reactive alert spawns also stamp `_last_audit_spawn_at` so the interval gate is shared. A one-tick notification sentinel and the existing active-agent breaker prevent auditor spawn storms; `0` disables scheduled sweeps. The auditor identity prompt and `_build_audit_prompt(scheduled=True)` support sweep-based reviews.
+- **E2E smoke test for auditor triggers.** `tests/e2e_smoke/test_auditor_triggers.py` exercises both auditor spawn paths end-to-end against the real orchestrator dispatcher: a scheduled sweep that sees recent delivery activity and a reactive `ALERT` created by `POST /api/tasks/{id}/fail-qa`. `spawn_agent` is stubbed so the test asserts the dispatch decision without running an auditor container. The e2e harness now mounts `/api/notifications` so `_dispatch_audit_work` can poll alert rows.
+
 ### Fixed
 
 - **Restored five coordination-event notification producers with double-fire guards.** Reassignment, collision-sequencing, unblock, dependency-revival, and stale-claim-reaped notifications are now wired at their lifecycle chokepoints in `TaskService` and the orchestrator reaper, each with an idempotent upstream guard preventing duplicate ALERT rows. The duplicate route-level `notify_assignee_of_unblock` call in `POST /api/tasks/{id}/unblock` was removed so unblock fires exactly one notification. Added `docs/backend/services/coordination-events.md` and `tests/e2e_smoke/test_notification_coordination_events.py` covering the restored producers.
+- **`_fresh_orchestrator` test helper initializes orchestrator state.** `tests/e2e_smoke/test_auditor_triggers.py` constructs a bare `AgentOrchestrator` via `__new__` so it can patch `spawn_agent`, but that bypasses `__init__`. The helper now explicitly sets `_instances = {}` and `_last_audit_spawn_at = None` so `_is_agent_active` and `_dispatch_audit_work` no longer raise `AttributeError` during the auditor trigger e2e tests.
+- **Hardened `AgentOrchestrator.__new__` for `__init__`-bypass test instances.** `AgentOrchestrator.__new__` now pre-initializes `_last_audit_spawn_at` and `_notification_spawn_at` alongside `_instances`, so bare-`__new__` orchestrator instances used by e2e/unit-test helpers no longer raise `AttributeError` when the auditor-dispatch and notification-cooldown paths run. The existing `_fresh_orchestrator` helper still sets these explicitly for clarity, but the safety net is now in the class itself. Normal construction via `__init__` is unchanged.
+- **Python quality gate type hygiene on the auditor-revival branch.** `roboco/services/task.py:get_all_descendants` now uses `cast("UUID", child.id)` instead of `# type: ignore[arg-type]` for the SQLAlchemy `Mapped[UUID]` value, and `roboco/services/notification_delivery.py` narrows the return types of `get_ack_status` and `get_delivery_summary` from bare `dict` to `dict[str, Any]`. These are typing-only changes; runtime behavior is unchanged and the local ruff / mypy quality gate stays green.
 
 ## [0.23.0] - 2026-07-11
 

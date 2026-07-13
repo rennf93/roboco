@@ -270,6 +270,16 @@ _OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
 # below and roboco/agent_sdk/intake_main.py.
 INTAKE_AGENT_ID = "intake-1"
 
+# Ambient note telling the intake agent its cwd holds clones of every project in
+# the scope, so it drafts against the real trees (Grep/Glob/Read), not from memory.
+_INTAKE_WORKSPACE_AMBIENT = (
+    "## Workspace\n\n"
+    "Your working directory holds a clone of every project in this intake scope "
+    "— the primary project at your cwd, and for a multi-project scope each "
+    "sibling project's clone alongside it under /data/workspaces. All are "
+    "readable via Grep/Glob/Read; draft against the real trees, not from memory."
+)
+
 # The Secretary agent: a single seeded, persistent chief-of-staff container the
 # CEO chats with (like intake), but with gated CEO authority. One container at a
 # time. Seeded in identity.AGENTS; see roboco/agent_sdk/secretary_main.py.
@@ -902,6 +912,27 @@ class AgentOrchestrator:
     # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
     # allocated by _record_expected_stop, same statement-budget rationale.
     _expected_stops: dict[str, tuple[str, float]]
+    # Last time the auditor was spawned, by reactive alert or scheduled sweep.
+    # Drives the ROBOCO_AUDIT_INTERVAL_SECONDS throttle. Per-instance override.
+    _last_audit_spawn_at: datetime | None = None
+
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> "AgentOrchestrator":
+        """Allocate the instance and pre-initialize lazy dispatcher state.
+
+        ``__init__`` still re-initializes ``_instances``; this just guarantees
+        the attributes exist for tests that bypass ``__init__`` via bare
+        ``AgentOrchestrator.__new__(AgentOrchestrator)``.
+
+        Auditor-dispatch paths read ``_last_audit_spawn_at`` and
+        ``_notification_spawn_at`` from partially-constructed instances, so
+        they must be present here; the per-instance cooldown stores are
+        re-initialized by ``__init__`` when the normal constructor runs.
+        """
+        instance = super().__new__(cls)
+        instance._instances = {}
+        instance._last_audit_spawn_at = None
+        instance._notification_spawn_at = {}
+        return instance
 
     def __init__(
         self,
@@ -3889,7 +3920,13 @@ class AgentOrchestrator:
         )
         return (
             "\n\n---\n\n".join(
-                part for part in (conventions_ambient, history_ambient) if part
+                part
+                for part in (
+                    _INTAKE_WORKSPACE_AMBIENT,
+                    conventions_ambient,
+                    history_ambient,
+                )
+                if part
             )
             or None
         )
@@ -5042,6 +5079,7 @@ class AgentOrchestrator:
         Grep/Glob/Read.
         """
         from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
         from roboco.services.workspace import WorkspaceService
 
         team = get_agent_team(INTAKE_AGENT_ID) or "board"
@@ -5050,6 +5088,15 @@ class AgentOrchestrator:
             slugs = await self._intake_scope_slugs(
                 db, project_slug, product_id, project_ids
             )
+            # ponytail: a multi-project scope may list several projects pointing
+            # at the same repo (a monorepo's cell-projects share one git_url);
+            # clone each git_url once, mirroring CI-watch's per-git_url dedupe.
+            project_svc = get_project_service(db)
+            slugs_with_urls: list[tuple[str, str | None]] = []
+            for slug in slugs:
+                project = await project_svc.get_by_slug(slug)
+                slugs_with_urls.append((slug, project.git_url if project else None))
+            slugs = AgentOrchestrator._dedupe_slugs_by_git_url(slugs_with_urls)
             ws = WorkspaceService(db)
             for slug in slugs:
                 await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
@@ -5057,6 +5104,27 @@ class AgentOrchestrator:
         # /data/workspaces inside the container, regardless of the host root).
         paths = [_agent_workspace_path(slug, team, INTAKE_AGENT_ID) for slug in slugs]
         return paths[0], paths
+
+    @staticmethod
+    def _dedupe_slugs_by_git_url(
+        slugs_with_urls: list[tuple[str, str | None]],
+    ) -> list[str]:
+        """Keep the first slug for each non-empty git_url (a monorepo's
+        cell-projects share one git_url — clone it once, mirroring CI-watch's
+        per-git_url dedupe). A slug with no/empty git_url is never collapsed
+        onto another, so each distinct local repo still clones. Order is
+        preserved; the primary (first) slug of a shared url wins.
+        """
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for slug, git_url in slugs_with_urls:
+            key = (git_url or "").strip()
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            deduped.append(slug)
+        return deduped
 
     @staticmethod
     async def _intake_scope_slugs(
@@ -13487,10 +13555,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """
         Dispatch audit work to the auditor.
 
-        Monitors: quality alert notifications
+        Monitors: quality alert notifications + scheduled periodic sweeps
         Spawns: auditor
-
-        Note: Periodic scheduled audits can be added here in the future.
         """
         alerts = await self._fetch_notifications(client, "alert")
 
@@ -13506,10 +13572,71 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     initial_prompt=self._build_audit_prompt(alert),
                     spawned_by="_dispatch_audit_work",
                 )
+                self._last_audit_spawn_at = datetime.now(UTC)
                 return
 
-        # TODO: Add scheduled periodic audits
-        # Check last audit time, spawn if overdue
+        # Scheduled periodic audit sweep. Reuse the notification cooldown
+        # pattern with a sentinel key as a one-tick breaker so a single
+        # dispatcher tick cannot spawn the auditor twice.
+        if self._is_agent_active("auditor"):
+            return
+        if self._audit_spawn_cooled():
+            return
+        if not await self._has_recent_delivery_activity(client):
+            return
+        if self._notification_spawn_cooled("auditor", "_scheduled_audit"):
+            return
+        await self.spawn_agent(
+            agent_id="auditor",
+            initial_prompt=self._build_audit_prompt(scheduled=True),
+            spawned_by="_dispatch_audit_work",
+        )
+        self._last_audit_spawn_at = datetime.now(UTC)
+
+    def _audit_spawn_cooled(self) -> bool:
+        """True when a scheduled sweep should be blocked.
+
+        Blocks when ROBOCO_AUDIT_INTERVAL_SECONDS is 0 (disabled) or when the
+        auditor was spawned within the interval window.
+        """
+        interval = settings.audit_interval_seconds
+        if interval <= 0:
+            return True
+        last = self._last_audit_spawn_at
+        if last is None:
+            return False
+        return (datetime.now(UTC) - last).total_seconds() < interval
+
+    async def _has_recent_delivery_activity(
+        self,
+        client: httpx.AsyncClient,
+    ) -> bool:
+        """True when delivery work has moved recently enough to warrant a sweep.
+
+        Active delivery states always count as recent activity. Completed tasks
+        only count if they were updated inside the audit interval window.
+        """
+        active_statuses = [
+            "in_progress",
+            "verifying",
+            "awaiting_qa",
+            "needs_revision",
+            "awaiting_documentation",
+            "awaiting_pr_review",
+            "awaiting_pm_review",
+            "awaiting_ceo_approval",
+        ]
+        if await self._fetch_tasks(client, active_statuses):
+            return True
+
+        interval = settings.audit_interval_seconds
+        cutoff = datetime.now(UTC) - timedelta(seconds=interval)
+        completed = await self._fetch_tasks(client, "completed")
+        for task in completed:
+            ts = self._coerce_heartbeat(task.get("updated_at"))
+            if ts is not None and ts >= cutoff:
+                return True
+        return False
 
     async def _detect_stuck_tasks(self, client: httpx.AsyncClient) -> None:
         """
@@ -14426,7 +14553,12 @@ Your job:
 6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
-    def _build_audit_prompt(self, alert: dict[str, Any] | None = None) -> str:
+    def _build_audit_prompt(
+        self,
+        alert: dict[str, Any] | None = None,
+        *,
+        scheduled: bool = False,
+    ) -> str:
         """Build initial prompt for the auditor."""
         if alert:
             subject = alert.get("subject", "Quality issue detected")
@@ -14443,6 +14575,24 @@ Your job:
 2. Review relevant tasks and history (you have read access to all)
 3. Compile your findings
 4. Report to CEO via your journal (note scope='reflect')
+5. Call i_am_idle() when complete
+"""
+
+        if scheduled:
+            return """SCHEDULED AUDIT SWEEP.
+
+You are running a periodic delivery-process review. Look across the org
+for the past audit window and log anything the CEO should know.
+
+Your job:
+
+1. Scan recent task state: long-running blocked work, repeated rework
+   (needs_revision), and PR-review failures
+2. Check quality drift: QA pass/fail patterns, convention violations,
+   tracing gaps on recently completed work
+3. Spot cross-cell hand-off friction and silent stranded work
+4. Record every observation via note(scope='reflect'); if nothing is
+   amiss, note exactly that
 5. Call i_am_idle() when complete
 """
 

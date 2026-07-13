@@ -12,7 +12,7 @@ Also implements the ACK system for tracking acknowledgments.
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -616,7 +616,7 @@ class NotificationDeliveryService(BaseService):
     async def get_ack_status(
         self,
         notification_id: UUID,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get acknowledgment status for a notification.
 
@@ -651,7 +651,7 @@ class NotificationDeliveryService(BaseService):
     async def get_delivery_summary(
         self,
         agent_id: UUID,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Get delivery summary for an agent.
 
@@ -934,6 +934,54 @@ class NotificationDeliveryService(BaseService):
         )
         await self._persist_and_deliver(notification)
 
+    async def notify_auditor_of_rework(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        reason: str,
+        actor_agent_id: UUID | None = None,
+        actor_role: str | None = None,
+    ) -> None:
+        """Auditor-targeted alert when a task enters needs_revision.
+
+        The orchestrator's ``_dispatch_audit_work`` watches for notifications of
+        type ``ALERT`` whose ``to_agents`` include the auditor and spawns the
+        auditor with a quality-alert prompt. This producer reactivates that
+        reactive dispatch path at the QA-fail / rework chokepoints.
+        """
+        auditor = await self._get_auditor_agent()
+        if not auditor:
+            return
+
+        actor = await self._get_agent_by_id(actor_agent_id) if actor_agent_id else None
+        from_agent = actor_agent_id if actor_agent_id is not None else auditor.id
+        title = task.title or "Untitled task"
+        role_label = actor_role or (actor.role if actor else "system")
+
+        body_lines = [
+            f"Task {task_id} ({title}) entered needs_revision.",
+            "",
+            f"Reason: {reason}",
+            f"Actor role: {role_label}",
+        ]
+        if actor:
+            body_lines.append(f"Actor: {actor.slug}")
+
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.HIGH,
+            from_agent=from_agent,
+            to_agents=[auditor.id],
+            subject=f"Rework alert: {title[:40]}",
+            body="\n".join(body_lines),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+            read_by=[],
+            acked_by=[],
+        )
+        await self._persist_and_deliver(notification)
+
     # ------------------------------------------------------------------
     # Private helpers for recipient resolution + persist
     # ------------------------------------------------------------------
@@ -977,6 +1025,16 @@ class NotificationDeliveryService(BaseService):
     async def _get_ceo_agent(self) -> AgentTable | None:
         result = await self.session.execute(
             select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+        )
+        return result.scalar_one_or_none()
+
+    async def _get_auditor_agent(self) -> AgentTable | None:
+        """Find the auditor agent (org-wide; earliest-created if many)."""
+        result = await self.session.execute(
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.AUDITOR)
+            .order_by(AgentTable.created_at)
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
