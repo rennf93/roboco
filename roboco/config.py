@@ -269,7 +269,7 @@ class Settings(BaseSettings):
     )
     audit_interval_seconds: int = Field(
         default=21600,
-        ge=60,
+        ge=0,
         description=(
             "Seconds between scheduled auditor sweeps (default 6 hours). The "
             "orchestrator spawns the auditor only when the interval has elapsed "

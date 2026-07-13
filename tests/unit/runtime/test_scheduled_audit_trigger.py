@@ -6,11 +6,12 @@ active-agent breaker that prevents auditor spawn storms.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from roboco.config import settings
+from roboco.config import Settings, settings
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
@@ -169,3 +170,12 @@ async def test_cooldown_zero_disables_scheduled_sweeps(orch: AgentOrchestrator) 
             ],
         )
     assert spawn_mock.await_count == 0
+
+
+def test_env_override_zero_is_accepted() -> None:
+    """ROBOCO_AUDIT_INTERVAL_SECONDS=0 is valid Pydantic input, matching the
+    documented disable sentinel and the runtime gate in _audit_spawn_cooled().
+    """
+    with patch.dict(os.environ, {"ROBOCO_AUDIT_INTERVAL_SECONDS": "0"}, clear=False):
+        s = Settings()
+    assert s.audit_interval_seconds == 0
