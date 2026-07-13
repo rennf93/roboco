@@ -7,7 +7,7 @@ seam, not the engine's internals.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -193,3 +193,36 @@ async def test_docs_sync_failure_never_fails_the_approve(
     assert result.status == "published"
     await db_session.refresh(task)
     assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_draft_docs_update_calls_engine_seam() -> None:
+    """``_draft_docs_update`` is the best-effort seam; cover it directly so the
+    publish-success path is exercised even when the full ``approve()`` DB fixture
+    is unavailable."""
+    report = _report()
+    fake_engine = AsyncMock()
+    fake_engine.originate_docs_update = AsyncMock(return_value=None)
+
+    with patch(
+        "roboco.services.docs_sync_engine.get_docs_sync_engine",
+        return_value=fake_engine,
+    ):
+        await ReleaseProposalService(MagicMock())._draft_docs_update(report)
+
+    fake_engine.originate_docs_update.assert_awaited_once_with(
+        version=_VERSION,
+        changelog=report.drafted_changelog,
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_docs_update_swallows_engine_exception() -> None:
+    """An engine exception must never propagate out of the best-effort seam."""
+    report = _report()
+
+    with patch(
+        "roboco.services.docs_sync_engine.get_docs_sync_engine",
+        side_effect=RuntimeError("docs-sync boom"),
+    ):
+        await ReleaseProposalService(MagicMock())._draft_docs_update(report)

@@ -123,3 +123,10 @@ def test_documenter_self_heal_head_supersede() -> None:
     assert m.get_self_heal_fingerprint(t) == "deadbeef"
     assert m.get_external_pr_head(t) == "sha123"
     assert m.get_external_pr_supersede(t) == "pr=1 review=2 closed=1"
+
+
+def test_docs_sync_release_version_roundtrip() -> None:
+    t = _task()
+    assert m.get_docs_sync_release_version(t) is None
+    m.set_docs_sync_release_version(t, "0.23.0")
+    assert m.get_docs_sync_release_version(t) == "0.23.0"
