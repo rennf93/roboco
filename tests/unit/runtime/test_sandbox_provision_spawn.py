@@ -159,7 +159,7 @@ async def test_ensure_sandbox_miss_provisions_and_caches() -> None:
     result = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
 
     assert result is info
-    sandbox.provision.assert_awaited_once_with("dev-1", ["postgres"])
+    sandbox.provision.assert_awaited_once_with("dev-1", ["postgres"], features=None)
     assert orch._sandbox_info["dev-1"] is info
 
 
@@ -198,7 +198,9 @@ async def test_ensure_sandbox_first_subset_request_provisions_full_opted_set() -
     )
 
     assert first is second is info
-    sandbox.provision.assert_awaited_once_with("dev-1", ["postgres", "redis"])
+    sandbox.provision.assert_awaited_once_with(
+        "dev-1", ["postgres", "redis"], features=None
+    )
     assert orch._sandbox_info["dev-1"] is info
 
 
@@ -229,7 +231,9 @@ async def test_ensure_sandbox_concurrent_calls_serialize_on_agent_lock() -> None
     info = _info({"postgres": SandboxConnection(host="h", port=5432, password="pw")})
     calls = 0
 
-    async def _slow_provision(_agent_id: str, _services: list[str]) -> SandboxInfo:
+    async def _slow_provision(
+        _agent_id: str, _services: list[str], **_kw: object
+    ) -> SandboxInfo:
         nonlocal calls
         calls += 1
         await asyncio.sleep(0.05)
@@ -270,3 +274,64 @@ async def test_ensure_sandbox_cache_hit_with_dead_container_reprovisions() -> No
     assert sandbox.provision.await_count == expected_provision_calls
     assert orch._sandbox_info["dev-1"] is fresh_info
     sandbox.is_live.assert_awaited_once_with("dev-1", ["postgres"])
+
+
+# ---------------------------------------------------------------------------
+# Cache-by-features: a cached entry satisfies a new call iff the services are
+# a subset AND every requested feature per service is already cached. A feature
+# superset re-provisions (rotates creds), mirroring the services-superset case.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_sandbox_features_subset_is_cache_hit() -> None:
+    orch, sandbox = _make_orchestrator()
+    info = SandboxInfo(
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", features=("postgis", "vector")
+            )
+        }
+    )
+    sandbox.provision.return_value = info
+
+    first = await orch.ensure_sandbox(
+        "dev-1",
+        ["postgres"],
+        ["postgres"],
+        features={"postgres": ["postgis", "vector"]},
+    )
+    second = await orch.ensure_sandbox(
+        "dev-1", ["postgres"], ["postgres"], features={"postgres": ["vector"]}
+    )
+
+    assert first is second is info
+    sandbox.provision.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_sandbox_features_superset_reprovisions() -> None:
+    orch, sandbox = _make_orchestrator()
+    info = SandboxInfo(
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", features=("vector",)
+            )
+        }
+    )
+    sandbox.provision.return_value = info
+
+    await orch.ensure_sandbox(
+        "dev-1", ["postgres"], ["postgres"], features={"postgres": ["vector"]}
+    )
+    await orch.ensure_sandbox(
+        "dev-1",
+        ["postgres"],
+        ["postgres"],
+        features={"postgres": ["postgis", "vector"]},
+    )
+
+    expected_provision_calls = 2
+    assert sandbox.provision.await_count == expected_provision_calls
+    second_features = sandbox.provision.call_args_list[1].kwargs["features"]
+    assert second_features == {"postgres": ["postgis", "vector"]}

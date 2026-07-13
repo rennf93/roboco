@@ -2438,7 +2438,11 @@ class AgentOrchestrator:
         return list(project.sandbox_services or []) if project else []
 
     async def ensure_sandbox(
-        self, agent_slug: str, requested: list[str], opted: list[str]
+        self,
+        agent_slug: str,
+        requested: list[str],
+        opted: list[str],
+        features: dict[str, list[str]] | None = None,
     ) -> SandboxInfo:
         """Idempotent on-demand provision, called by the `request_sandbox` verb.
 
@@ -2453,6 +2457,13 @@ class AgentOrchestrator:
         (rather than trusting the caller to always pass the full set) is
         belt-and-suspenders — bounded by the project's own opt-in either way.
 
+        ``features`` (per-service extensions/modules) is the union the verb
+        already computed (project standing union per-call, bounded by the opted
+        set + the allowlist). The cache-hit check extends to it: a cached
+        entry satisfies a new call iff the services are a subset AND every
+        requested feature per service is already cached — a feature superset
+        re-provisions (rotates creds), mirroring the services-superset case.
+
         A cache hit is verified live (`SandboxProvisioner.is_live`) before
         being trusted: a container OOM-killed or removed out-of-band evicts
         the stale entry and falls through to a fresh full-set provision
@@ -2463,6 +2474,7 @@ class AgentOrchestrator:
         race provision()/teardown() on the same containers.
         """
         full = sorted(set(requested) | set(opted))
+        feat_map = features or {}
         # Lazily-allocated (no __init__ statement) to keep AgentOrchestrator's
         # constructor under the statement-count gate; getattr guards bare
         # __new__() test doubles that never ran __init__ — same convention
@@ -2475,10 +2487,18 @@ class AgentOrchestrator:
         async with lock:
             cached = self._sandbox_info.get(agent_slug)
             if cached is not None and set(full) <= set(cached.services):
-                if await self._sandbox.is_live(agent_slug, sorted(cached.services)):
+                features_covered = all(
+                    set(feat_map.get(svc, [])) <= set(cached.services[svc].features)
+                    for svc in full
+                )
+                if features_covered and await self._sandbox.is_live(
+                    agent_slug, sorted(cached.services)
+                ):
                     return cached
                 self._sandbox_info.pop(agent_slug, None)
-            info = await self._sandbox.provision(agent_slug, full)
+            info = await self._sandbox.provision(
+                agent_slug, full, features=feat_map or None
+            )
             self._sandbox_info[agent_slug] = info
             return info
 

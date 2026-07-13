@@ -13,7 +13,11 @@ from uuid import UUID, uuid4
 from pydantic import Field, field_validator
 
 from roboco.models.base import RobocoBase, Team, TimestampMixin
-from roboco.models.sandbox import SANDBOX_ENGINES, VALID_SANDBOX_SERVICES
+from roboco.models.sandbox import (
+    SANDBOX_ENGINE_FEATURES,
+    SANDBOX_ENGINES,
+    VALID_SANDBOX_SERVICES,
+)
 
 
 class BranchReason(StrEnum):
@@ -43,6 +47,38 @@ def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
             f"{sorted(VALID_SANDBOX_SERVICES)}"
         )
     return [s for s in SANDBOX_ENGINES if s in value]
+
+
+def _normalize_sandbox_extensions(
+    value: dict[str, list[str]] | None,
+) -> dict[str, list[str]] | None:
+    """Allowlist-validate + normalize the per-service extension/module map.
+
+    Each key must be a valid sandbox service; each feature must be in that
+    service's allowlist (``SANDBOX_ENGINE_FEATURES``) — the security containment
+    that keeps a ``plpython3u`` (superuser-RCE) from ever being persisted. A
+    service with an empty feature list is dropped (bare == unset). Returns None
+    for an empty/None input so the column stays null for bare projects.
+    """
+    if value is None:
+        return None
+    normalized: dict[str, list[str]] = {}
+    for svc, feats in value.items():
+        if svc not in SANDBOX_ENGINES:
+            raise ValueError(
+                f"sandbox_extensions key {svc!r} is not a valid service; valid: "
+                f"{sorted(VALID_SANDBOX_SERVICES)}"
+            )
+        allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
+        bad = sorted(set(feats or []) - allowed)
+        if bad:
+            raise ValueError(
+                f"unallowed {svc} extension(s) {bad}; allowed: {sorted(allowed)}"
+            )
+        ordered = [f for f in sorted(allowed) if f in (feats or [])]
+        if ordered:
+            normalized[svc] = ordered
+    return normalized or None
 
 
 class Project(TimestampMixin):
@@ -159,6 +195,25 @@ class Project(TimestampMixin):
     def _check_sandbox_services(cls, v: list[str] | None) -> list[str] | None:
         return _normalize_sandbox_services(v)
 
+    # Per-service sandbox extensions/modules to activate post-ready
+    # (e.g. {"postgres": ["vector", "postgis"]}); null/empty = bare. Allowlist-
+    # validated — a plpython3u (superuser-RCE) can never be set here.
+    sandbox_extensions: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "Per-service extensions/modules the sandbox activates post-ready "
+            "(e.g. {'postgres': ['vector', 'postgis'], 'redis': ['search']}); "
+            "null/empty = bare. Allowlist-validated."
+        ),
+    )
+
+    @field_validator("sandbox_extensions")
+    @classmethod
+    def _check_sandbox_extensions(
+        cls, v: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
+        return _normalize_sandbox_extensions(v)
+
     # Metadata
     created_by: UUID = Field(..., description="PM who registered the project")
     is_active: bool = Field(default=True, description="Whether project is active")
@@ -218,8 +273,16 @@ class ProjectUpdate(RobocoBase):
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
+    sandbox_extensions: dict[str, list[str]] | None = None
 
     @field_validator("sandbox_services")
     @classmethod
     def _check_sandbox_services(cls, v: list[str] | None) -> list[str] | None:
         return _normalize_sandbox_services(v)
+
+    @field_validator("sandbox_extensions")
+    @classmethod
+    def _check_sandbox_extensions(
+        cls, v: dict[str, list[str]] | None
+    ) -> dict[str, list[str]] | None:
+        return _normalize_sandbox_extensions(v)

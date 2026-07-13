@@ -1985,29 +1985,90 @@ class ContentActions:
             )
         return requested, None
 
+    @staticmethod
+    def _sandbox_features_scope(
+        project: Any,
+        extensions: dict[str, list[str]] | None,
+        opted: frozenset[str],
+    ) -> tuple[dict[str, list[str]], Envelope | None]:
+        """request_sandbox's extension guard: the per-service feature map to
+        activate (project standing union per-call, bounded by the opted set +
+        the allowlist), or a clean invalid_state rejection.
+
+        Per-call ``extensions`` is allowlist-validated HERE (not only at the
+        provisioner) so a ``plpython3u`` gets a remediate naming the allowed
+        set, mirroring the unknown-service remediate. The project's standing
+        ``sandbox_extensions`` was allowlist-validated at write time, so it is
+        trusted and unioned in; entries for a service no longer opted into are
+        dropped (a venture may deactivate a service without clearing its
+        standing extensions). Returns only services with a non-empty feature
+        list — a service with no features is bare (the provisioner's default).
+        """
+        from roboco.models.sandbox import SANDBOX_ENGINE_FEATURES
+
+        standing = (project.sandbox_extensions if project else None) or {}
+        # Union per service: standing (trusted) + per-call (validated below).
+        merged: dict[str, set[str]] = {}
+        for svc, feats in standing.items():
+            if svc in opted:
+                merged.setdefault(svc, set()).update(feats or [])
+        for svc, feats in (extensions or {}).items():
+            if svc not in opted:
+                return {}, Envelope.invalid_state(
+                    message=(
+                        f"extensions given for {svc!r}, which this project has "
+                        f"not opted into"
+                    ),
+                    remediate=(
+                        f"this project's opted-in set is {sorted(opted)} — "
+                        "request extensions only for those services"
+                    ),
+                    context_briefing={},
+                )
+            allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
+            bad = sorted(set(feats or []) - allowed)
+            if bad:
+                return {}, Envelope.invalid_state(
+                    message=f"unallowed {svc} extension(s) {bad}",
+                    remediate=(
+                        f"the allowlist for {svc} is {sorted(allowed)} — "
+                        "request a subset; plpython3u and other superuser-"
+                        "language extensions are excluded by construction"
+                    ),
+                    context_briefing={},
+                )
+            merged.setdefault(svc, set()).update(feats or [])
+        return {svc: sorted(f) for svc, f in merged.items() if f}, None
+
     async def request_sandbox(
         self,
         *,
         agent_id: UUID,
         services: list[str] | None = None,
+        extensions: dict[str, list[str]] | None = None,
     ) -> Envelope:
         """On-demand sandbox DB/Redis/Mongo (dev + QA only, see role_config).
 
         Replaces eager per-spawn provisioning: a sandbox is created only when
         an agent actually asks for one, keyed off the CALLER's authenticated
         slug (never another agent's). ``services`` omitted means the
-        project's whole opted-in set.
+        project's whole opted-in set. ``extensions`` (per-service
+        extensions/modules, e.g. ``{"postgres": ["vector"]}``) is an additive
+        per-call override unioned with the project's standing
+        ``sandbox_extensions`` and bounded by the opted set + the allowlist —
+        a ``plpython3u`` is rejected here with the allowed set named.
 
         Guards, in order: flag off; caller has no claimed/active,
         project-bound task (`_sandbox_active_task`); project not opted into
         any sandbox service, or a requested service outside its opted set
-        (`_sandbox_scope`, names the allowed set); orchestrator handle
-        unavailable (retryable). `ensure_sandbox` always provisions the
-        project's whole opted-in set regardless of ``services`` (so a later
-        call can never trigger a mid-session teardown of a live container);
-        the evidence payload here is filtered back down to what THIS call
-        asked for. Creds come back in the evidence payload, never as
-        injected env — see
+        (`_sandbox_scope`, names the allowed set); per-call extensions for a
+        non-opted service or outside the allowlist (`_sandbox_features_scope`,
+        names the allowed set); orchestrator handle unavailable (retryable).
+        `ensure_sandbox` always provisions the project's whole opted-in set
+        regardless of ``services`` (so a later call can never trigger a
+        mid-session teardown of a live container); the evidence payload here
+        is filtered back down to what THIS call asked for. Creds come back in
+        the evidence payload, never as injected env — see
         ``docs/internal/specs/2026-07-08-sandbox-on-demand.md`` §4.
         """
         if not settings.sandbox_db_enabled:
@@ -2026,10 +2087,16 @@ class ContentActions:
         from roboco.services.project import get_project_service
 
         project = await get_project_service(self.task.session).get(t.project_id)
-        requested, rejection = self._sandbox_scope(project, services)
+        requested, rej_scope = self._sandbox_scope(project, services)
+        opted = frozenset(project.sandbox_services or []) if project else frozenset()
+        features, rej_features = self._sandbox_features_scope(
+            project, extensions, opted
+        )
+        # Scope before features: an unknown-service rejection wins over a
+        # per-call extension rejection for the same call.
+        rejection = rej_scope or rej_features
         if rejection is not None:
             return rejection
-        opted = frozenset(project.sandbox_services or []) if project else frozenset()
         if self.orchestrator is None:
             return Envelope.invalid_state(
                 message="orchestrator handle unavailable — cannot provision a sandbox",
@@ -2044,7 +2111,7 @@ class ContentActions:
         agent_slug = _resolve_to_slug(str(agent_id))
         try:
             info = await self.orchestrator.ensure_sandbox(
-                agent_slug, sorted(requested), sorted(opted)
+                agent_slug, sorted(requested), sorted(opted), features=features or None
             )
         except SandboxProvisionError as e:
             return Envelope.invalid_state(

@@ -46,8 +46,12 @@ def _task(project_id: object | None = uuid4()) -> MagicMock:
     return t
 
 
-def _stub_project(monkeypatch: pytest.MonkeyPatch, services: list[str] | None) -> None:
-    project = MagicMock(sandbox_services=services)
+def _stub_project(
+    monkeypatch: pytest.MonkeyPatch,
+    services: list[str] | None,
+    extensions: dict[str, list[str]] | None = None,
+) -> None:
+    project = MagicMock(sandbox_services=services, sandbox_extensions=extensions)
     project_service = MagicMock()
     project_service.get = AsyncMock(return_value=project)
     monkeypatch.setattr(
@@ -55,7 +59,9 @@ def _stub_project(monkeypatch: pytest.MonkeyPatch, services: list[str] | None) -
     )
 
 
-def _sandbox_info() -> SandboxInfo:
+def _sandbox_info(
+    features: tuple[str, ...] = (),
+) -> SandboxInfo:
     return SandboxInfo(
         services={
             "postgres": SandboxConnection(
@@ -64,6 +70,7 @@ def _sandbox_info() -> SandboxInfo:
                 password="pw",
                 user="sandbox",
                 database="sandbox",
+                features=features,
             )
         }
     )
@@ -287,3 +294,130 @@ async def test_ensure_sandbox_keyed_off_caller_own_slug(
     assert slugs_called[0] != slugs_called[1]
     assert slugs_called[0] == str(agent_a)
     assert slugs_called[1] == str(agent_b)
+
+
+# ---------------------------------------------------------------------------
+# Extensions — per-service additive override, allowlist-guarded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extensions_additive_unioned_with_project_standing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-call extensions union with the project's standing set (bounded by
+    the opted set + allowlist) and reach ensure_sandbox as the features kwarg."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(
+        monkeypatch,
+        services=["postgres"],
+        extensions={"postgres": ["vector"]},
+    )
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    await actions.request_sandbox(
+        agent_id=uuid4(), extensions={"postgres": ["postgis"]}
+    )
+
+    features = orch.ensure_sandbox.call_args.kwargs["features"]
+    assert features == {"postgres": ["postgis", "vector"]}
+
+
+@pytest.mark.asyncio
+async def test_standing_extensions_passed_with_no_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(
+        monkeypatch,
+        services=["postgres"],
+        extensions={"postgres": ["vector"]},
+    )
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    await actions.request_sandbox(agent_id=uuid4())
+
+    assert orch.ensure_sandbox.call_args.kwargs["features"] == {"postgres": ["vector"]}
+
+
+@pytest.mark.asyncio
+async def test_no_extensions_passes_none_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare call (no standing, no per-call) → features=None (bare provision)."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(monkeypatch, services=["postgres"])
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    await actions.request_sandbox(agent_id=uuid4())
+
+    assert orch.ensure_sandbox.call_args.kwargs["features"] is None
+
+
+@pytest.mark.asyncio
+async def test_extensions_rejects_plpython_names_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """plpython3u is rejected at the verb with the allowlist named in remediate
+    (not only at the provisioner), mirroring the unknown-service remediate."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(monkeypatch, services=["postgres"])
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    env = await actions.request_sandbox(
+        agent_id=uuid4(), extensions={"postgres": ["plpython3u"]}
+    )
+
+    assert env.error == "invalid_state"
+    remediate = env.remediate or ""
+    assert "vector" in remediate  # the allowlist is named
+    orch.ensure_sandbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_extensions_for_non_opted_service_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(monkeypatch, services=["postgres"])
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    env = await actions.request_sandbox(
+        agent_id=uuid4(), extensions={"redis": ["search"]}
+    )
+
+    assert env.error == "invalid_state"
+    orch.ensure_sandbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_available_extensions_surfaced_in_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The evidence payload carries available_extensions so the agent doesn't
+    guess what was activated."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(
+        monkeypatch,
+        services=["postgres"],
+        extensions={"postgres": ["vector", "postgis"]},
+    )
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info(features=("postgis", "vector"))
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    env = await actions.request_sandbox(agent_id=uuid4())
+
+    assert env.error is None
+    assert env.evidence is not None
+    assert env.evidence["postgres"]["available_extensions"] == ["postgis", "vector"]

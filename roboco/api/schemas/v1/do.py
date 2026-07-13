@@ -176,9 +176,11 @@ class EvidenceRequest(BaseModel):
 
 class RequestSandboxRequest(BaseModel):
     """On-demand sandbox DB/Redis/Mongo. Omitted `services` = the project's
-    whole opted-in set."""
+    whole opted-in set. ``extensions`` (per-service extensions/modules) is an
+    additive per-call override, allowlist-validated."""
 
     services: list[str] | None = None
+    extensions: dict[str, list[str]] | None = None
 
 
 class ProgressRequest(BaseModel):
