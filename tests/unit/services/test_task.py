@@ -462,6 +462,93 @@ async def test_reassign_returns_none_when_task_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reassign_notifies_once_not_twice_for_same_target() -> None:
+    """Repeated reassign to the SAME target must not double-fire.
+
+    `reassign` runs every time it's called (even a no-op redirect); the
+    coordination notification is guarded separately by comparing the new
+    assignee against the assignee captured before the mutation, so a second
+    call with an already-current target must skip the notification.
+    """
+    task = _build_task(assigned_to=None, claimed_by=None)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    new_assignee = uuid4()
+    mock_ns = MagicMock()
+    mock_ns.send_reassignment_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.reassign(task.id, new_assignee)
+        await svc.reassign(task.id, new_assignee)
+    mock_ns.send_reassignment_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unblock_notifies_once_not_twice_on_repeated_call() -> None:
+    """Repeated unblock() against the same task must not double-fire.
+
+    `unblock` only mutates + notifies a task whose status is currently
+    BLOCKED; the first call flips it to IN_PROGRESS/PENDING, so a second
+    call against the same task_id short-circuits on the status guard and
+    must not send a second notification.
+    """
+    raiser = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=raiser
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        first = await svc.unblock(task.id)
+        second = await svc.unblock(task.id)
+    assert first is task
+    assert second is None
+    mock_ns.send_unblock_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
+    """Collision-sequencing notification fires only for freshly-added edges.
+
+    `add_dependency` returns True only on a new edge; a subsequent wiring
+    pass over the same pair returns False and must skip the notification,
+    so the coordination ALERT cannot double-fire.
+    """
+    parent_id = uuid4()
+    held_back_id = uuid4()
+    blocking_id = uuid4()
+    held_back = _build_task(id=held_back_id, assigned_to=uuid4())
+    blocking = _build_task(id=blocking_id)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get_subtasks", AsyncMock(return_value=[held_back, blocking]))
+    add_dep_mock = AsyncMock(side_effect=[True, False])
+    _bind(svc, "add_dependency", add_dep_mock)
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    wiring_passes = 2
+    with (
+        patch(
+            "roboco.services.sequencing.dev_task_collision_edges",
+            return_value=[(blocking_id, held_back_id)],
+        ),
+        patch(
+            "roboco.services.notification.NotificationService",
+            return_value=mock_ns,
+        ),
+    ):
+        for _ in range(wiring_passes):
+            await svc.wire_sibling_collision_dag(parent_id)
+    mock_ns.send_collision_sequencing_notification.assert_awaited_once()
+    assert add_dep_mock.await_count == wiring_passes
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
     result = MagicMock()

@@ -120,6 +120,7 @@ export enum NotificationType {
   BLOCKER_ESCALATION = "blocker_escalation",
   REVIEW_REQUEST = "review_request",
   DOCUMENTATION_REQUEST = "documentation_request",
+  APPROVAL = "approval", // Board-level approval requests (PO/HM/Main PM)
   ALERT = "alert",
   BROADCAST = "broadcast",
   KNOWLEDGE_SHARE = "knowledge_share", // Cross-agent learning notification

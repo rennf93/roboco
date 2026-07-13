@@ -50,8 +50,9 @@ That gives you Next dev-server on `localhost:3000`, but you still need the orche
 - `src/components/` — React components (organized by feature: tasks, agents, channels, …)
 - `src/lib/api/` — typed API client (thin wrappers over `fetch`)
 - `src/lib/` — constants, utilities, WebSocket hooks
-- `src/types/` — shared TypeScript types mirroring backend schemas
+- `src/types/` — shared TypeScript types mirroring backend schemas (includes `NotificationType` enum)
 - `src/hooks/` — reusable React hooks (see [Frontend hooks](../docs/frontend/hooks.md))
+- `src/app/(dashboard)/notifications/` — notifications inbox page and components
 
 ## Hooks
 
@@ -72,6 +73,20 @@ const { register, unregister, refresh, loading, disabled } = usePageRefresh();
 - `disabled` returns to `true` when all callbacks are unregistered
 
 Wrap your page or layout in `PageRefreshProvider` from `@/components/providers` before consuming the hook. Dashboard pages should register their refetch callbacks and avoid adding inline "Refresh" buttons; see [`docs/frontend/components/page-refresh-provider.md`](../docs/frontend/components/page-refresh-provider.md) for the full wiring list and examples.
+
+## Notifications
+
+The panel renders five core **coordination-event notification types** that signal task lifecycle transitions between agents:
+
+| Type | Icon | Color | Meaning |
+|------|------|-------|---------|
+| `TASK_ASSIGNMENT` | ListTodo | green | A task has been assigned to you |
+| `BLOCKER_ESCALATION` | AlertTriangle | red | A developer is blocked and escalated |
+| `REVIEW_REQUEST` | Check | purple | Your review is needed |
+| `DOCUMENTATION_REQUEST` | Info | blue | Documentation is needed |
+| `APPROVAL` | ShieldCheck | emerald | Board-level approval requested |
+
+Each notification optionally carries a `related_task_id` rendered as a deep-link to `/tasks/{id}`. For full details on types, icons, and adding new types, see [`docs/frontend/components/notification-types.md`](../docs/frontend/components/notification-types.md).
 
 ## Dependency Management
 

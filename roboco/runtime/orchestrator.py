@@ -10998,6 +10998,9 @@ Start now: evidence(task_id="{task_id}")
                 if self._assignee_is_provider_parked(t):
                     continue
                 task_id = require_uuid(t.id)
+                reaped_agent = getattr(t, "assigned_to", None) or getattr(
+                    t, "claimed_by", None
+                )
                 try:
                     await svc.unclaim_for_reaper(task_id)
                     logger.warning(
@@ -11011,6 +11014,35 @@ Start now: evidence(task_id="{task_id}")
                         task_id=str(task_id),
                         error=str(exc),
                     )
+                else:
+                    await self._notify_stale_claim_reaped(task_id, reaped_agent, ts)
+
+    async def _notify_stale_claim_reaped(
+        self, task_id: "UUID", reaped_agent: Any, last_heartbeat: datetime | None
+    ) -> None:
+        """Best-effort coordination notification for a reaped stale claim.
+
+        Best-effort: a notification failure must not wedge the reaper tick,
+        so any error is logged and swallowed. A reaped task leaves
+        ``list_in_progress_or_claimed`` once released to pending, so a later
+        reaper tick never re-considers the same claim and cannot double-fire.
+        """
+        if reaped_agent is None:
+            return
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_stale_claim_reaped_notification(
+                task_id=str(task_id),
+                reaped_agent=str(reaped_agent),
+                last_heartbeat=last_heartbeat.isoformat() if last_heartbeat else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send stale-claim-reaped notification",
+                task_id=str(task_id),
+                error=str(exc),
+            )
 
     async def _dispatch_all_work(self) -> None:
         """Run all dispatchers to check for and assign work.

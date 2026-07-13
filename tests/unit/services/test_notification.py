@@ -412,4 +412,108 @@ async def test_create_notification_requires_ack_derives_from_type(
     assert (
         rows[0].requires_ack is ACK_REQUIRED_BY_TYPE[NotificationType.KNOWLEDGE_SHARE]
     )
-    assert rows[0].requires_ack is False
+
+
+# ---------------------------------------------------------------------------
+# Coordination-event producers (reassignment / collision / unblock /
+# dependency-revival / stale-claim-reaped)
+# ---------------------------------------------------------------------------
+
+# previous_assignee + new_assignee + ceo, resolved to UUIDs pre-insert.
+_REASSIGN_RECIPIENT_COUNT = 3
+# {task-owner, ceo} for the other four coordination producers.
+_TWO_RECIPIENT_COUNT = 2
+
+
+@pytest.mark.asyncio
+async def test_send_reassignment_notification(svc: NotificationService) -> None:
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_reassignment_notification(
+            task_id="t1", previous_assignee="be-dev-1", new_assignee="be-dev-2"
+        )
+    rows = [r for r in db.added if r.related_task_id == "t1"]
+    assert rows
+    assert all(len(r.to_agents) == _REASSIGN_RECIPIENT_COUNT for r in rows)
+    assert any("reassigned" in r.subject for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_send_reassignment_notification_no_recipients_is_noop(
+    svc: NotificationService,
+) -> None:
+    """All three recipients falsy ⇒ nothing is created (no crash)."""
+    db = _FakeDb()
+    with _patch_db_context(db):
+        await svc.send_reassignment_notification(
+            task_id="t1",
+            previous_assignee=None,
+            new_assignee=None,
+            to_ceo="",
+        )
+    assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_send_collision_sequencing_notification(
+    svc: NotificationService,
+) -> None:
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_collision_sequencing_notification(
+            held_back_task_id="t2",
+            blocking_task_id="t1",
+            held_back_assignee="be-dev-1",
+        )
+    rows = [r for r in db.added if r.related_task_id == "t2"]
+    assert rows
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
+    assert any("sequenced behind" in r.subject for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_send_unblock_notification(svc: NotificationService) -> None:
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_unblock_notification(task_id="t1", restored_owner="be-dev-1")
+    rows = [r for r in db.added if r.related_task_id == "t1"]
+    assert rows
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
+    assert any("unblocked" in r.subject for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_send_dependency_revival_notification(
+    svc: NotificationService,
+) -> None:
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_dependency_revival_notification(
+            task_id="t1", assignee="be-dev-1", completed_dependency_id="dep1"
+        )
+    rows = [r for r in db.added if r.related_task_id == "t1"]
+    assert rows
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
+    assert any("revived" in r.subject for r in rows)
+    assert any("dep1" in r.body for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_send_stale_claim_reaped_notification(
+    svc: NotificationService,
+) -> None:
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_stale_claim_reaped_notification(
+            task_id="t1", reaped_agent="be-dev-1", last_heartbeat="2026-07-11T00:00:00"
+        )
+    rows = [r for r in db.added if r.related_task_id == "t1"]
+    assert rows
+    assert all(len(r.to_agents) == _TWO_RECIPIENT_COUNT for r in rows)
+    assert any(r.priority == NotificationPriority.HIGH for r in rows)
+    assert any("stale claim reaped" in r.subject for r in rows)

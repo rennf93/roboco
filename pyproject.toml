@@ -154,6 +154,10 @@ select = [
 # agent_id, project_ids, route, session_id) — same >5-kwarg rationale as the
 # gateway verb surfaces below.
 "roboco/services/prompter.py" = ["PLR0913"]
+# send_dependency_revival_notification carries the coordination-event contract
+# (task_id, assignee, completed_dependency_id, from_agent, to_ceo, db_session) —
+# db_session is the caller's session for event-loop-safe notification creation.
+"roboco/services/notification.py" = ["PLR0913"]
 # open_video_task's kwargs (occasion, script, platforms, brief,
 # suggested_input_props, project_id) are the authoring-task contract shared
 # by the release/spotlight/on-demand callers — same "bundling would just

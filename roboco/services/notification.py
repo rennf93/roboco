@@ -355,6 +355,218 @@ class NotificationService:
             )
         )
 
+    async def send_reassignment_notification(
+        self,
+        task_id: str,
+        previous_assignee: str | None,
+        new_assignee: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+        db_session: AsyncSession | None = None,
+    ) -> None:
+        """Tell the outgoing + incoming owner (and the CEO) a task moved.
+
+        Skipped by the caller when ``new_assignee == previous_assignee`` —
+        ``TaskService.reassign`` runs even on a no-op redirect, and a
+        same-owner "reassignment" is not a coordination event.
+        """
+        recipients = list(
+            dict.fromkeys(r for r in (previous_assignee, new_assignee, to_ceo) if r)
+        )
+        if not recipients:
+            return
+        logger.info(
+            "Sending reassignment notification",
+            task_id=task_id,
+            previous_assignee=previous_assignee,
+            new_assignee=new_assignee,
+        )
+        body = (
+            f"Task {task_id} was reassigned from "
+            f"{previous_assignee or 'unassigned'} to {new_assignee or 'unassigned'}."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} reassigned",
+                body=body,
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
+    async def send_collision_sequencing_notification(
+        self,
+        held_back_task_id: str,
+        blocking_task_id: str,
+        held_back_assignee: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the held-back task's owner (+ CEO) it now waits on a sibling.
+
+        Fired only for a newly-created collision-sequencing edge (see
+        ``wire_sibling_collision_dag`` — a repeat wiring pass over an
+        already-wired pair contributes no edge, so this cannot double-fire).
+        """
+        recipients = list(dict.fromkeys(r for r in (held_back_assignee, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending collision-sequencing notification",
+            held_back_task_id=held_back_task_id,
+            blocking_task_id=blocking_task_id,
+        )
+        body = (
+            f"Task {held_back_task_id} was held back by the collision-sequencing "
+            f"analyzer: it now depends on task {blocking_task_id}, which surfaced "
+            "an overlapping file/migration/shared-surface collision. It will "
+            "resume once that task reaches a terminal state."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {held_back_task_id} sequenced behind a sibling",
+                body=body,
+                related_task_id=held_back_task_id,
+            )
+        )
+
+    async def send_unblock_notification(
+        self,
+        task_id: str,
+        restored_owner: str | None,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+        db_session: AsyncSession | None = None,
+    ) -> None:
+        """Tell the restored owner (+ CEO) a blocked task is workable again.
+
+        Fired from ``TaskService.unblock`` / ``unblock_with_restore`` — both
+        only act on a task whose status is currently ``BLOCKED``, so a
+        repeated call against the same (already-unblocked) task is a no-op
+        upstream and this cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (restored_owner, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending unblock notification",
+            task_id=task_id,
+            restored_owner=restored_owner,
+        )
+        body = (
+            f"Task {task_id} has been unblocked and handed back to "
+            f"{restored_owner or 'its owner'}. It is ready to resume."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} unblocked",
+                body=body,
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
+    async def send_dependency_revival_notification(
+        self,
+        task_id: str,
+        assignee: str | None,
+        completed_dependency_id: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+        db_session: AsyncSession | None = None,
+    ) -> None:
+        """Tell the revived task's owner (+ CEO) its last dependency landed.
+
+        Distinct event from ``send_unblock_notification``: that one fires
+        when a resolver explicitly calls ``unblock``/``unblock_with_restore``
+        on a task blocked by escalation. This one fires from
+        ``TaskService._unblock_dependents`` when the LAST outstanding
+        dependency of a task blocked ON THAT DEPENDENCY completes — no
+        resolver acted, the trigger is upstream task completion, so the
+        notification names which dependency unblocked it rather than who
+        resolved it. ``_unblock_dependents`` prunes ``dependency_ids`` before
+        this fires, so a repeated call for the same completed dependency
+        finds no matching dependent and cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (assignee, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending dependency-revival notification",
+            task_id=task_id,
+            completed_dependency_id=completed_dependency_id,
+        )
+        body = (
+            f"Task {task_id} was revived: its dependency "
+            f"{completed_dependency_id} just completed and no other "
+            "dependencies remain. It is ready to resume."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=recipients,
+                subject=f"Task {task_id} revived by dependency completion",
+                body=body,
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
+    async def send_stale_claim_reaped_notification(
+        self,
+        task_id: str,
+        reaped_agent: str | None,
+        last_heartbeat: str | None = None,
+        from_agent: str = "system",
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the reaped agent (+ CEO) its stale claim was released.
+
+        Fired from the orchestrator's ``_reap_with_service`` alongside
+        ``unclaim_for_reaper``. A reaped task leaves
+        ``list_in_progress_or_claimed`` once released to pending, so a
+        subsequent reaper tick never re-considers the same claim and this
+        cannot double-fire.
+        """
+        recipients = list(dict.fromkeys(r for r in (reaped_agent, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending stale-claim-reaped notification",
+            task_id=task_id,
+            reaped_agent=reaped_agent,
+        )
+        body = (
+            f"Task {task_id}'s claim went stale "
+            f"(last heartbeat: {last_heartbeat or 'unknown'}) and was reaped "
+            f"back to pending, releasing it from {reaped_agent or 'its holder'}."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent,
+                to_agents=recipients,
+                subject=f"Task {task_id}: stale claim reaped",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,
@@ -567,90 +779,112 @@ class NotificationService:
                 return True
         return False
 
-    async def _create_notification(self, params: CreateNotificationParams) -> None:
-        """Create a notification via the database and deliver it."""
-        async with get_db_context() as db:
-            from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
-            if from_agent_uuid is None:
-                # notifications.from_agent is NOT NULL + FK to agents.id, so
-                # we cannot insert. Skip-with-warn rather than crash the
-                # upstream request.
-                logger.warning(
-                    "Skipping notification: from_agent unresolvable",
-                    from_agent_input=str(params.from_agent),
-                    type=self._notification_type_label(params),
-                    subject=params.subject[:80],
-                    to_agents=[str(a) for a in params.to_agents],
-                )
-                return
-            to_agents_uuids = await self._resolve_recipients(db, params)
-            if not to_agents_uuids:
-                logger.warning(
-                    "Skipping notification: no resolvable recipients",
-                    to_agents_input=[str(a) for a in params.to_agents],
-                    type=self._notification_type_label(params),
-                    subject=params.subject[:80],
-                )
-                return
-            # Re-fire guard for loop-prone types: a 60s Redis SET-NX window
-            # coalesces the per-tick re-notify storm the DB dedup below skips
-            # (these types are requires_ack=False). Fail-open on Redis down.
-            if await all_recipients_recently_notified(
-                ntype=params.notification_type,
-                from_agent=from_agent_uuid,
-                recipients=to_agents_uuids,
-                related_task_id=params.related_task_id,
-                subject=params.subject,
-            ):
-                logger.info(
-                    "Suppressed re-fire notification (loop-prone, recent window)",
-                    from_agent=str(from_agent_uuid),
-                    type=params.notification_type.value,
-                    related_task_id=str(params.related_task_id)
-                    if params.related_task_id is not None
-                    else None,
-                    to_agents=[str(a) for a in to_agents_uuids],
-                )
-                return
-            # Purpose-based dedup (CEO directive, 2026-06-10): suppress a second
-            # notification for the SAME purpose while a prior one is unacked. See
-            # ``_duplicate_unacked_exists`` for the rationale + the action-only
-            # scope (informational types carry distinct content per send).
-            if await self._duplicate_unacked_exists(
-                db,
-                from_agent_uuid=from_agent_uuid,
-                params=params,
-                to_agents_uuids=to_agents_uuids,
-            ):
-                return
-            notification = NotificationTable(
-                type=params.notification_type,
-                priority=params.priority,
-                from_agent=from_agent_uuid,
-                to_agents=to_agents_uuids,
-                subject=params.subject,
-                body=params.body,
-                related_task_id=params.related_task_id,
-                # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
-                # informational), not the column's True default; default True
-                # for an unmapped type preserves the safe action-required bias.
-                requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
+    async def _create_notification(
+        self,
+        params: CreateNotificationParams,
+        db_session: AsyncSession | None = None,
+    ) -> None:
+        """Create a notification via the database and deliver it.
+
+        When ``db_session`` is provided, use it directly and skip the
+        internal commit — the caller owns the transaction. This is required
+        when the caller runs on a different event loop than the singleton
+        ``_DbHolder`` engine (e.g. ``TaskService`` called outside the FastAPI
+        request loop); opening ``get_db_context()`` there reuses an engine
+        whose asyncpg connections are bound to the server's loop, raising
+        ``Future attached to a different loop``.
+        """
+        if db_session is not None:
+            await self._create_notification_with_session(params, db_session)
+        else:
+            async with get_db_context() as db:
+                created = await self._create_notification_with_session(params, db)
+                if created:
+                    await db.commit()
+
+    async def _create_notification_with_session(
+        self, params: CreateNotificationParams, db: AsyncSession
+    ) -> bool:
+        from_agent_uuid = await _resolve_agent_uuid(db, params.from_agent)
+        if from_agent_uuid is None:
+            # notifications.from_agent is NOT NULL + FK to agents.id, so
+            # we cannot insert. Skip-with-warn rather than crash the
+            # upstream request.
+            logger.warning(
+                "Skipping notification: from_agent unresolvable",
+                from_agent_input=str(params.from_agent),
+                type=self._notification_type_label(params),
+                subject=params.subject[:80],
+                to_agents=[str(a) for a in params.to_agents],
             )
-            db.add(notification)
-            await db.flush()
-
-            # Deliver via Redis Streams for real-time push
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
+            return False
+        to_agents_uuids = await self._resolve_recipients(db, params)
+        if not to_agents_uuids:
+            logger.warning(
+                "Skipping notification: no resolvable recipients",
+                to_agents_input=[str(a) for a in params.to_agents],
+                type=self._notification_type_label(params),
+                subject=params.subject[:80],
             )
-
-            delivery_service = get_notification_delivery_service(db)
-            await delivery_service.deliver(require_uuid(notification.id))
-
-            await db.commit()
-
+            return False
+        # Re-fire guard for loop-prone types: a 60s Redis SET-NX window
+        # coalesces the per-tick re-notify storm the DB dedup below skips
+        # (these types are requires_ack=False). Fail-open on Redis down.
+        if await all_recipients_recently_notified(
+            ntype=params.notification_type,
+            from_agent=from_agent_uuid,
+            recipients=to_agents_uuids,
+            related_task_id=params.related_task_id,
+            subject=params.subject,
+        ):
             logger.info(
-                "Notification created and delivered",
-                notification_id=str(notification.id),
+                "Suppressed re-fire notification (loop-prone, recent window)",
+                from_agent=str(from_agent_uuid),
                 type=params.notification_type.value,
+                related_task_id=str(params.related_task_id)
+                if params.related_task_id is not None
+                else None,
+                to_agents=[str(a) for a in to_agents_uuids],
             )
+            return False
+        # Purpose-based dedup (CEO directive, 2026-06-10): suppress a second
+        # notification for the SAME purpose while a prior one is unacked. See
+        # ``_duplicate_unacked_exists`` for the rationale + the action-only
+        # scope (informational types carry distinct content per send).
+        if await self._duplicate_unacked_exists(
+            db,
+            from_agent_uuid=from_agent_uuid,
+            params=params,
+            to_agents_uuids=to_agents_uuids,
+        ):
+            return False
+        notification = NotificationTable(
+            type=params.notification_type,
+            priority=params.priority,
+            from_agent=from_agent_uuid,
+            to_agents=to_agents_uuids,
+            subject=params.subject,
+            body=params.body,
+            related_task_id=params.related_task_id,
+            # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
+            # informational), not the column's True default; default True
+            # for an unmapped type preserves the safe action-required bias.
+            requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
+        )
+        db.add(notification)
+        await db.flush()
+
+        # Deliver via Redis Streams for real-time push
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery_service = get_notification_delivery_service(db)
+        await delivery_service.deliver(require_uuid(notification.id))
+
+        logger.info(
+            "Notification created and delivered",
+            notification_id=str(notification.id),
+            type=params.notification_type.value,
+        )
+        return True
