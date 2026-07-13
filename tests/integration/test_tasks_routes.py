@@ -2023,15 +2023,21 @@ async def test_soft_block_task_success(task_client: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# unblock: success notifies assignee + commits
+# unblock: success leaves blocked status
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_unblock_task_success_notifies_assignee(
+async def test_unblock_task_success(
     task_client: dict,
 ) -> None:
-    """Unblock a blocked task assigned to a different agent → notification path."""
+    """Unblock a blocked task assigned to a different agent → 200, leaves BLOCKED.
+
+    The unblock notification (ALERT) is sent from TaskService.unblock() itself
+    (roboco/services/notification.py send_unblock_notification) — the route no
+    longer sends a second, duplicate notification, so there is nothing to mock
+    here.
+    """
     other = await _seed_agent(task_client)
     task = _seed_task(
         task_client,
@@ -2040,18 +2046,11 @@ async def test_unblock_task_success_notifies_assignee(
     )
     await task_client["db"].flush()
 
-    with patch(
-        "roboco.api.routes.tasks.get_notification_delivery_service"
-    ) as mock_delivery:
-        delivery_instance = AsyncMock()
-        delivery_instance.notify_assignee_of_unblock = AsyncMock(return_value=None)
-        mock_delivery.return_value = delivery_instance
-        response = await task_client["client"].post(
-            f"/api/tasks/{task.id}/unblock", headers=_HDR
-        )
+    response = await task_client["client"].post(
+        f"/api/tasks/{task.id}/unblock", headers=_HDR
+    )
     assert response.status_code == HTTPStatus.OK
     assert response.json()["status"] != "blocked"
-    delivery_instance.notify_assignee_of_unblock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
