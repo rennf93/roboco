@@ -23,11 +23,6 @@ import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
 import {

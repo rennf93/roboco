@@ -4,7 +4,7 @@
 
 Icon-only controls—buttons without visible text—require two layers of accessibility to be usable by all:
 
-1. **aria-label** attribute for screen reader users  
+1. **aria-label** attribute for screen reader users
 2. **Visible Tooltip** (matching text) for mouse, keyboard, and screen reader users
 
 Both layers must use identical text that describes the action or result.

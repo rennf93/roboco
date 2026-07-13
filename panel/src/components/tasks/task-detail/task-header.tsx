@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, TaskStatus, Team } from "@/types";
 import {
@@ -50,6 +51,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   RotateCcw,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";

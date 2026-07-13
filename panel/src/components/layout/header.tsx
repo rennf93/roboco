@@ -16,6 +16,7 @@ import { MobileSidebar } from "./mobile-sidebar";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -64,7 +65,6 @@ export function Header() {
                 onClick={() => void refresh()}
                 disabled={disabled || loading}
                 aria-label={REFRESH_LABEL}
-                title={REFRESH_LABEL}
               >
                 <RefreshCw
                   className={cn("h-5 w-5", loading && "animate-spin")}
