@@ -5,6 +5,13 @@ registry and runs the containers. Lives in the models layer so
 ``roboco/models/project.py`` can derive the valid-service allowlist from it
 without importing the runtime layer (no cycle). Adding an engine = one class +
 one registry line — no branch to edit in the provisioner or the env emitter.
+
+Extensions/modules are activated *post-ready* by a ``docker exec`` enable step
+(the provisioner runs it after the base readiness probe passes), never via
+bind-mounts or initdb scripts. The allowlists below are the *only* extensions /
+modules the system will ever activate — they are the security containment (an
+agent must not be able to ``CREATE EXTENSION plpython3u``, a superuser-RCE
+vector). See ``docs/internal/specs/2026-07-13-sandbox-extensions-on-the-fly.md``.
 """
 
 from __future__ import annotations
@@ -13,6 +20,35 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+# Per-family allowlists — the ONLY extensions/modules a sandbox may activate.
+# Adding one = add it here + ship it in the kitchen-sink image. An untrusted /
+# superuser-language extension (plpython3u, plperlu, …) must NEVER appear here.
+SANDBOX_PG_EXTENSIONS: frozenset[str] = frozenset(
+    {"vector", "postgis", "pg_trgm", "citext", "uuid-ossp"}
+)
+SANDBOX_REDIS_MODULES: frozenset[str] = frozenset({"search", "json", "bloom"})
+
+# Friendly module key -> the .so path inside the redis-stack image.
+SANDBOX_REDIS_MODULE_SO: dict[str, str] = {
+    "search": "/opt/redis-stack/lib/redisearch.so",
+    "json": "/opt/redis-stack/lib/rejson.so",
+    "bloom": "/opt/redis-stack/lib/redisbloom.so",
+}
+# Friendly module key -> the name redis reports in MODULE LIST (for verification).
+SANDBOX_REDIS_MODULE_NAME: dict[str, str] = {
+    "search": "search",
+    "json": "ReJSON",
+    "bloom": "bf",
+}
+
+# The allowed features per engine family, for the provisioner's allowlist guard
+# and for project-field validation. An engine with no activatable features omits
+# itself from the map (mongo).
+SANDBOX_ENGINE_FEATURES: dict[str, frozenset[str]] = {
+    "postgres": SANDBOX_PG_EXTENSIONS,
+    "redis": SANDBOX_REDIS_MODULES,
+}
+
 
 @dataclass(frozen=True)
 class SandboxConnection:
@@ -20,7 +56,8 @@ class SandboxConnection:
 
     ``user`` / ``database`` are ``None`` for engines that don't expose them
     (redis). For postgres ``database`` is the admin db; for mongo it is the
-    auth db (``admin``).
+    auth db (``admin``). ``features`` records the extensions/modules activated
+    in this container — for the cache-subset check and the evidence payload.
     """
 
     host: str
@@ -28,6 +65,7 @@ class SandboxConnection:
     password: str
     user: str | None = None
     database: str | None = None
+    features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,12 +89,14 @@ class SandboxInfo:
 
         Same variable names as ``emit_env`` (docs/env parity) but keyed for
         direct agent consumption (JSON) rather than ``docker run -e`` args.
+        ``available_extensions``/``available_modules`` surfaces what was
+        activated so the agent doesn't guess.
         """
         out: dict[str, dict[str, Any]] = {}
         for name, conn in self.services.items():
             args = SANDBOX_ENGINES[name].emit_env(conn)
             env = dict(pair.split("=", 1) for pair in args[1::2])
-            out[name] = {
+            payload: dict[str, Any] = {
                 "host": conn.host,
                 "port": conn.port,
                 "user": conn.user,
@@ -64,6 +104,14 @@ class SandboxInfo:
                 "database": conn.database,
                 "env": env,
             }
+            if conn.features:
+                key = (
+                    "available_extensions"
+                    if name == "postgres"
+                    else "available_modules"
+                )
+                payload[key] = list(conn.features)
+            out[name] = payload
         return out
 
 
@@ -95,14 +143,41 @@ class SandboxEngine(ABC):
 
     @abstractmethod
     def ready_probe(self, password: str) -> list[str]:
-        """``docker exec`` probe cmd; rc 0 means ready.
+        """``docker exec`` probe cmd; rc 0 means the base service is up.
 
-        Some engines ignore ``password`` (probe without auth); see ``run_command``.
+        Runs BEFORE ``enable_step``. Some engines ignore ``password`` (probe
+        without auth); see ``run_command``.
         """
 
     @abstractmethod
-    def connection(self, host: str, password: str) -> SandboxConnection:
-        """Connection info for the agent, given the container host + password."""
+    def enable_step(self, password: str, features: list[str]) -> list[list[str]] | None:
+        """``docker exec`` argvs that activate the requested features in a
+        running container (one inner argv per exec; the provisioner runs each).
+        ``None`` when there is nothing to enable (no features, or an engine
+        like mongo with no activatable features). The provisioner has already
+        allowlist-validated ``features`` before this runs, so every name here
+        is a known-safe identifier — the allowlist is the injection guard.
+        """
+
+    @abstractmethod
+    def verify_step(self, password: str, features: list[str]) -> list[str] | None:
+        """One ``docker exec`` argv whose output confirms the features are
+        actually present, or ``None`` when there is nothing to verify. Runs
+        after ``enable_step``; interpreted by ``verify_ok``."""
+
+    @abstractmethod
+    def verify_ok(self, features: list[str], stdout: bytes) -> bool:
+        """Interpret ``verify_step``'s stdout: True iff every feature is
+        confirmed present. A failed ``CREATE EXTENSION`` / ``MODULE LOAD``
+        (e.g. the image is missing the extension files) surfaces here, not
+        three steps later as a confusing query error."""
+
+    @abstractmethod
+    def connection(
+        self, host: str, password: str, features: tuple[str, ...] = ()
+    ) -> SandboxConnection:
+        """Connection info for the agent, given the container host, password,
+        and the features activated in this container."""
 
     @abstractmethod
     def emit_env(self, conn: SandboxConnection) -> list[str]:
@@ -133,13 +208,61 @@ class _PostgresEngine(SandboxEngine):
     def ready_probe(self, _password: str) -> list[str]:
         return ["pg_isready", "-U", "sandbox"]
 
-    def connection(self, host: str, password: str) -> SandboxConnection:
+    def enable_step(
+        self, _password: str, features: list[str]
+    ) -> list[list[str]] | None:
+        if not features:
+            return None
+        # Every name is allowlist-validated upstream; safe to interpolate as an
+        # identifier. IF NOT EXISTS so a re-provision of a warm container is a
+        # no-op rather than a not-error-but-noisy notice.
+        stmts = "; ".join(f"CREATE EXTENSION IF NOT EXISTS {f}" for f in features)
+        return [
+            [
+                "psql",
+                "-U",
+                "sandbox",
+                "-d",
+                "sandbox",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                stmts,
+            ]
+        ]
+
+    def verify_step(self, _password: str, features: list[str]) -> list[str] | None:
+        if not features:
+            return None
+        names = ",".join(f"'{f}'" for f in features)
+        return [
+            "psql",
+            "-U",
+            "sandbox",
+            "-d",
+            "sandbox",
+            "-tAc",
+            f"SELECT count(*) FROM pg_extension WHERE extname = ANY(ARRAY[{names}])",
+        ]
+
+    def verify_ok(self, features: list[str], stdout: bytes) -> bool:
+        if not features:
+            return True
+        try:
+            return int(stdout.decode().strip()) == len(features)
+        except (ValueError, AttributeError):
+            return False
+
+    def connection(
+        self, host: str, password: str, features: tuple[str, ...] = ()
+    ) -> SandboxConnection:
         return SandboxConnection(
             host=host,
             port=self.container_port,
             password=password,
             user="sandbox",
             database="sandbox",
+            features=features,
         )
 
     def emit_env(self, conn: SandboxConnection) -> list[str]:
@@ -174,8 +297,42 @@ class _RedisEngine(SandboxEngine):
     def ready_probe(self, password: str) -> list[str]:
         return ["redis-cli", "-a", password, "ping"]
 
-    def connection(self, host: str, password: str) -> SandboxConnection:
-        return SandboxConnection(host=host, port=self.container_port, password=password)
+    def enable_step(self, password: str, features: list[str]) -> list[list[str]] | None:
+        if not features:
+            return None
+        # One MODULE LOAD per module — redis-cli loads one module per call. The
+        # password is a per-sandbox ephemeral token (not a real secret), mirroring
+        # run_command's own --requirepass usage.
+        return [
+            ["redis-cli", "-a", password, "--no-auth-warning", "MODULE", "LOAD", so]
+            for so in (SANDBOX_REDIS_MODULE_SO[f] for f in features)
+        ]
+
+    def verify_step(self, password: str, features: list[str]) -> list[str] | None:
+        if not features:
+            return None
+        return [
+            "redis-cli",
+            "-a",
+            password,
+            "--no-auth-warning",
+            "--raw",
+            "MODULE",
+            "LIST",
+        ]
+
+    def verify_ok(self, features: list[str], stdout: bytes) -> bool:
+        if not features:
+            return True
+        tokens = set(stdout.decode(errors="replace").split())
+        return all(SANDBOX_REDIS_MODULE_NAME[f] in tokens for f in features)
+
+    def connection(
+        self, host: str, password: str, features: tuple[str, ...] = ()
+    ) -> SandboxConnection:
+        return SandboxConnection(
+            host=host, port=self.container_port, password=password, features=features
+        )
 
     def emit_env(self, conn: SandboxConnection) -> list[str]:
         return [
@@ -221,13 +378,29 @@ class _MongoEngine(SandboxEngine):
             "db.runCommand({ping:1}).ok",
         ]
 
-    def connection(self, host: str, password: str) -> SandboxConnection:
+    def enable_step(
+        self, _password: str, _features: list[str]
+    ) -> list[list[str]] | None:
+        # The mongo server is batteries-included (text search, change streams
+        # built in); nothing to activate post-ready.
+        return None
+
+    def verify_step(self, _password: str, _features: list[str]) -> list[str] | None:
+        return None
+
+    def verify_ok(self, features: list[str], _stdout: bytes) -> bool:
+        return not features
+
+    def connection(
+        self, host: str, password: str, features: tuple[str, ...] = ()
+    ) -> SandboxConnection:
         return SandboxConnection(
             host=host,
             port=self.container_port,
             password=password,
             user="sandbox",
             database="admin",
+            features=features,
         )
 
     def emit_env(self, conn: SandboxConnection) -> list[str]:
