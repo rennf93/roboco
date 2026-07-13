@@ -129,6 +129,7 @@ export function WorkSessionTable({
                       prefetch={false}
                       href={`/tasks/${session.task_id}`}
                       className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+                      title={session.task_id}
                     >
                       {session.task_id.slice(0, 8)}...
                     </Link>
@@ -183,6 +184,7 @@ export function WorkSessionTable({
                     prefetch={false}
                     href={`/work-sessions/${session.id}`}
                     className="truncate font-mono text-sm font-medium hover:underline"
+                    title={session.branch_name}
                   >
                     {session.branch_name}
                   </Link>
@@ -207,6 +209,7 @@ export function WorkSessionTable({
                     prefetch={false}
                     href={`/tasks/${session.task_id}`}
                     className="text-muted-foreground hover:text-foreground hover:underline"
+                    title={session.task_id}
                   >
                     {session.task_id.slice(0, 8)}...
                   </Link>

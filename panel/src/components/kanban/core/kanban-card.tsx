@@ -14,6 +14,7 @@ import {
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PriorityIndicator } from "../shared/priority-indicator";
@@ -65,6 +66,11 @@ export function KanbanCard({
   });
 
   const isDragging = isDraggingProp || isDraggingDnd;
+
+  const dragHandleLabel = "Drag to move task between columns";
+  const moveForwardLabel = isBacklog
+    ? "PM must activate this task first"
+    : "Move forward";
 
   const style = transform
     ? {
@@ -118,22 +124,22 @@ export function KanbanCard({
               </p>
             )}
           </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div
-                {...attributes}
-                {...listeners}
-                className={`shrink-0 mt-0.5 ${isBacklog ? "cursor-not-allowed opacity-50" : "cursor-grab active:cursor-grabbing"}`}
-              >
-                <GripVertical className="h-4 w-4 text-muted-foreground" />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              {isBacklog
-                ? "Backlog tasks can't be dragged — activate first"
-                : "Drag to another column to change status"}
-            </TooltipContent>
-          </Tooltip>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  {...attributes}
+                  {...listeners}
+                  aria-label={dragHandleLabel}
+                  title={dragHandleLabel}
+                  className={`shrink-0 mt-0.5 ${isBacklog ? "cursor-not-allowed opacity-50" : "cursor-grab active:cursor-grabbing"}`}
+                >
+                  <GripVertical className="h-4 w-4 text-muted-foreground" />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>{dragHandleLabel}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
 
         <div className="flex items-center justify-between mt-2">
@@ -262,27 +268,27 @@ export function KanbanCard({
               ) : (
                 task.status !== TaskStatus.COMPLETED &&
                 task.status !== TaskStatus.CANCELLED && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-11 w-11"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onAction("move-forward", task.id);
-                        }}
-                        disabled={isBacklog}
-                      >
-                        <ArrowRight className="h-3 w-3" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {isBacklog
-                        ? "PM must activate this task first"
-                        : "Advance to the next lifecycle stage"}
-                    </TooltipContent>
-                  </Tooltip>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-11 w-11"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAction("move-forward", task.id);
+                          }}
+                          disabled={isBacklog}
+                          aria-label={moveForwardLabel}
+                          title={moveForwardLabel}
+                        >
+                          <ArrowRight className="h-3 w-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{moveForwardLabel}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )
               )}
             </div>

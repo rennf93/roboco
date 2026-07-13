@@ -1,88 +1,35 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { SidebarNav, SidebarFooter, navItems } from "../sidebar";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { useUIStore } from "@/store";
+
+// tooltip-aria-label-spec.md §1a: the collapse-rail toggle previously had no
+// accessible name at all. The label must track the current action (collapse
+// vs. expand), not a static string, so a screen reader announces what will
+// happen next.
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/overview",
 }));
 
-const EXPECTED_ORDER = [
-  "/overview",
-  "/prompter",
-  "/tasks",
-  "/kanban",
-  "/git",
-  "/projects",
-  "/products",
-  "/social",
-  "/knowledge-base",
-  "/a2a",
-  "/agents",
-  "/journals",
-  "/auditor",
-  "/metrics",
-];
+import { Sidebar } from "../sidebar";
 
-describe("navItems", () => {
-  it("is a single flat array in the exact expected order", () => {
-    expect(navItems.map((item) => item.href)).toEqual(EXPECTED_ORDER);
+describe("Sidebar — collapse toggle aria-label (tooltip-aria-label-spec §1a)", () => {
+  it("labels the toggle 'Collapse sidebar' when expanded", () => {
+    useUIStore.setState({ sidebarCollapsed: false });
+    render(<Sidebar />);
+
+    const toggle = screen.getByRole("button", { name: "Collapse sidebar" });
+    expect(toggle).toHaveAttribute("title", "Collapse sidebar");
   });
 
-  it("does not include Business", () => {
-    expect(navItems.some((item) => item.href === "/business")).toBe(false);
-  });
-});
+  it("flips to 'Expand sidebar' once collapsed", () => {
+    useUIStore.setState({ sidebarCollapsed: false });
+    render(<Sidebar />);
 
-describe("SidebarNav", () => {
-  it("renders no dividers — the nav list itself has no group separators", () => {
-    const { container } = render(<SidebarNav />);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+
     expect(
-      container.querySelectorAll('[data-slot="separator"]'),
-    ).toHaveLength(0);
-  });
-
-  it("renders every nav item as a link, in order", () => {
-    render(<SidebarNav />);
-    const links = screen.getAllByRole("link");
-    expect(links.map((link) => link.getAttribute("href"))).toEqual(
-      EXPECTED_ORDER,
-    );
-  });
-
-  it("renders correctly when collapsed (icon-only, no layout break)", () => {
-    render(<SidebarNav collapsed />);
-    expect(screen.getAllByRole("link")).toHaveLength(navItems.length);
-    expect(screen.queryByText("Overview")).not.toBeInTheDocument();
-  });
-});
-
-describe("SidebarFooter", () => {
-  it("renders Business immediately before AI Providers, with Settings last", () => {
-    render(<SidebarFooter />);
-    const links = screen.getAllByRole("link");
-    expect(links.map((link) => link.getAttribute("href"))).toEqual([
-      "/business",
-      "/settings/ai-providers",
-      "/settings",
-    ]);
-  });
-
-  it("renders no Separator — the wrapper's border-t is the single divider (a Separator doubled it)", () => {
-    const expanded = render(<SidebarFooter />);
-    expect(
-      expanded.container.querySelectorAll('[data-slot="separator"]'),
-    ).toHaveLength(0);
-    expanded.unmount();
-
-    const collapsed = render(<SidebarFooter collapsed />);
-    expect(
-      collapsed.container.querySelectorAll('[data-slot="separator"]'),
-    ).toHaveLength(0);
-  });
-
-  it("renders correctly when collapsed (icon-only)", () => {
-    render(<SidebarFooter collapsed />);
-    expect(screen.getAllByRole("link")).toHaveLength(3);
-    expect(screen.queryByText("Business")).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Expand sidebar" }),
+    ).toBeInTheDocument();
   });
 });

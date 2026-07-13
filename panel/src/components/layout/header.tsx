@@ -17,10 +17,13 @@ import { MobileSidebar } from "./mobile-sidebar";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { usePageRefresh } from "@/hooks";
+
+const REFRESH_LABEL = "Refresh only the current page";
 
 export function Header() {
   const { setTheme } = useTheme();
@@ -54,22 +57,24 @@ export function Header() {
         <ConnectionStatus />
 
         {/* Refresh current page data */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => void refresh()}
-              disabled={disabled || loading}
-              aria-label="Refresh only the current page"
-            >
-              <RefreshCw
-                className={cn("h-5 w-5", loading && "animate-spin")}
-              />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Refresh this page&apos;s data</TooltipContent>
-        </Tooltip>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => void refresh()}
+                disabled={disabled || loading}
+                aria-label={REFRESH_LABEL}
+              >
+                <RefreshCw
+                  className={cn("h-5 w-5", loading && "animate-spin")}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{REFRESH_LABEL}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
 
         {/* Theme toggle */}
         <DropdownMenu>

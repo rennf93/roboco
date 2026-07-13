@@ -22,6 +22,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   GitPullRequest,
   ExternalLink,
   Rocket,
@@ -203,15 +209,23 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
                     )}
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                    <Link
-                      href={`/tasks/${task.id}`}
-                      title="Review details"
-                      prefetch={false}
-                    >
-                      <Button variant="ghost" size="sm">
-                        <FileText className="h-4 w-4" />
-                      </Button>
-                    </Link>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Link href={`/tasks/${task.id}`} prefetch={false}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label="Review details"
+                              title="Review details"
+                            >
+                              <FileText className="h-4 w-4" />
+                            </Button>
+                          </Link>
+                        </TooltipTrigger>
+                        <TooltipContent>Review details</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                     {awaiting && (
                       <>
                         <Button

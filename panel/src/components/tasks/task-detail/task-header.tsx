@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, TaskStatus, Team } from "@/types";
 import {
@@ -50,6 +51,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   RotateCcw,
+  ArrowLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
@@ -57,8 +59,11 @@ import { CopyButton } from "@/components/ui/copy-button";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
+const BACK_LABEL = "Go back to tasks list";
 
 // Status badge colors
 const statusColors: Record<TaskStatus, string> = {
@@ -479,6 +484,24 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
             truncates, so a long title never pushes the controls or the
             Actions menu out of place. */}
         <div className="flex items-start gap-3 min-w-0 flex-1">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link href="/tasks" prefetch={false}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    aria-label={BACK_LABEL}
+                    title={BACK_LABEL}
+                  >
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent>{BACK_LABEL}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <div className="min-w-0 flex-1">
             {/* Row 1: title only — editable, no UUID. Truncates on overflow. */}
             {editingTitle ? (

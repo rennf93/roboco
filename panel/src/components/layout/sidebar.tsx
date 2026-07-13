@@ -29,6 +29,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useUIStore } from "@/store";
@@ -154,6 +155,7 @@ export function SidebarFooter({
 
 export function Sidebar() {
   const { sidebarCollapsed, setSidebarCollapsed } = useUIStore();
+  const toggleLabel = sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
 
   return (
     <aside
@@ -184,29 +186,28 @@ export function Sidebar() {
             <span className="font-semibold text-lg">RoboCo</span>
           </Link>
         )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className={cn(sidebarCollapsed && "mx-auto")}
-              aria-label={
-                sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
-              }
-            >
-              <ChevronLeft
-                className={cn(
-                  "h-4 w-4 transition-transform",
-                  sidebarCollapsed && "rotate-180",
-                )}
-              />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="right">
-            {sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          </TooltipContent>
-        </Tooltip>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                className={cn(sidebarCollapsed && "mx-auto")}
+                aria-label={toggleLabel}
+                title={toggleLabel}
+              >
+                <ChevronLeft
+                  className={cn(
+                    "h-4 w-4 transition-transform",
+                    sidebarCollapsed && "rotate-180",
+                  )}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{toggleLabel}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Navigation */}

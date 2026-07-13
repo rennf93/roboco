@@ -285,6 +285,7 @@ export function SecretaryTab() {
                 onClick={() => void handleStart()}
                 disabled={starting}
                 className="h-11 shrink-0 px-6"
+                aria-label={starting ? "Starting…" : undefined}
               >
                 {starting ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
