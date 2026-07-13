@@ -1,4 +1,4 @@
-name: CodeQL Python
+name: CodeQL JavaScript/TypeScript
 
 on:
   push:
@@ -9,21 +9,13 @@ on:
     # ABSENT on a fleet-authored PR revision.
     branches: [master, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
     paths:
-      - 'roboco/**'
-      - 'agents/**'
-      - 'alembic/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - '.github/workflows/code-ql.yml'
+      - 'panel/**'
+      - '.github/workflows/codeql-js-ts.yml'
   pull_request:
     branches: [master]
     paths:
-      - 'roboco/**'
-      - 'agents/**'
-      - 'alembic/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - '.github/workflows/code-ql.yml'
+      - 'panel/**'
+      - '.github/workflows/codeql-js-ts.yml'
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
@@ -52,7 +44,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - language: python
+          - language: javascript-typescript
             build-mode: none
 
     steps:
