@@ -70,6 +70,11 @@ def seed_company(stack: E2EStack) -> Company:
         reviewer = agent("pr-reviewer-1", AgentRole.PR_REVIEWER, None)
         ceo = agent("ceo", AgentRole.CEO, None)
         hom = agent("head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD)
+        # The system sentinel is a from_agent FK target for orchestrator-generated
+        # notifications, never a participant. Production seeds it via
+        # initial_data.py; the harness must too or _resolve_agent_uuid("system")
+        # returns None and silently drops every system-origin notification.
+        agent("system", AgentRole.SYSTEM, None)
         await session.flush()
         out.ceo_id = ceo.id
         out.dev_id = dev.id
