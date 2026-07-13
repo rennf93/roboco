@@ -512,6 +512,42 @@ async def test_unblock_notifies_once_not_twice_on_repeated_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
+    """Collision-sequencing notification fires only for freshly-added edges.
+
+    `add_dependency` returns True only on a new edge; a subsequent wiring
+    pass over the same pair returns False and must skip the notification,
+    so the coordination ALERT cannot double-fire.
+    """
+    parent_id = uuid4()
+    held_back_id = uuid4()
+    blocking_id = uuid4()
+    held_back = _build_task(id=held_back_id, assigned_to=uuid4())
+    blocking = _build_task(id=blocking_id)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get_subtasks", AsyncMock(return_value=[held_back, blocking]))
+    add_dep_mock = AsyncMock(side_effect=[True, False])
+    _bind(svc, "add_dependency", add_dep_mock)
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    wiring_passes = 2
+    with (
+        patch(
+            "roboco.services.sequencing.dev_task_collision_edges",
+            return_value=[(blocking_id, held_back_id)],
+        ),
+        patch(
+            "roboco.services.notification.NotificationService",
+            return_value=mock_ns,
+        ),
+    ):
+        for _ in range(wiring_passes):
+            await svc.wire_sibling_collision_dag(parent_id)
+    mock_ns.send_collision_sequencing_notification.assert_awaited_once()
+    assert add_dep_mock.await_count == wiring_passes
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
     result = MagicMock()

@@ -4,6 +4,12 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Restored five coordination-event notification producers with double-fire guards.** Reassignment, collision-sequencing, unblock, dependency-revival, and stale-claim-reaped notifications are now wired at their lifecycle chokepoints in `TaskService` and the orchestrator reaper, each with an idempotent upstream guard preventing duplicate ALERT rows. The duplicate route-level `notify_assignee_of_unblock` call in `POST /api/tasks/{id}/unblock` was removed so unblock fires exactly one notification. Added `docs/backend/services/coordination-events.md` and `tests/e2e_smoke/test_notification_coordination_events.py` covering the restored producers.
+
 ## [0.21.0] - 2026-07-09
 
 ### Added
