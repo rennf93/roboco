@@ -59,6 +59,7 @@
 | `cancel` | method | task.py:5644 | Cascade-cancel descendants through the validator. |
 | `reassign` / `reassign_active_claim` | method | task.py:7657 / 7807 | Reassignment with Board/Main-PM diversion guards. |
 | `pr_pass` / `pr_fail` | method | task.py:8100 / 8137 | In-path PR-review gate verdicts; `pr_fail` transitions to `needs_revision`, then calls `_alert_auditor_of_rework` after flush to emit a best-effort auditor rework ALERT. |
+| `list_open_docs_sync_tasks` | method | task.py:1580 | Returns open `source=docs_sync` tasks, optionally scoped to one release version via the `docs_sync_release_version` marker. The version predicate is applied in SQL so dedupe/cap checks do not haul every open row into Python. |
 
 ## Data Flow
 Request → `TaskService` loads `TaskTable` (`get`/`_load_task_or_raise`) → validates role/transition (`validate_task_transition`) + git reqs (`validate_git_requirements`, branchless/umbrella/external-review exempt) → mutates columns → `_emit_status_transition_audit` writes `AuditLogTable` row + bumps `revision_count` in the same session → pokes orchestrator `trigger_dispatch()` → fires fire-and-forget background tasks (RAG indexing, learning distillation, worktree cleanup, work-session close). Terminal states trigger `_unblock_dependents` to revive waiting tasks.
@@ -136,6 +137,7 @@ stateDiagram-v2
 - Background indexing/learning/cleanup tasks are tracked on `self._background_tasks` and are best-effort — a failure never blocks the transition.
 - The sequence gate (`_claim_blocked_by_sequence`) is enforced ONLY in `_validate_claim_preconditions`, i.e. inside `claim` itself — both the gateway claim verbs AND the orchestrator's raw dispatch claim cross it because they both funnel through `TaskService.claim`, unlike the pre-#382 dependency gate which briefly lived only on the gateway side. Any future claim path that bypasses `TaskService.claim` (a raw `admin_set_status`, for instance) does NOT get sequence enforcement.
 - `_apply_dependency_lineage` is scoped to SAME-REPO dependencies only (`dep_task.project_id != ctx.project.id` short-circuits) — a cross-repo dependency edge (e.g. a MegaTask root-subtask in another project) has no shared git history to merge and is silently skipped; the dependency TIMING gate still holds the claim regardless of repo.
+- `TaskTable.orchestration_markers` is generic `JSON`, not `JSONB`. Any SQL predicate on a marker key must use `.as_string()` (or the JSON dialect's generic comparator), not `.astext`, which is JSONB-only and raises `AttributeError` at compile time. `list_open_docs_sync_tasks(version=...)` at task.py:1596 is the current example; the inline comment records the rationale.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md states ceo_reject "~4779 skips _validate_and_set_status in branchless path". Actual: branchless branch of `ceo_reject` is at task.py:5488 and routes through `admin_set_status` (which DOES emit audit at task.py:2100). The non-branchless branch DOES call `_validate_and_set_status` (task.py:5461). No audit gap — the line reference is stale.
