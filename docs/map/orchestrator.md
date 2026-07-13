@@ -115,6 +115,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._blocked_by_earlier_lane_sibling | method | roboco/runtime/orchestrator.py:10234 | Per-dev LANE barrier: hold a dev's higher-sequence code leaf until its own lower-sequence code siblings under the same parent are terminal. |
 | AgentOrchestrator._dispatch_pm_review_work | method | roboco/runtime/orchestrator.py:10299 | Dispatch awaiting_pm_review to cell/main PM; applies _blocked_by_earlier_sibling; human-role skip + respawn gate. |
 | AgentOrchestrator._dispatch_a2a_work | method | roboco/runtime/orchestrator.py:10904 | Spawn targets of unacknowledged a2a_request notifications; skips human-only roles (CEO/prompter/secretary). |
+| AgentOrchestrator._dispatch_audit_work | method | roboco/runtime/orchestrator.py:12948 | Spawn the auditor on reactive HIGH-priority ALERT notifications or on a scheduled sweep when `ROBOCO_AUDIT_INTERVAL_SECONDS` has elapsed and recent delivery activity exists. |
 | AgentOrchestrator._build_dev_prompt | method | roboco/runtime/orchestrator.py:11053 | Render the dev spawn prompt with workflow state + instructions. |
 | is_unattributed_delivery_spawn | function | roboco/runtime/orchestrator.py:415 | True when a delivery-role (developer/qa/documenter) spawn carries no task_id; warns on unattributed usage without noise from intentionally taskless roles. |
 | AgentOrchestrator._flush_respawn_tracker | method | roboco/runtime/orchestrator.py:1105 | Unbounded flush of the full in-memory PM-respawn snapshot called after `_drain_bg_tasks` in `stop()` so a deadline-cancelled fire-and-forget persist can't leave the durable count lagging. |
@@ -171,7 +172,7 @@ stateDiagram-v2
 ## Logical Tree
 - AgentOrchestrator
   - Startup (`start`): restore WaitingRecord + respawn_tracker → reconcile orphan claims → `_readopt_running_agents` → launch background loops
-  - Dispatch: `_dispatch_all_work` (reap → grok budget → 17 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`)
+  - Dispatch: `_dispatch_all_work` (reap → grok budget → 17 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`); includes `_dispatch_audit_work` for reactive auditor ALERTs and scheduled sweeps
   - Spawn: `spawn_agent` chokepoint → `_readiness_gate` → provider-park pre-check → `_prepare_agent_spawn` (worktree/permissions/briefing/MCP/manifest) → `_safe_spawn` → `_spawn_container` or GrokCliProvider
   - Health/reaper: `_check_health` (docker inspect) → `_maybe_park_for_exit_error` | `_crash_retry_or_escalate` | `_handle_stopped_container`; `_reap_stale_claims` via `_should_skip_live_reap` + `_maybe_recover_broken_gateway`
   - Rate-limit/overload park-and-probe: `_park_provider_unavailable` (+ grok 75/78 variants) → `_rate_limit_probe_loop` (30s) → `_on_probe_success`/`_on_probe_failure` → `resolve_wait`
@@ -189,7 +190,7 @@ stateDiagram-v2
 ## Entry Points
 - FastAPI lifespan start → `AgentOrchestrator.start()` (bootstrap constructs singleton).
 - FastAPI lifespan shutdown → `stop()` (idempotent; bootstrap `finally` re-calls as safety net).
-- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`).
+- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`), including `_dispatch_audit_work` for reactive auditor ALERTs and scheduled sweeps.
 - `_health_loop` (per-instance inspect), `_sweeper_loop` (superseded PRs, dangling images, transcript retention, grok budget), `_rate_limit_probe_loop` (30s).
 - Default-off loop ticks: self-heal / ci-watch / dep-update / release-manager / strategy / external-PR poll.
 - API routes: `spawn_agent`, `stop_agent`, `start_intake_session`, `spawn_secretary_session`, `supersede_external_pr`, `get_status_summary`.
@@ -204,6 +205,7 @@ stateDiagram-v2
 - `ROBOCO_STRATEGY_ENGINE_ENABLED`, `ROBOCO_RESEARCH_ENABLED`, `ROBOCO_EXTERNAL_PR_REVIEW_ENABLED` / `ROBOCO_INTERNAL_PR_REVIEW_ENABLED` — strategy / research / external-PR poll.
 - `ROBOCO_GROK_MAX_COST_USD` — grok budget kill-switch; `_GROK_RATE_LIMIT_EXIT_CODE=75`, `_GROK_AUTH_EXIT_CODE=78`, `_PROBE_GIVE_UP_THRESHOLD=30`.
 - `ROBOCO_CLAUDE_STUCK_KILL_SECONDS` (default 3600, min 600) — heartbeat-stale kill threshold for non-GROK agents; controls `_maybe_kill_stuck_claude`.
+- `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 21600) — cadence for scheduled auditor sweeps; `0` disables. Controls `_dispatch_audit_work` scheduled path.
 - `ROBOCO_DISPATCHER_INTERVAL_SECONDS` (30), `ROBOCO_INTERACTIVE_IDLE_REAP_SECONDS`, `ROBOCO_GROK_*` backoff constants.
 - `ROBOCO_SANDBOX_DB_ENABLED` (default off) — master switch for the sandboxed per-agent test DB/Redis/Mongo. On-demand model (2026-07-08): nothing is provisioned at spawn — `_sandbox_available_services` only probes+names the project's opted-in set (marker env), and `ensure_sandbox` provisions idempotently when an agent calls the `request_sandbox` do-verb (`ContentActions.request_sandbox`, gateway/content_actions.py). Teardown (`_sandbox_janitor_sweep` + every container-removal path) is unchanged. A project participates only when its `sandbox_services` column is also set. The service set is the `SANDBOX_ENGINES` registry (postgres / redis / mongo); adding an engine needs no orchestrator or env-emitter change.
 - `ROBOCO_DB_NETWORK_ISOLATED` (default off; set by the compose topology that carries the `roboco_data` network) — suppresses the legacy `_append_gate_env` prod-creds injection when postgres/redis are unreachable from the agent mesh.
