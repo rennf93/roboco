@@ -119,7 +119,7 @@ async def test_publish_success_calls_docs_sync_seam(db_session: AsyncSession) ->
             AsyncMock(return_value=fake_executor),
         ),
         patch(
-            "roboco.services.release_proposal.get_docs_sync_engine",
+            "roboco.services.docs_sync_engine.get_docs_sync_engine",
             return_value=fake_engine,
         ),
         patch.object(
@@ -170,7 +170,7 @@ async def test_docs_sync_failure_never_fails_the_approve(
             AsyncMock(return_value=fake_executor),
         ),
         patch(
-            "roboco.services.release_proposal.get_docs_sync_engine",
+            "roboco.services.docs_sync_engine.get_docs_sync_engine",
             side_effect=RuntimeError("docs-sync boom"),
         ),
         patch.object(
