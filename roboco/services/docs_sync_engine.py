@@ -61,15 +61,21 @@ class DocsSyncEngine(BaseService):
 
     service_name = "docs_sync_engine"
 
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # Tracks how many tasks this engine instance has originated. Reset per
+        # instance because release_proposal creates a fresh engine per publish.
+        self._per_cycle_originated = 0
+
     async def originate_docs_update(
         self, version: str, changelog: str
     ) -> TaskTable | None:
         """If enabled, open one docs-update task for this release.
 
         Returns the created task, or None when disabled, when roboco-website is
-        not registered, when the open-task cap is reached, or when a task for
-        this version is already open. Flushes; the caller (release_proposal)
-        owns the commit. Never starts / approves / merges.
+        not registered, when either cap is reached, or when a task for this
+        version is already open. Flushes; the caller (release_proposal) owns
+        the commit. Never starts / approves / merges.
         """
         if not settings.docs_sync_enabled:
             return None
@@ -95,6 +101,13 @@ class DocsSyncEngine(BaseService):
             )
             return None
 
+        if self._per_cycle_originated >= settings.docs_sync_max_per_cycle:
+            self.log.info(
+                "docs-sync per-cycle cap reached; not originating",
+                cap=settings.docs_sync_max_per_cycle,
+            )
+            return None
+
         if await self._already_open_for_version(task_svc, version):
             self.log.info(
                 "docs-sync task already open for version",
@@ -105,6 +118,7 @@ class DocsSyncEngine(BaseService):
         task = await self._open_task(
             task_svc, cast("UUID", project.id), version, changelog
         )
+        self._per_cycle_originated += 1
         self.log.info(
             "docs-sync task opened",
             task_id=str(task.id),
