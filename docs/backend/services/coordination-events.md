@@ -66,10 +66,12 @@ Body: Task {held_back_task_id} was held back by the collision-sequencing
 
 **Double-fire guard:** Both `unblock` and `unblock_with_restore` are guarded by a status check (`status != BLOCKED` short-circuits early). A repeated call against an already-unblocked task is a no-op upstream and never reaches the notification handler.
 
+**Route-layer duplicate removed:** The `POST /api/tasks/{id}/unblock` route previously called `NotificationDeliveryService.notify_assignee_of_unblock()` (a `TASK_ASSIGNMENT` notification) after `TaskService.unblock()` had already sent the ALERT above. That route-layer call and the now-dead delivery method have been removed, so the ALERT from the service chokepoint is the only notification fired for an unblock.
+
 **Subject & body:**
 ```
 Subject: Task {task_id} unblocked
-Body: Task {task_id} has been unblocked and handed back to {owner}. 
+Body: Task {task_id} has been unblocked and handed back to {owner}.
        It is ready to resume.
 ```
 
@@ -163,5 +165,7 @@ See `test_notification.py` and `test_task.py` for worked examples of producer-le
 
 - **Implementation:** `roboco/services/notification.py` (producers)
 - **Wiring:** `roboco/services/task.py` (TaskService helpers), `roboco/runtime/orchestrator.py` (reaper hook)
-- **Tests:** `tests/unit/services/test_notification.py` (producer unit tests), `tests/unit/services/test_task.py` (chokepoint double-fire proofs)
+- **Route:** `roboco/api/routes/tasks.py` (`unblock` endpoint; service-layer ALERT only, no route-level duplicate)
+- **Unit tests:** `tests/unit/services/test_notification.py` (producer unit tests), `tests/unit/services/test_task.py` (chokepoint double-fire proofs)
+- **Route/chokepoint integration tests:** `tests/integration/test_tasks_routes.py` (unblock returns 200 and leaves `blocked` with no duplicate notification), `tests/e2e_smoke/test_notification_coordination_events.py` (DB-truth checks for unblock and dependency-revival ALERT rows)
 - **Data model:** `roboco/models/notification.py` (CreateNotificationParams)
