@@ -4757,7 +4757,9 @@ class TaskService(BaseService):
             from roboco.services.notification import NotificationService
 
             await NotificationService().send_unblock_notification(
-                task_id=str(task_id), restored_owner=str(restored_owner)
+                task_id=str(task_id),
+                restored_owner=str(restored_owner),
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning(
@@ -7011,6 +7013,7 @@ class TaskService(BaseService):
                 task_id=str(task.id),
                 assignee=str(owner),
                 completed_dependency_id=str(completed_dependency_id),
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning(
