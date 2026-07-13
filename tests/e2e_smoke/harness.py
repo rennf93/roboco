@@ -476,6 +476,12 @@ class ScriptedAgent:
         os.environ["ROBOCO_AGENT_ROLE"] = self.role
         os.environ["ROBOCO_ORCHESTRATOR_URL"] = self.stack.base_url
         os.environ["ROBOCO_TOOL_MANIFEST_PATH"] = str(self._manifest_path)
+        # The host agent environment may carry a real ROBOCO_AGENT_TOKEN issued
+        # for the test runner's identity. flow_server reads it at import time
+        # and forwards it on every call; the token won't match the ephemeral
+        # test agent IDs and causes 401s. Drop it so tests run in the same
+        # unsigned-token mode as CI.
+        os.environ.pop("ROBOCO_AGENT_TOKEN", None)
         module = importlib.import_module(name)
         if getattr(module, "AGENT_ID", None) != str(self.agent_id):
             module = importlib.reload(module)

@@ -17,20 +17,22 @@ asserts on the dispatch decision, not the LLM runtime.
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import httpx
-import pytest
 from roboco.config import settings
+from roboco.models import NotificationType
 from roboco.models.base import TaskStatus
-from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.runtime.orchestrator import _SYSTEM_API_HEADERS, AgentOrchestrator
 from tests.e2e_smoke.arcs import seed_company, seed_project, seed_task
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    import pytest
     from sqlalchemy.ext.asyncio import AsyncSession
     from tests.e2e_smoke.harness import E2EStack
 
@@ -109,7 +111,8 @@ def _notifications_for_task(
 
 def _fresh_orchestrator(stack: E2EStack, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Return a bare orchestrator whose internal API points at the e2e app."""
-    monkeypatch.setattr(settings, "internal_api_url", f"{stack.base_url}/api")
+    # internal_api_url is a computed property; patch its input api_url instead.
+    monkeypatch.setattr(settings, "api_url", stack.base_url)
     orch: Any = AgentOrchestrator.__new__(AgentOrchestrator)
     # __new__ bypasses __init__, so the instance attributes that
     # _is_agent_active and _dispatch_audit_work read must be initialized here.
@@ -119,8 +122,7 @@ def _fresh_orchestrator(stack: E2EStack, monkeypatch: pytest.MonkeyPatch) -> Any
     return orch
 
 
-@pytest.mark.asyncio
-async def test_scheduled_audit_trigger_spawns_auditor(
+def test_scheduled_audit_trigger_spawns_auditor(
     e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The scheduled sweep spawns the auditor when delivery activity is recent."""
@@ -147,8 +149,13 @@ async def test_scheduled_audit_trigger_spawns_auditor(
     orch = _fresh_orchestrator(stack, monkeypatch)
     monkeypatch.setattr(settings, "audit_interval_seconds", 60)
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        await orch._dispatch_audit_work(client)
+    async def _dispatch() -> None:
+        async with httpx.AsyncClient(
+            timeout=5.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
+            await orch._dispatch_audit_work(client)
+
+    asyncio.run(_dispatch())
 
     orch.spawn_agent.assert_awaited_once()
     call = orch.spawn_agent.await_args
@@ -159,12 +166,11 @@ async def test_scheduled_audit_trigger_spawns_auditor(
     assert "SCHEDULED AUDIT SWEEP" in prompt
 
     # No reactive alert should have been created for this path.
-    assert _notifications_for_task(stack, task_id, "ALERT") == []
+    assert _notifications_for_task(stack, task_id, NotificationType.ALERT) == []
     assert auditor_id is not None  # auditor was seeded and resolved
 
 
-@pytest.mark.asyncio
-async def test_reactive_alert_producer_spawns_auditor(
+def test_reactive_alert_producer_spawns_auditor(
     e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """QA-fail emits an auditor-targeted ALERT; the dispatcher spawns the auditor."""
@@ -197,7 +203,7 @@ async def test_reactive_alert_producer_spawns_auditor(
         f"fail-qa: {resp.status_code} {resp.text[:1500]}"
     )
 
-    alerts = _notifications_for_task(stack, task_id, "ALERT")
+    alerts = _notifications_for_task(stack, task_id, NotificationType.ALERT)
     assert len(alerts) == 1, alerts
     alert = alerts[0]
     assert "rework alert" in alert["subject"].lower(), alert
@@ -206,8 +212,13 @@ async def test_reactive_alert_producer_spawns_auditor(
     orch = _fresh_orchestrator(stack, monkeypatch)
     monkeypatch.setattr(settings, "audit_interval_seconds", 60)
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        await orch._dispatch_audit_work(client)
+    async def _dispatch() -> None:
+        async with httpx.AsyncClient(
+            timeout=5.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
+            await orch._dispatch_audit_work(client)
+
+    asyncio.run(_dispatch())
 
     orch.spawn_agent.assert_awaited_once()
     call = orch.spawn_agent.await_args
