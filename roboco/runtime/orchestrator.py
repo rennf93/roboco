@@ -907,14 +907,21 @@ class AgentOrchestrator:
     _last_audit_spawn_at: datetime | None = None
 
     def __new__(cls, *_args: Any, **_kwargs: Any) -> "AgentOrchestrator":
-        """Allocate the instance and pre-initialize the agent registry.
+        """Allocate the instance and pre-initialize lazy dispatcher state.
 
         ``__init__`` still re-initializes ``_instances``; this just guarantees
-        the attribute exists for tests that bypass ``__init__`` via bare
+        the attributes exist for tests that bypass ``__init__`` via bare
         ``AgentOrchestrator.__new__(AgentOrchestrator)``.
+
+        Auditor-dispatch paths read ``_last_audit_spawn_at`` and
+        ``_notification_spawn_at`` from partially-constructed instances, so
+        they must be present here; the per-instance cooldown stores are
+        re-initialized by ``__init__`` when the normal constructor runs.
         """
         instance = super().__new__(cls)
         instance._instances = {}
+        instance._last_audit_spawn_at = None
+        instance._notification_spawn_at = {}
         return instance
 
     def __init__(
