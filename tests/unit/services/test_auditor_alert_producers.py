@@ -79,15 +79,17 @@ def _session_with_agent(agent: MagicMock | None) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_notify_auditor_of_rework_creates_alert_to_auditor() -> None:
+async def test_notify_auditor_of_rework_creates_alert_to_auditor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The delivery service builds an ALERT notification targeted at the auditor."""
     auditor = _mock_agent(role="auditor", slug="auditor")
     actor = _mock_agent(role="qa", slug="be-qa")
     session = _session_with_agent(auditor)
     svc = NotificationDeliveryService(session)
-    svc._get_auditor_agent = AsyncMock(return_value=auditor)
-    svc._get_agent_by_id = AsyncMock(return_value=actor)
-    svc.deliver = AsyncMock(return_value=True)
+    monkeypatch.setattr(svc, "_get_auditor_agent", AsyncMock(return_value=auditor))
+    monkeypatch.setattr(svc, "_get_agent_by_id", AsyncMock(return_value=actor))
+    monkeypatch.setattr(svc, "deliver", AsyncMock(return_value=True))
 
     task = _mock_task()
     with patch(
@@ -115,12 +117,15 @@ async def test_notify_auditor_of_rework_creates_alert_to_auditor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notify_auditor_of_rework_skips_when_no_auditor() -> None:
+async def test_notify_auditor_of_rework_skips_when_no_auditor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """If the auditor agent is absent, the producer is a silent no-op."""
     session = _session_with_agent(None)
     svc = NotificationDeliveryService(session)
-    svc._get_auditor_agent = AsyncMock(return_value=None)
-    svc.deliver = AsyncMock()
+    monkeypatch.setattr(svc, "_get_auditor_agent", AsyncMock(return_value=None))
+    deliver_spy = AsyncMock()
+    monkeypatch.setattr(svc, "deliver", deliver_spy)
 
     task = _mock_task()
     await svc.notify_auditor_of_rework(
@@ -130,7 +135,7 @@ async def test_notify_auditor_of_rework_skips_when_no_auditor() -> None:
     )
 
     assert not session.add.called
-    assert not svc.deliver.called
+    assert not deliver_spy.called
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +195,9 @@ async def test_alert_auditor_of_rework_is_best_effort() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fail_qa_emits_auditor_alert() -> None:
+async def test_fail_qa_emits_auditor_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``fail_qa`` calls the auditor rework producer with QA attribution."""
     session = MagicMock()
     session.flush = AsyncMock()
@@ -198,9 +205,10 @@ async def test_fail_qa_emits_auditor_alert() -> None:
     task.orchestration_markers = {"original_developer": str(uuid4())}
 
     svc = TaskService(session)
-    svc.get = AsyncMock(return_value=task)
-    svc._validate_and_set_status = MagicMock()
-    svc._alert_auditor_of_rework = AsyncMock()
+    monkeypatch.setattr(svc, "get", AsyncMock(return_value=task))
+    monkeypatch.setattr(svc, "_validate_and_set_status", MagicMock())
+    alert_spy = AsyncMock()
+    monkeypatch.setattr(svc, "_alert_auditor_of_rework", alert_spy)
 
     with (
         patch(
@@ -212,15 +220,18 @@ async def test_fail_qa_emits_auditor_alert() -> None:
         out = await svc.fail_qa(task.id, notes="missing tests")
 
     assert out is task
-    svc._alert_auditor_of_rework.assert_awaited_once()
-    call = svc._alert_auditor_of_rework.await_args
+    alert_spy.assert_awaited_once()
+    call = alert_spy.await_args
+    assert call is not None
     assert call.args[0] is task
     assert call.kwargs["reason"] == "missing tests"
     assert call.kwargs["actor_role"] == "qa"
 
 
 @pytest.mark.asyncio
-async def test_pr_fail_emits_auditor_alert() -> None:
+async def test_pr_fail_emits_auditor_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``pr_fail`` calls the auditor rework producer with reviewer attribution."""
     session = MagicMock()
     session.flush = AsyncMock()
@@ -233,18 +244,20 @@ async def test_pr_fail_emits_auditor_alert() -> None:
     pm.id = pm_id
 
     svc = TaskService(session)
-    svc.get = AsyncMock(return_value=task)
-    svc._validate_and_set_status = MagicMock()
-    svc._revision_pm_for_task = AsyncMock(return_value=pm)
-    svc._alert_auditor_of_rework = AsyncMock()
+    monkeypatch.setattr(svc, "get", AsyncMock(return_value=task))
+    monkeypatch.setattr(svc, "_validate_and_set_status", MagicMock())
+    monkeypatch.setattr(svc, "_revision_pm_for_task", AsyncMock(return_value=pm))
+    alert_spy = AsyncMock()
+    monkeypatch.setattr(svc, "_alert_auditor_of_rework", alert_spy)
 
     out = await svc.pr_fail(
         reviewer_id, task.id, notes="convention violation", issues=["mv model"]
     )
 
     assert out is task
-    svc._alert_auditor_of_rework.assert_awaited_once()
-    call = svc._alert_auditor_of_rework.await_args
+    alert_spy.assert_awaited_once()
+    call = alert_spy.await_args
+    assert call is not None
     assert call.args[0] is task
     assert call.kwargs["reason"] == "convention violation"
     assert call.kwargs["actor_role"] == "pr_reviewer"
@@ -252,7 +265,9 @@ async def test_pr_fail_emits_auditor_alert() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_changes_emits_auditor_alert() -> None:
+async def test_request_changes_emits_auditor_alert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``request_changes`` calls the auditor rework producer with PM attribution."""
     session = MagicMock()
     session.flush = AsyncMock()
@@ -263,10 +278,11 @@ async def test_request_changes_emits_auditor_alert() -> None:
     task.claimed_by = pm_id
 
     svc = TaskService(session)
-    svc.get = AsyncMock(return_value=task)
-    svc._validate_and_set_status = MagicMock()
-    svc._revision_pm_for_task = AsyncMock(return_value=pm)
-    svc._alert_auditor_of_rework = AsyncMock()
+    monkeypatch.setattr(svc, "get", AsyncMock(return_value=task))
+    monkeypatch.setattr(svc, "_validate_and_set_status", MagicMock())
+    monkeypatch.setattr(svc, "_revision_pm_for_task", AsyncMock(return_value=pm))
+    alert_spy = AsyncMock()
+    monkeypatch.setattr(svc, "_alert_auditor_of_rework", alert_spy)
 
     with patch("roboco.services.task.extract_original_developer", return_value=None):
         out = await svc.request_changes(
@@ -278,8 +294,9 @@ async def test_request_changes_emits_auditor_alert() -> None:
         )
 
     assert out is task
-    svc._alert_auditor_of_rework.assert_awaited_once()
-    call = svc._alert_auditor_of_rework.await_args
+    alert_spy.assert_awaited_once()
+    call = alert_spy.await_args
+    assert call is not None
     assert call.args[0] is task
     assert call.kwargs["reason"] == "AC missing"
     assert call.kwargs["actor_role"] == "cell_pm"
