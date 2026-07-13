@@ -12,7 +12,7 @@ Also implements the ACK system for tracking acknowledgments.
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -616,7 +616,7 @@ class NotificationDeliveryService(BaseService):
     async def get_ack_status(
         self,
         notification_id: UUID,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get acknowledgment status for a notification.
 
@@ -651,7 +651,7 @@ class NotificationDeliveryService(BaseService):
     async def get_delivery_summary(
         self,
         agent_id: UUID,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """
         Get delivery summary for an agent.
 
