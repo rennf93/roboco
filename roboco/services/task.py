@@ -1588,12 +1588,13 @@ class TaskService(BaseService):
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
         if version is not None:
-            # Filter by marker in SQL so the database can apply JSONB indexes
-            # and avoid hauling every open docs_sync row into Python.
+            # Filter by marker in SQL so the database applies the predicate
+            # and avoids hauling every open docs_sync row into Python.
+            # .as_string() is the generic JSON comparator; .astext is JSONB-only.
             stmt = stmt.where(
                 TaskTable.orchestration_markers[
                     markers.DOCS_SYNC_RELEASE_VERSION
-                ].astext
+                ].as_string()
                 == version
             )
         result = await self.session.execute(stmt)
@@ -2071,7 +2072,7 @@ class TaskService(BaseService):
             for child in result.scalars().all():
                 # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
                 # import and to keep ruff/mypy happy without noqa/type: ignore.
-                child_id = cast('UUID', child.id)
+                child_id = cast("UUID", child.id)
                 if child_id in seen:
                     continue
                 seen.add(child_id)
@@ -8025,7 +8026,7 @@ class TaskService(BaseService):
                 descendants.append(child)
                 # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
                 # resolves to uuid.UUID at runtime, without a type: ignore.
-                to_process.append(cast('UUID', child.id))
+                to_process.append(cast("UUID", child.id))
 
         return descendants
 
