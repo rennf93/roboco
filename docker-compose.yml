@@ -384,6 +384,20 @@ services:
       - agent-grok-image
 
   # ==========================================================================
+  # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
+  # Only pulled by the provisioner when a venture requests pg extensions; bare
+  # sandboxes stay on the light upstream postgres image. See
+  # docker/sandbox-pg.Dockerfile + docs/internal/specs/2026-07-13-sandbox-extensions-on-the-fly.md
+  # ==========================================================================
+  sandbox-pg-image:
+    build:
+      context: .
+      dockerfile: docker/sandbox-pg.Dockerfile
+    image: roboco-sandbox-pg
+    entrypoint: ["/bin/sh", "-c", "echo 'Sandbox PG (kitchen-sink) image built'"]
+    restart: "no"
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:

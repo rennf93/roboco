@@ -128,6 +128,18 @@ class SandboxEngine(ABC):
     def container_name(self, agent_id: str) -> str:
         return f"roboco-sandbox-{self.container_slug}-{agent_id}"
 
+    def image_for(self, _features: list[str]) -> str:
+        """Image to run for this provision, given the features requested.
+
+        Default: the bare ``image`` for every provision — bare projects pull
+        only the light upstream image (no heavier kitchen-sink pull). An engine
+        whose features need files the bare image lacks (pg extensions, redis
+        modules) overrides this to return the kitchen-sink image when features
+        is non-empty. The provisioner calls this (not ``image`` directly) so the
+        bare path stays byte-for-byte unchanged.
+        """
+        return self.image
+
     @abstractmethod
     def run_env(self, password: str) -> list[str]:
         """``-e KEY=VAL`` pairs baked into the sandbox container's ``docker run``."""
@@ -187,10 +199,17 @@ class SandboxEngine(ABC):
 class _PostgresEngine(SandboxEngine):
     name = "postgres"
     image = "postgres:16-alpine"
+    # Kitchen-sink image: pgvector base + postgis + contrib (pg_trgm/citext/
+    # uuid-ossp). Only pulled when a venture requests extensions — bare
+    # provisions stay on the light `image` above (no heavier pull).
+    kitchen_sink_image = "roboco-sandbox-pg:latest"
     container_port = 5432
     ready_deadline = 60.0
     tmpfs = ("/var/lib/postgresql/data",)
     container_slug = "pg"
+
+    def image_for(self, features: list[str]) -> str:
+        return self.kitchen_sink_image if features else self.image
 
     def run_env(self, password: str) -> list[str]:
         return [
@@ -283,10 +302,18 @@ class _PostgresEngine(SandboxEngine):
 class _RedisEngine(SandboxEngine):
     name = "redis"
     image = "redis:8-alpine"
+    # redis-stack-server ships search/json/bloom as loadable-but-unloaded
+    # modules — no custom build. Headless (-server) variant: no RedisInsight
+    # web UI, appropriate for an ephemeral dev sandbox. Only pulled when a
+    # venture requests modules; bare provisions stay on the light `image`.
+    kitchen_sink_image = "redis/redis-stack-server:latest"
     container_port = 6379
     ready_deadline = 15.0
     tmpfs: tuple[str, ...] = ()
     container_slug = "redis"
+
+    def image_for(self, features: list[str]) -> str:
+        return self.kitchen_sink_image if features else self.image
 
     def run_env(self, _password: str) -> list[str]:
         return []
