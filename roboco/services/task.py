@@ -1016,6 +1016,41 @@ class TaskService(BaseService):
                 events.append("task.ceo_reject")
         return events
 
+    async def _alert_auditor_of_rework(
+        self,
+        task: TaskTable,
+        *,
+        reason: str,
+        actor_agent_id: UUID | None = None,
+        actor_role: str | None = None,
+    ) -> None:
+        """Best-effort auditor alert when a task bounces to needs_revision.
+
+        Mirrors the other best-effort notification seams in this service: a
+        delivery failure must never block the underlying transition. The
+        orchestrator's ``_dispatch_audit_work`` watches for ``ALERT``
+        notifications targeted at the auditor and spawns an audit pass.
+        """
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery = get_notification_delivery_service(self.session)
+            await delivery.notify_auditor_of_rework(
+                task=task,
+                task_id=require_uuid(task.id),
+                reason=reason,
+                actor_agent_id=actor_agent_id,
+                actor_role=actor_role,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Auditor rework alert failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
     # =========================================================================
     # CRUD OPERATIONS
     # =========================================================================
@@ -5084,6 +5119,13 @@ class TaskService(BaseService):
                 )
 
         await self.session.flush()
+
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "QA review failed",
+            actor_agent_id=to_python_uuid(qa_agent_id),
+            actor_role="qa",
+        )
 
         # Index negative QA review (fire-and-forget)
         review_task = asyncio.create_task(
@@ -9842,6 +9884,12 @@ class TaskService(BaseService):
             audit_agent_id=captured,
         )
         await self.session.flush()
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "PR review failed",
+            actor_agent_id=captured,
+            actor_role="pr_reviewer",
+        )
         self.log.info("Assembled PR failed review", task_id=str(task_id))
         return task
 
@@ -9894,6 +9942,12 @@ class TaskService(BaseService):
             audit_agent_id=pm_agent_id,
         )
         await self.session.flush()
+        await self._alert_auditor_of_rework(
+            task,
+            reason=notes or "PM requested changes at merge review",
+            actor_agent_id=pm_agent_id,
+            actor_role=agent_role,
+        )
         self.log.info(
             "PM requested changes at merge review",
             task_id=str(task_id),
