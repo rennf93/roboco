@@ -345,9 +345,9 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     # The REST task surface — scenario 3 drives the real CEO
     # approve-and-merge endpoint (the human gate) through it.
     app.include_router(tasks_router, prefix="/api/tasks")
-    # Reactive audit dispatch (``_dispatch_audit_work``) polls the real
-    # notifications surface for ALERT rows; mount it so auditor-trigger e2e
-    # paths exercise the full dispatcher↔DB wiring end-to-end.
+    # The notifications router was already mounted here before the auditor
+    # revival diff; it remains so reactive audit dispatch (``_dispatch_audit_work``)
+    # can poll real ALERT rows end-to-end.
     app.include_router(notifications_router, prefix="/api/notifications")
     # Cloud-auth gate coverage smoke exercises the real _require_ceo and
     # require_panel_token dep paths on these routers.
@@ -477,6 +477,12 @@ class ScriptedAgent:
         os.environ["ROBOCO_AGENT_ROLE"] = self.role
         os.environ["ROBOCO_ORCHESTRATOR_URL"] = self.stack.base_url
         os.environ["ROBOCO_TOOL_MANIFEST_PATH"] = str(self._manifest_path)
+        # The host agent environment may carry a real ROBOCO_AGENT_TOKEN issued
+        # for the test runner's identity. flow_server reads it before each call
+        # and forwards it in X-Agent-Token; the token won't match the ephemeral
+        # test agent IDs and causes 401s. Drop it so tests run in the same
+        # unsigned-token mode as CI.
+        os.environ.pop("ROBOCO_AGENT_TOKEN", None)
         module = importlib.import_module(name)
         if getattr(module, "AGENT_ID", None) != str(self.agent_id):
             module = importlib.reload(module)
