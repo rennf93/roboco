@@ -322,6 +322,7 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
 def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.middleware import setup_middleware
     from roboco.api.routes.health import router as health_router
+    from roboco.api.routes.notifications import router as notifications_router
     from roboco.api.routes.orchestrator import router as orchestrator_router
     from roboco.api.routes.settings import router as settings_router
     from roboco.api.routes.tasks import router as tasks_router
@@ -344,6 +345,9 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     # The REST task surface — scenario 3 drives the real CEO
     # approve-and-merge endpoint (the human gate) through it.
     app.include_router(tasks_router, prefix="/api/tasks")
+    # Notifications surface — exercised by orchestrator dispatchers such as
+    # _dispatch_audit_work, which poll ALERT notifications to spawn the auditor.
+    app.include_router(notifications_router, prefix="/api/notifications")
     # Cloud-auth gate coverage smoke exercises the real _require_ceo and
     # require_panel_token dep paths on these routers.
     app.include_router(orchestrator_router, prefix="/api/orchestrator")
