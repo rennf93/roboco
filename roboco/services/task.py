@@ -2132,6 +2132,20 @@ class TaskService(BaseService):
             ValueError: If branch cannot be created
         """
         if task.branch_name:
+            # A set branch_name is not proof the ref is on origin: a manual
+            # field write, or a prior failed create_branch whose rollback
+            # didn't restore branch_name, can leave the field set while the
+            # branch was never pushed. Descendants then ls-remote this name,
+            # find it empty, and silently cut from master via create_branch's
+            # fallback — breaking the hierarchy. For a task that owns a repo,
+            # trust-but-verify: if the ref is confirmed missing, run the full
+            # create to push it. An inconclusive probe (network error) fails
+            # soft and returns the name as before, so a transient glitch can't
+            # fail a normal resume claim.
+            if task.project_id and await self._named_branch_missing_on_remote(
+                task, agent_id
+            ):
+                return await self._auto_create_branch(task, agent_id)
             return str(task.branch_name)
 
         if not task.project_id:
@@ -2159,6 +2173,31 @@ class TaskService(BaseService):
             )
 
         return await self._auto_create_branch(task, agent_id)
+
+    async def _named_branch_missing_on_remote(
+        self, task: TaskTable, agent_id: UUID
+    ) -> bool:
+        """True only when the task's named branch is confirmed absent from origin.
+
+        False (don't re-create) when the ref is present OR the probe was
+        inconclusive (network error / project unresolvable) — an inconclusive
+        probe must fail soft so a transient glitch can't trigger a redundant
+        full create or fail the claim. Only a confirmed-absent result flips
+        this True, driving :meth:`_ensure_branch_for_task` to push the branch
+        a pre-set ``branch_name`` field promised but never delivered.
+        """
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(self.session).get(
+            UUID(str(task.project_id))
+        )
+        if project is None:
+            return False
+        probe = await get_git_service(self.session).branch_exists_on_remote(
+            project.slug, str(task.branch_name), agent_id
+        )
+        return probe is False
 
     async def _find_ancestor_branch(self, task: TaskTable) -> str | None:
         """Walk up task hierarchy to find nearest ancestor with a branch.
@@ -3011,6 +3050,11 @@ class TaskService(BaseService):
         original_claimed_at = task.claimed_at
         original_heartbeat = task.last_heartbeat_at
         original_claimant_id = task.active_claimant_id
+        # branch_name too: _ensure_branch_for_task may set it (create_branch's
+        # task_service.update + the in-memory assignment) before a later step
+        # throws — without restoring it, a retried claim sees the field set and
+        # the trust-but-verify short-circuits, never re-pushing the branch.
+        original_branch_name = task.branch_name
 
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -3035,39 +3079,45 @@ class TaskService(BaseService):
 
         await self.session.flush()
 
-        if not task.branch_name:
-            try:
-                await self._ensure_branch_for_task(task, agent_id)
-            except Exception:
-                # Roll back claim fields so the task is reclaimable.
-                task.status = original_status
-                task.assigned_to = original_assigned_to
-                task.claimed_by = original_claimed_by
-                task.claimed_at = original_claimed_at
-                task.last_heartbeat_at = original_heartbeat
-                task.active_claimant_id = original_claimant_id
-                await self.session.flush()
-                # emit the reversal audit row so the journey doesn't diverge
-                # from real state. The forward ``task.claimed`` audit row was
-                # already committed on the audit service's own connection; this
-                # rollback's flush reverts the task row but NOT that audit row.
-                # Without a matching reversal row, downstream metrics
-                # (cycle time, bottlenecks) reconstructed from ``task.<status>``
-                # events would be corrupted.
-                if original_status in self._CLAIMABLE_STATUSES:
-                    self._emit_status_transition_audit(
-                        task,
-                        from_status=TaskStatus.CLAIMED.value,
-                        to_status=(
-                            original_status.value
-                            if isinstance(original_status, TaskStatus)
-                            else str(original_status)
-                        ),
-                        agent_role=agent_role,
-                        audit_agent_id=agent_id,
-                    )
-                raise
-            await self.session.refresh(task)
+        # Always run _ensure_branch_for_task — it is the single chokepoint that
+        # ensures the task's branch exists on origin, whether by creating it
+        # (branch_name unset) or by trust-but-verify of a pre-set name
+        # (branch_name set: a manual field write or a prior failed create can
+        # leave the field set while the ref was never pushed). Branchless
+        # coordination/umbrella tasks return "" without touching the network.
+        try:
+            await self._ensure_branch_for_task(task, agent_id)
+        except Exception:
+            # Roll back claim fields so the task is reclaimable.
+            task.status = original_status
+            task.assigned_to = original_assigned_to
+            task.claimed_by = original_claimed_by
+            task.claimed_at = original_claimed_at
+            task.last_heartbeat_at = original_heartbeat
+            task.active_claimant_id = original_claimant_id
+            task.branch_name = original_branch_name
+            await self.session.flush()
+            # emit the reversal audit row so the journey doesn't diverge
+            # from real state. The forward ``task.claimed`` audit row was
+            # already committed on the audit service's own connection; this
+            # rollback's flush reverts the task row but NOT that audit row.
+            # Without a matching reversal row, downstream metrics
+            # (cycle time, bottlenecks) reconstructed from ``task.<status>``
+            # events would be corrupted.
+            if original_status in self._CLAIMABLE_STATUSES:
+                self._emit_status_transition_audit(
+                    task,
+                    from_status=TaskStatus.CLAIMED.value,
+                    to_status=(
+                        original_status.value
+                        if isinstance(original_status, TaskStatus)
+                        else str(original_status)
+                    ),
+                    agent_role=agent_role,
+                    audit_agent_id=agent_id,
+                )
+            raise
+        await self.session.refresh(task)
 
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 

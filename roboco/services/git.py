@@ -591,6 +591,41 @@ class GitService(BaseService):
 
         return workspace
 
+    async def branch_exists_on_remote(
+        self,
+        project_slug: str,
+        branch_name: str,
+        agent_id: UUID | None = None,
+    ) -> bool | None:
+        """Probe whether ``branch_name`` exists on the project's ``origin``.
+
+        Returns True when the ref is present, False when confirmed absent, and
+        None when the probe itself errored (network blip, missing workspace or
+        token) — callers fail-soft on None so a transient glitch can't fail a
+        normal claim. Mirrors the ``ls-remote --heads origin <branch>`` idiom
+        in :meth:`create_branch`'s parent-branch check, reusing the same
+        workspace + decrypted-token resolution so the probe is authoritative.
+        """
+        try:
+            workspace = await self.get_workspace(project_slug, agent_id)
+            token = await self._token_for_project(project_slug)
+            result = await self._run_git(
+                workspace,
+                ["ls-remote", "--heads", "origin", branch_name],
+                check=False,
+                token=token,
+                timeout=_network_git_timeout(),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "branch_exists_on_remote probe failed; failing soft",
+                project_slug=project_slug,
+                branch_name=branch_name,
+                error=str(exc),
+            )
+            return None
+        return bool(result.stdout.strip())
+
     # =========================================================================
     # STATUS / INFO METHODS
     # =========================================================================
