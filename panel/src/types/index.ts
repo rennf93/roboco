@@ -1032,6 +1032,7 @@ export interface Project {
   dep_update_command: string | null;
   dep_update_paths: string[] | null;
   sandbox_services: string[] | null;
+  sandbox_extensions: Record<string, string[]> | null;
   // Runtime state
   workspace_path: string | null;
   last_synced_at: string | null;
@@ -1081,6 +1082,7 @@ export interface ProjectUpdate {
   dep_update_command?: string;
   dep_update_paths?: string[];
   sandbox_services?: string[];
+  sandbox_extensions?: Record<string, string[]>;
 }
 
 export interface ProjectSummary {

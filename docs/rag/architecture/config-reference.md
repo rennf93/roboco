@@ -156,7 +156,7 @@ Per-agent-spawn throwaway Postgres/Redis/Mongo, replacing (never coexisting with
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Master switch. Off = spawning behaves exactly as today (the legacy `_append_gate_env` prod-creds injection, itself gated by `ROBOCO_TOOLCHAIN_MATCH_ENABLED`). Only projects with their `sandbox_services` column set (migration `057`) participate even when on. The valid service set is `VALID_SANDBOX_SERVICES` in `roboco/models/sandbox.py` (registry-derived: postgres / redis / mongo); adding an engine is one class + one registry line, no orchestrator edit. Env injected per engine: `ROBOCO_TEST_DB_*`, `ROBOCO_TEST_REDIS_*`, `ROBOCO_TEST_MONGO_*` (incl. `ROBOCO_TEST_MONGO_AUTH_DB=admin`). |
+| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Master switch. Off = spawning behaves exactly as today (the legacy `_append_gate_env` prod-creds injection, itself gated by `ROBOCO_TOOLCHAIN_MATCH_ENABLED`). Only projects with their `sandbox_services` column set (migration `057`) participate even when on. The valid service set is `VALID_SANDBOX_SERVICES` in `roboco/models/sandbox.py` (registry-derived: postgres / redis / mongo); adding an engine is one class + one registry line, no orchestrator edit. Env injected per engine: `ROBOCO_TEST_DB_*`, `ROBOCO_TEST_REDIS_*`, `ROBOCO_TEST_MONGO_*` (incl. `ROBOCO_TEST_MONGO_AUTH_DB=admin`). A project may also declare `sandbox_extensions` (migration `072`) — a per-service extension/module map activated post-ready via `docker exec`, bounded by a fixed allowlist (`SANDBOX_PG_EXTENSIONS` / `SANDBOX_REDIS_MODULES`; no `plpython3u`). See `docs/rag/architecture/sandbox-db.md`. |
 
 ## X (Twitter) Engine
 
