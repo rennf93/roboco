@@ -49,6 +49,31 @@ def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
     return [s for s in SANDBOX_ENGINES if s in value]
 
 
+def _validate_one_sandbox_extension(
+    svc: str, feats: list[str] | None
+) -> list[str]:
+    """Allowlist-validate one service's feature list; return it ordered.
+
+    Raises ``ValueError`` on an unknown service or an unallowed feature (the
+    security containment that keeps a ``plpython3u`` from ever being
+    persisted). Returns the allowlist-ordered list (empty when the service is
+    bare). Extracted so ``_normalize_sandbox_extensions`` stays under the
+    complexity bound.
+    """
+    if svc not in SANDBOX_ENGINES:
+        raise ValueError(
+            f"sandbox_extensions key {svc!r} is not a valid service; valid: "
+            f"{sorted(VALID_SANDBOX_SERVICES)}"
+        )
+    allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
+    bad = sorted(set(feats or []) - allowed)
+    if bad:
+        raise ValueError(
+            f"unallowed {svc} extension(s) {bad}; allowed: {sorted(allowed)}"
+        )
+    return [f for f in sorted(allowed) if f in (feats or [])]
+
+
 def _normalize_sandbox_extensions(
     value: dict[str, list[str]] | None,
 ) -> dict[str, list[str]] | None:
@@ -62,22 +87,11 @@ def _normalize_sandbox_extensions(
     """
     if value is None:
         return None
-    normalized: dict[str, list[str]] = {}
-    for svc, feats in value.items():
-        if svc not in SANDBOX_ENGINES:
-            raise ValueError(
-                f"sandbox_extensions key {svc!r} is not a valid service; valid: "
-                f"{sorted(VALID_SANDBOX_SERVICES)}"
-            )
-        allowed = SANDBOX_ENGINE_FEATURES.get(svc, frozenset())
-        bad = sorted(set(feats or []) - allowed)
-        if bad:
-            raise ValueError(
-                f"unallowed {svc} extension(s) {bad}; allowed: {sorted(allowed)}"
-            )
-        ordered = [f for f in sorted(allowed) if f in (feats or [])]
-        if ordered:
-            normalized[svc] = ordered
+    normalized = {
+        svc: ordered
+        for svc, feats in value.items()
+        if (ordered := _validate_one_sandbox_extension(svc, feats))
+    }
     return normalized or None
 
 
