@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **Restored five coordination-event notification producers with double-fire guards.** Reassignment, collision-sequencing, unblock, dependency-revival, and stale-claim-reaped notifications are now wired at their lifecycle chokepoints in `TaskService` and the orchestrator reaper, each with an idempotent upstream guard preventing duplicate ALERT rows. The duplicate route-level `notify_assignee_of_unblock` call in `POST /api/tasks/{id}/unblock` was removed so unblock fires exactly one notification. Added `docs/backend/services/coordination-events.md` and `tests/e2e_smoke/test_notification_coordination_events.py` covering the restored producers.
+- **`_fresh_orchestrator` test helper initializes orchestrator state.** `tests/e2e_smoke/test_auditor_triggers.py` constructs a bare `AgentOrchestrator` via `__new__` so it can patch `spawn_agent`, but that bypasses `__init__`. The helper now explicitly sets `_instances = {}` and `_last_audit_spawn_at = None` so `_is_agent_active` and `_dispatch_audit_work` no longer raise `AttributeError` during the auditor trigger e2e tests.
 
 ## [0.23.0] - 2026-07-11
 
