@@ -253,7 +253,9 @@ class _PostgresEngine(SandboxEngine):
     def verify_step(self, _password: str, features: list[str]) -> list[str] | None:
         if not features:
             return None
-        names = ",".join(f"'{f}'" for f in features)
+        # Static query — no interpolation, so no string-built-SQL surface; the
+        # feature membership check happens in verify_ok against the installed
+        # extname set. Every requested name is allowlist-validated upstream.
         return [
             "psql",
             "-U",
@@ -261,16 +263,19 @@ class _PostgresEngine(SandboxEngine):
             "-d",
             "sandbox",
             "-tAc",
-            f"SELECT count(*) FROM pg_extension WHERE extname = ANY(ARRAY[{names}])",
+            "SELECT extname FROM pg_extension",
         ]
 
     def verify_ok(self, features: list[str], stdout: bytes) -> bool:
         if not features:
             return True
         try:
-            return int(stdout.decode().strip()) == len(features)
+            installed = {
+                line.strip() for line in stdout.decode().splitlines() if line.strip()
+            }
         except (ValueError, AttributeError):
             return False
+        return set(features).issubset(installed)
 
     def connection(
         self, host: str, password: str, features: tuple[str, ...] = ()
