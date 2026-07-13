@@ -902,6 +902,9 @@ class AgentOrchestrator:
     # Expected-stop breadcrumbs (agent_id -> (reason, monotonic ts)); lazily
     # allocated by _record_expected_stop, same statement-budget rationale.
     _expected_stops: dict[str, tuple[str, float]]
+    # Last time the auditor was spawned, by reactive alert or scheduled sweep.
+    # Drives the ROBOCO_AUDIT_INTERVAL_SECONDS throttle. Per-instance override.
+    _last_audit_spawn_at: datetime | None = None
 
     def __init__(
         self,
@@ -13487,10 +13490,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """
         Dispatch audit work to the auditor.
 
-        Monitors: quality alert notifications
+        Monitors: quality alert notifications + scheduled periodic sweeps
         Spawns: auditor
-
-        Note: Periodic scheduled audits can be added here in the future.
         """
         alerts = await self._fetch_notifications(client, "alert")
 
@@ -13506,10 +13507,71 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     initial_prompt=self._build_audit_prompt(alert),
                     spawned_by="_dispatch_audit_work",
                 )
+                self._last_audit_spawn_at = datetime.now(UTC)
                 return
 
-        # TODO: Add scheduled periodic audits
-        # Check last audit time, spawn if overdue
+        # Scheduled periodic audit sweep. Reuse the notification cooldown
+        # pattern with a sentinel key as a one-tick breaker so a single
+        # dispatcher tick cannot spawn the auditor twice.
+        if self._is_agent_active("auditor"):
+            return
+        if self._audit_spawn_cooled():
+            return
+        if not await self._has_recent_delivery_activity(client):
+            return
+        if self._notification_spawn_cooled("auditor", "_scheduled_audit"):
+            return
+        await self.spawn_agent(
+            agent_id="auditor",
+            initial_prompt=self._build_audit_prompt(scheduled=True),
+            spawned_by="_dispatch_audit_work",
+        )
+        self._last_audit_spawn_at = datetime.now(UTC)
+
+    def _audit_spawn_cooled(self) -> bool:
+        """True when a scheduled sweep should be blocked.
+
+        Blocks when ROBOCO_AUDIT_INTERVAL_SECONDS is 0 (disabled) or when the
+        auditor was spawned within the interval window.
+        """
+        interval = settings.audit_interval_seconds
+        if interval <= 0:
+            return True
+        last = self._last_audit_spawn_at
+        if last is None:
+            return False
+        return (datetime.now(UTC) - last).total_seconds() < interval
+
+    async def _has_recent_delivery_activity(
+        self,
+        client: httpx.AsyncClient,
+    ) -> bool:
+        """True when delivery work has moved recently enough to warrant a sweep.
+
+        Active delivery states always count as recent activity. Completed tasks
+        only count if they were updated inside the audit interval window.
+        """
+        active_statuses = [
+            "in_progress",
+            "verifying",
+            "awaiting_qa",
+            "needs_revision",
+            "awaiting_documentation",
+            "awaiting_pr_review",
+            "awaiting_pm_review",
+            "awaiting_ceo_approval",
+        ]
+        if await self._fetch_tasks(client, active_statuses):
+            return True
+
+        interval = settings.audit_interval_seconds
+        cutoff = datetime.now(UTC) - timedelta(seconds=interval)
+        completed = await self._fetch_tasks(client, "completed")
+        for task in completed:
+            ts = self._coerce_heartbeat(task.get("updated_at"))
+            if ts is not None and ts >= cutoff:
+                return True
+        return False
 
     async def _detect_stuck_tasks(self, client: httpx.AsyncClient) -> None:
         """
@@ -14426,7 +14488,12 @@ Your job:
 6. If no more work, call i_am_idle() to shutdown gracefully
 """
 
-    def _build_audit_prompt(self, alert: dict[str, Any] | None = None) -> str:
+    def _build_audit_prompt(
+        self,
+        alert: dict[str, Any] | None = None,
+        *,
+        scheduled: bool = False,
+    ) -> str:
         """Build initial prompt for the auditor."""
         if alert:
             subject = alert.get("subject", "Quality issue detected")
@@ -14443,6 +14510,24 @@ Your job:
 2. Review relevant tasks and history (you have read access to all)
 3. Compile your findings
 4. Report to CEO via your journal (note scope='reflect')
+5. Call i_am_idle() when complete
+"""
+
+        if scheduled:
+            return """SCHEDULED AUDIT SWEEP.
+
+You are running a periodic delivery-process review. Look across the org
+for the past audit window and log anything the CEO should know.
+
+Your job:
+
+1. Scan recent task state: long-running blocked work, repeated rework
+   (needs_revision), and PR-review failures
+2. Check quality drift: QA pass/fail patterns, convention violations,
+   tracing gaps on recently completed work
+3. Spot cross-cell hand-off friction and silent stranded work
+4. Record every observation via note(scope='reflect'); if nothing is
+   amiss, note exactly that
 5. Call i_am_idle() when complete
 """
 
