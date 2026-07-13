@@ -1491,9 +1491,6 @@ async def unblock_task(
             detail="Not authorized to unblock this task",
         )
 
-    # Remember the assigned agent before unblocking
-    assigned_agent_id = task.assigned_to
-
     task = await service.unblock(task_id, agent.role)
     if not task:
         raise HTTPException(
@@ -1501,16 +1498,9 @@ async def unblock_task(
             detail="Cannot unblock task - not blocked",
         )
 
-    # Notify the assigned agent that the task is unblocked
-    if assigned_agent_id and assigned_agent_id != agent.agent_id:
-        delivery = get_notification_delivery_service(db)
-        await delivery.notify_assignee_of_unblock(
-            task=task,
-            task_id=task_id,
-            from_agent_id=agent.agent_id,
-            assignee_agent_id=require_uuid(assigned_agent_id),
-        )
-
+    # TaskService.unblock() already sends the ALERT unblock notification
+    # (send_unblock_notification) to the restored owner + CEO — do not
+    # duplicate it here.
     await db.commit()
     return task_to_response(task)
 
