@@ -45,9 +45,11 @@ def seed_company(stack: E2EStack) -> Company:
     out = Company()
 
     async def _run(session: AsyncSession) -> None:
-        def agent(slug: str, role: AgentRole, team: Team | None) -> AgentTable:
+        def agent(
+            slug: str, role: AgentRole, team: Team | None, agent_id: Any = None
+        ) -> AgentTable:
             row = AgentTable(
-                id=uuid4(),
+                id=agent_id or uuid4(),
                 name=slug,
                 slug=slug,
                 role=role,
@@ -72,9 +74,19 @@ def seed_company(stack: E2EStack) -> Company:
         hom = agent("head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD)
         # The system sentinel is a from_agent FK target for orchestrator-generated
         # notifications, never a participant. Production seeds it via
-        # initial_data.py; the harness must too or _resolve_agent_uuid("system")
-        # returns None and silently drops every system-origin notification.
-        agent("system", AgentRole.SYSTEM, None)
+        # initial_data.py at the fixed foundation UUID; the harness must too or
+        # _resolve_agent_uuid("system") returns None and silently drops every
+        # system-origin notification. The fixed UUID also lets other tests'
+        # _seed_system_and_secretary / _seed_video_agents find it by UUID and
+        # skip their own insert, avoiding an ix_agents_slug collision.
+        from roboco.foundation import identity as _foundation
+
+        agent(
+            "system",
+            AgentRole.SYSTEM,
+            None,
+            agent_id=_foundation.AGENTS["system"].uuid,
+        )
         await session.flush()
         out.ceo_id = ceo.id
         out.dev_id = dev.id
