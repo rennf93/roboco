@@ -329,6 +329,9 @@ services:
       ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
       ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
       ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
+      # Docs-divergence sync (release -> docs-update task): default OFF in the
+      # registry compose; arm via .env once the engine is verified.
+      ROBOCO_DOCS_SYNC_ENABLED: ${ROBOCO_DOCS_SYNC_ENABLED:-false}
       # Video engine (HyperFrames): NAS-default-on, OFF in public registry —
       # heavier optional feature. Arm via .env + uncomment the video-renders
       # bind mount above so renders persist.

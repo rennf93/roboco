@@ -847,6 +847,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Docs-divergence sync — when enabled, the release-proposal publish-success
+    # path invokes the docs-sync engine to originate one bounded, deduped
+    # docs-update task against the roboco-website project per release. Default-off;
+    # the engine no-ops when disabled and logs a warning when roboco-website is
+    # not registered as a project.
+    docs_sync_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the docs-divergence sync engine. OFF by default; "
+            "when off the engine is never invoked on release publish. When on, "
+            "a successful release proposal may originate one docs-update task "
+            "per release tag against the roboco-website project."
+        ),
+    )
+
     # Organizational-memory loop — distill a high-signal lesson at task
     # completion, index journal reflections, and auto-inject similar past
     # lessons/playbooks into the agent briefing on claim. Default-off; when off

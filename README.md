@@ -184,6 +184,7 @@ ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
 ROBOCO_CONVENTIONS_ENABLED=false        # per-project architectural conventions standard
 ROBOCO_TOOLCHAIN_MATCH_ENABLED=false    # build each target project under its own Python
 ROBOCO_OVERLOAD_BREAK_ENABLED=true      # park a provider on a persistent model-API overload
+ROBOCO_DOCS_SYNC_ENABLED=false          # docs-divergence sync (release → docs-update task). Currently a no-op: the engine subtask is not yet implemented.
 
 # Auditor scheduled sweeps (default 6 hours; 0 disables)
 ROBOCO_AUDIT_INTERVAL_SECONDS=21600
