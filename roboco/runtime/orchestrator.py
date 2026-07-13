@@ -912,6 +912,11 @@ class AgentOrchestrator:
         ``__init__`` still re-initializes ``_instances``; this just guarantees
         the attributes exist for tests that bypass ``__init__`` via bare
         ``AgentOrchestrator.__new__(AgentOrchestrator)``.
+
+        Auditor-dispatch paths read ``_last_audit_spawn_at`` and
+        ``_notification_spawn_at`` from partially-constructed instances, so
+        they must be present here; the per-instance cooldown stores are
+        re-initialized by ``__init__`` when the normal constructor runs.
         """
         instance = super().__new__(cls)
         instance._instances = {}
