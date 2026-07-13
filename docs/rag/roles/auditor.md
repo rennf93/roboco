@@ -14,6 +14,16 @@
 3. Record findings privately
 4. No interference with workflow
 
+## Reactive Dispatch Path
+
+In addition to read-only observation, the Auditor is now spawned reactively when a task bounces into `needs_revision`:
+
+- `TaskService` emits a HIGH-priority `ALERT` notification addressed to the auditor agent from three rework chokepoints: `fail_qa`, `pr_fail`, and `request_changes`.
+- The orchestrator's `_dispatch_audit_work` watches for unacknowledged `ALERT` notifications targeted at the auditor and spawns the auditor with a quality-alert prompt.
+- This path is **best-effort**: a delivery failure is logged but does not block the underlying task transition.
+
+You still cannot claim tasks, message agents, or write code — the reactive spawn only gives you a timely lens on quality events.
+
 ## What You CAN Do
 
 - Triage / view tasks in your scope via `triage()` (read-only)

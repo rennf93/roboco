@@ -115,6 +115,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._blocked_by_earlier_lane_sibling | method | roboco/runtime/orchestrator.py:10234 | Per-dev LANE barrier: hold a dev's higher-sequence code leaf until its own lower-sequence code siblings under the same parent are terminal. |
 | AgentOrchestrator._dispatch_pm_review_work | method | roboco/runtime/orchestrator.py:10299 | Dispatch awaiting_pm_review to cell/main PM; applies _blocked_by_earlier_sibling; human-role skip + respawn gate. |
 | AgentOrchestrator._dispatch_a2a_work | method | roboco/runtime/orchestrator.py:10904 | Spawn targets of unacknowledged a2a_request notifications; skips human-only roles (CEO/prompter/secretary). |
+| AgentOrchestrator._dispatch_audit_work | method | roboco/runtime/orchestrator.py:12948 | Spawn the auditor when an unacknowledged HIGH-priority ALERT notification is targeted at the auditor role (reactive dispatch path). |
 | AgentOrchestrator._build_dev_prompt | method | roboco/runtime/orchestrator.py:11053 | Render the dev spawn prompt with workflow state + instructions. |
 | is_unattributed_delivery_spawn | function | roboco/runtime/orchestrator.py:415 | True when a delivery-role (developer/qa/documenter) spawn carries no task_id; warns on unattributed usage without noise from intentionally taskless roles. |
 | AgentOrchestrator._flush_respawn_tracker | method | roboco/runtime/orchestrator.py:1105 | Unbounded flush of the full in-memory PM-respawn snapshot called after `_drain_bg_tasks` in `stop()` so a deadline-cancelled fire-and-forget persist can't leave the durable count lagging. |
@@ -171,7 +172,7 @@ stateDiagram-v2
 ## Logical Tree
 - AgentOrchestrator
   - Startup (`start`): restore WaitingRecord + respawn_tracker → reconcile orphan claims → `_readopt_running_agents` → launch background loops
-  - Dispatch: `_dispatch_all_work` (reap → grok budget → 17 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`)
+  - Dispatch: `_dispatch_all_work` (reap → grok budget → 18 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`); includes `_dispatch_audit_work` for reactive auditor ALERTs
   - Spawn: `spawn_agent` chokepoint → `_readiness_gate` → provider-park pre-check → `_prepare_agent_spawn` (worktree/permissions/briefing/MCP/manifest) → `_safe_spawn` → `_spawn_container` or GrokCliProvider
   - Health/reaper: `_check_health` (docker inspect) → `_maybe_park_for_exit_error` | `_crash_retry_or_escalate` | `_handle_stopped_container`; `_reap_stale_claims` via `_should_skip_live_reap` + `_maybe_recover_broken_gateway`
   - Rate-limit/overload park-and-probe: `_park_provider_unavailable` (+ grok 75/78 variants) → `_rate_limit_probe_loop` (30s) → `_on_probe_success`/`_on_probe_failure` → `resolve_wait`
@@ -189,7 +190,7 @@ stateDiagram-v2
 ## Entry Points
 - FastAPI lifespan start → `AgentOrchestrator.start()` (bootstrap constructs singleton).
 - FastAPI lifespan shutdown → `stop()` (idempotent; bootstrap `finally` re-calls as safety net).
-- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`).
+- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`), including `_dispatch_audit_work` for reactive auditor ALERTs.
 - `_health_loop` (per-instance inspect), `_sweeper_loop` (superseded PRs, dangling images, transcript retention, grok budget), `_rate_limit_probe_loop` (30s).
 - Default-off loop ticks: self-heal / ci-watch / dep-update / release-manager / strategy / external-PR poll.
 - API routes: `spawn_agent`, `stop_agent`, `start_intake_session`, `spawn_secretary_session`, `supersede_external_pr`, `get_status_summary`.
