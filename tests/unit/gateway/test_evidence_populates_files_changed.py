@@ -141,7 +141,9 @@ async def test_evidence_populates_journal_highlights() -> None:
     env = await ca.evidence(agent_id=agent_id, task_id=task_id)
     body = env.as_dict()
     assert body["evidence"]["journal_highlights"] == highlights
-    evidence_repo.journal_highlights_for_task.assert_awaited_once_with(task_id)
+    evidence_repo.journal_highlights_for_task.assert_awaited_once_with(
+        task_id, include_ancestors=True
+    )
 
 
 @pytest.mark.asyncio

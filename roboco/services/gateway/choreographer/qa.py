@@ -224,6 +224,11 @@ class QAMixin(_Base):
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
+        # The ask-chain (parent → root descriptions) so QA judges INTENT
+        # against the intake's original analysis, not only the leaf's ACs.
+        # Leaf-only journals stay (include_ancestors defaults False above);
+        # ancestor *descriptions* are the ask, not work-so-far.
+        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
         convention_findings = await self._qa_convention_findings(qa_agent_id, t)
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
@@ -241,6 +246,7 @@ class QAMixin(_Base):
             convention_findings=convention_findings,
             revision_findings=open_findings,
             prior_findings=prior_findings,
+            parent_context=parent_context,
         )
 
     async def _verify_qa_owner(

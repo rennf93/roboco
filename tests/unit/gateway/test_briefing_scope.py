@@ -82,7 +82,9 @@ class TestBriefingScope:
         )
         briefing = await choreo._briefing_for(uuid4(), task_id, task=task, full=True)
         assert briefing["task_handoff"]["pr_number"] == _PR_NUMBER
-        repo.journal_highlights_for_task.assert_awaited_once_with(task_id)
+        repo.journal_highlights_for_task.assert_awaited_once_with(
+            task_id, include_ancestors=True
+        )
 
     @pytest.mark.asyncio
     async def test_slim_with_task_omits_handoff(self) -> None:

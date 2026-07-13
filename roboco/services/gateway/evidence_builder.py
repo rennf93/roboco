@@ -23,6 +23,8 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "convention_findings",
     "revision_findings",
     "prior_findings",
+    "parent_context",
+    "description",
 )
 
 
@@ -36,6 +38,14 @@ class EvidencePayload:
     dev_summary: str | None
     journal_highlights: list[dict[str, Any]]
     acceptance_criteria_status: list[dict[str, Any]]
+    # The task's own description (the spec / brief) — the dev's ``evidence()``
+    # call finally carries the ask, not only the work-so-far. Omitted when empty.
+    description: str | None = None
+    # The upstream ``description`` chain (immediate parent → root) so a
+    # downstream owner reads the intake's original analysis and each PM's
+    # decomposition rationale verbatim instead of a re-paraphrased summary.
+    # Empty for a parentless task.
+    parent_context: list[dict[str, Any]] = field(default_factory=list)
     # Architectural-conventions validator findings on the changed files, so QA
     # can flag a misplaced definition / suppression. Empty when the subsystem
     # is off; a single ``could_not_run`` entry surfaces a fail-loud explicitly.
@@ -149,12 +159,15 @@ def build_evidence_for_task(
     convention_findings: list[dict[str, Any]] | None = None,
     revision_findings: list[Any] | None = None,
     prior_findings: list[Any] | None = None,
+    parent_context: list[dict[str, Any]] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
     ``revision_findings`` / ``prior_findings`` take raw ledger rows (the
     caller fetches; this module stays DB-free) and render them via
-    ``render_findings``.
+    ``render_findings``. ``parent_context`` is the upstream ``description``
+    chain (parent → root) the caller fetches via EvidenceRepo so the dev
+    reads the intake's original analysis verbatim.
     """
     return EvidencePayload(
         pr_number=task.pr_number,
@@ -165,6 +178,8 @@ def build_evidence_for_task(
         dev_summary=task.dev_notes,
         journal_highlights=list(journal_highlights),
         acceptance_criteria_status=list(task.acceptance_criteria_status or []),
+        description=_typed(task.description, str, None),
+        parent_context=list(parent_context or []),
         convention_findings=list(convention_findings or []),
         revision_findings=render_findings(revision_findings),
         prior_findings=render_findings(prior_findings),
@@ -191,19 +206,28 @@ def _has_prior_work(
     qa_review: dict[str, Any] | None,
     pm_review: dict[str, Any] | None,
     open_findings: list,
+    description: str | None = None,
+    parent_context: list[dict[str, Any]] | None = None,
 ) -> bool:
-    """True when any resumable prior-work signal is present on the task."""
-    return bool(
-        commits
-        or acceptance
-        or highlights
-        or pr_number is not None
-        or dev_summary
-        or completed_deps
-        or pr_review is not None
-        or qa_review is not None
-        or pm_review is not None
-        or open_findings
+    """True when any resumable prior-work signal — or the task spec itself —
+    is present. The spec (``description``) and upstream ``parent_context`` count
+    so a freshly-claimed leaf still gets a handoff carrying the intake's
+    analysis, not ``None``."""
+    return any(
+        [
+            commits,
+            acceptance,
+            highlights,
+            pr_number is not None,
+            dev_summary,
+            completed_deps,
+            pr_review is not None,
+            qa_review is not None,
+            pm_review is not None,
+            open_findings,
+            description,
+            parent_context,
+        ]
     )
 
 
@@ -211,15 +235,18 @@ def build_task_handoff(
     task: Any,
     journal_highlights: list[dict[str, Any]],
     open_findings: list[Any] | None = None,
+    parent_context: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Compose a compact prior-work digest for the briefed task.
 
-    Returns ``None`` when there is no task or no prior work worth resuming
-    from, so the briefing only carries a handoff when one genuinely exists.
-    DB-only by design — no git diff — so it is cheap enough to attach to
-    every task-scoped briefing. ``open_findings`` takes raw ledger rows (the
-    caller fetches — this module stays DB-free); rendered under
-    ``revision_findings`` when non-empty.
+    Returns ``None`` only when there is no task AND no spec to carry — the
+    task's own ``description`` and the upstream ``parent_context`` chain now
+    count as worth carrying, so a freshly-claimed leaf finally receives the
+    intake's analysis at claim time instead of an empty handoff. DB-only by
+    design — no git diff — so it is cheap enough to attach to every
+    task-scoped briefing. ``open_findings`` takes raw ledger rows (the caller
+    fetches — this module stays DB-free); rendered under ``revision_findings``
+    when non-empty.
     """
     if task is None:
         return None
@@ -228,6 +255,8 @@ def build_task_handoff(
     highlights = _typed(journal_highlights, list, [])
     pr_number = _typed(task.pr_number, int, None)
     dev_summary = _typed(task.dev_notes, str, None)
+    description = _typed(task.description, str, None)
+    parent_context = _typed(parent_context, list, [])
     # Upstream dependencies that completed and were cleared — present only on a
     # just-unblocked task, so the revived dependent knows what it can build on.
     completed_deps = _typed(getattr(task, "completed_dependency_ids", None), list, [])
@@ -253,6 +282,8 @@ def build_task_handoff(
         qa_review,
         pm_review,
         open_findings,
+        description,
+        parent_context,
     ):
         return None
     handoff: dict[str, Any] = {
@@ -262,6 +293,8 @@ def build_task_handoff(
         "commit_count": len(commits),
         "recent_commits": commits[-BRIEFING_LIST_CAP:],
         "dev_summary": dev_summary,
+        "description": description,
+        "parent_context": parent_context[:BRIEFING_LIST_CAP],
         "acceptance_criteria_status": acceptance[:BRIEFING_LIST_CAP],
         "journal_highlights": highlights[:BRIEFING_LIST_CAP],
         "completed_dependency_ids": [

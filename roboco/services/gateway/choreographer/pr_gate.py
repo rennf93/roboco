@@ -1200,7 +1200,18 @@ class PRGateMixin(_Base):
         prior_findings = await findings_lib.full_ledger_for_task(
             self.task.session, t.id
         )
-        return {
+        # The ask: this assembled task's own description + the upstream
+        # chain (parent → root) so the gate reviewer checks INTENT against
+        # the intake's original analysis, not only the AC list. Empty chain
+        # for a parentless root is fine (omitted downstream when empty).
+        parent_context: list[dict[str, Any]] = []
+        try:
+            parent_context = await self.evidence_repo.ancestor_context_for_task(t.id)
+        except Exception as exc:
+            logger.warning(
+                "gate_review_parent_context_skip", task_id=str(t.id), error=str(exc)
+            )
+        evidence: dict[str, Any] = {
             "pr_number": t.pr_number,
             "pr_url": t.pr_url,
             "pr_diff": diff,
@@ -1209,3 +1220,9 @@ class PRGateMixin(_Base):
             "revision_findings": render_findings(open_findings),
             "prior_findings": render_findings(prior_findings),
         }
+        description = getattr(t, "description", None)
+        if description:
+            evidence["description"] = description
+        if parent_context:
+            evidence["parent_context"] = parent_context
+        return evidence

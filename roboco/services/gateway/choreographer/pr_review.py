@@ -495,17 +495,36 @@ class PRReviewerMixin(_Base):
         )
 
     async def _build_pr_review_evidence(self, t: Any) -> dict[str, Any]:
-        """Inline evidence for claim_pr_review: the PR's unified diff (read-only)."""
+        """Inline evidence for claim_pr_review: the PR's unified diff (read-only).
+
+        Carries the review task's own ``description`` (the CEO/intake review ask)
+        and the upstream ``parent_context`` chain so the reviewer judges the
+        contributor's diff against the stated intent, not in a vacuum. Both are
+        empty for a bare external-PR task and omitted when empty.
+        """
         slug = await self._project_slug_for(t)
         diff = ""
         if slug and t.pr_number:
             diff = await self.git.get_pr_diff(slug, t.pr_number)
-        return {
+        evidence: dict[str, Any] = {
             "pr_number": t.pr_number,
             "pr_url": t.pr_url,
             "pr_diff": diff,
             "is_external_pr": True,
         }
+        description = getattr(t, "description", None)
+        if description:
+            evidence["description"] = description
+        try:
+            parent_context = await self.evidence_repo.ancestor_context_for_task(t.id)
+        except Exception as exc:
+            logger.warning(
+                "pr_review_parent_context_skip", task_id=str(t.id), error=str(exc)
+            )
+            parent_context = []
+        if parent_context:
+            evidence["parent_context"] = parent_context
+        return evidence
 
     async def _pr_review_tracing_gate(
         self,

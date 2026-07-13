@@ -1024,11 +1024,16 @@ class Choreographer:
             # Push the prior-work digest so a freshly spawned / respawned agent
             # resumes from the previous worker's PR + commits + journal rather
             # than re-exploring the codebase cold on every lifecycle hand-off.
-            handoff_highlights = await repo.journal_highlights_for_task(task_id)
+            handoff_highlights = await repo.journal_highlights_for_task(
+                task_id, include_ancestors=True
+            )
             open_findings = await findings_lib.open_findings_for_task(
                 self.task.session, task_id
             )
-            task_handoff = build_task_handoff(task, handoff_highlights, open_findings)
+            parent_context = await repo.ancestor_context_for_task(task_id)
+            task_handoff = build_task_handoff(
+                task, handoff_highlights, open_findings, parent_context
+            )
         return {
             "recent_team_activity": await repo.recent_team_activity(agent_id),
             "blockers_in_my_lane": await repo.blockers_in_lane(agent_id),
