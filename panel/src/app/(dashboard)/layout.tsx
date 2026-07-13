@@ -4,6 +4,7 @@ import { Header } from "@/components/layout/header";
 import { BottomTabBar } from "@/components/layout/bottom-tab-bar";
 import { ScrollRestoration } from "@/components/scroll-restoration";
 import { RateLimitBanner } from "@/components/rate-limit/rate-limit-banner";
+import { AutoRefreshDriver } from "@/components/providers/auto-refresh-driver";
 
 export default function DashboardLayout({
   children,
@@ -14,6 +15,7 @@ export default function DashboardLayout({
     // h-dvh (not h-screen/100vh): mobile Safari's dynamic toolbar resizes the
     // viewport, and 100vh doesn't track that — dvh does.
     <div className="flex h-dvh overflow-hidden">
+      <AutoRefreshDriver />
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header />
