@@ -184,7 +184,8 @@ class SandboxProvisioner:
         name = engine.container_name(agent_id)
         password = secrets.token_hex(16)
         run = self._run()
-        await self._ensure_image(engine.image)
+        image = engine.image_for(features)
+        await self._ensure_image(image)
         args = [
             "run",
             "-d",
@@ -201,7 +202,7 @@ class SandboxProvisioner:
             args += ["--tmpfs", mount]
         args += ["--memory", "512m", "--cpus", "1"]
         args += engine.run_env(password)
-        args.append(engine.image)
+        args.append(image)
         args += engine.run_command(password)
         rc, _, stderr = await run(args, _DOCKER_RUN_TIMEOUT_SECONDS)
         if rc != 0:

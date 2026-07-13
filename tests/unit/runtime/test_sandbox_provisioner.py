@@ -457,6 +457,87 @@ async def test_provision_mongo_features_are_a_noop() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Feature-aware image selection: kitchen-sink image only when features are
+# requested, bare provisions stay on the light upstream image (no heavier pull).
+# ---------------------------------------------------------------------------
+
+
+def _run_call(runner: _FakeRunner) -> list[str]:
+    runs = [c for c in runner.calls if c[0] == "run"]
+    assert runs, "no docker run call recorded"
+    return runs[0]
+
+
+@pytest.mark.asyncio
+async def test_provision_pg_features_uses_kitchen_sink_image() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"1\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-pgimg", ["postgres"], features={"postgres": ["vector"]}
+    )
+
+    joined = " ".join(_run_call(runner))
+    assert "roboco-sandbox-pg:latest" in joined
+    assert "postgres:16-alpine" not in joined
+
+
+@pytest.mark.asyncio
+async def test_provision_pg_bare_uses_light_image() -> None:
+    """Bare pg (no extensions) stays on the light upstream image — no heavier pull."""
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-pgbare", ["postgres"])
+
+    joined = " ".join(_run_call(runner))
+    assert "postgres:16-alpine" in joined
+    # The container is named roboco-sandbox-pg-<agent> regardless of image, so
+    # check the full image ref (with tag) — the name carries no :latest.
+    assert "roboco-sandbox-pg:latest" not in joined
+
+
+@pytest.mark.asyncio
+async def test_provision_redis_features_uses_redis_stack_server() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"search\n99999\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-redisimg", ["redis"], features={"redis": ["search"]}
+    )
+
+    joined = " ".join(_run_call(runner))
+    assert "redis/redis-stack-server:latest" in joined
+    assert "redis:8-alpine" not in joined
+
+
+@pytest.mark.asyncio
+async def test_provision_redis_bare_uses_light_image() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-redisbare", ["redis"])
+
+    joined = " ".join(_run_call(runner))
+    assert "redis:8-alpine" in joined
+    assert "redis/redis-stack-server:latest" not in joined
+
+
+def test_engine_image_for_selects_kitchen_sink_iff_features() -> None:
+    """Pure unit check on the registry: bare -> light image, features -> kitchen-sink;
+    mongo (no activatable features) ignores features and returns its base image."""
+    pg = sandbox_module.SANDBOX_ENGINES["postgres"]
+    assert pg.image_for([]) == "postgres:16-alpine"
+    assert pg.image_for(["vector"]) == "roboco-sandbox-pg:latest"
+    redis = sandbox_module.SANDBOX_ENGINES["redis"]
+    assert redis.image_for([]) == "redis:8-alpine"
+    assert redis.image_for(["search"]) == "redis/redis-stack-server:latest"
+    assert sandbox_module.SANDBOX_ENGINES["mongo"].image_for(["anything"]) == "mongo:8"
+
+
 @pytest.mark.asyncio
 async def test_provision_rejects_unallowed_pg_extension() -> None:
     """plpython3u is a superuser-RCE vector — the allowlist rejects it before

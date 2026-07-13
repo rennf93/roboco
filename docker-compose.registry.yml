@@ -243,6 +243,14 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-secretary image present'"]
     restart: "no"
 
+  # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
+  # into pg extensions. Bare sandboxes use the upstream postgres image, so this
+  # is only needed by extension-using projects.
+  sandbox-pg-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-sandbox-pg:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'sandbox-pg image present'"]
+    restart: "no"
+
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------

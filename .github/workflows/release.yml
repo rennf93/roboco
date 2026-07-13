@@ -101,6 +101,7 @@ jobs:
             [roboco-orchestrator]=docker/orchestrator.Dockerfile
             [roboco-panel]=docker/panel.Dockerfile
             [roboco-video-renderer]=docker/video-renderer.Dockerfile
+            [roboco-sandbox-pg]=docker/sandbox-pg.Dockerfile
             [roboco-agent-pm]=docker/agent-pm.Dockerfile
             [roboco-agent-dev-be]=docker/agent-dev-be.Dockerfile
             [roboco-agent-dev-fe]=docker/agent-dev-fe.Dockerfile
