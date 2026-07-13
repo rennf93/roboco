@@ -49,9 +49,7 @@ def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
     return [s for s in SANDBOX_ENGINES if s in value]
 
 
-def _validate_one_sandbox_extension(
-    svc: str, feats: list[str] | None
-) -> list[str]:
+def _validate_one_sandbox_extension(svc: str, feats: list[str] | None) -> list[str]:
     """Allowlist-validate one service's feature list; return it ordered.
 
     Raises ``ValueError`` on an unknown service or an unallowed feature (the
