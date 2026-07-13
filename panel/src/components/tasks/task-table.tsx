@@ -593,6 +593,7 @@ export function TaskTable({
                                 variant="ghost"
                                 size="icon-sm"
                                 className="p-0.5 h-5 w-5 shrink-0"
+                                aria-label={isExpanded ? "Collapse" : "Expand"}
                               >
                                 {isExpanded ? (
                                   <ChevronDown className="h-4 w-4" />
@@ -848,6 +849,7 @@ export function TaskTable({
                 className="h-8 w-8"
                 onClick={() => goToPage(currentPage - 1)}
                 disabled={currentPage === 1}
+                aria-label="Previous page"
               >
                 <ChevronLeft className="h-4 w-4" />
               </Button>
@@ -857,6 +859,7 @@ export function TaskTable({
                 className="h-8 w-8"
                 onClick={() => goToPage(currentPage + 1)}
                 disabled={currentPage === totalPages}
+                aria-label="Next page"
               >
                 <ChevronRight className="h-4 w-4" />
               </Button>
