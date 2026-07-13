@@ -141,7 +141,7 @@ tests/
     ├── agents/ (4) — autogen_prompt_layer, briefing_cluster, conventions_ambient_injection, tool_load_directive
     ├── api/ (30) + routes/ (3) + routes/v1/ (11) + schemas/ (2) + schemas/v1/ (1) — middleware, deps, errors, websocket_*, schemas, v1 flow router tests
     ├── billing/ (1) — pricing
-    ├── config/ (5) — ci_watch/conventions/dep_update/org_memory/release_manager flag tests
+    ├── config/ (6) — ci_watch/conventions/dep_update/docs_sync/org_memory/release_manager flag tests
     ├── conventions/ (10) — classify_python/ts, cli, cli_smoke, custom, hygiene, modularity, placement, runner, scan
     ├── db/ (1) — respawn_tracker_table
     ├── enforcement/ (4) — a2a_access, journal_perms, task_lifecycle, task_ownership
