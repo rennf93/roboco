@@ -906,6 +906,17 @@ class AgentOrchestrator:
     # Drives the ROBOCO_AUDIT_INTERVAL_SECONDS throttle. Per-instance override.
     _last_audit_spawn_at: datetime | None = None
 
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> "AgentOrchestrator":
+        """Allocate the instance and pre-initialize the agent registry.
+
+        ``__init__`` still re-initializes ``_instances``; this just guarantees
+        the attribute exists for tests that bypass ``__init__`` via bare
+        ``AgentOrchestrator.__new__(AgentOrchestrator)``.
+        """
+        instance = super().__new__(cls)
+        instance._instances = {}
+        return instance
+
     def __init__(
         self,
         mcp_config_dir: Path | None = None,
