@@ -372,9 +372,10 @@ def _exec_calls(runner: _FakeRunner, containish: str | None = None) -> list[list
 
 @pytest.mark.asyncio
 async def test_provision_pg_features_runs_enable_then_verify() -> None:
-    # exec_out = "2\n" satisfies the pg verify (count == len(features)).
+    # exec_out is the installed-extname set the static verify query returns;
+    # verify_ok checks every requested feature is present in it.
     runner = _FakeRunner(run_rc=0, exec_rc=0)
-    runner.exec_out = b"2\n"
+    runner.exec_out = b"vector\npostgis\n"
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     info = await provisioner.provision(
@@ -383,16 +384,16 @@ async def test_provision_pg_features_runs_enable_then_verify() -> None:
 
     pg = info.services["postgres"]
     assert pg.features == ("vector", "postgis")
-    # The enable exec creates both extensions; the verify exec counts them —
-    # assert each by content rather than a magic count.
+    # The enable exec creates both extensions; the verify exec is a static
+    # SELECT (no interpolation) — verify_ok does the membership check against
+    # the installed set, so provision succeeding proves both are present.
     execs = _exec_calls(runner, "psql")
     enable = next(c for c in execs if "CREATE EXTENSION" in " ".join(c))
     verify = next(c for c in execs if "pg_extension" in " ".join(c))
     assert "CREATE EXTENSION IF NOT EXISTS vector" in " ".join(enable)
     assert "CREATE EXTENSION IF NOT EXISTS postgis" in " ".join(enable)
     assert "ON_ERROR_STOP=1" in enable
-    assert "vector" in " ".join(verify)
-    assert "postgis" in " ".join(verify)
+    assert "SELECT extname FROM pg_extension" in " ".join(verify)
 
 
 @pytest.mark.asyncio
@@ -472,7 +473,7 @@ def _run_call(runner: _FakeRunner) -> list[str]:
 @pytest.mark.asyncio
 async def test_provision_pg_features_uses_kitchen_sink_image() -> None:
     runner = _FakeRunner(run_rc=0, exec_rc=0)
-    runner.exec_out = b"1\n"
+    runner.exec_out = b"vector\n"
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     await provisioner.provision(
@@ -582,11 +583,11 @@ async def test_provision_failed_enable_tears_down_and_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_provision_failed_verify_raises_with_image_hint() -> None:
-    """A successful enable but a verify count that's short (the image is missing
+    """A successful enable but a verify that comes up short (the image is missing
     the extension files) is fatal with the 'image may be missing' hint."""
-    # 2 features requested but verify reports only 1 present.
+    # 2 features requested but verify reports only vector installed.
     runner = _FakeRunner(run_rc=0, exec_rc=0)
-    runner.exec_out = b"1\n"
+    runner.exec_out = b"vector\n"
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError, match="missing the extension"):
@@ -598,7 +599,7 @@ async def test_provision_failed_verify_raises_with_image_hint() -> None:
 @pytest.mark.asyncio
 async def test_as_payload_surfaces_available_extensions() -> None:
     runner = _FakeRunner(run_rc=0, exec_rc=0)
-    runner.exec_out = b"1\n"
+    runner.exec_out = b"vector\n"
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     info = await provisioner.provision(
