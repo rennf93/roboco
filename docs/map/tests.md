@@ -24,6 +24,7 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | tests/unit/gateway/ | 105 Choreographer/verb-runner unit tests — the largest single cluster: every intent verb's guards, envelopes, evidence, claim locks, lane barrier, pr gate, conventions gate, content actions |  |
 | tests/unit/runtime/ | 64 orchestrator unit tests: spawn/manifest/cwd/worktree, reaper, respawn persistence, rate-limit/overload sweeps, ci_watch/dep_update/release/self_heal loops, no_spawn_human_roles, per_dev_lane_queue, readopt_running_agents |  |
 | tests/unit/services/ | 120 service unit tests: task, git (+worktree), workspace, work_session, release_executor/readiness/manager, sequencing, conventions, playbook, notification, rate_limit_tracker, optimal_brain/ (10) |  |
+| tests/e2e_smoke/ | Scripted-agent lifecycle smoke tests: real routers + middleware over ephemeral Postgres + bare git origin + fake GitHub REST layer; no LLM. Env-gated (`ROBOCO_E2E_SMOKE=1`) via `make e2e-smoke`. |  |
 
 ## Key Symbols
 
@@ -107,6 +108,18 @@ tests/
 ├── property/  (2 — deterministic, no hypothesis)
 │   ├── test_state_machine_invariants.py  [6 invariants: orphan/terminal/reachability/random-walk/self-loop]
 │   └── test_tracing_completeness.py  [6-bullet tracing contract over smoke_test_batch]
+├── e2e_smoke/  (scripted-agent lifecycle smoke — env-gated)
+│   ├── conftest.py  [collection gate: skips unless ROBOCO_E2E_SMOKE=1]
+│   ├── harness.py  [in-process API, ephemeral Postgres, bare git origin, fake GitHub REST]
+│   ├── arcs.py  [canonical-company seeding + dev/qa/pm/reviewer lifecycle helpers]
+│   ├── test_dev_lifecycle.py  [scenario 1: leaf dev arc → awaiting_pm_review]
+│   ├── test_pm_merge_chain.py  [scenarios 2/2b: PR-gate turn cut + serial root merges]
+│   ├── test_root_ceo_chain.py  [scenario 3: pr_fail → rework → real approve-and-merge]
+│   ├── test_megatask_umbrella.py  [scenario 4: MegaTask sequencing + umbrella closure]
+│   ├── test_notification_coordination_events.py  [DB-truth checks for restored coordination-event ALERTs]
+│   ├── test_auditor_triggers.py  [scheduled sweep + reactive QA-fail alert paths spawn auditor]
+│   ├── test_auth_gate_coverage.py, test_background_engines.py, test_data_integrity.py, test_feature_spotlight.py, test_flow_verb_timeout.py, test_git_workflow.py, test_sandbox_image_tags.py, test_sandbox_on_demand.py, test_state_machine.py, test_video_pipeline.py  [other e2e smoke scenarios]
+│   └── test_bash_guard_message.sh / test_stop_hook_verb_names.sh  [NOT here — these live in tests/integration/]
 └── unit/  (~430 — mirrors roboco/)
     ├── test_* (11 top-level: agents_config, bootstrap, config_properties, enum_migration_parity, exceptions, logging, no_deleted_tool_names, notification_dedup, notification_dedup_refire, notification_delivery_refire, toolchain_flag)
     ├── agent_sdk/ (11) — grok_cli/intake/secretary/manifest/prompt_guard/usage_sync/verb_circuit_breaker
@@ -141,6 +154,7 @@ tests/
 |---|---|---|
 | make quality | Makefile | developer/CI merge gate — runs ruff format-check + ruff check + mypy roboco/ tests/ + pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80 + xenon + vulture |
 | make quality-fast | Makefile | pre-submit fast gate — ruff + mypy + pytest -q -x --no-cov (no coverage threshold) |
+| make e2e-smoke | Makefile | scripted-agent lifecycle smoke — `ROBOCO_E2E_SMOKE=1 uv run pytest tests/e2e_smoke -q --no-cov`; needs test Postgres + git on PATH |
 | make gate (panel-gate) | Makefile | panel pnpm lint + typecheck + vitest |
 | make test/test-3.10..3.14/test-all | Makefile | docker compose run roboco pytest -v --cov=. across Python versions |
 | uv run pytest | pyproject.toml | direct invocation — auto-applies addopts (--cov=roboco --cov-report=term-missing), testpaths=tests, asyncio_mode=auto |
@@ -205,6 +219,7 @@ tests/
 > - **49526f55** test-suite quality gate unblock: fixed 12 mypy errors across 5 test files + 2 behavior corrections (child task state for cascade-cancel assertion; test_a2a_message_auth mocked to DB-free path).
 > - **76ce53e3** chat MESSAGE_SENT fix: test_websocket_bridge.py gained 3 new test functions for `_handle_message_event` (skips missing ids, skips invalid uuid, broadcasts to session+channel).
 > - **77958c1e** chat session/group/message read IDOR fix: test_messaging_service.py extended with `_make_agent` helper + IDOR access-control test coverage for get_session/get_group/list_messages.
+> - **1f129199** auditor-trigger e2e smoke test: added `tests/e2e_smoke/test_auditor_triggers.py` exercising scheduled sweep and reactive QA-fail alert paths end-to-end, plus harness mount of `/api/notifications` so `_dispatch_audit_work` can poll ALERT rows.
 
 ## Regression Risks
 

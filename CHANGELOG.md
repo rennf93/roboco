@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **Scheduled auditor sweeps.** `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 21600s / 6h, `audit_interval_seconds` in `roboco/config.py`) drives a periodic auditor spawn. `_dispatch_audit_work` now spawns the auditor on a scheduled sweep when the interval has elapsed, the auditor is not already active, and recent delivery activity exists (active delivery states or a task completed within the window). Reactive alert spawns also stamp `_last_audit_spawn_at` so the interval gate is shared. A one-tick notification sentinel and the existing active-agent breaker prevent auditor spawn storms; `0` disables scheduled sweeps. The auditor identity prompt and `_build_audit_prompt(scheduled=True)` support sweep-based reviews.
+- **E2E smoke test for auditor triggers.** `tests/e2e_smoke/test_auditor_triggers.py` exercises both auditor spawn paths end-to-end against the real orchestrator dispatcher: a scheduled sweep that sees recent delivery activity and a reactive `ALERT` created by `POST /api/tasks/{id}/fail-qa`. `spawn_agent` is stubbed so the test asserts the dispatch decision without running an auditor container. The e2e harness now mounts `/api/notifications` so `_dispatch_audit_work` can poll alert rows.
 
 ### Fixed
 
