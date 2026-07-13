@@ -13,6 +13,8 @@ Documentation for the Backend Cell team.
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
+- `/ops/` - Operational runbooks
+  - `codeql-workflows.md` - Split CodeQL workflow triggers and branch-protection notes
 
 ## Contributing
 
