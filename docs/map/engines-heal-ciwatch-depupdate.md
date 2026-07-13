@@ -187,3 +187,6 @@ engines-heal-ciwatch-depupdate
 
 ## Health
 All three engines are small, single-purpose, and follow a deliberately conservative pattern: gate on a default-off flag, read-only detect, bounded+deduped originate of one PENDING task, flush-only (caller commits), never start/approve/merge/deploy. The safety invariants (self_heal HELD behind CEO approve; ci_watch/dep_update READY but ride normal gates; per-git_url dedupe for monorepos; per-cycle + rolling caps) are intact and consistent with CLAUDE.md. Two medium risks present at baseline are now resolved: CEO notify spam (536bbb64 added Redis per-fingerprint dedupe) and multi-workflow monorepo under-count (536bbb64 changed _should_open to dedupe per (git_url, workflow); d34bc1a7 hardened the SQL to normalize git_url accidentals and treat empty-string workflow as NULL). Remaining standing risks are low-severity: fingerprint collision on shared signal_name, dep_update cap-check ordering (non-eligibles consume a loop slot not a cap slot), and ci_watch cell-PM notify swallowing all exceptions. Health is good.
+
+## See also
+- `docs/map/engine-docs-sync.md` — a sibling originate-only engine that opens a docs-update task on release publish (release-triggered, no background loop).
