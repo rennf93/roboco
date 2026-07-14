@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from roboco.services.usage import UsageService
+from roboco.services.usage import UsageService, _parse_period
 
 # ---------------------------------------------------------------------------
 # Named constants (ruff PLR2004: magic values in comparisons must be named).
@@ -99,6 +99,45 @@ def _service_with_execute(*return_values: object) -> UsageService:
     session = MagicMock()
     session.execute = AsyncMock(side_effect=list(return_values))
     return UsageService(session)
+
+
+# ---------------------------------------------------------------------------
+# _parse_period — period string → (start_dt, hours)
+# ---------------------------------------------------------------------------
+
+
+class TestParsePeriod:
+    """_parse_period maps each period string to (start_dt, hours).
+
+    90d is the new window (W9-2); the others pin the existing contract so a
+    future refactor can't silently drop a window.
+    """
+
+    _HOURS_PER_DAY = 24
+
+    def test_24h_default(self) -> None:
+        start, hours = _parse_period("24h")
+        assert hours == self._HOURS_PER_DAY
+        elapsed_h = (datetime.datetime.now(datetime.UTC) - start).total_seconds() / 3600
+        assert elapsed_h == pytest.approx(self._HOURS_PER_DAY, abs=1)
+
+    def test_7d(self) -> None:
+        _, hours = _parse_period("7d")
+        assert hours == 7 * self._HOURS_PER_DAY
+
+    def test_30d(self) -> None:
+        _, hours = _parse_period("30d")
+        assert hours == 30 * self._HOURS_PER_DAY
+
+    def test_90d(self) -> None:
+        start, hours = _parse_period("90d")
+        assert hours == 90 * self._HOURS_PER_DAY
+        elapsed_h = (datetime.datetime.now(datetime.UTC) - start).total_seconds() / 3600
+        assert elapsed_h == pytest.approx(90 * self._HOURS_PER_DAY, abs=1)
+
+    def test_unknown_defaults_to_24h(self) -> None:
+        _, hours = _parse_period("bogus")
+        assert hours == self._HOURS_PER_DAY
 
 
 # ---------------------------------------------------------------------------

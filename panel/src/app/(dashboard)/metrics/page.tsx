@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
@@ -17,11 +17,13 @@ import {
   useSpawnWaste,
   useUsageSessions,
 } from "@/hooks/use-usage";
+import type { UsagePeriod } from "@/lib/api/usage";
 import { TaskStatus, Team } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { OfflineState } from "@/components/ui/offline-state";
 import {
   ResponsiveTable,
@@ -36,6 +38,7 @@ import {
   ModelUsageDonut,
   AgentUsageChart,
   TeamUsageChart,
+  TaskStatusChart,
   SessionsTable,
 } from "@/components/metrics";
 import {
@@ -327,31 +330,42 @@ function PerformanceTabContent() {
       {/* Task Status */}
       <div>
         <h2 className="text-lg font-semibold mb-3">Task Status</h2>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
-          <MetricCard
-            title="Pending"
-            value={pending}
-            icon={<Clock className="h-4 w-4 text-gray-500" />}
-          />
-          <MetricCard
-            title="In Progress"
-            value={inProgress}
-            icon={<Activity className="h-4 w-4 text-blue-500" />}
-          />
-          <MetricCard
-            title="Blocked"
-            value={blocked}
-            icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
-          />
-          <MetricCard
-            title="Awaiting QA"
-            value={awaitingQa}
-            icon={<Timer className="h-4 w-4 text-yellow-500" />}
-          />
-          <MetricCard
-            title="Completed"
-            value={completed}
-            icon={<CheckCircle className="h-4 w-4 text-green-500" />}
+        <div className="grid gap-4 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3">
+          <div className="lg:col-span-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
+            <MetricCard
+              title="Pending"
+              value={pending}
+              icon={<Clock className="h-4 w-4 text-gray-500" />}
+            />
+            <MetricCard
+              title="In Progress"
+              value={inProgress}
+              icon={<Activity className="h-4 w-4 text-blue-500" />}
+            />
+            <MetricCard
+              title="Blocked"
+              value={blocked}
+              icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+            />
+            <MetricCard
+              title="Awaiting QA"
+              value={awaitingQa}
+              icon={<Timer className="h-4 w-4 text-yellow-500" />}
+            />
+            <MetricCard
+              title="Completed"
+              value={completed}
+              icon={<CheckCircle className="h-4 w-4 text-green-500" />}
+            />
+          </div>
+          <TaskStatusChart
+            slices={[
+              { name: "Pending", value: pending },
+              { name: "In Progress", value: inProgress },
+              { name: "Blocked", value: blocked },
+              { name: "Awaiting QA", value: awaitingQa },
+              { name: "Completed", value: completed },
+            ]}
           />
         </div>
       </div>
@@ -408,23 +422,41 @@ function PerformanceTabContent() {
 
 // ─── Token Usage & Costs tab content ─────────────────────────────────────────
 
+const TIME_WINDOW_OPTIONS: { value: UsagePeriod; label: string }[] = [
+  { value: "24h", label: "24h" },
+  { value: "7d", label: "7d" },
+  { value: "30d", label: "30d" },
+  { value: "90d", label: "90d" },
+];
+
 function TokenUsageCostsSection() {
-  const { data: summary, isLoading: loadingSnap } = useUsageSummary("24h");
-  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries("24h");
-  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage("24h");
-  const { data: teamUsage, isLoading: loadingTeams } = useTeamUsage("24h");
+  const [period, setPeriod] = useState<UsagePeriod>("24h");
+  const { data: summary, isLoading: loadingSnap } = useUsageSummary(period);
+  const { data: timeSeries, isLoading: loadingTS } = useUsageTimeSeries(period);
+  const { data: agentUsage, isLoading: loadingAgents } = useAgentUsage(period);
+  const { data: teamUsage, isLoading: loadingTeams } = useTeamUsage(period);
   const { data: sessions, isLoading: loadingSessions } = useUsageSessions(100);
-  const { data: modelUsage, isLoading: loadingModels } = useModelUsage("24h");
+  const { data: modelUsage, isLoading: loadingModels } = useModelUsage(period);
   const { data: projection, isLoading: loadingProj } = useUsageProjection();
   const { data: cacheStats, isLoading: loadingCache } =
-    useCacheEfficiency("24h");
-  const { data: roleUsage, isLoading: loadingRoles } = useRoleUsage("24h");
-  const { data: waste, isLoading: loadingWaste } = useSpawnWaste("24h");
+    useCacheEfficiency(period);
+  const { data: roleUsage, isLoading: loadingRoles } = useRoleUsage(period);
+  const { data: waste, isLoading: loadingWaste } = useSpawnWaste(period);
 
   const trendUp = (summary?.trend_pct ?? 0) >= 0;
 
   return (
     <div className="space-y-6">
+      {/* Time window selector — drives every period-scoped hook below */}
+      <div className="flex justify-end">
+        <SegmentedControl
+          options={TIME_WINDOW_OPTIONS}
+          value={period}
+          onValueChange={(v) => setPeriod(v as UsagePeriod)}
+          aria-label="Usage time window"
+        />
+      </div>
+
       {/* Row 1 — Summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-6">
         <SummaryCard
@@ -440,7 +472,7 @@ function TokenUsageCostsSection() {
           isLoading={loadingSnap}
         />
         <SummaryCard
-          title="Total Cost (24h)"
+          title="Total Cost"
           value={summary ? "$" + summary.total_cost_usd.toFixed(4) : undefined}
           icon={<Coins className="h-4 w-4 text-green-500" />}
           isLoading={loadingSnap}
