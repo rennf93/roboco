@@ -26,10 +26,13 @@ def orch() -> AgentOrchestrator:
 async def _run_dispatch(
     orch: AgentOrchestrator, *, tasks: list[dict] | None = None
 ) -> MagicMock:
-    """Run _dispatch_audit_work with notifications empty and return the spawn mock."""
+    """Run _dispatch_audit_work with no unobserved alerts and return the spawn mock."""
     client = MagicMock()
     with (
-        patch.object(orch, "_fetch_notifications", new=AsyncMock(return_value=[])),
+        patch.object(
+            orch, "_next_unobserved_audit_alert", new=AsyncMock(return_value=None)
+        ),
+        patch.object(orch, "_ack_alert_as_auditor", new=AsyncMock()),
         patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=tasks or [])),
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
@@ -111,7 +114,10 @@ async def test_breaker_skips_when_auditor_active(orch: AgentOrchestrator) -> Non
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
         patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
-        patch.object(orch, "_fetch_notifications", new=AsyncMock(return_value=[])),
+        patch.object(
+            orch, "_next_unobserved_audit_alert", new=AsyncMock(return_value=None)
+        ),
+        patch.object(orch, "_ack_alert_as_auditor", new=AsyncMock()),
         patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=[])),
         patch.object(orch, "_is_agent_active", return_value=True),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
@@ -129,8 +135,7 @@ async def test_reactive_alert_stamps_last_spawn_and_blocks_scheduled(
     """A reactive alert spawn records _last_audit_spawn_at and returns early."""
     client = MagicMock()
     alert = {
-        "id": "a1",
-        "to_agents": ["auditor"],
+        "id": "11111111-1111-1111-1111-111111111111",
         "subject": "Coverage gap",
         "body": "Test",
     }
@@ -138,7 +143,10 @@ async def test_reactive_alert_stamps_last_spawn_and_blocks_scheduled(
     with (
         patch.object(settings, "audit_interval_seconds", 21600),
         patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
-        patch.object(orch, "_fetch_notifications", new=AsyncMock(return_value=[alert])),
+        patch.object(
+            orch, "_next_unobserved_audit_alert", new=AsyncMock(return_value=alert)
+        ),
+        patch.object(orch, "_ack_alert_as_auditor", new=AsyncMock()),
         patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=[])),
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
@@ -147,6 +155,43 @@ async def test_reactive_alert_stamps_last_spawn_and_blocks_scheduled(
         await orch._dispatch_audit_work(client)
     assert spawn_mock.await_count == 1
     assert orch._last_audit_spawn_at == now
+
+
+@pytest.mark.anyio
+async def test_reactive_alert_acks_so_it_cannot_rotate(
+    orch: AgentOrchestrator,
+) -> None:
+    """The alert is acked as the auditor on dispatch, so the next tick —
+    which would otherwise re-fetch the same stale alert and respawn — finds
+    no unobserved alert and falls through to the scheduled path (blocked by
+    the just-stamped _last_audit_spawn_at). This is the rotation-stopper.
+    """
+    client = MagicMock()
+    alert_id = "22222222-2222-2222-2222-222222222222"
+    alert = {
+        "id": alert_id,
+        "subject": "Rework alert",
+        "body": "Task entered needs_revision",
+    }
+    now = datetime.now(UTC)
+    ack_mock = AsyncMock()
+    fetch_mock = AsyncMock(side_effect=[alert, None])
+    with (
+        patch.object(settings, "audit_interval_seconds", 21600),
+        patch("roboco.runtime.orchestrator.datetime", wraps=datetime) as dt_mock,
+        patch.object(orch, "_next_unobserved_audit_alert", new=fetch_mock),
+        patch.object(orch, "_ack_alert_as_auditor", new=ack_mock),
+        patch.object(orch, "_fetch_tasks", new=AsyncMock(return_value=[])),
+        patch.object(orch, "_is_agent_active", return_value=False),
+        patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn_mock,
+    ):
+        dt_mock.now.return_value = now
+        await orch._dispatch_audit_work(client)  # tick 1: alert -> spawn + ack
+        await orch._dispatch_audit_work(client)  # tick 2: no alert -> scheduled
+    assert spawn_mock.await_count == 1  # not respawned on tick 2
+    assert ack_mock.await_count == 1
+    # acked as the auditor saw it: (client, alert_id)
+    assert ack_mock.await_args.args[1] == alert_id
 
 
 @pytest.mark.anyio
