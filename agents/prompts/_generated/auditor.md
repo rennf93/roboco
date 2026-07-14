@@ -9,6 +9,7 @@
 |------|-------------|
 | `i_am_idle` | `i_am_idle()` |
 | `triage` | `triage()` |
+| `waive_finding` | `waive_finding(finding_id: UUID, note: str)` |
 
 ### Content (do) tools
 
