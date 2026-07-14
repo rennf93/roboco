@@ -45,6 +45,7 @@ from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
+from roboco.api.routes.telegram import router as telegram_router
 from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
 from roboco.api.routes.v1 import flow_auditor as flow_auditor_module
@@ -476,6 +477,14 @@ def create_app() -> FastAPI:
         tiktok_router,
         prefix=f"{api_prefix}/tiktok",
         tags=["TikTok"],
+    )
+
+    # Telegram notifications bridge — CEO-managed bot-token + chat-id credentials
+    # (write-only); the fan-out itself runs server-side from the CEO producers.
+    app.include_router(
+        telegram_router,
+        prefix=f"{api_prefix}/telegram",
+        tags=["Telegram"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.

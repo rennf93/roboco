@@ -80,6 +80,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("vault_intake_enabled", "Vault intake watcher (notes -> held drafts)"),
     ("vault_report_enabled", "Vault weekly org-report note"),
     ("vault_kb_enabled", "Vault KB ingest (CEO notes -> RAG)"),
+    ("telegram_enabled", "Telegram notifications bridge (CEO DMs)"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
 
