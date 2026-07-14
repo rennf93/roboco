@@ -201,6 +201,7 @@ class ReleaseProposalService(BaseService):
                 await self.session.flush()
                 await self._draft_x_post(report)
                 await self._draft_video(report)
+                await self._draft_docs_update(report)
             return result
         finally:
             await self._finalize_release_lock(
@@ -237,6 +238,22 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("video draft failed (best-effort): %s", exc)
+
+    async def _draft_docs_update(self, report: ReleaseReadinessReport) -> None:
+        """Hand the just-published release to the docs-sync engine for a
+        docs-update task (best-effort — never raises into approve(); an
+        origination failure must not affect the release's already-succeeded
+        publish). Off or a missing roboco-website project is itself a no-op
+        inside the engine."""
+        try:
+            from roboco.services.docs_sync_engine import get_docs_sync_engine
+
+            await get_docs_sync_engine(self.session).originate_docs_update(
+                version=report.proposed_version,
+                changelog=report.drafted_changelog,
+            )
+        except Exception as exc:
+            logger.warning("docs-sync task origination failed (best-effort): %s", exc)
 
     async def _finalize_release_lock(
         self,

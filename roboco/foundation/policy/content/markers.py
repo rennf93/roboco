@@ -48,6 +48,7 @@ VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
 VAULT_NOTE_REF = "vault_note_ref"
+DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -401,3 +402,17 @@ def set_transition_note(task: HasMarkers, event: str, note: str) -> None:
     notes = dict(existing) if isinstance(existing, dict) else {}
     notes[event] = note
     set_marker(task, TRANSITION_NOTES, notes)
+
+
+# --- docs-sync release version --------------------------------------------- #
+# The docs-sync engine stamps the release version (e.g. "0.23.0") on each
+# docs_update task it originates so it can dedupe per release.
+
+
+def get_docs_sync_release_version(task: HasMarkers) -> str | None:
+    val = get_marker(task, DOCS_SYNC_RELEASE_VERSION)
+    return str(val) if val else None
+
+
+def set_docs_sync_release_version(task: HasMarkers, version: str) -> None:
+    set_marker(task, DOCS_SYNC_RELEASE_VERSION, version)

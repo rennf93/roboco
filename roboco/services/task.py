@@ -597,6 +597,11 @@ CI_WATCH_SOURCE = "ci_watch"
 # lifecycle (+ PR-review gate) and is never auto-merged.
 DEP_UPDATE_SOURCE = "dep_update"
 
+# Source tag for a docs-divergence sync task: opened by the docs-sync engine on a
+# successful release publish. Rides the normal delivery lifecycle and never
+# auto-merges; requires the roboco-website project to be registered.
+DOCS_SYNC_SOURCE = "docs_sync"
+
 # Source tag for a gated release proposal: opened by the release-manager engine
 # when accumulated unreleased changes pass the threshold + the gate is green.
 # Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
@@ -1569,6 +1574,32 @@ class TaskService(BaseService):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_open_docs_sync_tasks(
+        self, version: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal docs_sync tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one release ``version`` via the
+        ``docs_sync_release_version`` marker so a release never gets a second
+        docs-update task while the first is still open.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DOCS_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if version is not None:
+            # Filter by marker in SQL so the database applies the predicate
+            # and avoids hauling every open docs_sync row into Python.
+            # .as_string() is the generic JSON comparator; .astext is JSONB-only.
+            stmt = stmt.where(
+                TaskTable.orchestration_markers[
+                    markers.DOCS_SYNC_RELEASE_VERSION
+                ].as_string()
+                == version
+            )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_open_release_proposals(self) -> list[TaskTable]:
         """Non-terminal release-manager proposals — the one-open-at-a-time basis.
 
@@ -2039,6 +2070,8 @@ class TaskService(BaseService):
             )
             frontier = []
             for child in result.scalars().all():
+                # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
+                # import and to keep ruff/mypy happy without noqa/type: ignore.
                 child_id = cast("UUID", child.id)
                 if child_id in seen:
                     continue
@@ -5169,7 +5202,6 @@ class TaskService(BaseService):
                 )
 
         await self.session.flush()
-
         await self._alert_auditor_of_rework(
             task,
             reason=notes or "QA review failed",
@@ -7992,8 +8024,8 @@ class TaskService(BaseService):
             children = await self.get_subtasks(current_id)
             for child in children:
                 descendants.append(child)
-                # child.id is SQLAlchemy Mapped[UUID]
-                # but resolves to uuid.UUID at runtime
+                # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
+                # resolves to uuid.UUID at runtime, without a type: ignore.
                 to_process.append(cast("UUID", child.id))
 
         return descendants

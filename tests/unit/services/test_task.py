@@ -342,6 +342,23 @@ async def test_list_video_pipeline_tasks_empty_when_nothing_in_flight() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list_open_docs_sync_tasks — docs-sync dedupe + open-cap basis
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_open_docs_sync_tasks_returns_non_terminal_source_tasks() -> None:
+    task = _build_task(status=TaskStatus.PENDING)
+    scalars = MagicMock()
+    scalars.all.return_value = [task]
+    result = MagicMock()
+    result.scalars.return_value = scalars
+    svc = _service_with(result)
+    out = await svc.list_open_docs_sync_tasks()
+    assert out == [task]
+
+
+# ---------------------------------------------------------------------------
 # all_subtasks_terminal
 # ---------------------------------------------------------------------------
 
