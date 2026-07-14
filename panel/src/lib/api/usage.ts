@@ -270,13 +270,14 @@ export const usageApi = {
     return data;
   },
 
-  /** Bucketed time-series — GET /usage/time-series?period= */
+  /** Bucketed time-series — GET /usage/time-series?period=&agent_slug= */
   getUsageTimeSeries: async (
     period: UsagePeriod = "24h",
+    agentSlug?: string,
   ): Promise<UsageTimePoint[]> => {
     if (isMockMode()) return mockTimeSeries(period);
     const { data } = await api.get<UsageTimePoint[]>("/usage/time-series", {
-      params: { period },
+      params: agentSlug ? { period, agent_slug: agentSlug } : { period },
     });
     return data;
   },

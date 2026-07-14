@@ -5,5 +5,6 @@ export { AgentStatusCards } from "./agent-status-cards";
 export { SpawnAgentDialog } from "./spawn-agent-dialog";
 export { ResolveWaitDialog } from "./resolve-wait-dialog";
 export { AgentStreamViewer } from "./stream-viewer";
+export { AgentActivityPanel } from "./agent-activity-panel";
 export { OrchestratorStatusCards } from "./orchestrator-status";
 export { WaitingAgentsAlert } from "./waiting-agents-alert";
