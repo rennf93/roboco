@@ -69,7 +69,9 @@ def _patch_repo(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> MagicMock:
     return repo_mock
 
 
-def _choreographer(monkeypatch: pytest.MonkeyPatch, row: Any | None):
+def _choreographer(
+    monkeypatch: pytest.MonkeyPatch, row: Any | None
+) -> tuple[Choreographer, MagicMock]:
     deps = _make_deps()
     deps.task.session = MagicMock()
     c = Choreographer(deps)
