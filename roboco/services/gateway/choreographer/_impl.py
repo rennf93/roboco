@@ -32,6 +32,7 @@ from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
+from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
@@ -969,6 +970,13 @@ class Choreographer:
             # can tell "searched, nothing" (below_floor / empty) from "search broke"
             # (error) from "subsystem off" (disabled); lessons is empty unless ok.
             briefing = {**briefing, "institutional_memory": memory_block}
+        # The collision map: surfaced siblings (same parent) that would collide
+        # with this task. A PM planning a batch root sees the other
+        # root-subtasks' declared surfaces; a dev claiming a leaf sees its
+        # cell-sibling overlaps. No actual files at plan/claim time, so drift is
+        # omitted here (the QA/gate envelopes carry it). Best-effort — a failure
+        # omits the block, never breaks the briefing.
+        briefing = await self._with_collision_briefing(briefing, full, task)
         if include_ac_coverage and task_id is not None:
             coverage = await self.task.parent_ac_coverage(task_id)
             if coverage:
@@ -984,6 +992,42 @@ class Choreographer:
                     ],
                 }
         return briefing
+
+    async def _collision_context_for(
+        self, t: Any, *, actual_files: list[str] | None = None
+    ) -> list[dict[str, Any]] | None:
+        """The collision map for ``t`` against its surfaced siblings — one
+        indexed ``get_subtasks(parent_task_id)`` query + the pure builder.
+
+        ``None`` for a root (no parent) or a fetch failure (best-effort: the
+        briefing / envelope omit the block rather than break). The QA and
+        PR-gate evidence builders call the pure ``build_collision_context``
+        directly (they hold the real touched files); this helper covers the
+        planning/claim briefing path, which has no actual files yet.
+        """
+        parent_id = getattr(t, "parent_task_id", None)
+        if not parent_id:
+            return None
+        try:
+            siblings = await self.task.get_subtasks(parent_id)
+        except Exception:  # best-effort: omit on any fetch failure
+            return None
+        return build_collision_context(
+            task=t, siblings=siblings, actual_files=actual_files
+        )
+
+    async def _with_collision_briefing(
+        self, briefing: dict[str, Any], full: bool, task: Any
+    ) -> dict[str, Any]:
+        """Merge the collision block into ``briefing`` when the planning/claim
+        path warrants it (``full`` + a real task). Keeps the branch count out of
+        ``_briefing_for`` — the collision fetch + merge live here."""
+        if not full or task is None:
+            return briefing
+        collision = await self._collision_context_for(task)
+        if not collision:
+            return briefing
+        return {**briefing, "collision_context": collision}
 
     async def _resolve_company_goals(
         self,

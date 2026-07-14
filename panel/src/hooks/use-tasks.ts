@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { tasksApi, type TaskFilters } from "@/lib/api/tasks";
+import { tasksApi, type TaskFilters, type CollisionMap } from "@/lib/api/tasks";
 import {
   Team,
   TaskStatus,
@@ -29,6 +29,7 @@ export const taskKeys = {
     [...taskKeys.all, "subtasks", parentId] as const,
   boardReview: (id: string) => [...taskKeys.all, "board-review", id] as const,
   findings: (id: string) => [...taskKeys.all, "findings", id] as const,
+  collisionMap: (id: string) => [...taskKeys.all, "collision-map", id] as const,
   stats: () => [...taskKeys.all, "stats"] as const,
   statsByTeam: () => [...taskKeys.all, "stats-by-team"] as const,
 };
@@ -76,6 +77,18 @@ export function useTaskFindings(taskId: string) {
   return useQuery({
     queryKey: taskKeys.findings(taskId),
     queryFn: () => tasksApi.getFindings(taskId),
+    enabled: !!taskId,
+    staleTime: 30000,
+  });
+}
+
+// The reviewer/PM collision map — surfaced siblings that would collide with
+// the task. Fetched lazily (enabled only on the Collision tab) so it adds no
+// cost to the task-detail load; mirrors useBoardReview's staleTime posture.
+export function useTaskCollisionMap(taskId: string) {
+  return useQuery<CollisionMap>({
+    queryKey: taskKeys.collisionMap(taskId),
+    queryFn: () => tasksApi.getCollisionMap(taskId),
     enabled: !!taskId,
     staleTime: 30000,
   });

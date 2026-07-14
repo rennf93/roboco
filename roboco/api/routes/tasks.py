@@ -23,6 +23,8 @@ from roboco.api.schemas.tasks import (
     CancelTaskRequest,
     CheckpointRequest,
     ClaimRequest,
+    CollisionMapResponse,
+    CollisionSibling,
     CommitRequest,
     CompleteTaskRequest,
     EscalateRequest,
@@ -65,6 +67,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.journal import get_journal_service
 from roboco.services.notification_delivery import (
     EscalationError,
@@ -1345,6 +1348,59 @@ async def get_task_findings(
         summary=findings_summary(counts),
         total=total,
         truncated=total > len(rows),
+    )
+
+
+@router.get("/{task_id}/collision-map", response_model=CollisionMapResponse)
+async def get_task_collision_map(
+    task_id: UUID,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+) -> CollisionMapResponse:
+    """The reviewer/PM collision map for a task — its own declared surface
+    (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``) plus
+    the surfaced siblings (same parent) that would collide with it: file
+    globs that overlap or a shared migration chain. Read-only feed for the
+    panel's Collision tab; the QA/PR-gate evidence envelopes carry the same
+    block inline (with declared-vs-actual drift, which needs the real
+    touched files the panel route doesn't resolve a workspace for).
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    siblings = (
+        await service.get_subtasks(UUID(str(task.parent_task_id)))
+        if task.parent_task_id
+        else []
+    )
+    # No actual files here — the panel shows the declared surface + sibling
+    # overlap only; drift stays in the in-context evidence envelope.
+    ctx = build_collision_context(task=task, siblings=siblings)
+    return CollisionMapResponse(
+        task_id=str(task.id),
+        parent_task_id=str(task.parent_task_id) if task.parent_task_id else None,
+        intends_to_touch=list(task.intends_to_touch or []),
+        adds_migration=bool(task.adds_migration),
+        touches_shared=bool(task.touches_shared),
+        siblings=[
+            CollisionSibling(
+                id=s["id"],
+                title=s.get("title"),
+                status=s.get("status", ""),
+                branch_name=s.get("branch_name"),
+                pr_number=s.get("pr_number"),
+                sequence=s.get("sequence"),
+                intends_to_touch=s.get("intends_to_touch", []),
+                adds_migration=s.get("adds_migration", False),
+                touches_shared=s.get("touches_shared", False),
+                overlap=s.get("overlap", []),
+                undeclared=s.get("undeclared", []),
+            )
+            for s in (ctx or [])
+        ],
     )
 
 

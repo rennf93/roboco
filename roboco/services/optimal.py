@@ -362,7 +362,7 @@ class OptimalService:
             return None
 
         # Directories to auto-index (RAG-optimized docs only)
-        auto_index_dirs = ["rag"]
+        auto_index_dirs = ["rag", "map"]
 
         for subdir in auto_index_dirs:
             target_dir = docs_root / subdir

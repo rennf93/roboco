@@ -25,6 +25,7 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "prior_findings",
     "parent_context",
     "description",
+    "collision_context",
 )
 
 
@@ -58,6 +59,11 @@ class EvidencePayload:
     # newest round first, so the round-N+1 reviewer verifies prior rounds
     # item-by-item instead of seeing only what is still open.
     prior_findings: list[dict[str, Any]] = field(default_factory=list)
+    # The collision map: surfaced siblings (same parent) that would collide
+    # with this task — file-overlap globs + migration-chain siblings + the
+    # declared-vs-actual drift. Empty for a root or a task with no colliding
+    # siblings; the block is omitted when empty (zero token cost).
+    collision_context: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -160,6 +166,7 @@ def build_evidence_for_task(
     revision_findings: list[Any] | None = None,
     prior_findings: list[Any] | None = None,
     parent_context: list[dict[str, Any]] | None = None,
+    collision_context: list[dict[str, Any]] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
@@ -167,7 +174,10 @@ def build_evidence_for_task(
     caller fetches; this module stays DB-free) and render them via
     ``render_findings``. ``parent_context`` is the upstream ``description``
     chain (parent → root) the caller fetches via EvidenceRepo so the dev
-    reads the intake's original analysis verbatim.
+    reads the intake's original analysis verbatim. ``collision_context`` is
+    the prebuilt collision-map block (the caller fetches siblings + actual
+    files and runs the pure ``build_collision_context``); passed through
+    verbatim so this module stays DB-free.
     """
     return EvidencePayload(
         pr_number=task.pr_number,
@@ -183,6 +193,7 @@ def build_evidence_for_task(
         convention_findings=list(convention_findings or []),
         revision_findings=render_findings(revision_findings),
         prior_findings=render_findings(prior_findings),
+        collision_context=list(collision_context or []),
     )
 
 
