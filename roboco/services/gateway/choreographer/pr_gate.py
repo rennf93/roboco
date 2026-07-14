@@ -29,6 +29,7 @@ from roboco.foundation.policy.content import (
     validate_findings,
 )
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import render_findings
 from roboco.services.gateway.merge_chain import resolve_parent_branch
@@ -1182,6 +1183,47 @@ class PRGateMixin(_Base):
             logger.warning("gate_diff_parent_skip", task_id=str(t.id), error=str(exc))
             return None
 
+    async def _gate_changed_files(self, t: Any, gate_parent: str | None) -> list[str]:
+        """The assembled PR's real touched files, same base as the diff — so
+        the collision map's declared-vs-actual drift is accurate. Best-effort:
+        a fetch failure yields ``[]`` and drift is simply omitted."""
+        try:
+            return list(
+                await self.git.list_changed_files(
+                    branch_name=t.branch_name, preferred_parent=gate_parent
+                )
+            )
+        except Exception as exc:  # best-effort; drift omits on failure
+            logger.warning(
+                "gate_review_files_changed_skip",
+                task_id=str(t.id),
+                error=str(exc),
+            )
+            return []
+
+    async def _gate_collision_evidence(
+        self, t: Any, files_changed: list[str]
+    ) -> list[dict[str, Any]] | None:
+        """The collision map for an assembled task — surfaced siblings that
+        would collide with it, with declared-vs-actual drift (the gate has
+        the real touched files in hand). Best-effort — mirrors the
+        ``parent_context`` block; a failure omits the block, never breaks the
+        gate."""
+        if not t.parent_task_id:
+            return None
+        try:
+            siblings = await self.task.get_subtasks(t.parent_task_id)
+        except Exception as exc:
+            logger.warning(
+                "gate_review_collision_context_skip",
+                task_id=str(t.id),
+                error=str(exc),
+            )
+            return None
+        return build_collision_context(
+            task=t, siblings=siblings, actual_files=files_changed or None
+        )
+
     async def _build_gate_review_evidence(self, t: Any) -> dict[str, Any]:
         """Inline evidence for claim_gate_review: the assembled diff +
         criteria + the task's OPEN findings (so they aren't crowded out by
@@ -1189,11 +1231,14 @@ class PRGateMixin(_Base):
         newest round first) so the reviewer verifies prior rounds
         item-by-item — parity with QA's ``_build_qa_claim_evidence``."""
         diff = ""
+        files_changed: list[str] = []
         if t.branch_name:
+            gate_parent = await self._gate_diff_parent(t)
             diff = await self.git.diff(
                 branch_name=t.branch_name,
-                preferred_parent=await self._gate_diff_parent(t),
+                preferred_parent=gate_parent,
             )
+            files_changed = await self._gate_changed_files(t, gate_parent)
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
         )
@@ -1225,4 +1270,7 @@ class PRGateMixin(_Base):
             evidence["description"] = description
         if parent_context:
             evidence["parent_context"] = parent_context
+        collision = await self._gate_collision_evidence(t, files_changed)
+        if collision:
+            evidence["collision_context"] = collision
         return evidence
