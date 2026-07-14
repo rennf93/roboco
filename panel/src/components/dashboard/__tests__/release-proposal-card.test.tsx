@@ -124,3 +124,53 @@ describe("ReleaseProposalCard — query-failure surfacing (F082)", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("ReleaseProposalCard — execute outcome surfacing (W8b)", () => {
+  it("renders the in-flight badge and disables actions while execute runs", () => {
+    // execute_in_flight is the UX for the Redis-mutex-protected background
+    // execute; the approve/reject buttons disable so the CEO can't double-click.
+    mockUseQuery.mockReturnValue({
+      data: { ...buildProposal(), execute_in_flight: true },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(withPageRefresh(<ReleaseProposalCard />));
+
+    expect(
+      screen.getByText(/release execute running in the background/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Reject with changes/i }),
+    ).toBeDisabled();
+    // Approve stays present but disabled while the execute runs.
+    const approve = screen.getByRole("button", { name: /Approve & publish/i });
+    expect(approve).toBeDisabled();
+  });
+
+  it("renders the failure block and a Retry label from a persisted execute_status", () => {
+    // A failed ~40min execute left the proposal open with a persisted
+    // execute_status; the card surfaces the reason and flips Approve to Retry.
+    mockUseQuery.mockReturnValue({
+      data: {
+        ...buildProposal(),
+        execute_status: "gate_failed",
+        execute_detail: "make quality failed",
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    render(withPageRefresh(<ReleaseProposalCard />));
+
+    expect(screen.getByText(/last execute failed/i)).toBeInTheDocument();
+    expect(screen.getByText(/make quality failed/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Retry approve & publish/i }),
+    ).toBeInTheDocument();
+  });
+});

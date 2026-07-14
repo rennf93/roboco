@@ -34,6 +34,8 @@ ESCALATION = "escalation"
 APPROVE_AND_START_NOTES = "approve_and_start_notes"
 RELEASE_REPORT = "release_report"
 RELEASE_REQUIRED_CHANGES = "release_required_changes"
+RELEASE_EXECUTE_STATUS = "release_execute_status"
+RELEASE_EXECUTE_DETAIL = "release_execute_detail"
 X_DRAFT_BODY = "x_draft_body"
 X_RELEASE_VERSION = "x_release_version"
 X_MENTION_REF = "x_mention_ref"
@@ -141,6 +143,24 @@ def get_release_required_changes(task: HasMarkers) -> str | None:
 
 def set_release_required_changes(task: HasMarkers, text: str) -> None:
     set_marker(task, RELEASE_REQUIRED_CHANGES, text)
+
+
+def get_release_execute_outcome(task: HasMarkers) -> tuple[str, str] | None:
+    """The last execute outcome ``(status, detail)`` — e.g. ``("gate_failed",
+    "...")`` — or None when the proposal has never been approved. Surfaced to
+    the CEO via ``GET /proposal`` so a failed ~40min execute isn't a silent
+    PENDING."""
+    status = get_marker(task, RELEASE_EXECUTE_STATUS)
+    if not status:
+        return None
+    detail = get_marker(task, RELEASE_EXECUTE_DETAIL)
+    return str(status), str(detail) if detail else ""
+
+
+def set_release_execute_outcome(task: HasMarkers, status: str, detail: str) -> None:
+    """Record the outcome of the latest approve execute on the proposal."""
+    set_marker(task, RELEASE_EXECUTE_STATUS, status)
+    set_marker(task, RELEASE_EXECUTE_DETAIL, detail)
 
 
 # --- X (Twitter) held post/reply -------------------------------------------

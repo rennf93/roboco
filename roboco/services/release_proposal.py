@@ -348,11 +348,18 @@ class ReleaseProposalService(BaseService):
             await asyncio.sleep(_RELEASE_LOCK_HEARTBEAT_SECONDS)
 
     async def reject(self, task_id: UUID, required_changes: str) -> TaskTable | None:
-        """Record the CEO's required changes; keep the proposal held for revision."""
+        """Record the CEO's required changes and cancel the proposal.
+
+        Cancelling (not holding) is what frees the one-open-proposal dedup —
+        ``list_open_release_proposals`` excludes CANCELLED, so the next
+        ``run_cycle`` re-assesses and may originate a fresh proposal. The
+        ``required_changes`` marker stays on the cancelled row for history.
+        Mirrors the video-post reject (``video_post_service.py``)."""
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source != RELEASE_MANAGER_SOURCE:
             return None
         markers.set_release_required_changes(task, required_changes)
+        task.status = TaskStatus.CANCELLED
         await self.session.flush()
         return task
 
@@ -410,7 +417,13 @@ async def _run_approve_background(
 ) -> None:
     """Run ``approve`` in a background task with a fresh session (the request
     session closes when the 202 returns). Commits the outcome; a failure logs
-    and rolls back — the proposal stays open for the CEO to retry."""
+    and rolls back — the proposal stays open for the CEO to retry.
+
+    The execute outcome (status + detail) is persisted as a marker on the task
+    so a failed ~40min execute isn't a silent PENDING — ``GET /proposal``
+    surfaces it. ``already_in_progress`` is transient (a concurrent click) and
+    is NOT persisted, so it can't clobber the real running execute's eventual
+    outcome."""
     async with session_factory() as bg_db:
         try:
             result = await get_release_proposal_service(bg_db).approve(task_id)
@@ -419,12 +432,32 @@ async def _run_approve_background(
                 task_id,
                 result.status if result is not None else "no_report",
             )
+            if result is not None and result.status != "already_in_progress":
+                task = await get_task_service(bg_db).get(task_id)
+                if task is not None:
+                    markers.set_release_execute_outcome(
+                        task, result.status, result.detail
+                    )
             await bg_db.commit()
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "release approve background task failed task_id=%s", task_id
             )
             await bg_db.rollback()
+            # Re-fetch post-rollback and record the crash so the CEO sees a
+            # reason instead of a silent PENDING.
+            task = await get_task_service(bg_db).get(task_id)
+            if task is not None:
+                markers.set_release_execute_outcome(task, "error", str(exc)[:500])
+                await bg_db.commit()
+
+
+def is_approve_in_flight(task_id: UUID) -> bool:
+    """True iff a background release execute is currently running for this proposal.
+
+    Single-process (one orchestrator) by construction; the durable cross-restart
+    signal is the execute-outcome marker, this is the live progress nicety."""
+    return task_id in _INFLIGHT_APPROVES
 
 
 def dispatch_approve(
