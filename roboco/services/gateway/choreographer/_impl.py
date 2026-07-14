@@ -2193,7 +2193,11 @@ class Choreographer:
         distinguish "the local gate already decided" from "CI green, gate
         skipped" so it never double-gates.
         """
-        status = await self._resolve_ci_status(ctx.task_id, ctx.task)
+        # ``_resolve_ci_status`` lives on ``PRGateMixin``; ``_LegacyChoreographer``
+        # reaches it via the typed-helpers cast (same idiom as the pr_pass path).
+        status = await cast("ChoreographerHelpers", self)._resolve_ci_status(
+            ctx.task_id, ctx.task
+        )
         if status is not None:
             state = status.get("state")
             if state == "success":
@@ -2935,7 +2939,7 @@ class Choreographer:
                     addressed.add(str(crit))
             if addressed < set(criteria):
                 return False
-        return not await self._open_finding_ids(getattr(t, "id", None))
+        return not await self._open_finding_ids(t.id)
 
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any

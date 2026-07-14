@@ -10,6 +10,7 @@ sees real data, not the latent reader/writer key drift).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -243,15 +244,34 @@ def _ctx(status: str = "claimed") -> Any:
     return ctx
 
 
+@dataclass
+class _FastPathMocks:
+    """Typed handles to the patched verb-boundary mocks. mypy keeps the
+    declared method types on ``c.<method>`` even after ``monkeypatch.setattr``
+    (the runtime override is invisible to static analysis), so assertions
+    must go through these locals typed as ``AsyncMock`` — not ``c.<method>``."""
+
+    ok: AsyncMock
+    reject: AsyncMock
+    conventions: AsyncMock
+    open_findings: AsyncMock
+    record_milestone: AsyncMock
+
+
 def _stub_fast_path(
     c: Choreographer, monkeypatch: pytest.MonkeyPatch, quality_rejection: Any = None
-) -> None:
+) -> _FastPathMocks:
+    conventions = AsyncMock(return_value=None)
+    open_findings = AsyncMock(return_value=())
+    ok = AsyncMock(return_value="OK")
+    reject = AsyncMock(return_value="REJECT")
+    record_milestone = AsyncMock(return_value=None)
     monkeypatch.setattr(c, "_apply_resolved_findings", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_check_submit_qa_field_gates", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_behind_base_gate", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_ensure_branch_pushed", AsyncMock(return_value=None))
-    monkeypatch.setattr(c, "_conventions_gate", AsyncMock(return_value=None))
-    monkeypatch.setattr(c, "_open_finding_ids", AsyncMock(return_value=()))
+    monkeypatch.setattr(c, "_conventions_gate", conventions)
+    monkeypatch.setattr(c, "_open_finding_ids", open_findings)
     monkeypatch.setattr(
         c,
         "_fast_path_quality_verdict",
@@ -259,9 +279,16 @@ def _stub_fast_path(
     )
     monkeypatch.setattr(c, "_notify_qa", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_touch", AsyncMock(return_value=None))
-    monkeypatch.setattr(c, "_record_milestone_progress", AsyncMock(return_value=None))
-    monkeypatch.setattr(c, "_build_i_am_done_ok", AsyncMock(return_value="OK"))
-    monkeypatch.setattr(c, "_reject_i_am_done", AsyncMock(return_value="REJECT"))
+    monkeypatch.setattr(c, "_record_milestone_progress", record_milestone)
+    monkeypatch.setattr(c, "_build_i_am_done_ok", ok)
+    monkeypatch.setattr(c, "_reject_i_am_done", reject)
+    return _FastPathMocks(
+        ok=ok,
+        reject=reject,
+        conventions=conventions,
+        open_findings=open_findings,
+        record_milestone=record_milestone,
+    )
 
 
 @pytest.mark.asyncio
@@ -269,15 +296,15 @@ async def test_fast_path_claimed_starts_without_set_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     c = Choreographer(_deps())
-    _stub_fast_path(c, monkeypatch)
-    env = await c._i_am_done_fast_path(_ctx(status="claimed"))
-    assert env == "OK"
+    stubs = _stub_fast_path(c, monkeypatch)
+    await c._i_am_done_fast_path(_ctx(status="claimed"))
+    stubs.ok.assert_awaited_once()  # OK path taken, no rejection
     c.task.start.assert_awaited_once()  # claimed -> in_progress
     c.task.set_plan.assert_not_awaited()  # rich plan SKIPPED (no set_plan)
     c.task.submit_verification.assert_awaited_once()
     c.task.submit_qa.assert_awaited_once()
-    c._conventions_gate.assert_awaited_once()  # conventions KEPT
-    c._record_milestone_progress.assert_awaited_once()
+    stubs.conventions.assert_awaited_once()  # conventions KEPT
+    stubs.record_milestone.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -285,9 +312,9 @@ async def test_fast_path_in_progress_skips_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     c = Choreographer(_deps())
-    _stub_fast_path(c, monkeypatch)
-    env = await c._i_am_done_fast_path(_ctx(status="in_progress"))
-    assert env == "OK"
+    stubs = _stub_fast_path(c, monkeypatch)
+    await c._i_am_done_fast_path(_ctx(status="in_progress"))
+    stubs.ok.assert_awaited_once()
     c.task.start.assert_not_awaited()  # already in_progress
     c.task.submit_verification.assert_awaited_once()
     c.task.submit_qa.assert_awaited_once()
@@ -296,10 +323,10 @@ async def test_fast_path_in_progress_skips_start(
 @pytest.mark.asyncio
 async def test_fast_path_open_findings_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     c = Choreographer(_deps())
-    _stub_fast_path(c, monkeypatch)
+    stubs = _stub_fast_path(c, monkeypatch)
     monkeypatch.setattr(c, "_open_finding_ids", AsyncMock(return_value=("f1abcd12",)))
     await c._i_am_done_fast_path(_ctx())
-    c._reject_i_am_done.assert_awaited_once()
+    stubs.reject.assert_awaited_once()
     c.task.submit_qa.assert_not_awaited()
 
 
@@ -308,14 +335,14 @@ async def test_fast_path_conventions_block_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     c = Choreographer(_deps())
-    _stub_fast_path(c, monkeypatch)
+    stubs = _stub_fast_path(c, monkeypatch)
     monkeypatch.setattr(
         c,
         "_conventions_gate",
         AsyncMock(return_value=Envelope.invalid_state(message="x", remediate="fix")),
     )
     await c._i_am_done_fast_path(_ctx())
-    c._reject_i_am_done.assert_awaited_once()
+    stubs.reject.assert_awaited_once()
     c.task.submit_qa.assert_not_awaited()
 
 
@@ -324,7 +351,7 @@ async def test_fast_path_ci_failure_rejects_before_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     c = Choreographer(_deps())
-    _stub_fast_path(c, monkeypatch)
+    stubs = _stub_fast_path(c, monkeypatch)
     monkeypatch.setattr(
         c,
         "_fast_path_quality_verdict",
@@ -336,5 +363,5 @@ async def test_fast_path_ci_failure_rejects_before_transition(
         ),
     )
     await c._i_am_done_fast_path(_ctx())
-    c._reject_i_am_done.assert_awaited_once()
+    stubs.reject.assert_awaited_once()
     c.task.submit_qa.assert_not_awaited()
