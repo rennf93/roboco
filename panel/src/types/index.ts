@@ -1100,6 +1100,12 @@ export interface ProjectUpdate {
   sandbox_extensions?: Record<string, string[]>;
 }
 
+export interface ProjectTaskCounts {
+  done: number;
+  active: number;
+  blocked: number;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -1110,6 +1116,8 @@ export interface ProjectSummary {
   has_workspace: boolean;
   has_git_token: boolean;
   video_engine_enabled: boolean;
+  ci_watch_enabled: boolean;
+  task_counts: ProjectTaskCounts | null;
 }
 
 export interface ProductCellMapping {
