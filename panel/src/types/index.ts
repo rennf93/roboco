@@ -1128,11 +1128,25 @@ export interface Product {
   updated_at: string | null;
 }
 
+export interface ProductCellSummary {
+  team: Team;
+  project_id: string;
+  project_name: string;
+}
+
+export interface ProductProgressSummary {
+  done: number;
+  active: number;
+  blocked: number;
+}
+
 export interface ProductSummary {
   id: string;
   name: string;
   slug: string;
   cell_count: number;
+  cells: ProductCellSummary[];
+  progress: ProductProgressSummary;
 }
 
 export interface ProductCreate {
