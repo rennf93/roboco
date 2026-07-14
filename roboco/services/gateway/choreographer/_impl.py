@@ -2042,14 +2042,11 @@ class Choreographer:
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
         )
-        # Recovery re-entry: task already in `verifying` owned by the caller
-        # (e.g. orchestrator restart between submit_verification and
-        # submit_qa). The spec gate would reject because the first composed
-        # action `submit_verification` requires source IN_PROGRESS. Run only
-        # submit_qa via the runner-equivalent path, then continue with the
-        # standard tracing/field gates beforehand.
-        if str(t.status) == "verifying" and t.assigned_to == agent_id:
-            return await self._i_am_done_resume_from_verifying(ctx)
+        # Pre-spec-gate short-circuits (verifying-resume recovery + the
+        # work-already-done fast path), folded into one helper to keep i_am_done
+        # within its return-count budget (mirrors _fresh_dev_claim's extraction).
+        if dispatched := await self._i_am_done_pre_gate_dispatch(ctx, t, agent_id):
+            return dispatched
         # Stale/superseded agent: the task was reassigned out from under this
         # agent (PM reassign / reaper unclaim / escalation redirect) while its
         # container kept running. Without this, the spec gate's
@@ -2768,6 +2765,112 @@ class Choreographer:
         await self._touch(ctx.task_id)
         return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
+    async def _i_am_done_pre_gate_dispatch(
+        self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
+    ) -> Envelope | None:
+        """Pre-spec-gate short-circuits, folded to keep i_am_done within its
+        return-count budget:
+
+        1. verifying-resume recovery (task already ``verifying`` owned by the
+           caller — orchestrator restart between submit_verification and
+           submit_qa; the spec gate would reject the first composed action).
+        2. the possibilities-matrix fast path (work already done).
+
+        Returns the dispatched envelope, or None to fall through to the
+        standard spec/soup/gate path.
+        """
+        if str(t.status) == "verifying" and t.assigned_to == agent_id:
+            return await self._i_am_done_resume_from_verifying(ctx)
+        return await self._maybe_i_am_done_fast_path(ctx, t, agent_id)
+
+    async def _maybe_i_am_done_fast_path(
+        self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
+    ) -> Envelope | None:
+        """Possibilities-matrix fast-path gate: returns the fast-path envelope
+        when the flag is armed, the task is claimed/in_progress and owned by
+        the caller, and ``_work_appears_done`` holds; None to fall through to
+        the standard i_am_done path. Extracted from i_am_done to keep that
+        verb within its return-count budget. ``assigned_to`` is asserted here
+        so a reassigned agent cannot fast-path a task that is no longer theirs.
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.possibilities_matrix_enabled:
+            return None
+        if str(t.status) not in ("claimed", "in_progress"):
+            return None
+        if t.assigned_to != agent_id:
+            return None
+        if not await self._work_appears_done(t):
+            return None
+        return await self._i_am_done_fast_path(ctx)
+
+    async def _i_am_done_fast_path(self, ctx: _IAmDoneContext) -> Envelope:
+        """Work-already-done fast path: slimmed gates + direct transition chain.
+
+        Skips the turn-costly gates the standard ``_i_am_done_gate`` runs: the
+        retroactive rich-plan gate (``start`` without ``set_plan`` — a done task
+        has no plan to author), the journal tracing gates (``notes`` is the
+        reflect/handoff substitute, recorded as a progress entry by
+        ``submit_verification`` / ``submit_qa``), and the local quality gate
+        (the CI-green proxy in ``_fast_path_quality_verdict``). Keeps the
+        non-negotiable gates the predicate already asserts, plus conventions
+        (leaf dev tasks skip ``awaiting_pr_review`` so the conventions check
+        must not also be skipped here — it is tree-sitter, sub-second, 0 turns
+        when green).
+        """
+        await self._apply_resolved_findings(ctx)
+        guards = (
+            lambda: self._check_submit_qa_field_gates(
+                ctx.agent_id, ctx.task_id, ctx.task
+            ),
+            lambda: self._behind_base_gate(ctx),
+            lambda: self._ensure_branch_pushed(ctx),
+            lambda: self._conventions_gate(ctx),
+        )
+        for guard in guards:
+            if rejection := await guard():
+                return await self._reject_i_am_done(ctx, rejection)
+        # FINDINGS_ADDRESSED re-checked post-resolution: a resolved_findings entry
+        # in THIS call may have closed the open set; anything still open blocks.
+        if await self._open_finding_ids(ctx.task_id):
+            return await self._reject_i_am_done(
+                ctx,
+                Envelope.invalid_state(
+                    message="fast path blocked — open findings remain on the ledger",
+                    remediate=(
+                        "name every open finding in resolved_findings "
+                        "({finding_id, note}), or leave possibilities_matrix off "
+                        "and run the standard i_am_done path"
+                    ),
+                    context_briefing=ctx.briefing,
+                ),
+            )
+        rejection, _ran_local = await self._fast_path_quality_verdict(ctx)
+        if rejection is not None:
+            return await self._reject_i_am_done(ctx, rejection)
+        try:
+            if str(ctx.task.status) == "claimed":
+                await self.task.start(ctx.task_id, ctx.agent_id, "developer")
+            await self.task.submit_verification(ctx.agent_id, ctx.task_id, ctx.notes)
+            submitted = await self.task.submit_qa(ctx.agent_id, ctx.task_id, ctx.notes)
+        except Exception as exc:
+            return await self._reject_i_am_done(
+                ctx,
+                Envelope.invalid_state(
+                    message=f"fast-path transition failed: {exc}",
+                    remediate="check workspace + retry; if persistent, call i_am_idle",
+                    context_briefing=ctx.briefing,
+                ),
+            )
+        t = submitted if submitted is not None else ctx.task
+        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._touch(ctx.task_id)
+        await self._record_milestone_progress(
+            ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
+        )
+        return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
+
     async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
         """8-char ids of the task's still-OPEN revision-ledger findings.
 
@@ -2832,9 +2935,7 @@ class Choreographer:
                     addressed.add(str(crit))
             if addressed < set(criteria):
                 return False
-        if await self._open_finding_ids(getattr(t, "id", None)):
-            return False
-        return True
+        return not await self._open_finding_ids(getattr(t, "id", None))
 
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any

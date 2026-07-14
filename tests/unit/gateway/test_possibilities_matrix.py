@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.envelope import Envelope
 
 
 def _deps() -> ChoreographerDeps:
@@ -43,7 +44,6 @@ def _t(
     status: str = "claimed",
     commits: tuple[int, ...] = (1,),
     pr_created: bool = True,
-    pr_number: int | None = 12345,
     criteria: tuple[str, ...] = ("ac1", "ac2"),
     ac_status: list[dict[str, Any]] | None = None,
 ) -> MagicMock:
@@ -57,35 +57,43 @@ def _t(
     t.status = status
     t.commits = commits
     t.pr_created = pr_created
-    t.pr_number = pr_number
+    t.pr_number = 12345 if pr_created else None
     t.acceptance_criteria = list(criteria)
     t.acceptance_criteria_status = ac_status
     return t
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_true_when_all_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_true_when_all_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
     assert await c._work_appears_done(_t()) is True
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_false_when_no_pr(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_false_when_no_pr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
-    assert await c._work_appears_done(_t(pr_created=False, pr_number=None)) is False
+    assert await c._work_appears_done(_t(pr_created=False)) is False
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_false_when_no_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_false_when_no_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
     assert await c._work_appears_done(_t(commits=())) is False
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_false_when_ac_unaddressed(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_false_when_ac_unaddressed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
     t = _t(
@@ -98,21 +106,27 @@ async def test_work_appears_done_false_when_ac_unaddressed(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_true_with_no_criteria(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_true_with_no_criteria(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
     assert await c._work_appears_done(_t(criteria=(), ac_status=[])) is True
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_false_when_open_finding(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_false_when_open_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _one_open)
     assert await c._work_appears_done(_t()) is False
 
 
 @pytest.mark.asyncio
-async def test_work_appears_done_false_when_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_work_appears_done_false_when_terminal_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(c, "_open_finding_ids", _no_findings)
     assert await c._work_appears_done(_t(status="awaiting_qa")) is False
@@ -133,6 +147,7 @@ async def test_work_appears_done_reads_referencing_artifact_id_schema(
         ]
     )
     assert await c._work_appears_done(t) is True
+
 
 # ---------------------------------------------------------------------------
 # _fast_path_quality_verdict: CI-green proxy for the skipped local gate
@@ -158,7 +173,9 @@ async def test_quality_verdict_ci_success_skips_local_gate(
 
 
 @pytest.mark.asyncio
-async def test_quality_verdict_ci_failure_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_quality_verdict_ci_failure_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     c = Choreographer(_deps())
     monkeypatch.setattr(
         c,
@@ -207,3 +224,117 @@ async def test_quality_verdict_unresolvable_falls_back_to_local_gate(
     assert rejection is None
     assert ran_local is True
     local.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _i_am_done_fast_path: gate ordering + transition chain (skips rich plan)
+# ---------------------------------------------------------------------------
+
+
+def _ctx(status: str = "claimed") -> Any:
+    ctx = MagicMock()
+    ctx.agent_id = uuid4()
+    ctx.task_id = uuid4()
+    ctx.task = _t(status=status)
+    ctx.briefing = {}
+    ctx.notes = "done"
+    ctx.resolved_findings = None
+    ctx.role_str = "developer"
+    return ctx
+
+
+def _stub_fast_path(
+    c: Choreographer, monkeypatch: pytest.MonkeyPatch, quality_rejection: Any = None
+) -> None:
+    monkeypatch.setattr(c, "_apply_resolved_findings", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_check_submit_qa_field_gates", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_behind_base_gate", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_ensure_branch_pushed", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_conventions_gate", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_open_finding_ids", AsyncMock(return_value=()))
+    monkeypatch.setattr(
+        c,
+        "_fast_path_quality_verdict",
+        AsyncMock(return_value=(quality_rejection, False)),
+    )
+    monkeypatch.setattr(c, "_notify_qa", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_touch", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_record_milestone_progress", AsyncMock(return_value=None))
+    monkeypatch.setattr(c, "_build_i_am_done_ok", AsyncMock(return_value="OK"))
+    monkeypatch.setattr(c, "_reject_i_am_done", AsyncMock(return_value="REJECT"))
+
+
+@pytest.mark.asyncio
+async def test_fast_path_claimed_starts_without_set_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    env = await c._i_am_done_fast_path(_ctx(status="claimed"))
+    assert env == "OK"
+    c.task.start.assert_awaited_once()  # claimed -> in_progress
+    c.task.set_plan.assert_not_awaited()  # rich plan SKIPPED (no set_plan)
+    c.task.submit_verification.assert_awaited_once()
+    c.task.submit_qa.assert_awaited_once()
+    c._conventions_gate.assert_awaited_once()  # conventions KEPT
+    c._record_milestone_progress.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_in_progress_skips_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    env = await c._i_am_done_fast_path(_ctx(status="in_progress"))
+    assert env == "OK"
+    c.task.start.assert_not_awaited()  # already in_progress
+    c.task.submit_verification.assert_awaited_once()
+    c.task.submit_qa.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_open_findings_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    monkeypatch.setattr(c, "_open_finding_ids", AsyncMock(return_value=("f1abcd12",)))
+    await c._i_am_done_fast_path(_ctx())
+    c._reject_i_am_done.assert_awaited_once()
+    c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_conventions_block_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    monkeypatch.setattr(
+        c,
+        "_conventions_gate",
+        AsyncMock(return_value=Envelope.invalid_state(message="x", remediate="fix")),
+    )
+    await c._i_am_done_fast_path(_ctx())
+    c._reject_i_am_done.assert_awaited_once()
+    c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_ci_failure_rejects_before_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    monkeypatch.setattr(
+        c,
+        "_fast_path_quality_verdict",
+        AsyncMock(
+            return_value=(
+                Envelope.invalid_state(message="ci red", remediate="fix"),
+                False,
+            )
+        ),
+    )
+    await c._i_am_done_fast_path(_ctx())
+    c._reject_i_am_done.assert_awaited_once()
+    c.task.submit_qa.assert_not_awaited()
