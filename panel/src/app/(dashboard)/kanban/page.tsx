@@ -10,16 +10,18 @@ import {
 } from "@/components/kanban";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { pickTab } from "@/lib/tabs";
 import { Code, TestTube, GitPullRequest, ClipboardList } from "lucide-react";
 
 type KanbanView = "dev" | "qa" | "pr-review" | "pm";
+const KANBAN_VIEWS = ["dev", "qa", "pr-review", "pm"] as const satisfies readonly KanbanView[];
 
 function KanbanPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Read view from URL params, default to "dev"
-  const view = (searchParams.get("view") as KanbanView) || "dev";
+  // Read view from URL params; fall back to "dev" on null/empty/invalid.
+  const view: KanbanView = pickTab(searchParams.get("view"), KANBAN_VIEWS, "dev");
 
   const handleViewChange = (newView: string) => {
     if (newView === "dev") {
