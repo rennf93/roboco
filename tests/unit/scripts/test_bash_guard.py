@@ -379,8 +379,13 @@ def test_allows_python_httpx_import_without_internal_host() -> None:
 
 def test_allows_pytest_even_if_suite_uses_requests() -> None:
     """The command string is just the runner — no http-client token and
-    no internal host literal — so it must pass."""
-    assert _run("uv run python -m pytest tests/unit/ -q") == _ALLOWED
+    no internal host literal — so it must pass.
+
+    Bare ``python -m pytest`` (not ``uv run``): raw ``uv run`` is now
+    Makefile-gated (W1), so the runner here is the bare interpreter to keep
+    this test about the HTTP-injection allow path, not package-manager policy.
+    """
+    assert _run("python -m pytest tests/unit/ -q") == _ALLOWED
 
 
 # ---------------------------------------------------------------------------
@@ -435,8 +440,12 @@ def test_allows_uv_sync_in_workspace() -> None:
     )
 
 
-def test_allows_pip_install_in_workspace() -> None:
-    assert _run("pip install -r requirements.txt") == _ALLOWED
+def test_denies_pip_install_when_makefile_present() -> None:
+    """W1: raw ``pip install`` is Makefile-gated. A workspace clone carries
+    a ``Makefile`` (same repo), so a bare ``pip install`` is denied — agents
+    use ``make`` / ``uv sync --extra dev``. Makefile-less projects skip the
+    deny (covered in test_bash_guard_makefile_guardrail.py)."""
+    assert _run("pip install -r requirements.txt") == _DENIED
 
 
 def test_allows_reading_files_under_app() -> None:
