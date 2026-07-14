@@ -284,6 +284,18 @@ class TriageRequest(BaseModel):
     """Empty request body."""
 
 
+class WaiveFindingRequest(BaseModel):
+    finding_id: UUID
+    note: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Why this finding is waived rather than fixed — recorded on the "
+            "ledger row and in audit. Only minor/nit findings are waivable."
+        ),
+    )
+
+
 class UnblockRequest(BaseModel):
     task_id: UUID
     reason: str = Field(

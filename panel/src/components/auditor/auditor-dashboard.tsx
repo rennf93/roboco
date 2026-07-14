@@ -10,6 +10,7 @@ import {
 import { QualityMetricsPanel } from "./quality-metrics-panel";
 import { FlaggedItemsPanel } from "./flagged-items-panel";
 import { ReportsPanel } from "./reports-panel";
+import { FindingsQueuePanel } from "./findings-queue-panel";
 import { Button } from "@/components/ui/button";
 import { FileText } from "lucide-react";
 import { toast } from "sonner";
@@ -73,11 +74,17 @@ export function AuditorDashboard() {
         </div>
       </div>
 
-      {/* Quality Metrics */}
-      <QualityMetricsPanel
-        metrics={dashboard?.metrics}
-        isLoading={loadingDashboard}
-      />
+      {/* Top Row: Open Findings + Quality Metrics */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">
+        <FindingsQueuePanel
+          findings={dashboard?.findings}
+          isLoading={loadingDashboard}
+        />
+        <QualityMetricsPanel
+          metrics={dashboard?.metrics}
+          isLoading={loadingDashboard}
+        />
+      </div>
 
       {/* Bottom Row: Flagged Items + Reports */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">

@@ -611,6 +611,20 @@ export interface AuditorReport {
   sent_at: string | null;
 }
 
+export interface AuditorFinding {
+  id: string;
+  task_id: string;
+  origin: string;
+  severity: string;
+  file: string | null;
+  line: number | null;
+  criterion: string | null;
+  expected: string | null;
+  actual: string | null;
+  round: number;
+  created_at: string | null;
+}
+
 export interface AuditorDashboard {
   flagged_items: AuditorFlag[];
   metrics: Record<string, number>;
@@ -621,6 +635,7 @@ export interface AuditorDashboard {
     team: string | null;
   }>;
   recent_reports: AuditorReport[];
+  findings: AuditorFinding[];
 }
 
 export interface TeamHealth {

@@ -11,7 +11,11 @@ from guard_core.handlers.behavior_handler import BehaviorRule
 
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_auditor
-from roboco.api.schemas.v1.flow import IAmIdleRequest, TriageRequest
+from roboco.api.schemas.v1.flow import (
+    IAmIdleRequest,
+    TriageRequest,
+    WaiveFindingRequest,
+)
 from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -41,6 +45,20 @@ async def triage(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.auditor_triage(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/waive_finding")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def waive_finding(
+    request: Request,
+    body: WaiveFindingRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.waive_finding(x_agent_id, body.finding_id, body.note)
     return envelope_to_response(env, request)
 
 
