@@ -133,3 +133,77 @@ async def test_work_appears_done_reads_referencing_artifact_id_schema(
         ]
     )
     assert await c._work_appears_done(t) is True
+
+# ---------------------------------------------------------------------------
+# _fast_path_quality_verdict: CI-green proxy for the skipped local gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quality_verdict_ci_success_skips_local_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    monkeypatch.setattr(
+        c, "_resolve_ci_status", AsyncMock(return_value={"state": "success"})
+    )
+    local = AsyncMock(return_value=None)
+    monkeypatch.setattr(c, "_check_quality_gate", local)
+    rejection, ran_local = await c._fast_path_quality_verdict(
+        MagicMock(task_id=uuid4(), task=MagicMock(), briefing={})
+    )
+    assert rejection is None
+    assert ran_local is False
+    local.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quality_verdict_ci_failure_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    c = Choreographer(_deps())
+    monkeypatch.setattr(
+        c,
+        "_resolve_ci_status",
+        AsyncMock(return_value={"state": "failure", "failing_checks": ["lint"]}),
+    )
+    local = AsyncMock(return_value=None)
+    monkeypatch.setattr(c, "_check_quality_gate", local)
+    rejection, ran_local = await c._fast_path_quality_verdict(
+        MagicMock(task_id=uuid4(), task=MagicMock(), briefing={})
+    )
+    assert rejection is not None
+    assert ran_local is False
+    local.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quality_verdict_no_ci_falls_back_to_local_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    monkeypatch.setattr(
+        c, "_resolve_ci_status", AsyncMock(return_value={"state": "no_ci_configured"})
+    )
+    local = AsyncMock(return_value=None)
+    monkeypatch.setattr(c, "_check_quality_gate", local)
+    rejection, ran_local = await c._fast_path_quality_verdict(
+        MagicMock(task_id=uuid4(), task=MagicMock(), briefing={})
+    )
+    assert rejection is None
+    assert ran_local is True
+    local.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_quality_verdict_unresolvable_falls_back_to_local_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    monkeypatch.setattr(c, "_resolve_ci_status", AsyncMock(return_value=None))
+    local = AsyncMock(return_value=None)
+    monkeypatch.setattr(c, "_check_quality_gate", local)
+    rejection, ran_local = await c._fast_path_quality_verdict(
+        MagicMock(task_id=uuid4(), task=MagicMock(), briefing={})
+    )
+    assert rejection is None
+    assert ran_local is True
+    local.assert_awaited_once()

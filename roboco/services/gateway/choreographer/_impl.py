@@ -2180,6 +2180,51 @@ class Choreographer:
             context_briefing=ctx.briefing,
         )
 
+    async def _fast_path_quality_verdict(
+        self, ctx: _IAmDoneContext
+    ) -> tuple[Envelope | None, bool]:
+        """Quality posture for the work-already-done fast path.
+
+        Trusts the PR's CI-green signal — the same signal the downstream
+        ``pr_pass`` gate trusts (``_ci_status_guard``) — and skips the local
+        workspace gate when CI is green. A repo with no CI configured (or an
+        unresolvable lookup) has no CI signal, so the local gate is the only
+        signal and runs. A CI ``failure`` is a known-bad build: refuse the fast
+        path rather than shipping red, even before the local gate runs.
+
+        Returns ``(rejection|None, ran_local)``. ``ran_local`` lets the caller
+        distinguish "the local gate already decided" from "CI green, gate
+        skipped" so it never double-gates.
+        """
+        status = await self._resolve_ci_status(ctx.task_id, ctx.task)
+        if status is not None:
+            state = status.get("state")
+            if state == "success":
+                return None, False
+            if state == "failure":
+                names = (
+                    ", ".join(status.get("failing_checks") or [])
+                    or "one or more checks"
+                )
+                return (
+                    Envelope.invalid_state(
+                        message=(
+                            f"fast path refused — PR CI is failing ({names}); "
+                            "QA reviews working code, not a red build"
+                        ),
+                        remediate=(
+                            "fix the failing CI checks, commit, and call i_am_done "
+                            "again — or run the standard path (leave "
+                            "possibilities_matrix off)"
+                        ),
+                        context_briefing=ctx.briefing,
+                    ),
+                    False,
+                )
+        # No CI signal (no_ci_configured / pending / pending_not_scheduled /
+        # error / unresolvable): the local gate is the only signal — run it.
+        return await self._check_quality_gate(ctx), True
+
     async def _toolchain_broken_guard(
         self, agent_id: UUID, task: Any, *, reviewer: bool = False
     ) -> Envelope | None:
