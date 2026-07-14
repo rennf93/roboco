@@ -430,6 +430,10 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         # sync_branch is a git-only rebase+force-push through the gate; no DB
         # state change, no journal/plan rationale (mirrors open_pr).
         "sync_branch",
+        # waive_finding is an auditor curation move: the required note is the
+        # rationale, captured on the ledger row + a task.finding_waived audit
+        # event — no task status change, no journal:decision needed.
+        "waive_finding",
     }
 )
 
