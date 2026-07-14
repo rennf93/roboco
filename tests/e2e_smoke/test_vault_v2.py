@@ -47,7 +47,7 @@ from roboco.services.vault_kb_engine import VaultKBEngine
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
     from tests.e2e_smoke.harness import E2EStack
 
 _PROJECT_SLUG = "vault-e2e-proj"
@@ -116,13 +116,25 @@ def _arm_vault(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return vault
 
 
-def _fresh_factory() -> async_sessionmaker[AsyncSession]:
-    """The app's lazy factory, rebound to THIS test's loop (M1 posture)."""
-    from roboco.db import base as db_base
+def _fresh_factory(
+    db_url: str,
+) -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
+    """A PRIVATE engine bound to THIS test's loop — not the app's shared _DbHolder.
 
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
-    return db_base.get_session_factory()
+    The create/janitor seams use only the passed session (``assemble_task_note_data``
+    / ``get_project_service`` / ``VaultJanitor`` never call ``get_session_factory``),
+    so a private engine against the same e2e DB exercises the real wiring without
+    sharing a connection pool with the uvicorn server thread. A lingering app
+    handler on the server's loop checking out a connection from a shared engine
+    is what flaked this suite ~1/50 in CI: asyncpg's pool then handed a following
+    test a connection created on the server's loop, awaited on the test's loop →
+    ``RuntimeError: Future ... attached to a different loop``. A private engine
+    the app can't reach keeps its pool loop-pure. Caller disposes the engine.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    engine = create_async_engine(db_url)
+    return async_sessionmaker(engine, expire_on_commit=False), engine
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +151,8 @@ async def test_create_seam_materializes_note_flag_on_and_off(
     """Real ``TaskService.create`` against the e2e DB: with the vault armed
     the note appears (status frontmatter + placeholder narrative); with the
     flag off a second create writes nothing new."""
-    from roboco.db import base as db_base
-
     vault = _arm_vault(monkeypatch, tmp_path)
-    factory = _fresh_factory()
+    factory, engine = _fresh_factory(e2e_stack.db_url)
     try:
         async with factory() as session:
             created_by = await _seed_system_agent(session)
@@ -168,7 +178,7 @@ async def test_create_seam_materializes_note_flag_on_and_off(
             await session.commit()
             assert len(list(vault.rglob("*.md"))) == 1  # nothing new
     finally:
-        await db_base.close_db()
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +236,10 @@ async def test_janitor_cycle_reprojects_archives_and_persists_state(
     re-projects into Tasks/, the old terminal one lands in Archive/<year>/,
     the state file carries last_sweep + archive_watermark, and the returned
     counts match what was actually done. No vault code is mocked."""
-    from roboco.db import base as db_base
-
     vault = _arm_vault(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, "vault_archive_days", 30)
     monkeypatch.setattr(settings, "vault_report_enabled", False)
-    factory = _fresh_factory()
+    factory, engine = _fresh_factory(e2e_stack.db_url)
     try:
         async with factory() as session:
             created_by = await _seed_system_agent(session)
@@ -266,7 +274,7 @@ async def test_janitor_cycle_reprojects_archives_and_persists_state(
         assert datetime.fromisoformat(state["last_sweep"]).tzinfo is not None
         assert datetime.fromisoformat(state["archive_watermark"]).tzinfo is not None
     finally:
-        await db_base.close_db()
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
