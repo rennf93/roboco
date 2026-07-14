@@ -2921,25 +2921,42 @@ class Choreographer:
             return False
         if not (getattr(t, "pr_created", False) or getattr(t, "pr_number", None)):
             return False
-        criteria = list(getattr(t, "acceptance_criteria", []) or [])
-        if criteria:
-            rows = list(getattr(t, "acceptance_criteria_status", []) or [])
-            addressed: set[str] = set()
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                if not (
-                    row.get("referencing_artifact_id")
-                    or row.get("artifact_ref")
-                    or row.get("addressed")
-                ):
-                    continue
-                crit = row.get("criterion")
-                if crit:
-                    addressed.add(str(crit))
-            if addressed < set(criteria):
-                return False
+        if not self._all_criteria_addressed(t):
+            return False
         return not await self._open_finding_ids(t.id)
+
+    @staticmethod
+    def _all_criteria_addressed(t: Any) -> bool:
+        """Every acceptance criterion has a per-criterion row marked addressed.
+
+        A criterion counts as addressed if its row carries a non-empty
+        artifact reference OR an explicit ``addressed`` flag. The writer
+        (``_new_criterion_entry``) stores ``artifact_ref`` while the canonical
+        reader (``_already_addressed_criteria``) looks for
+        ``referencing_artifact_id`` — a latent key drift masked today because
+        the standard AC gate passes via the ``journal_reflect_present``
+        blanket. The fast path skips that blanket (it skips the reflect gate),
+        so this reads BOTH keys plus ``addressed`` to see real data rather
+        than ship dead code. A task with no criteria is trivially covered.
+        """
+        criteria = list(getattr(t, "acceptance_criteria", []) or [])
+        if not criteria:
+            return True
+        rows = list(getattr(t, "acceptance_criteria_status", []) or [])
+        addressed: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if not (
+                row.get("referencing_artifact_id")
+                or row.get("artifact_ref")
+                or row.get("addressed")
+            ):
+                continue
+            crit = row.get("criterion")
+            if crit:
+                addressed.add(str(crit))
+        return addressed >= set(criteria)
 
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any
