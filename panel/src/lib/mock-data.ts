@@ -1187,6 +1187,7 @@ export const mockAuditorDashboard = {
     },
   ],
   recent_reports: mockAuditorReports,
+  findings: [],
 };
 
 // Mock mode: dev = mock, production = real backend

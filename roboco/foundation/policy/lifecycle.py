@@ -1591,6 +1591,19 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         next_hint=lambda _t: "act on a listed task or i_am_idle",
     ),
+    "waive_finding": IntentSpec(
+        name="waive_finding",
+        allowed_roles=frozenset({Role.AUDITOR}),
+        description=(
+            "Waive one minor/nit review finding by id with a required note. "
+            "Blocker/major findings must be fixed, never waived. No task "
+            "status change."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: "finding waived; triage() for next item or i_am_idle",
+    ),
 }
 
 

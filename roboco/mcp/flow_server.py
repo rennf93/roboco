@@ -879,6 +879,18 @@ def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
     return _post(_role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason})
 
 
+def waive_finding(finding_id: str, note: str) -> dict[str, Any]:
+    """Auditor: waive one minor/nit review finding by id with a required note.
+
+    Blocker/major findings must be fixed, never waived. The finding id is the
+    ``[F-<id8>]`` prefix shown in task notes / triage. No task status changes.
+    """
+    return _post(
+        _role_path("waive_finding"),
+        {"finding_id": finding_id, "note": note},
+    )
+
+
 # ---------- Cell PM + Main PM extras ----------
 # i_will_plan, delegate, submit_up, give_me_work — restore the pre-Phase-4
 # PM lifecycle so PMs can drive parent tasks instead of stalling.
@@ -1108,6 +1120,8 @@ _TOOLS: dict[str, Any] = {
     "declare_coverage": declare_coverage,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
+    # auditor
+    "waive_finding": waive_finding,
 }
 
 

@@ -117,6 +117,7 @@ async def get_auditor_dashboard(
         metrics=metrics,
         audit_queue=audit_queue,
         recent_reports=recent_reports,
+        findings=await service.get_open_findings(limit=20),
     )
 
 

@@ -54,6 +54,7 @@ class AuditorDashboard(BaseModel):
     metrics: dict[str, Any]
     audit_queue: list[dict[str, Any]]
     recent_reports: list[AuditorReport]
+    findings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TeamHealth(BaseModel):

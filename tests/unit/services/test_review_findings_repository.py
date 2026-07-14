@@ -289,3 +289,55 @@ async def test_mark_waived_requires_note(db_session: AsyncSession) -> None:
 async def test_mark_waived_unknown_id_returns_false(db_session: AsyncSession) -> None:
     repo = ReviewFindingsRepository(db_session)
     assert await repo.mark_waived(uuid4(), "note") is False
+
+
+@pytest.mark.asyncio
+async def test_list_open_findings_cross_task_blocking_first(
+    db_session: AsyncSession,
+) -> None:
+    """list_open_findings returns OPEN rows across tasks, blocker first."""
+    agent_id = await _seed_agent(db_session)
+    task_a = await _seed_task(db_session, agent_id)
+    task_b = await _seed_task(db_session, agent_id)
+    repo = ReviewFindingsRepository(db_session)
+
+    await repo.insert_many(
+        task_id=task_a,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.MINOR)],
+    )
+    await repo.insert_many(
+        task_id=task_b,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    # Waive the minor one so only the blocker is OPEN.
+    open_rows = await repo.list_for_task(task_a, status=STATUS_OPEN)
+    await repo.mark_waived(UUID(str(open_rows[0].id)), "waived in test")
+
+    result = await repo.list_open_findings(limit=20)
+    assert len(result) == 1
+    assert result[0].severity == Severity.BLOCKER.value
+    assert str(result[0].task_id) == str(task_b)
+
+
+@pytest.mark.asyncio
+async def test_list_open_findings_excludes_non_open(
+    db_session: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(db_session, agent_id)
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.NIT)],
+    )
+    await repo.mark_waived(UUID(str(rows[0].id)), "nit, skip")
+    assert await repo.list_open_findings(limit=20) == []

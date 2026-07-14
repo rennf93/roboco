@@ -319,6 +319,38 @@ class DashboardService(BaseService):
             "active_blockers": blockers.active_blockers,
         }
 
+    async def get_open_findings(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Open review findings across all tasks for the auditor's findings queue.
+
+        Blocking severity first then newest. Fails open (empty list) — the
+        dashboard must never break on a findings-query error.
+        """
+        from roboco.services.repositories.review_findings import (
+            ReviewFindingsRepository,
+        )
+
+        try:
+            repo = ReviewFindingsRepository(self.session)
+            rows = await repo.list_open_findings(limit=limit)
+        except Exception:
+            return []
+        return [
+            {
+                "id": str(r.id),
+                "task_id": str(r.task_id),
+                "origin": r.origin,
+                "severity": r.severity,
+                "file": r.file,
+                "line": r.line,
+                "criterion": r.criterion,
+                "expected": r.expected,
+                "actual": r.actual,
+                "round": r.round,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
     async def get_all_agent_status(self, team: Team | None = None) -> dict[str, Any]:
         """Return agent-status summary (counts + per-agent snapshot)."""
         query = select(AgentTable)

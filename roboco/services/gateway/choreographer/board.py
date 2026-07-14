@@ -14,9 +14,15 @@ the actual class is composed in ``__init__.py`` and inherits from
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
+from roboco.foundation.policy.content import Severity
 from roboco.services.gateway.envelope import Envelope
+from roboco.services.repositories.review_findings import (
+    STATUS_OPEN,
+    ReviewFindingsRepository,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -26,6 +32,9 @@ if TYPE_CHECKING:
     _Base = ChoreographerHelpers
 else:
     _Base = object
+
+# Severity stored as the enum's string value (``f.severity.value`` at insert).
+_BLOCKING = frozenset({Severity.BLOCKER.value, Severity.MAJOR.value})
 
 
 class BoardMixin(_Base):
@@ -87,4 +96,77 @@ class BoardMixin(_Base):
             task_id=None,
             next="no anomalies — i_am_idle",
             context_briefing=await self._briefing_for(auditor_agent_id, None),
+        )
+
+    async def waive_finding(
+        self, auditor_agent_id: UUID, finding_id: UUID, note: str
+    ) -> Envelope:
+        """Waive one minor/nit finding by id with a required note.
+
+        The auditor is the only role that can close a finding without a dev
+        fix — but only for non-blocking severity (minor/nit). Blocker/major
+        must be fixed, never waived. No task status change: the ledger row
+        moves ``open -> waived`` and an audit event records the decision.
+        ``mark_waived`` is the long-unwired repo method this finally calls.
+        """
+        repo = ReviewFindingsRepository(self.task.session)
+        row = await repo.get(finding_id)
+        if row is None:
+            return Envelope.not_found(
+                message=f"finding {str(finding_id)[:8]} not found.",
+                remediate=(
+                    "find open findings via the task's GET /findings or triage()."
+                ),
+            )
+        if row.status != STATUS_OPEN:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {str(finding_id)[:8]} is already {row.status}; "
+                    "only open findings can be waived."
+                ),
+                remediate=(
+                    "pick an open finding — waived/addressed/verified "
+                    "rows are immutable."
+                ),
+            )
+        if row.severity in _BLOCKING:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {str(finding_id)[:8]} is {row.severity} — "
+                    "blocker/major findings must be fixed, never waived."
+                ),
+                remediate=(
+                    "leave it for the dev to address; waive only minor/nit findings."
+                ),
+            )
+        clean_note = note.strip()
+        if not clean_note:
+            return Envelope.invalid_state(
+                message=(
+                    "a waive requires a note explaining why this finding "
+                    "is not worth a fix."
+                ),
+                remediate="pass note=<why this minor/nit is waived>.",
+            )
+        await repo.mark_waived(finding_id, clean_note)
+        with contextlib.suppress(Exception):
+            await self.audit.log_task_event(
+                event_type="task.finding_waived",
+                task_id=row.task_id,
+                agent_id=auditor_agent_id,
+                severity="info",
+                details={
+                    "finding_id": str(finding_id),
+                    "severity": row.severity,
+                    "origin": row.origin,
+                    "note": clean_note[:300],
+                },
+            )
+        return Envelope.ok(
+            status="waived",
+            task_id=str(row.task_id),
+            next=(
+                f"finding {str(finding_id)[:8]} waived; triage() for next item "
+                "or i_am_idle"
+            ),
         )

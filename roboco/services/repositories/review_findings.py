@@ -162,3 +162,25 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         row.resolution_note = note[:_RESOLUTION_NOTE_CAP]
         await self.session.flush()
         return True
+
+    async def list_open_findings(
+        self, *, limit: int = 20
+    ) -> list[TaskReviewFindingTable]:
+        """Cross-task open findings, blocking severity first then newest.
+
+        For the auditor dashboard's findings queue — the backlog of unresolved
+        review findings the auditor can triage / waive. Capped (the dashboard
+        is a glance, not a ledger view — ``GET /api/tasks/{id}/findings`` is
+        the full per-task ledger).
+        """
+        stmt = (
+            select(TaskReviewFindingTable)
+            .where(TaskReviewFindingTable.status == STATUS_OPEN)
+            .order_by(
+                TaskReviewFindingTable.severity.asc(),
+                TaskReviewFindingTable.created_at.desc(),
+            )
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
