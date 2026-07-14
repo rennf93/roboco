@@ -19,11 +19,13 @@
 
 ## Development Standards
 ```bash
-# Before any commit
-uv run ruff format .
-uv run ruff check .
-uv run mypy roboco/
-uv run pytest
+# Before any commit — use the Makefile, never raw `uv run`/`pip`/`conda`/`poetry`.
+# The Makefile sets UV_NO_SYNC=1 + a private UV_CACHE_DIR to prevent venv
+# corruption; bare `uv run` bypasses both.
+make lint        # ruff format + ruff check + mypy + vulture (formats in place)
+make gate        # fast pre-submit: ruff format --check + ruff check + mypy + xenon
+make quality     # full merge gate (lint+types+tests+cov+xenon+bandit+audit+...)
+make test        # pytest with coverage
 
 # Coverage target: 80%
 ```

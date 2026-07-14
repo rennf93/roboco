@@ -177,7 +177,7 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 1. ✅ Every subtask under your task is in a terminal state (`completed` or `cancelled`) — gateway-enforced.
 2. ✅ You inspected each child's PR (already merged into your branch via `complete`) — call `evidence(your_task_id)` for the aggregate diff.
 3. ✅ Each acceptance criterion on YOUR cell-PM task is met by something in the aggregate (commit / merged PR / doc).
-4. ✅ Tests/lint on the aggregate are green — your branch is the integration point for the cell, so run `make quality` (or equivalent) before submitting up.
+4. ✅ Tests/lint on the aggregate are green — your branch is the integration point for the cell, so run `make quality` before submitting up.
 5. ✅ `note(scope='reflect', task_id=...)` written — aggregate review.
 6. ✅ `note(scope='decision', task_id=...)` written — submit-up rationale (gateway-required).
 7. ✅ `notes` argument to `submit_up` >= 20 chars (gateway-enforced).

@@ -103,7 +103,7 @@ The gateway enforces some of these; the rest are convention but failing one of t
 
 1. ✅ At least one `commit()` on this branch (gateway-enforced).
 2. ✅ Every acceptance criterion is met by actual code or test, not just intention. Re-read them via `evidence(task_id)`.
-3. ✅ Tests/lint/typecheck pass locally — run them via `Bash`. If your project has `make quality` (or equivalent), run it. **`i_am_done` runs the fast gate (lint + typecheck) in your workspace and rejects the submit if it's red** — so run it yourself first and submit green on the first try; QA and CI run the full gate (incl. tests) too.
+3. ✅ Tests/lint/typecheck pass locally — run `make quality` (or `make gate` for the fast pre-submit gate). Never raw `uv run`. **`i_am_done` runs the fast gate (lint + typecheck) in your workspace and rejects the submit if it's red** — so run it yourself first and submit green on the first try; QA and CI run the full gate (incl. tests) too.
 4. ✅ `git diff` (call `evidence(task_id)` to inspect) shows nothing stray — no `print()` debugging, no commented-out code, no unrelated edits.
 5. ✅ `note(scope='reflect', task_id=...)` walks through every criterion (gateway-enforced as `journal:reflect`).
 6. ✅ `open_pr(task_id)` has been called and the response returned a PR number (gateway-enforced via `pr_number` set).

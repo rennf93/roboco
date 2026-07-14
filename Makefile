@@ -558,7 +558,7 @@ foundation-check:
 	@echo "==> verb tables up-to-date (renders + git diff)"
 	@uv run python scripts/regenerate_verb_tables.py
 	@git diff --exit-code -- agents/prompts/_generated/ ':!agents/prompts/_generated/lifecycle-*.md' \
-		|| (echo "Verb tables are out of date. Run 'uv run python scripts/regenerate_verb_tables.py' and commit the diff." && exit 1)
+		|| (echo "Verb tables are out of date. Run 'make foundation-check' and commit the diff." && exit 1)
 	@echo "==> postgres enum parity (skip if no migrated DB)"
 	uv run python scripts/verify_postgres_enums.py
 	@echo "All foundation drift checks passed."
