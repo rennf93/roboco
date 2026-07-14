@@ -2745,6 +2745,52 @@ class Choreographer:
             return ()
         return tuple(str(row.id)[:8] for row in open_rows)
 
+    async def _work_appears_done(self, t: Any) -> bool:
+        """True when a task's work is provably already done — the gate for the
+        possibilities-matrix fast path. status in {claimed, in_progress,
+        verifying} + >=1 commit + PR open + every acceptance criterion
+        addressed + no open findings. Ownership is NOT checked here (the
+        fast-path branch asserts ``assigned_to`` so a reassigned agent cannot
+        fast-path a task that is no longer theirs).
+
+        A criterion counts as addressed if its per-criterion row carries a
+        non-empty artifact reference OR an explicit ``addressed`` flag. The
+        writer (``_new_criterion_entry``) stores ``artifact_ref`` while the
+        canonical reader (``_already_addressed_criteria``) looks for
+        ``referencing_artifact_id`` — a latent key drift masked today because
+        the standard AC gate passes via the ``journal_reflect_present``
+        blanket. The fast path skips that blanket (it skips the reflect gate),
+        so this predicate reads BOTH keys plus ``addressed`` to see real data
+        rather than ship dead code.
+        """
+        if str(t.status) not in ("claimed", "in_progress", "verifying"):
+            return False
+        if not getattr(t, "commits", None):
+            return False
+        if not (getattr(t, "pr_created", False) or getattr(t, "pr_number", None)):
+            return False
+        criteria = list(getattr(t, "acceptance_criteria", []) or [])
+        if criteria:
+            rows = list(getattr(t, "acceptance_criteria_status", []) or [])
+            addressed: set[str] = set()
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if not (
+                    row.get("referencing_artifact_id")
+                    or row.get("artifact_ref")
+                    or row.get("addressed")
+                ):
+                    continue
+                crit = row.get("criterion")
+                if crit:
+                    addressed.add(str(crit))
+            if addressed < set(criteria):
+                return False
+        if await self._open_finding_ids(getattr(t, "id", None)):
+            return False
+        return True
+
     async def _check_tracing_gates(
         self, agent_id: UUID, task_id: UUID, t: Any
     ) -> Envelope | None:
