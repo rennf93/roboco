@@ -318,6 +318,16 @@ class Settings(BaseSettings):
             "fully inert."
         ),
     )
+    possibilities_matrix_enabled: bool = Field(
+        default=False,
+        description=(
+            "Possibilities matrix: when a task's work is already done (commits "
+            "+ PR open + all acceptance criteria addressed + no open findings), "
+            "let i_am_done submit it for QA in one call, skipping the retroactive "
+            "rich-plan, journal tracing, and local quality (CI-green proxy) "
+            "gates. Off => the standard i_am_done path is unchanged."
+        ),
+    )
 
     # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
