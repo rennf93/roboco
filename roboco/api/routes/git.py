@@ -43,6 +43,7 @@ from roboco.api.schemas.git import (
     GitDiffResponse,
     GitFetchRequest,
     GitFetchResponse,
+    GitFileContentResponse,
     GitLogResponse,
     GitMergePRRequest,
     GitMergePRResponse,
@@ -85,6 +86,43 @@ _LOG_FORMAT_PARTS = 5
 # git timeouts/command failures to be translated to 504/500 instead of
 # bubbling as 500 Internal Server Errors with no `detail`.
 _TranslatableError = (ServiceError, GitError)
+
+# Cap an unbounded whole-file read so a huge file can't flood the panel.
+_FILE_MAX_LINES = 2000
+
+
+def _compute_file_range(
+    *,
+    total: int,
+    line: int | None,
+    context: int,
+    start: int | None,
+    end: int | None,
+) -> tuple[int, int, bool]:
+    """Resolve the (start, end, truncated) slice for a file-content read.
+
+    Explicit ``start``/``end`` win; else ``line`` centers a context window;
+    else the whole file. The whole-file case is capped at ``_FILE_MAX_LINES``.
+    Returns 1-based inclusive [start, end] and whether the slice is shorter
+    than the file.
+    """
+    if start is not None and end is not None:
+        s, e_ = start, end
+    elif line is not None:
+        s = max(1, line - context)
+        e_ = min(total, line + context)
+    else:
+        s, e_ = 1, total
+
+    s = max(1, min(s, total))
+    e_ = max(s, min(e_, total))
+
+    truncated = e_ < total
+    if s == 1 and e_ == total and total > _FILE_MAX_LINES:
+        e_ = _FILE_MAX_LINES
+        truncated = True
+    return s, e_, truncated
+
 
 # Roles permitted to rebase branches via the /rebase endpoint.
 # Rebase is a history-rewriting operation that should be authorised only by
@@ -341,6 +379,59 @@ async def get_git_diff(
         file_path=file_path,
         diff=diff_result.stdout,
         files_changed=max(0, files_changed),
+    )
+
+
+@router.get("/file", response_model=GitFileContentResponse)
+async def get_git_file(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    branch: str = Query(..., description="Task branch holding the file"),
+    path: str = Query(..., description="Repo-relative file path"),
+    line: int | None = Query(default=None, ge=1, description="Target line"),
+    context: int = Query(default=10, ge=0, le=100, description="Context around line"),
+    start: int | None = Query(default=None, ge=1, description="Explicit start line"),
+    end: int | None = Query(default=None, ge=1, description="Explicit end line"),
+) -> GitFileContentResponse:
+    """Return a file's content at a branch tip, optionally sliced to a range.
+
+    Reads straight out of the branch with ``git show`` (``read_file_at_branch``)
+    so a reviewer/CEO can read a finding's source lines without a workspace
+    mount. A missing file or bad ref yields 404. When `line` is given the
+    slice is centered on it (`line - context` .. `line + context`); explicit
+    `start`/`end` override. With none of the three, the whole file returns
+    (capped at 2000 lines to bound the payload — `truncated` flags the cut).
+    """
+    git_service = get_git_service(db)
+
+    try:
+        content = await git_service.read_file_at_branch(
+            branch_name=branch, path=path, actor_agent_id=agent.agent_id
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    if content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found at {branch}:{path}",
+        )
+
+    all_lines = content.splitlines()
+    total = len(all_lines)
+
+    s, e_, truncated = _compute_file_range(
+        total=total, line=line, context=context, start=start, end=end
+    )
+
+    sliced = all_lines[s - 1 : e_]
+    return GitFileContentResponse(
+        branch=branch,
+        path=path,
+        content="\n".join(sliced),
+        start_line=s,
+        total_lines=total,
+        truncated=truncated,
     )
 
 
