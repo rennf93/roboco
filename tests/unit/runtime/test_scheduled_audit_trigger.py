@@ -191,7 +191,9 @@ async def test_reactive_alert_acks_so_it_cannot_rotate(
     assert spawn_mock.await_count == 1  # not respawned on tick 2
     assert ack_mock.await_count == 1
     # acked as the auditor saw it: (client, alert_id)
-    assert ack_mock.await_args.args[1] == alert_id
+    ack_call = ack_mock.await_args
+    assert ack_call is not None
+    assert ack_call.args[1] == alert_id
 
 
 @pytest.mark.anyio
