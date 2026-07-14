@@ -361,8 +361,10 @@ class OptimalService:
             )
             return None
 
-        # Directories to auto-index (RAG-optimized docs only)
-        auto_index_dirs = ["rag"]
+        # Directories to auto-index (RAG-optimized docs only). docs/rag is the
+        # agent-facing RAG corpus; docs/map is the agent-facing exhaustive
+        # codebase map — indexing it makes the map roboco_kb_search-able.
+        auto_index_dirs = ["rag", "map"]
 
         for subdir in auto_index_dirs:
             target_dir = docs_root / subdir
