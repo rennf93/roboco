@@ -13578,22 +13578,32 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         Monitors: quality alert notifications + scheduled periodic sweeps
         Spawns: auditor
         """
-        alerts = await self._fetch_notifications(client, "alert")
-
-        for alert in alerts:
-            targets = alert.get("to_agents", [])
-            # Resolve UUIDs to slugs and check if auditor is a target
-            target_slugs = [self._resolve_agent_slug(str(t)) for t in targets]
-            if "auditor" in target_slugs and not self._is_agent_active("auditor"):
-                if self._notification_spawn_cooled("auditor", alert.get("id")):
-                    continue
-                await self.spawn_agent(
-                    agent_id="auditor",
-                    initial_prompt=self._build_audit_prompt(alert),
-                    spawned_by="_dispatch_audit_work",
-                )
-                self._last_audit_spawn_at = datetime.now(UTC)
-                return
+        # Alert path: dispatch the auditor ONCE per alert targeting it that the
+        # auditor has not observed yet. The auditor is read-only (no ack verb)
+        # and auditor_triage never acks, so under the old system-wide fetch
+        # (every not-fully-acked alert) a stale rework alert stayed pending
+        # forever and the per-alert cooldown only paced a rotation that
+        # respawned the auditor every ~3 min. Fetching the auditor's own
+        # not-yet-acked-by-me view and acking on dispatch makes each alert a
+        # one-shot, DB-persistent — the rotation cannot restart on a tick.
+        if not self._is_agent_active("auditor"):
+            alert = await self._next_unobserved_audit_alert(client)
+            if alert is not None:
+                alert_id = str(alert["id"])
+                if not self._notification_spawn_cooled("auditor", alert_id):
+                    await self.spawn_agent(
+                        agent_id="auditor",
+                        initial_prompt=self._build_audit_prompt(
+                            {
+                                "subject": alert.get("subject", ""),
+                                "body": alert.get("body", ""),
+                            }
+                        ),
+                        spawned_by="_dispatch_audit_work",
+                    )
+                    await self._ack_alert_as_auditor(client, alert_id)
+                    self._last_audit_spawn_at = datetime.now(UTC)
+                    return
 
         # Scheduled periodic audit sweep. Reuse the notification cooldown
         # pattern with a sentinel key as a one-tick breaker so a single
@@ -13626,6 +13636,68 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if last is None:
             return False
         return (datetime.now(UTC) - last).total_seconds() < interval
+
+    async def _next_unobserved_audit_alert(
+        self, client: httpx.AsyncClient
+    ) -> dict[str, Any] | None:
+        """Newest ALERT targeting the auditor that the auditor has not acked.
+
+        Fetches the auditor's OWN pending-ack view: ``GET /notifications`` authed
+        as the auditor routes through ``list_for_agent``, which filters
+        ``acked_by`` for the auditor — not the system-wide "not fully acked"
+        view ``list_system_notifications`` returns. The auditor is read-only (no
+        ack verb) and ``auditor_triage`` never acks, so under the system view a
+        stale rework alert stayed pending forever (the CEO hadn't acked either)
+        and the per-alert cooldown only paced a rotation that respawned the
+        auditor every ~3 min. The auditor's own view excludes alerts it has
+        already observed — even ones the CEO has not acked yet — so each alert
+        is a one-shot, not a rotation source. Authed as the auditor (not the
+        system identity) so the route selects the per-recipient view.
+        """
+        auditor_uuid = AGENT_UUIDS.get("auditor")
+        if not auditor_uuid:
+            return None
+        try:
+            resp = await client.get(
+                f"{self._api_url}/notifications",
+                params={"type_filter": "alert", "pending_ack_only": "true"},
+                headers=_agent_api_headers(auditor_uuid, "auditor"),
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                items = resp.json().get("items", [])
+                return items[0] if items else None
+        except Exception as e:
+            logger.error("Fetch unobserved audit alert failed", error=str(e))
+        return None
+
+    async def _ack_alert_as_auditor(
+        self, client: httpx.AsyncClient, notification_id: str
+    ) -> None:
+        """Acknowledge an alert as the auditor on dispatch (HTTP, loop-safe).
+
+        The spawn IS the auditor's observation; the auditor has no ack verb
+        (read-only), so the orchestrator acks on its behalf via the API authed
+        as the auditor. This is the terminal one-shot response that clears the
+        alert from the auditor's pending view so the next tick cannot respawn
+        on the same alert. Best-effort: a failed ack degrades to the per-alert
+        cooldown guarding the next tick — it never blocks the dispatch.
+        """
+        auditor_uuid = AGENT_UUIDS.get("auditor")
+        if not auditor_uuid:
+            return
+        try:
+            resp = await client.post(
+                f"{self._api_url}/notifications/{notification_id}/ack",
+                headers=_agent_api_headers(auditor_uuid, "auditor"),
+            )
+            if resp.status_code != http_status.HTTP_200_OK:
+                logger.warning(
+                    "Ack audit alert as auditor failed",
+                    notification_id=notification_id,
+                    status=resp.status_code,
+                )
+        except Exception as e:
+            logger.warning("Ack audit alert as auditor failed", error=str(e))
 
     async def _has_recent_delivery_activity(
         self,

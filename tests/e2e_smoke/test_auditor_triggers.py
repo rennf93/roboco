@@ -228,3 +228,30 @@ def test_reactive_alert_producer_spawns_auditor(
     prompt = call.kwargs["initial_prompt"]
     assert "QUALITY ALERT" in prompt
     assert "missing edge-case coverage" in prompt
+
+    # Rotation-stopper: dispatch acks the alert as the auditor (the auditor is
+    # read-only, no ack verb), so the auditor's pending-ack view no longer
+    # returns it and the next tick cannot respawn on this same alert. Without
+    # this ack the per-alert cooldown only paced a rotation through every
+    # stale not-fully-acked alert — the loop being fixed.
+    async def _acked_by_auditor(session: AsyncSession) -> bool:
+        from roboco.db.tables import NotificationTable
+        from sqlalchemy import select
+
+        row = (
+            (
+                await session.execute(
+                    select(NotificationTable).where(
+                        NotificationTable.related_task_id == task_id,
+                        NotificationTable.type == NotificationType.ALERT,
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        return auditor_id in row.acked_by
+
+    assert stack.run_db(_acked_by_auditor), (
+        "alert not acked as auditor after dispatch — rotation not stopped"
+    )
