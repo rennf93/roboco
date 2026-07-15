@@ -51,6 +51,7 @@ from roboco.exceptions import (
     MergeConflictError,
 )
 from roboco.foundation.policy import lifecycle
+from roboco.foundation.policy.pr_labels import CONVENTIONS_PR_LABELS, derive_pr_labels
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.models.env_branches import head_branch
 from roboco.services.base import (
@@ -2360,6 +2361,92 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    # A single neutral color — labels are distinguished by name, not hue, and
+    # GitHub's create-label endpoint requires a color (it won't auto-assign).
+    _PR_LABEL_COLOR = "5e6ad2"
+
+    async def _ensure_label_exists(
+        self, owner: str, repo: str, git_token: str, name: str
+    ) -> None:
+        """Create a repo label if missing (GitHub's add-label API 404s on an
+        unknown label instead of auto-creating). Swallow 'already exists'
+        (422/409). Best-effort: logs and never raises — a missing label must not
+        block PR creation."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"name": name, "color": self._PR_LABEL_COLOR},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
+            return
+        # 422 (already_exists) / 409 (conflict) = the label is already present.
+        if resp.is_success or resp.status_code in (409, 422):
+            return
+        self.log.warning(
+            "could not ensure PR label exists",
+            label=name,
+            status=resp.status_code,
+            body=(resp.text or "")[:200],
+        )
+
+    async def _apply_pr_labels(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        pr_number: int,
+        labels: list[str],
+    ) -> None:
+        """Best-effort: create each label (GitHub won't auto-create on add) then
+        add them to the PR. Re-adding is a no-op, so the 422 'PR already exists'
+        path is safe to re-label. Never raises — labeling must not block PR
+        creation (same posture as ``_record_pr_atomically``)."""
+        if not labels:
+            return
+        for name in labels:
+            await self._ensure_label_exists(owner, repo, git_token, name)
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"labels": labels},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
+            return
+        if not resp.is_success:
+            self.log.warning(
+                "could not add PR labels",
+                pr=pr_number,
+                status=resp.status_code,
+                body=(resp.text or "")[:200],
+            )
+
+    async def _task_has_children(self, task_id: UUID) -> bool:
+        """True iff the task has any subtask (a one-row probe). PR creation is
+        rare; the query is negligible and keeps ``has_children`` honest instead
+        of assumed per call site."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
+
     async def _pr_base_on_remote(
         self,
         workspace: Path,
@@ -2445,10 +2532,13 @@ class GitService(BaseService):
             },
         )
 
+        labels = await self._labels_for_pr_request(request)
+
         existing = await self._existing_pr_tuple(
             resp, (owner, repo), (source_branch, target_branch), git_token, pr_title
         )
         if existing is not None:
+            await self._apply_pr_labels(owner, repo, git_token, existing[0], labels)
             return existing
 
         if not resp.is_success:
@@ -2459,8 +2549,10 @@ class GitService(BaseService):
             )
 
         pr_data = resp.json()
+        pr_number = int(pr_data["number"])
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return (
-            int(pr_data["number"]),
+            pr_number,
             str(pr_data["html_url"]),
             pr_title or "",
             source_branch,
@@ -2614,6 +2706,35 @@ class GitService(BaseService):
             return None
         data = resp.json()
         return {"number": int(data["number"]), "url": str(data.get("html_url", ""))}
+
+    async def _labels_for_pr_request(
+        self,
+        request: GitCreatePRRequest,
+    ) -> list[str]:
+        """The org-structure labels for the REST/task PR path. A task PR derives
+        team / batch / has_children from the task; a freeform PR (``task_id``
+        None) carries only the tree + root flags."""
+        if request.task_id is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        task = await get_task_service(self.session).get(request.task_id)
+        if task is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        return derive_pr_labels(
+            is_root_pr=request.is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=await self._task_has_children(UUID(str(task.id))),
+        )
 
     async def _resolve_new_pr_context(
         self,
@@ -4178,6 +4299,15 @@ class GitService(BaseService):
             },
         )
 
+        # Org-structure labels: create_pr is always an assembled PM PR
+        # (cell->root or root->master), so has_children is True by construction.
+        labels = derive_pr_labels(
+            is_root_pr=is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=True,
+        )
+
         if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
             found = await self._find_existing_pr(
                 owner, repo, branch_name, parent, git_token
@@ -4192,6 +4322,7 @@ class GitService(BaseService):
                 await _await_shielded(
                     self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
                 )
+                await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
                 return {
                     "pr_number": pr_number,
                     "pr_url": pr_url,
@@ -4217,6 +4348,7 @@ class GitService(BaseService):
         await _await_shielded(
             self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
         )
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
     async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:
@@ -5585,9 +5717,16 @@ class GitService(BaseService):
         if not resp.is_success:
             return unopened
         data = resp.json()
+        pr_number = data.get("number")
+        if pr_number is not None:
+            # Static label — a project-level scaffold/restore PR has no task or
+            # org layer; best-effort, never blocks.
+            await self._apply_pr_labels(
+                owner, repo, token, int(pr_number), CONVENTIONS_PR_LABELS
+            )
         return {
             "branch": spec.branch,
-            "pr_number": data.get("number"),
+            "pr_number": pr_number,
             "pr_url": data.get("html_url"),
         }
 

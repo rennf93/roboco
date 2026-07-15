@@ -503,6 +503,7 @@ async def test_create_pr_returns_pr_dict() -> None:
         "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
     }
     _bind(svc, "_post_pr", AsyncMock(return_value=fake_resp))
+    _bind(svc, "_apply_pr_labels", AsyncMock())
 
     with _patch_project_service(fake_project):
         out = await svc.create_pr(
@@ -550,6 +551,7 @@ async def test_create_pr_records_pr_despite_cancellation_after_post() -> None:
         "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
     }
     _bind(svc, "_post_pr", AsyncMock(return_value=fake_resp))
+    _bind(svc, "_apply_pr_labels", AsyncMock())
 
     with _patch_project_service(fake_project):
         task = asyncio.ensure_future(
@@ -607,6 +609,7 @@ async def test_create_pr_cancellation_waits_out_record_before_reraising() -> Non
         "html_url": f"https://github.com/acme/repo/pull/{_EXPECTED_PR_NUMBER}",
     }
     _bind(svc, "_post_pr", AsyncMock(return_value=fake_resp))
+    _bind(svc, "_apply_pr_labels", AsyncMock())
 
     with _patch_project_service(fake_project):
         task = asyncio.ensure_future(

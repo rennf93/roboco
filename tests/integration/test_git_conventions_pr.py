@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from roboco.config import settings
@@ -158,6 +159,7 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
         return _Resp()
 
     monkeypatch.setattr(git, "_post_pr", _fake_post_pr)
+    monkeypatch.setattr(git, "_apply_pr_labels", AsyncMock())
 
     spec = _ConventionsPr(
         content="version: 1\n",
