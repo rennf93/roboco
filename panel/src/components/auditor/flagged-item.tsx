@@ -119,7 +119,7 @@ export function FlaggedItem({
                 Resolve
               </Button>
             </HelpTip>
-            {flag.severity === FlagSeverity.URGENT && (
+            {flag.severity === FlagSeverity.URGENT && onReportToCeo && (
               <HelpTip label="Only shown for Urgent-severity flags">
                 <Button
                   variant="default"
