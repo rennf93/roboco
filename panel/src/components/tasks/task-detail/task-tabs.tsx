@@ -140,7 +140,18 @@ export function TaskTabs({ task }: TaskTabsProps) {
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>
-              <TabsTrigger value={tab.value} className="gap-2">
+              {/* TooltipTrigger's asChild Slot merge injects its own
+                  data-state ("open"/"closed") onto this trigger, and Radix
+                  Tabs' internal render spreads incoming props after its own
+                  literal data-state — so the tooltip's value silently wins
+                  and the data-[state=active] highlight in ui/tabs.tsx never
+                  fires. Re-assert the real selection state explicitly so it
+                  survives the merge. */}
+              <TabsTrigger
+                value={tab.value}
+                data-state={tab.value === activeTab ? "active" : "inactive"}
+                className="gap-2"
+              >
                 <tab.icon className="h-4 w-4" />
                 <span className="hidden sm:inline">{tab.label}</span>
                 {tab.count !== undefined && (
