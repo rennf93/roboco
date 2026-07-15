@@ -126,6 +126,29 @@ _GIT_MUTATE_DENY = (
 )
 _DESTRUCTIVE_DENY = ("Bash(rm -rf*)",)
 
+# Raw package-manager / test-runner commands — use the Makefile (CEO direction).
+# Native --deny is graceful (model adapts to `make`, run continues), so this is
+# the primary gate on grok; the bash-guard hook only catches the compound
+# commands the globs miss (cd x && uv run) and there nudges via
+# ROBOCO_GUARD_SKIP_PM=1 instead of canceling the run.
+_RAW_PM_DENY = (
+    "Bash(uv run*)",
+    "Bash(uv pip install*)",
+    "Bash(uv pip uninstall*)",
+    "Bash(uv lock*)",
+    "Bash(uv add*)",
+    "Bash(uv remove*)",
+    "Bash(pip install*)",
+    "Bash(pip3 install*)",
+    "Bash(pip uninstall*)",
+    "Bash(conda install*)",
+    "Bash(conda create*)",
+    "Bash(conda run*)",
+    "Bash(poetry run*)",
+    "Bash(poetry install*)",
+    "Bash(poetry add*)",
+)
+
 
 def render_config_toml(mcp_config: dict[str, Any]) -> str:
     """Translate Claude Code ``mcpServers`` into grok's ``[mcp_servers]`` TOML.
@@ -171,7 +194,7 @@ def _deny_rules(role: str) -> list[str]:
     """``--deny`` permission rules for a role (only bash-capable roles need any)."""
     if role not in _BASH_ROLES:
         return []  # bash removed entirely → nothing left to gate
-    return [*_DESTRUCTIVE_DENY, *_GIT_MUTATE_DENY]
+    return [*_DESTRUCTIVE_DENY, *_GIT_MUTATE_DENY, *_RAW_PM_DENY]
 
 
 def _effort() -> str | None:
@@ -266,7 +289,13 @@ def bash_guard_hook_config(hook_path: str = BASH_GUARD_HOOK) -> dict[str, Any]:
                         {
                             "type": "command",
                             "command": hook_path,
-                            "env": {"ROBOCO_GUARD_SKIP_GIT": "1"},
+                            "env": {
+                                "ROBOCO_GUARD_SKIP_GIT": "1",
+                                # Raw-PM is gated by graceful native --deny above;
+                                # the hook only nudges (exit 0) for compound
+                                # commands the globs miss, never cancels the run.
+                                "ROBOCO_GUARD_SKIP_PM": "1",
+                            },
                         }
                     ],
                 }
