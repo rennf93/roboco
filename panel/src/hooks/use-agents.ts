@@ -337,6 +337,9 @@ export function useAgentStatus(agentId: string) {
     queryFn: () => orchestratorApi.getAgentStatus(agentId),
     enabled: !!agentId,
     refetchInterval: 5000, // Refetch every 5 seconds
+    // A 404 (agent not running) is deterministic, not transient — retrying
+    // just delays settling into the degraded "not running" state.
+    retry: false,
   });
 }
 

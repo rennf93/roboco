@@ -6,6 +6,13 @@ import { render, screen } from "@testing-library/react";
 // spawnAgent.mutateAsync({ agentId }) directly from a bare button — no task,
 // no message, no double-fire guard. Both bare buttons must now render the
 // shared SpawnAgentDialog instead.
+//
+// Whole-page-replaced-by-error fix: a stopped agent's live-status query 404s
+// (orchestrator has no running instance) while the agent's roster identity
+// still resolves fine. That must degrade the live-status area only — not
+// discard the DB-backed header/activity content already rendered above it.
+// The full-page fatal card is reserved for a genuinely invalid agent id
+// (the roster lookup itself failing).
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ agentId: "fe-dev-2" }),
@@ -24,15 +31,19 @@ vi.mock("@/hooks/use-page-refresh", () => ({
 
 vi.mock("@/hooks/use-agents", () => ({
   useAgentStatus: vi.fn(),
-  useAgentDefinition: vi.fn(() => ({ data: undefined })),
+  useAgentDefinition: vi.fn(() => ({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+  })),
   useStopAgent: vi.fn(() => ({ mutateAsync: vi.fn() })),
 }));
 
 vi.mock("@/components/agents", () => ({
-  AgentStatusCards: () => null,
+  AgentStatusCards: () => <div data-testid="agent-status-cards" />,
   ResolveWaitDialog: () => null,
   AgentStreamViewer: () => null,
-  AgentActivityPanel: () => null,
+  AgentActivityPanel: () => <div data-testid="agent-activity-panel" />,
   SpawnAgentDialog: ({
     agentId,
     agentName,
@@ -52,27 +63,10 @@ vi.mock("@/components/agents", () => ({
   ),
 }));
 
-import { useAgentStatus } from "@/hooks/use-agents";
+import { useAgentStatus, useAgentDefinition } from "@/hooks/use-agents";
 import AgentDetailPage from "../page";
 
 describe("AgentDetailPage — spawn dialog parity", () => {
-  it("renders SpawnAgentDialog (not a bare button) in the error state", () => {
-    vi.mocked(useAgentStatus).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      error: new Error("not found"),
-      refetch: vi.fn(),
-    } as unknown as ReturnType<typeof useAgentStatus>);
-
-    render(<AgentDetailPage />);
-
-    const dialog = screen.getByTestId("spawn-agent-dialog");
-    expect(dialog).toHaveAttribute("data-agent-id", "fe-dev-2");
-    expect(
-      screen.getByRole("button", { name: /Spawn Agent/i }),
-    ).toBeInTheDocument();
-  });
-
   it("renders SpawnAgentDialog in the header when the agent is not active", () => {
     vi.mocked(useAgentStatus).mockReturnValue({
       data: {
@@ -97,5 +91,83 @@ describe("AgentDetailPage — spawn dialog parity", () => {
     expect(
       screen.queryByRole("button", { name: "Stop" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentDetailPage — live-status error degrades, doesn't discard content", () => {
+  it("keeps header + activity panel and shows a not-running banner when the roster resolves but live status 404s", () => {
+    vi.mocked(useAgentDefinition).mockReturnValue({
+      data: { id: "fe-dev-2", uuid: "uuid-1", name: "Frontend Dev 2" },
+      isLoading: false,
+      error: undefined,
+    } as unknown as ReturnType<typeof useAgentDefinition>);
+    vi.mocked(useAgentStatus).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Agent fe-dev-2 not found"),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useAgentStatus>);
+
+    render(<AgentDetailPage />);
+
+    // DB-backed content that loaded independently of live status must stay.
+    expect(screen.getByText("Frontend Dev 2")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-activity-panel")).toBeInTheDocument();
+
+    // Live-status area degrades to an inline banner, not a whole-page card.
+    expect(screen.getByText("Not running")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load agent status"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agent-status-cards")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Spawn Agent/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the whole-page fatal card only when the roster lookup itself fails (invalid id)", () => {
+    vi.mocked(useAgentDefinition).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Agent not found"),
+    } as unknown as ReturnType<typeof useAgentDefinition>);
+    vi.mocked(useAgentStatus).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Agent not found"),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useAgentStatus>);
+
+    render(<AgentDetailPage />);
+
+    expect(screen.getByText("Failed to load agent status")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-activity-panel"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Spawn Agent/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the status skeleton (not the banner) while the roster is still loading, even if status already errored", () => {
+    vi.mocked(useAgentDefinition).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: undefined,
+    } as unknown as ReturnType<typeof useAgentDefinition>);
+    vi.mocked(useAgentStatus).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Agent not found"),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useAgentStatus>);
+
+    render(<AgentDetailPage />);
+
+    // Definition still resolving — not fatal yet, page renders normally.
+    expect(
+      screen.queryByText("Failed to load agent status"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Not running")).toBeInTheDocument();
   });
 });

@@ -65,8 +65,17 @@ export default function AgentDetailPage() {
   const router = useRouter();
   const agentId = params.agentId as string;
 
-  const { data: agent, isLoading, error, refetch } = useAgentStatus(agentId);
-  const { data: definition } = useAgentDefinition(agentId);
+  const {
+    data: agent,
+    isLoading: isStatusLoading,
+    error: statusError,
+    refetch,
+  } = useAgentStatus(agentId);
+  const {
+    data: definition,
+    isLoading: isDefinitionLoading,
+    error: definitionError,
+  } = useAgentDefinition(agentId);
 
   const { register, unregister } = usePageRefresh();
 
@@ -100,7 +109,13 @@ export default function AgentDetailPage() {
     }
   };
 
-  if (error) {
+  // Fatal only when the agent identity itself doesn't resolve (roster lookup
+  // failed) — a genuinely invalid id. A live-status error (agent not running)
+  // is a normal, expected state for a stopped agent and must not discard the
+  // DB-backed content below (activity panel, header) — see isAgentDown.
+  const isInvalidAgent = !!definitionError && !isDefinitionLoading;
+
+  if (isInvalidAgent) {
     return (
       <div className="space-y-6">
         <Button variant="ghost" onClick={() => router.back()}>
@@ -131,6 +146,11 @@ export default function AgentDetailPage() {
       </div>
     );
   }
+
+  // Live status unreachable (stopped/unreachable agent, 404 from the
+  // orchestrator) but the agent identity is real — degrade in place instead
+  // of replacing the page.
+  const isAgentDown = !!statusError && !isStatusLoading;
 
   const isActive =
     agent &&
@@ -201,7 +221,7 @@ export default function AgentDetailPage() {
           History exists independent of live status, so render for any slug. */}
       <AgentActivityPanel agentSlug={agentId} agentUuid={definition?.uuid} />
 
-      {isLoading ? (
+      {isStatusLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Card key={i}>
@@ -214,6 +234,29 @@ export default function AgentDetailPage() {
             </Card>
           ))}
         </div>
+      ) : isAgentDown ? (
+        <Card className="border-muted-foreground/30">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <AlertTriangle className="h-5 w-5" />
+              <span>Not running</span>
+            </div>
+            <p className="text-muted-foreground mt-2">
+              Live status is unavailable — this agent isn&apos;t currently
+              active. Spawn it to see live state.
+            </p>
+            <SpawnAgentDialog
+              agentId={agentId}
+              agentName={displayName}
+              trigger={
+                <Button className="mt-4">
+                  <Play className="h-4 w-4 mr-2" />
+                  Spawn Agent
+                </Button>
+              }
+            />
+          </CardContent>
+        </Card>
       ) : agent ? (
         <>
           {/* Status Cards */}
