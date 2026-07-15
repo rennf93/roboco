@@ -8,6 +8,7 @@ import {
   derivePipelineStage,
   pipelineStageColor,
   pipelineStageLabel,
+  type PipelineStage,
 } from "./video-pipeline-utils";
 import { RerenderControl } from "@/components/dashboard/video-rerender-control";
 import {
@@ -19,7 +20,26 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Film } from "lucide-react";
+
+// Per-stage explanation for the stage chip — lives here (not in
+// video-pipeline-utils.ts) since that file is pure derivation logic with its
+// own dedicated unit tests.
+function stageHint(stage: PipelineStage): string {
+  switch (stage.kind) {
+    case "authoring":
+      return "A developer is building this video's composition";
+    case "in_review":
+      return "The authoring PR is in QA / PR / PM review before assembly";
+    case "awaiting_approval":
+      return "Rendered and waiting on your approval — open the task to review";
+    case "rendering":
+      return "The renderer is producing the 9:16 and 1:1 cuts, retrying on failure";
+    case "render_failed":
+      return "The renderer gave up after all retries — re-render to try again";
+  }
+}
 
 // One row: title + occasion + a colored stage chip. The stage chip is
 // derived (never fetched) from status + render_status/render_attempts —
@@ -40,10 +60,16 @@ function PipelineRow({ item }: { item: VideoPipelineItem }) {
     <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm">
       <Film className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span className="font-medium">{item.title}</span>
-      {item.occasion && <Badge variant="outline">{item.occasion}</Badge>}
-      <Badge className={`${pipelineStageColor(stage)} text-white`}>
-        {pipelineStageLabel(stage)}
-      </Badge>
+      {item.occasion && (
+        <HelpTip label="The occasion/event this video was drafted for">
+          <Badge variant="outline">{item.occasion}</Badge>
+        </HelpTip>
+      )}
+      <HelpTip label={stageHint(stage)}>
+        <Badge className={`${pipelineStageColor(stage)} text-white`}>
+          {pipelineStageLabel(stage)}
+        </Badge>
+      </HelpTip>
       {stage.kind === "awaiting_approval" && (
         <Link
           href={`/tasks/${item.task_id}`}

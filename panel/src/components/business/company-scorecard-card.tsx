@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
+import { HelpTip } from "@/components/ui/help-tip";
 
 // ---------------------------------------------------------------------------
 // Loading skeleton — three grouped skeleton blocks
@@ -56,9 +57,12 @@ function ScorecardSkeleton() {
 // Section header helper
 // ---------------------------------------------------------------------------
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ children, ...props }: React.ComponentProps<"p">) {
   return (
-    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+    <p
+      className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+      {...props}
+    >
       {children}
     </p>
   );
@@ -71,14 +75,17 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 interface DeliveryMetricProps {
   label: string;
   value: number;
+  hint: string;
 }
 
-function DeliveryMetric({ label, value }: DeliveryMetricProps) {
+function DeliveryMetric({ label, value, hint }: DeliveryMetricProps) {
   return (
-    <div className="rounded-lg border bg-card p-3 text-center">
-      <div className="text-2xl font-bold tabular-nums">{value}</div>
-      <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
-    </div>
+    <HelpTip label={hint}>
+      <div className="rounded-lg border bg-card p-3 text-center">
+        <div className="text-2xl font-bold tabular-nums">{value}</div>
+        <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
+      </div>
+    </HelpTip>
   );
 }
 
@@ -91,12 +98,25 @@ function DeliverySection({ delivery }: DeliverySectionProps) {
     <div className="space-y-2">
       <SectionLabel>Delivery</SectionLabel>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <DeliveryMetric label="In flight" value={delivery.in_flight} />
-        <DeliveryMetric label="Blocked" value={delivery.blocked} />
-        <DeliveryMetric label="Awaiting CEO" value={delivery.awaiting_ceo} />
+        <DeliveryMetric
+          label="In flight"
+          value={delivery.in_flight}
+          hint="Tasks currently claimed or in progress"
+        />
+        <DeliveryMetric
+          label="Blocked"
+          value={delivery.blocked}
+          hint="Tasks stuck on an external dependency"
+        />
+        <DeliveryMetric
+          label="Awaiting CEO"
+          value={delivery.awaiting_ceo}
+          hint="Tasks escalated to you for final approval"
+        />
         <DeliveryMetric
           label="Done (30 d)"
           value={delivery.completed_30d ?? 0}
+          hint="Tasks completed in the last 30 days"
         />
       </div>
     </div>
@@ -141,7 +161,9 @@ function SpendSection({ spend }: SpendSectionProps) {
           </div>
         )}
         <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Monthly cap</span>
+          <HelpTip label="Set via operating_policy.monthly_budget_cap on the Goals tab">
+            <span className="text-muted-foreground">Monthly cap</span>
+          </HelpTip>
           {monthly_budget_cap_usd === null ? (
             <span className="text-muted-foreground italic">
               No budget cap set
@@ -183,7 +205,9 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
       <SectionLabel>Speed</SectionLabel>
       <div className="rounded-lg border p-3">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Median lead time</span>
+          <HelpTip label="Hours from task creation to completion, over tasks completed in the last 30 days">
+            <span className="text-muted-foreground">Median lead time</span>
+          </HelpTip>
           {hasData ? (
             <span className="font-medium tabular-nums">
               {medianLeadTimeHours.toFixed(1)}h median &mdash; target:
@@ -210,7 +234,9 @@ function StubObjectivesSection() {
 
   return (
     <div className="space-y-2">
-      <SectionLabel>Objectives</SectionLabel>
+      <HelpTip label="Placeholder — not yet wired to the Goals tab's Objectives list">
+        <SectionLabel>Objectives</SectionLabel>
+      </HelpTip>
       <div className="space-y-2">
         {stubs.map((stub) => (
           <div

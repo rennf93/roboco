@@ -58,6 +58,7 @@ export function RAGQueryInput({
               className="absolute bottom-2 right-2"
               onClick={handleSubmit}
               disabled={!question.trim() || isLoading}
+              aria-label="Ask the knowledge base"
             >
               {isLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

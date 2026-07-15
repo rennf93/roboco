@@ -31,6 +31,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ProjectSelector } from "@/components/projects/project-selector";
 import { useProjects } from "@/hooks/use-projects";
 import { RerenderControl } from "@/components/dashboard/video-rerender-control";
@@ -47,7 +48,21 @@ const REQUEST_PLATFORMS = ["x", "tiktok"] as const;
 // Only one source reaches this queue today; a function (not a literal)
 // mirrors XPostQueue's sourceMeta pattern and costs nothing to extend later.
 function sourceMeta() {
-  return { label: "Video", icon: Film };
+  return {
+    label: "Video",
+    icon: Film,
+    hint: "Rendered by the video pipeline — from a release, a feature spotlight, or an on-demand request",
+  };
+}
+
+// Explains what Approve does, or why it's disabled — mirrors x-post-queue's
+// approveHint. Always non-empty (see that function's comment for why: a
+// null/string toggle on HelpTip's label unmounts the wrapped child).
+function approveHint(approving: boolean, overLimit: boolean): string {
+  if (approving) return "Already posting this draft";
+  if (overLimit)
+    return "An edited caption is over its platform's character limit — trim to enable";
+  return "Post this draft to the selected platforms";
 }
 
 function describeExecuteResult(result: VideoPostExecuteResult): string {
@@ -201,9 +216,17 @@ function VideoPostRow({
   return (
     <div className="rounded-lg border p-4 transition-colors hover:bg-muted/50">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <meta.icon className="h-4 w-4 text-muted-foreground" />
-        <span className="font-medium">{meta.label}</span>
-        {post.occasion && <Badge variant="outline">{post.occasion}</Badge>}
+        <HelpTip label={meta.hint}>
+          <span className="inline-flex items-center gap-1.5">
+            <meta.icon className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">{meta.label}</span>
+          </span>
+        </HelpTip>
+        {post.occasion && (
+          <HelpTip label="The occasion/event this video was drafted for">
+            <Badge variant="outline">{post.occasion}</Badge>
+          </HelpTip>
+        )}
         {canRerender && (
           <div className="ml-auto">
             <RerenderControl authoringTaskId={post.source_task_id as string} />
@@ -222,30 +245,40 @@ function VideoPostRow({
 
       <div className="mb-3 space-y-2">
         <div className="flex gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant={cut === "vertical" ? "default" : "outline"}
-            disabled={!post.mp4_paths?.vertical}
-            title={
-              post.mp4_paths?.vertical ? undefined : "9:16 hasn't rendered yet"
+          <HelpTip
+            label={
+              post.mp4_paths?.vertical
+                ? "Preview the 9:16 cut"
+                : "9:16 hasn't rendered yet"
             }
-            onClick={() => setCut("vertical")}
           >
-            9:16{!post.mp4_paths?.vertical && " (missing)"}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant={cut === "square" ? "default" : "outline"}
-            disabled={!post.mp4_paths?.square}
-            title={
-              post.mp4_paths?.square ? undefined : "1:1 hasn't rendered yet"
+            <Button
+              type="button"
+              size="sm"
+              variant={cut === "vertical" ? "default" : "outline"}
+              disabled={!post.mp4_paths?.vertical}
+              onClick={() => setCut("vertical")}
+            >
+              9:16{!post.mp4_paths?.vertical && " (missing)"}
+            </Button>
+          </HelpTip>
+          <HelpTip
+            label={
+              post.mp4_paths?.square
+                ? "Preview the 1:1 cut"
+                : "1:1 hasn't rendered yet"
             }
-            onClick={() => setCut("square")}
           >
-            1:1{!post.mp4_paths?.square && " (missing)"}
-          </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={cut === "square" ? "default" : "outline"}
+              disabled={!post.mp4_paths?.square}
+              onClick={() => setCut("square")}
+            >
+              1:1{!post.mp4_paths?.square && " (missing)"}
+            </Button>
+          </HelpTip>
         </div>
         {post.mp4_paths?.[cut] ? (
           <video
@@ -272,9 +305,11 @@ function VideoPostRow({
                 checked={editX}
                 onCheckedChange={(c) => setEditX(c === true)}
               />
-              <Label htmlFor={`${post.task_id}-x-edit`} className="text-sm">
-                Edit X caption
-              </Label>
+              <HelpTip label="Uncheck to keep posting the caption already saved on this draft instead of your edit">
+                <Label htmlFor={`${post.task_id}-x-edit`} className="text-sm">
+                  Edit X caption
+                </Label>
+              </HelpTip>
             </div>
             <Textarea
               value={xCaption}
@@ -283,11 +318,13 @@ function VideoPostRow({
               rows={2}
               className={xOverLimit ? "border-destructive" : undefined}
             />
-            <p
-              className={`text-right text-xs ${xOverLimit ? "text-destructive" : "text-muted-foreground"}`}
-            >
-              {xCaption.length}/{MAX_X_CAPTION_CHARS}
-            </p>
+            <HelpTip label={`X's per-post character limit (${MAX_X_CAPTION_CHARS})`}>
+              <p
+                className={`text-right text-xs ${xOverLimit ? "text-destructive" : "text-muted-foreground"}`}
+              >
+                {xCaption.length}/{MAX_X_CAPTION_CHARS}
+              </p>
+            </HelpTip>
           </div>
         )}
 
@@ -299,12 +336,14 @@ function VideoPostRow({
                 checked={editTiktok}
                 onCheckedChange={(c) => setEditTiktok(c === true)}
               />
-              <Label
-                htmlFor={`${post.task_id}-tiktok-edit`}
-                className="text-sm"
-              >
-                Edit TikTok caption
-              </Label>
+              <HelpTip label="Uncheck to keep posting the caption already saved on this draft instead of your edit">
+                <Label
+                  htmlFor={`${post.task_id}-tiktok-edit`}
+                  className="text-sm"
+                >
+                  Edit TikTok caption
+                </Label>
+              </HelpTip>
             </div>
             <Textarea
               value={tiktokCaption}
@@ -313,11 +352,15 @@ function VideoPostRow({
               rows={2}
               className={tiktokOverLimit ? "border-destructive" : undefined}
             />
-            <p
-              className={`text-right text-xs ${tiktokOverLimit ? "text-destructive" : "text-muted-foreground"}`}
+            <HelpTip
+              label={`TikTok's caption character limit (${MAX_TIKTOK_CAPTION_CHARS})`}
             >
-              {tiktokCaption.length}/{MAX_TIKTOK_CAPTION_CHARS}
-            </p>
+              <p
+                className={`text-right text-xs ${tiktokOverLimit ? "text-destructive" : "text-muted-foreground"}`}
+              >
+                {tiktokCaption.length}/{MAX_TIKTOK_CAPTION_CHARS}
+              </p>
+            </HelpTip>
           </div>
         )}
       </div>
@@ -332,15 +375,17 @@ function VideoPostRow({
           <XCircle className="mr-1 h-4 w-4" />
           Reject
         </Button>
-        <Button
-          size="sm"
-          className="bg-green-600 hover:bg-green-700"
-          disabled={approving || overLimit}
-          onClick={handleApprove}
-        >
-          <CheckCircle2 className="mr-1 h-4 w-4" />
-          Approve &amp; post
-        </Button>
+        <HelpTip label={approveHint(approving, overLimit)}>
+          <Button
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            disabled={approving || overLimit}
+            onClick={handleApprove}
+          >
+            <CheckCircle2 className="mr-1 h-4 w-4" />
+            Approve &amp; post
+          </Button>
+        </HelpTip>
       </div>
     </div>
   );
@@ -407,6 +452,21 @@ function RequestVideoDialog({
     occasion.trim().length > 0 &&
     brief.trim().length > 0 &&
     platforms.length > 0;
+
+  // Explains what Request does, or why it's disabled — the four canSubmit
+  // conditions checked in order, plus the in-flight case canSubmit doesn't
+  // cover. Always non-empty (see approveHint's comment for why).
+  const requestHint = requestMutation.isPending
+    ? "Request already in flight"
+    : !effectiveProjectId
+      ? "Pick a project first"
+      : occasion.trim().length === 0
+        ? "Give this video an occasion"
+        : brief.trim().length === 0
+          ? "Give this video a brief"
+          : platforms.length === 0
+            ? "Pick at least one platform"
+            : "Open a video-authoring task for this brief";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -476,12 +536,14 @@ function RequestVideoDialog({
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button
-                onClick={() => requestMutation.mutate()}
-                disabled={!canSubmit || requestMutation.isPending}
-              >
-                {requestMutation.isPending ? "Requesting..." : "Request"}
-              </Button>
+              <HelpTip label={requestHint}>
+                <Button
+                  onClick={() => requestMutation.mutate()}
+                  disabled={!canSubmit || requestMutation.isPending}
+                >
+                  {requestMutation.isPending ? "Requesting..." : "Request"}
+                </Button>
+              </HelpTip>
             </DialogFooter>
           </>
         ) : (

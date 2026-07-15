@@ -29,6 +29,7 @@ import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -46,19 +47,63 @@ const SANDBOX_SERVICES = [
 // (roboco/models/sandbox.py SANDBOX_ENGINE_FEATURES). The allowlist is the
 // security containment — a plpython3u (superuser-RCE) is absent by design.
 // Mongo has no activatable features and is intentionally absent here.
-const SANDBOX_EXTENSIONS: Record<string, { id: string; label: string }[]> = {
+const SANDBOX_EXTENSIONS: Record<
+  string,
+  { id: string; label: string; hint: string }[]
+> = {
   postgres: [
-    { id: "vector", label: "pgvector" },
-    { id: "postgis", label: "PostGIS" },
-    { id: "pg_trgm", label: "pg_trgm" },
-    { id: "citext", label: "citext" },
-    { id: "uuid-ossp", label: "uuid-ossp" },
+    {
+      id: "vector",
+      label: "pgvector",
+      hint: "Vector similarity search/indexing for embeddings.",
+    },
+    {
+      id: "postgis",
+      label: "PostGIS",
+      hint: "Geospatial types and queries for PostgreSQL.",
+    },
+    {
+      id: "pg_trgm",
+      label: "pg_trgm",
+      hint: "Trigram-based fuzzy text matching and similarity search.",
+    },
+    {
+      id: "citext",
+      label: "citext",
+      hint: "Case-insensitive text column type.",
+    },
+    {
+      id: "uuid-ossp",
+      label: "uuid-ossp",
+      hint: "Functions to generate UUIDs (e.g. uuid_generate_v4()).",
+    },
   ],
   redis: [
-    { id: "search", label: "RediSearch" },
-    { id: "json", label: "RedisJSON" },
-    { id: "bloom", label: "RedisBloom" },
+    {
+      id: "search",
+      label: "RediSearch",
+      hint: "Full-text search and secondary indexing for Redis.",
+    },
+    {
+      id: "json",
+      label: "RedisJSON",
+      hint: "Native JSON document storage and querying.",
+    },
+    {
+      id: "bloom",
+      label: "RedisBloom",
+      hint: "Probabilistic data structures (Bloom/Cuckoo filters, HyperLogLog).",
+    },
   ],
+};
+
+const SANDBOX_SERVICE_HINTS: Record<string, string> = {
+  postgres:
+    "Ephemeral PostgreSQL container for this project's agent spawns — random creds, tmpfs storage, torn down at end of engagement.",
+  redis:
+    "Ephemeral Redis container for this project's agent spawns — random creds, tmpfs storage, torn down at end of engagement.",
+  mongo:
+    "Ephemeral MongoDB container for this project's agent spawns — random creds, tmpfs storage, torn down at end of engagement.",
 };
 
 interface EditProjectDialogProps {
@@ -260,31 +305,35 @@ function EditProjectForm({
         {/* Git Token Section */}
         <div className="grid gap-2 p-3 border rounded-lg bg-muted/30">
           <div className="flex items-center justify-between">
-            <Label className="flex items-center gap-2">
-              {project.has_git_token ? (
-                <>
-                  <Key className="h-4 w-4 text-green-500" />
-                  <span className="text-green-600 dark:text-green-400">
-                    Token is set
-                  </span>
-                </>
-              ) : (
-                <>
-                  <KeyRound className="h-4 w-4 text-amber-500" />
-                  <span className="text-amber-600 dark:text-amber-400">
-                    No token configured
-                  </span>
-                </>
-              )}
-            </Label>
+            <HelpTip label="Stored encrypted (Fernet) and never re-displayed once saved — required for HTTPS clone/push/PR operations.">
+              <Label className="flex items-center gap-2">
+                {project.has_git_token ? (
+                  <>
+                    <Key className="h-4 w-4 text-green-500" />
+                    <span className="text-green-600 dark:text-green-400">
+                      Token is set
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <KeyRound className="h-4 w-4 text-amber-500" />
+                    <span className="text-amber-600 dark:text-amber-400">
+                      No token configured
+                    </span>
+                  </>
+                )}
+              </Label>
+            </HelpTip>
             {project.has_git_token && (
               <div className="flex items-center gap-2">
-                <Label
-                  htmlFor="clear-token"
-                  className="text-xs text-muted-foreground"
-                >
-                  Clear token
-                </Label>
+                <HelpTip label="Clears the stored token when you save. Leave off to keep the current token, or enter a replacement below.">
+                  <Label
+                    htmlFor="clear-token"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Clear token
+                  </Label>
+                </HelpTip>
                 <Switch
                   id="clear-token"
                   checked={clearToken}
@@ -359,7 +408,9 @@ function EditProjectForm({
 
         {/* Active Status */}
         <div className="flex items-center justify-between">
-          <Label htmlFor="is_active">Active</Label>
+          <HelpTip label="Inactive projects are hidden from the default project list (toggle 'Show Inactive' to see them) and are skipped as the fallback project for idle-agent spawns.">
+            <Label htmlFor="is_active">Active</Label>
+          </HelpTip>
           <Switch
             id="is_active"
             checked={isActive}
@@ -458,9 +509,11 @@ function EditProjectForm({
         {showAutonomy && (
           <>
             <div className="flex items-center justify-between">
-              <Label htmlFor="ci_watch_enabled">
-                CI-watch (open a fix task when CI goes red)
-              </Label>
+              <HelpTip label="Opens a fix task automatically when this repo's default-branch CI goes red. Also requires the CI-watch engine armed fleet-wide (ROBOCO_CI_WATCH_ENABLED) to actually run.">
+                <Label htmlFor="ci_watch_enabled">
+                  CI-watch (open a fix task when CI goes red)
+                </Label>
+              </HelpTip>
               <Switch
                 id="ci_watch_enabled"
                 checked={ciWatchEnabled}
@@ -483,9 +536,11 @@ function EditProjectForm({
             </div>
 
             <div className="flex items-center justify-between">
-              <Label htmlFor="video_engine_enabled">
-                Video engine (author marketing videos into this project)
-              </Label>
+              <HelpTip label="Opts this repo into authoring motion-graphics videos under motion/. Also requires the video engine armed fleet-wide (ROBOCO_VIDEO_ENGINE_ENABLED) to render/post.">
+                <Label htmlFor="video_engine_enabled">
+                  Video engine (author marketing videos into this project)
+                </Label>
+              </HelpTip>
               <Switch
                 id="video_engine_enabled"
                 checked={videoEngineEnabled}
@@ -526,15 +581,19 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label>Sandbox Services</Label>
+              <HelpTip label="Requires the sandbox engine armed fleet-wide (ROBOCO_SANDBOX_DB_ENABLED); agents call request_sandbox() on-demand rather than getting creds at spawn.">
+                <Label>Sandbox Services</Label>
+              </HelpTip>
               {SANDBOX_SERVICES.map((svc) => (
                 <div key={svc.id} className="flex items-center justify-between">
-                  <Label
-                    htmlFor={`sandbox_${svc.id}`}
-                    className="text-sm font-normal"
-                  >
-                    {svc.label}
-                  </Label>
+                  <HelpTip label={SANDBOX_SERVICE_HINTS[svc.id]}>
+                    <Label
+                      htmlFor={`sandbox_${svc.id}`}
+                      className="text-sm font-normal"
+                    >
+                      {svc.label}
+                    </Label>
+                  </HelpTip>
                   <Switch
                     id={`sandbox_${svc.id}`}
                     checked={sandboxSet.has(svc.id)}
@@ -565,12 +624,14 @@ function EditProjectForm({
                     key={ext.id}
                     className="flex items-center justify-between"
                   >
-                    <Label
-                      htmlFor={`ext_${svc.id}_${ext.id}`}
-                      className="text-sm font-normal"
-                    >
-                      {ext.label}
-                    </Label>
+                    <HelpTip label={ext.hint}>
+                      <Label
+                        htmlFor={`ext_${svc.id}_${ext.id}`}
+                        className="text-sm font-normal"
+                      >
+                        {ext.label}
+                      </Label>
+                    </HelpTip>
                     <Switch
                       id={`ext_${svc.id}_${ext.id}`}
                       checked={sandboxExtensions[svc.id]?.has(ext.id) ?? false}

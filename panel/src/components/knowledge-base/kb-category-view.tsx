@@ -6,6 +6,7 @@ import { useKBDocuments } from "@/hooks/use-knowledge-base";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { KBIndexTypeBadge } from "./kb-index-type-badge";
 import {
   FileCode,
@@ -80,7 +81,11 @@ function KBCategoryViewInner({ category }: { category: KBIndexType }) {
                     <div className="flex items-center gap-2 mb-1">
                       <KBIndexTypeBadge indexType={category} />
                     </div>
-                    <p className="text-sm font-mono truncate">{doc.source}</p>
+                    <HelpTip label={doc.source}>
+                      <p className="text-sm font-mono truncate">
+                        {doc.source}
+                      </p>
+                    </HelpTip>
                     <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
                       <span>

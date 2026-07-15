@@ -37,6 +37,16 @@ describe("TelegramCredentialsForm", () => {
     ).toBeInTheDocument();
   });
 
+  it("tooltip-wraps each field label with the write-only storage note", async () => {
+    render(withQueryClient(<TelegramCredentialsForm />));
+    await screen.findByText("No credentials configured");
+    expect(
+      screen
+        .getByText("Bot token (from @BotFather)")
+        .getAttribute("data-state"),
+    ).toBe("closed");
+  });
+
   it("disables Save until both fields are filled", async () => {
     render(withQueryClient(<TelegramCredentialsForm />));
     await screen.findByText("No credentials configured");

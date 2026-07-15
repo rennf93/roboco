@@ -63,6 +63,7 @@ import { RAGAnswerDisplay } from "./rag-answer-display";
 import { MentorChat } from "./mentor-chat";
 import { KBCategoryNav } from "./kb-category-nav";
 import { KBCategoryView } from "./kb-category-view";
+import { getIndexTypeDescription } from "./kb-index-type-badge";
 
 const TAB_VALUES = ["search", "ask", "mentor", "browse", "admin"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
@@ -541,10 +542,14 @@ function KnowledgeBaseBrowserContent() {
                       <p className="text-2xl font-bold">{totalDocs}</p>
                       <p className="text-xs text-muted-foreground">Documents</p>
                     </div>
-                    <div>
-                      <p className="text-2xl font-bold">{totalChunks}</p>
-                      <p className="text-xs text-muted-foreground">Chunks</p>
-                    </div>
+                    <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
+                      <div className="w-fit">
+                        <p className="text-2xl font-bold">{totalChunks}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Chunks
+                        </p>
+                      </div>
+                    </HelpTip>
                   </div>
                 </CardContent>
               </Card>
@@ -589,9 +594,16 @@ function KnowledgeBaseBrowserContent() {
                                   <span className="font-medium">
                                     {INDEX_LABELS[indexType]}
                                   </span>
-                                  <Badge variant="outline" className="text-xs">
-                                    {indexType}
-                                  </Badge>
+                                  <HelpTip
+                                    label={getIndexTypeDescription(indexType)}
+                                  >
+                                    <Badge
+                                      variant="outline"
+                                      className="text-xs w-fit"
+                                    >
+                                      {indexType}
+                                    </Badge>
+                                  </HelpTip>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <HelpTip label="Refresh this index">
@@ -602,6 +614,7 @@ function KnowledgeBaseBrowserContent() {
                                         handleRefreshIndex(indexType)
                                       }
                                       disabled={refreshIndex.isPending}
+                                      aria-label={`Refresh ${INDEX_LABELS[indexType]} index`}
                                     >
                                       {refreshIndex.isPending ? (
                                         <RefreshCw className="h-3 w-3 animate-spin" />
@@ -617,6 +630,7 @@ function KnowledgeBaseBrowserContent() {
                                           size="sm"
                                           variant="outline"
                                           className="text-red-600"
+                                          aria-label={`Delete ${INDEX_LABELS[indexType]} index`}
                                         >
                                           <Trash2 className="h-3 w-3" />
                                         </Button>
@@ -661,14 +675,16 @@ function KnowledgeBaseBrowserContent() {
                                     {index.document_count}
                                   </span>
                                 </div>
-                                <div>
-                                  <span className="text-muted-foreground">
-                                    Chunks:
-                                  </span>{" "}
-                                  <span className="font-medium">
-                                    {index.chunk_count}
-                                  </span>
-                                </div>
+                                <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
+                                  <div className="w-fit">
+                                    <span className="text-muted-foreground">
+                                      Chunks:
+                                    </span>{" "}
+                                    <span className="font-medium">
+                                      {index.chunk_count}
+                                    </span>
+                                  </div>
+                                </HelpTip>
                                 <div>
                                   <span className="text-muted-foreground">
                                     Updated:

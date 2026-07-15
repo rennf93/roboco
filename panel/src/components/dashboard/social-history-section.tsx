@@ -19,6 +19,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   AtSign,
   ChevronDown,
@@ -30,16 +31,31 @@ import {
 
 const HISTORY_LIMIT = 50;
 const PLATFORM_LABELS: Record<string, string> = { x: "X", tiktok: "TikTok" };
+const VIDEO_HINT =
+  "Rendered by the video pipeline — from a release, a feature spotlight, or an on-demand request";
 
 type UnifiedRow =
   | { kind: "x"; entry: XPostHistoryEntry }
   | { kind: "video"; entry: VideoPostHistoryEntry };
 
 function xKindMeta(source: XPostHistoryEntry["source"]) {
-  if (source === "x_post") return { label: "X post", icon: Rocket };
+  if (source === "x_post")
+    return {
+      label: "X post",
+      icon: Rocket,
+      hint: "Drafted automatically when a release publishes",
+    };
   if (source === "x_feature")
-    return { label: "Feature spotlight", icon: Sparkles };
-  return { label: "X reply", icon: AtSign };
+    return {
+      label: "Feature spotlight",
+      icon: Sparkles,
+      hint: "Drafted periodically by the Head of Marketing's feature-spotlight sweep",
+    };
+  return {
+    label: "X reply",
+    icon: AtSign,
+    hint: "Drafted automatically in reply to a meaningful mention on X",
+  };
 }
 
 // One unified row: X entries link the posted tweet / show the reject reason;
@@ -48,9 +64,13 @@ function xKindMeta(source: XPostHistoryEntry["source"]) {
 function UnifiedHistoryRow({ row }: { row: UnifiedRow }) {
   const posted = row.entry.status === "completed";
   const statusBadge = posted ? (
-    <Badge className="bg-green-600 hover:bg-green-600">Posted</Badge>
+    <HelpTip label="Approved and successfully posted">
+      <Badge className="bg-green-600 hover:bg-green-600">Posted</Badge>
+    </HelpTip>
   ) : (
-    <Badge variant="destructive">Rejected</Badge>
+    <HelpTip label="Rejected — this draft was never posted">
+      <Badge variant="destructive">Rejected</Badge>
+    </HelpTip>
   );
   const timestamp = (
     <span className="ml-auto text-xs text-muted-foreground">
@@ -63,8 +83,12 @@ function UnifiedHistoryRow({ row }: { row: UnifiedRow }) {
     return (
       <div className="rounded-lg border p-3 text-sm">
         <div className="mb-1 flex flex-wrap items-center gap-2">
-          <meta.icon className="h-4 w-4 text-muted-foreground" />
-          <span className="font-medium">{meta.label}</span>
+          <HelpTip label={meta.hint}>
+            <span className="inline-flex items-center gap-1.5">
+              <meta.icon className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">{meta.label}</span>
+            </span>
+          </HelpTip>
           {statusBadge}
           {timestamp}
         </div>
@@ -92,10 +116,16 @@ function UnifiedHistoryRow({ row }: { row: UnifiedRow }) {
   return (
     <div className="rounded-lg border p-3 text-sm">
       <div className="mb-1 flex flex-wrap items-center gap-2">
-        <Film className="h-4 w-4 text-muted-foreground" />
-        <span className="font-medium">Video</span>
+        <HelpTip label={VIDEO_HINT}>
+          <span className="inline-flex items-center gap-1.5">
+            <Film className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">Video</span>
+          </span>
+        </HelpTip>
         {row.entry.occasion && (
-          <Badge variant="outline">{row.entry.occasion}</Badge>
+          <HelpTip label="The occasion/event this video was drafted for">
+            <Badge variant="outline">{row.entry.occasion}</Badge>
+          </HelpTip>
         )}
         {statusBadge}
         {timestamp}

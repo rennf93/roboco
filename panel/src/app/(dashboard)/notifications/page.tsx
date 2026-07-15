@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
+import { HelpTip } from "@/components/ui/help-tip";
 import { usePageRefresh } from "@/hooks";
 import {
   Bell,
@@ -64,6 +65,21 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
   [NotificationType.MENTION]: <AtSign className="h-4 w-4 text-indigo-500" />,
 };
 
+// The type icon is the only place a notification's category is conveyed —
+// subject/body/priority don't repeat it, so it needs a decode on hover.
+const typeLabels: Record<NotificationType, string> = {
+  [NotificationType.TASK_ASSIGNMENT]: "Task assignment",
+  [NotificationType.PRIORITY_CHANGE]: "Priority change",
+  [NotificationType.BLOCKER_ESCALATION]: "Blocker escalation",
+  [NotificationType.REVIEW_REQUEST]: "Review request",
+  [NotificationType.DOCUMENTATION_REQUEST]: "Documentation request",
+  [NotificationType.APPROVAL]: "Approval request",
+  [NotificationType.ALERT]: "Alert",
+  [NotificationType.BROADCAST]: "Broadcast",
+  [NotificationType.KNOWLEDGE_SHARE]: "Knowledge share",
+  [NotificationType.MENTION]: "Mention",
+};
+
 const priorityColors: Record<NotificationPriority, string> = {
   [NotificationPriority.NORMAL]:
     "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
@@ -92,7 +108,9 @@ function NotificationCard({
     >
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
-          <div className="mt-1">{typeIcons[notification.type]}</div>
+          <HelpTip label={typeLabels[notification.type]}>
+            <div className="mt-1">{typeIcons[notification.type]}</div>
+          </HelpTip>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium">{notification.subject}</span>
@@ -116,12 +134,14 @@ function NotificationCard({
                   href={`/tasks/${notification.related_task_id}`}
                   prefetch={false}
                 >
-                  <Badge
-                    variant="outline"
-                    className="text-xs hover:bg-muted cursor-pointer"
-                  >
-                    Task #{notification.related_task_id.slice(0, 8)}
-                  </Badge>
+                  <HelpTip label={notification.related_task_id}>
+                    <Badge
+                      variant="outline"
+                      className="text-xs hover:bg-muted cursor-pointer"
+                    >
+                      Task #{notification.related_task_id.slice(0, 8)}
+                    </Badge>
+                  </HelpTip>
                 </Link>
               )}
             </div>
@@ -130,8 +150,11 @@ function NotificationCard({
             </div>
             <div className="flex items-center justify-between mt-3">
               <div className="text-xs text-muted-foreground">
-                From: {notification.from_agent.slice(0, 8)} •{" "}
-                {formatDistanceToNow(new Date(notification.timestamp))} ago
+                From:{" "}
+                <HelpTip label={notification.from_agent}>
+                  <span>{notification.from_agent.slice(0, 8)}</span>
+                </HelpTip>{" "}
+                • {formatDistanceToNow(new Date(notification.timestamp))} ago
               </div>
               <div className="flex items-center gap-2">
                 {!notification.is_read && (
@@ -254,9 +277,11 @@ function NotificationsPageContent() {
         <div className="grid grid-cols-3 gap-2 sm:gap-4">
           <Card className="py-4 sm:py-6">
             <CardHeader className="px-3 pb-2 sm:px-6">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Total
-              </CardTitle>
+              <HelpTip label="Scoped to the active tab's filter, not the full mailbox">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  Total
+                </CardTitle>
+              </HelpTip>
             </CardHeader>
             <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold">{data.total}</div>
@@ -264,10 +289,12 @@ function NotificationsPageContent() {
           </Card>
           <Card className="py-4 sm:py-6">
             <CardHeader className="px-3 pb-2 sm:px-6">
-              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-                <Mail className="h-4 w-4" />
-                Unread
-              </CardTitle>
+              <HelpTip label="Unread count within the active tab's filter">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+                  <Mail className="h-4 w-4" />
+                  Unread
+                </CardTitle>
+              </HelpTip>
             </CardHeader>
             <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold text-blue-600">
@@ -277,10 +304,12 @@ function NotificationsPageContent() {
           </Card>
           <Card className="py-4 sm:py-6">
             <CardHeader className="px-3 pb-2 sm:px-6">
-              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-                <Bell className="h-4 w-4" />
-                Pending Ack
-              </CardTitle>
+              <HelpTip label="Awaiting acknowledgement within the active tab's filter — switch to All to see the full count">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+                  <Bell className="h-4 w-4" />
+                  Pending Ack
+                </CardTitle>
+              </HelpTip>
             </CardHeader>
             <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold text-red-600">

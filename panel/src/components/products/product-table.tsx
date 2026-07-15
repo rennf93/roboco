@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Boxes, Pencil } from "lucide-react";
 import type { ProductSummary, Team } from "@/types";
 import { EditProductDialog } from "./edit-product-dialog";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const TEAM_LABELS: Record<Team, string> = {
   board: "Board",
@@ -41,21 +42,23 @@ function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
     return <span className="text-muted-foreground text-sm">Unmapped</span>;
   }
   return (
-    <div className="flex flex-col gap-1">
-      {cells.map((c) => (
-        <div key={`${c.team}-${c.project_id}`} className="flex items-center gap-2">
-          <Badge
-            variant="outline"
-            className="bg-blue-500/10 text-blue-500 text-xs"
-          >
-            {TEAM_LABELS[c.team] ?? c.team}
-          </Badge>
-          <span className="text-muted-foreground text-xs truncate">
-            {c.project_name || "—"}
-          </span>
-        </div>
-      ))}
-    </div>
+    <HelpTip label="Each cell (Backend/Frontend/UX-UI) works on the project listed beside it. A cell with no project mapped here does no work for this product.">
+      <div className="flex flex-col gap-1">
+        {cells.map((c) => (
+          <div key={`${c.team}-${c.project_id}`} className="flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className="bg-blue-500/10 text-blue-500 text-xs"
+            >
+              {TEAM_LABELS[c.team] ?? c.team}
+            </Badge>
+            <span className="text-muted-foreground text-xs truncate">
+              {c.project_name || "—"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </HelpTip>
   );
 }
 
@@ -66,15 +69,21 @@ function ProgressCell({
 }) {
   const { done, active, blocked } = progress;
   const atRisk = blocked > 0;
+  const dotHint = atRisk
+    ? "At risk — this product's mapped projects have blocked tasks needing attention."
+    : done > 0
+      ? "Healthy — tasks are completing with none currently blocked."
+      : "No completed or blocked tasks yet.";
   return (
     <div className="flex items-center gap-2">
-      <span
-        className={
-          "h-2 w-2 rounded-full " +
-          (atRisk ? "bg-amber-500" : done > 0 ? "bg-emerald-500" : "bg-muted")
-        }
-        title={atRisk ? "At risk: blocked tasks" : "Healthy"}
-      />
+      <HelpTip label={dotHint}>
+        <span
+          className={
+            "h-2 w-2 rounded-full inline-block " +
+            (atRisk ? "bg-amber-500" : done > 0 ? "bg-emerald-500" : "bg-muted")
+          }
+        />
+      </HelpTip>
       <div className="flex items-center gap-2 text-xs">
         <span className="text-emerald-600 dark:text-emerald-400">{done} done</span>
         <span className="text-muted-foreground">{active} active</span>
@@ -148,14 +157,16 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setEditingProductId(product.id)}
-                          title="Edit product"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
+                        <HelpTip label="Edit product name, description, and cell-project mapping">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setEditingProductId(product.id)}
+                            aria-label="Edit product"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </HelpTip>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -181,15 +192,17 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                       {product.slug}
                     </p>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="shrink-0"
-                    onClick={() => setEditingProductId(product.id)}
-                    title="Edit product"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
+                  <HelpTip label="Edit product name, description, and cell-project mapping">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="shrink-0"
+                      onClick={() => setEditingProductId(product.id)}
+                      aria-label="Edit product"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </HelpTip>
                 </div>
                 <div className="mt-3 divide-y">
                   <ResponsiveTableCardRow label="Cells">

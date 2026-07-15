@@ -3,6 +3,11 @@
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GoalsTab } from "@/components/business/goals-tab";
 import { CompanyScorecardCard } from "@/components/business/company-scorecard-card";
@@ -13,7 +18,36 @@ import { PitchesTab } from "@/components/business/pitches-tab";
 // Valid tab values
 // ---------------------------------------------------------------------------
 
-const TAB_VALUES = ["goals", "scorecard", "secretary", "pitches"] as const;
+interface TabDef {
+  value: "goals" | "scorecard" | "secretary" | "pitches";
+  label: string;
+  hint: string;
+}
+
+const TAB_DEFS: TabDef[] = [
+  {
+    value: "goals",
+    label: "Goals",
+    hint: "CEO-owned charter — north star, brand voice, objectives, constraints",
+  },
+  {
+    value: "scorecard",
+    label: "Scorecard",
+    hint: "Live delivery, spend, and speed metrics against the charter",
+  },
+  {
+    value: "secretary",
+    label: "Secretary",
+    hint: "Chat with your chief-of-staff and confirm or reject pending directives",
+  },
+  {
+    value: "pitches",
+    label: "Pitches",
+    hint: "Board-authored product pitches awaiting your decision",
+  },
+];
+
+const TAB_VALUES = TAB_DEFS.map((t) => t.value);
 type TabValue = (typeof TAB_VALUES)[number];
 
 function isValidTab(value: string | null): value is TabValue {
@@ -50,10 +84,23 @@ function BusinessPageContent() {
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
-          <TabsTrigger value="goals">Goals</TabsTrigger>
-          <TabsTrigger value="scorecard">Scorecard</TabsTrigger>
-          <TabsTrigger value="secretary">Secretary</TabsTrigger>
-          <TabsTrigger value="pitches">Pitches</TabsTrigger>
+          {TAB_DEFS.map((tab) => (
+            <Tooltip key={tab.value}>
+              <TooltipTrigger asChild>
+                {/* TooltipTrigger's asChild Slot merge clobbers TabsTrigger's
+                    own data-state; re-assert the real selection state
+                    explicitly (see task-detail/task-tabs.tsx) so the
+                    data-[state=active] styling still fires. */}
+                <TabsTrigger
+                  value={tab.value}
+                  data-state={tab.value === activeTab ? "active" : "inactive"}
+                >
+                  {tab.label}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{tab.hint}</TooltipContent>
+            </Tooltip>
+          ))}
         </TabsList>
 
         <TabsContent value="goals" className="mt-4">

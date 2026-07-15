@@ -79,12 +79,26 @@ export function KBSearchBar({
         )}
       </div>
       {onSearch && (
-        <Button
-          onClick={onSearch}
-          disabled={!localValue || localValue.length < 3 || isLoading}
+        <HelpTip
+          label={
+            isLoading
+              ? "Searching…"
+              : !localValue || localValue.length < 3
+                ? "Enter at least 3 characters to search"
+                : null
+          }
         >
-          {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
-        </Button>
+          <Button
+            onClick={onSearch}
+            disabled={!localValue || localValue.length < 3 || isLoading}
+          >
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              "Search"
+            )}
+          </Button>
+        </HelpTip>
       )}
     </div>
   );

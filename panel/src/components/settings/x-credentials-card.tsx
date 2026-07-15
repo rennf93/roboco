@@ -6,6 +6,7 @@ import { xApi } from "@/lib/api";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -104,9 +105,13 @@ export function XCredentialsForm() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {FIELDS.map((field) => (
           <div key={field.key} className="space-y-2">
-            <Label htmlFor={`x-cred-${field.key}`}>
-              {status?.has_credentials ? `Replace ${field.label}` : field.label}
-            </Label>
+            <HelpTip label="Stored encrypted server-side; never displayed again once saved.">
+              <Label htmlFor={`x-cred-${field.key}`}>
+                {status?.has_credentials
+                  ? `Replace ${field.label}`
+                  : field.label}
+              </Label>
+            </HelpTip>
             <Input
               id={`x-cred-${field.key}`}
               type="password"

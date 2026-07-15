@@ -80,6 +80,7 @@ export function EnvironmentLadderEditor({
                         className="h-6 w-6"
                         disabled={isFirst}
                         onClick={() => handleMove(index, -1)}
+                        aria-label="Move rung up, toward head"
                       >
                         <ArrowUp className="h-3.5 w-3.5" />
                       </Button>
@@ -95,6 +96,7 @@ export function EnvironmentLadderEditor({
                         className="h-6 w-6"
                         disabled={isLast}
                         onClick={() => handleMove(index, 1)}
+                        aria-label="Move rung down, toward prod"
                       >
                         <ArrowDown className="h-3.5 w-3.5" />
                       </Button>
@@ -125,6 +127,7 @@ export function EnvironmentLadderEditor({
                       size="icon"
                       className="h-8 w-8 shrink-0"
                       onClick={() => handleRemove(index)}
+                      aria-label="Remove this rung"
                     >
                       <X className="h-4 w-4" />
                     </Button>

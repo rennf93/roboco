@@ -37,6 +37,15 @@ describe("XCredentialsForm", () => {
     ).toBeInTheDocument();
   });
 
+  it("tooltip-wraps each field label with the write-only storage note", async () => {
+    render(withQueryClient(<XCredentialsForm />));
+    await screen.findByText("No credentials configured");
+    // TooltipTrigger always stamps data-state onto its asChild target.
+    expect(screen.getByText("API key").getAttribute("data-state")).toBe(
+      "closed",
+    );
+  });
+
   it("disables Save until all 4 fields are filled", async () => {
     render(withQueryClient(<XCredentialsForm />));
     await screen.findByText("No credentials configured");

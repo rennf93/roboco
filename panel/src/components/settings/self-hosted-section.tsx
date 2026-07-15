@@ -160,7 +160,9 @@ export function SelfHostedSection({
 
       {/* Base URL input */}
       <div className="space-y-1">
-        <Label className="text-xs text-muted-foreground">Base URL</Label>
+        <HelpTip label="Any OpenAI-compatible endpoint — e.g. Ollama, vLLM, LM Studio.">
+          <Label className="text-xs text-muted-foreground">Base URL</Label>
+        </HelpTip>
         <div className="flex gap-2">
           <Input
             type="text"
@@ -178,10 +180,12 @@ export function SelfHostedSection({
 
       {/* Auth token input with Eye toggle */}
       <div className="space-y-1">
-        <Label className="text-xs text-muted-foreground">
-          Auth token{" "}
-          <span className="text-muted-foreground/60">(optional)</span>
-        </Label>
+        <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+          <Label className="text-xs text-muted-foreground">
+            Auth token{" "}
+            <span className="text-muted-foreground/60">(optional)</span>
+          </Label>
+        </HelpTip>
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Input
@@ -320,7 +324,17 @@ export function SelfHostedSection({
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
               Last refreshed:{" "}
-              <span className="font-medium">{relativeTime(lastRefreshed)}</span>
+              <HelpTip
+                label={
+                  lastRefreshed
+                    ? new Date(lastRefreshed).toLocaleString()
+                    : undefined
+                }
+              >
+                <span className="font-medium">
+                  {relativeTime(lastRefreshed)}
+                </span>
+              </HelpTip>
             </p>
             <Button
               variant="ghost"
@@ -353,9 +367,11 @@ export function SelfHostedSection({
                     {m.model_name}
                   </span>
                 </div>
-                <Badge variant="secondary" className="text-xs">
-                  auto-discovered
-                </Badge>
+                <HelpTip label="Found by probing the endpoint's model list — not manually added.">
+                  <Badge variant="secondary" className="text-xs">
+                    auto-discovered
+                  </Badge>
+                </HelpTip>
               </div>
             ))}
           </div>

@@ -168,7 +168,9 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
   const moduleBoundaries = (
     <Card className="lg:flex lg:flex-col">
       <CardHeader>
-        <CardTitle className="text-sm">Module boundaries</CardTitle>
+        <HelpTip label="The effective map: auto-derived defaults from a scan of this repo, overlaid by any committed .roboco/conventions.yml. Editing here and saving writes it back as that committed file.">
+          <CardTitle className="text-sm w-fit">Module boundaries</CardTitle>
+        </HelpTip>
         <CardDescription>
           Which definition kinds are forbidden in each module. Click a kind to
           toggle it.
@@ -335,9 +337,17 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
                 placeholder="rule-id"
                 onChange={(e) => updateCustom(index, { id: e.target.value })}
               />
-              <span className="w-10 text-right text-xs text-muted-foreground">
-                {rule.level}
-              </span>
+              <HelpTip
+                label={
+                  rule.level === "block"
+                    ? "Block: a match refuses the conventions gate"
+                    : "Warn: a match is advisory only, never blocks the gate"
+                }
+              >
+                <span className="w-10 text-right text-xs text-muted-foreground">
+                  {rule.level}
+                </span>
+              </HelpTip>
               <Switch
                 checked={rule.level === "block"}
                 onCheckedChange={(checked) =>
@@ -462,23 +472,35 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
       {recentViolations}
 
       <div className="flex justify-between">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={restore.isPending}
-          onClick={() => restore.mutate()}
+        <HelpTip label={restore.isPending ? "Restoring…" : null}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={restore.isPending}
+            onClick={() => restore.mutate()}
+          >
+            Restore from last-good
+          </Button>
+        </HelpTip>
+        <HelpTip
+          label={
+            save.isPending
+              ? "Saving…"
+              : draft == null && !usingDefaults
+                ? "Edit a module, rule, waiver, or custom rule above to enable saving."
+                : null
+          }
         >
-          Restore from last-good
-        </Button>
-        <Button
-          size="sm"
-          disabled={(draft == null && !usingDefaults) || save.isPending}
-          onClick={() => save.mutate(draft ?? standard)}
-        >
-          {usingDefaults && draft == null
-            ? "Save defaults to repo"
-            : "Save to repo"}
-        </Button>
+          <Button
+            size="sm"
+            disabled={(draft == null && !usingDefaults) || save.isPending}
+            onClick={() => save.mutate(draft ?? standard)}
+          >
+            {usingDefaults && draft == null
+              ? "Save defaults to repo"
+              : "Save to repo"}
+          </Button>
+        </HelpTip>
       </div>
     </div>
   );

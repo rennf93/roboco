@@ -127,4 +127,31 @@ describe("FeatureFlagsCard — M42 off-transition confirm + pending-keys Set", (
     resolveQueue.current.shift()?.(undefined);
     await waitFor(() => expect(beta).not.toBeDisabled());
   });
+
+  // W9-5 follow-up: every real flag key gets a one-line hover tip on its
+  // label (FLAG_TOOLTIPS in feature-flags-card.tsx); an unmapped key (the
+  // "alpha"/"beta" fixtures above) renders bare per HelpTip's falsy short-
+  // circuit. TooltipTrigger always stamps data-state ("closed" while
+  // unopened) onto its asChild target, so its presence/absence is a reliable
+  // proxy for "is this label tooltip-wrapped" without simulating hover.
+  it("attaches the mapped tooltip to a real flag key and leaves unmapped keys bare", async () => {
+    getFeatureFlags.mockResolvedValueOnce({
+      flags: [
+        { key: "alpha", label: "Alpha", enabled: true },
+        {
+          key: "external_pr_enabled",
+          label: "External PR Review",
+          enabled: true,
+        },
+      ],
+      note: "Changes take effect on the next backend restart.",
+    });
+    render(withQueryClient(<FeatureFlagsCard />));
+
+    const mapped = await screen.findByText("External PR Review");
+    expect(mapped.getAttribute("data-state")).toBe("closed");
+
+    const unmapped = screen.getByText("Alpha");
+    expect(unmapped.getAttribute("data-state")).toBeNull();
+  });
 });

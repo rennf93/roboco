@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { KBSearchResult } from "@/types";
 import { KBIndexTypeBadge } from "./kb-index-type-badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ExternalLink, FileCode, Hash } from "lucide-react";
 
 interface KBResultCardProps {
@@ -47,19 +48,23 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
             {/* Header */}
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <KBIndexTypeBadge indexType={result.index_type} />
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <Hash className="h-3 w-3" />
-                {scorePercent}% match
-              </span>
+              <HelpTip label="Relevance: how closely this chunk's embedding matches your search query">
+                <span className="text-xs text-muted-foreground flex items-center gap-1 w-fit">
+                  <Hash className="h-3 w-3" />
+                  {scorePercent}% match
+                </span>
+              </HelpTip>
             </div>
 
             {/* Source */}
-            <div className="flex items-center gap-1 text-sm text-muted-foreground mb-2">
-              <FileCode className="h-3 w-3 shrink-0" />
-              <span className="truncate font-mono text-xs">
-                {formatSource(result.source)}
-              </span>
-            </div>
+            <HelpTip label={result.source}>
+              <div className="flex items-center gap-1 text-sm text-muted-foreground mb-2 w-fit max-w-full">
+                <FileCode className="h-3 w-3 shrink-0" />
+                <span className="truncate font-mono text-xs">
+                  {formatSource(result.source)}
+                </span>
+              </div>
+            </HelpTip>
 
             {/* Content snippet */}
             <p className="text-sm text-foreground/90 whitespace-pre-wrap line-clamp-4">
@@ -89,7 +94,9 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
           </div>
 
           {onClick && (
-            <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+            <HelpTip label="Open full document">
+              <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+            </HelpTip>
           )}
         </div>
       </CardContent>

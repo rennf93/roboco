@@ -116,4 +116,29 @@ describe("SettingsPage — client-only prefs (store-driven, no server round trip
     fireEvent.click(soundSwitch);
     expect(mockStore.setSoundEnabled).not.toHaveBeenCalled();
   });
+
+  // W9-5 follow-up: the disabled Refresh Interval / Sound Alerts controls
+  // now carry a tooltip on their label explaining why — but only while
+  // actually disabled. TooltipTrigger always stamps data-state onto its
+  // asChild target, so its presence/absence proxies "is this label
+  // tooltip-wrapped" without simulating hover.
+  it("Refresh Interval and Sound Alerts labels carry a disabled-reason tooltip only while disabled", () => {
+    const { rerender } = render(<SettingsPage />); // autoRefresh: false, notificationsEnabled: true (reset default)
+    expect(
+      screen.getByText("Refresh Interval").getAttribute("data-state"),
+    ).toBe("closed");
+    expect(screen.getByText("Sound Alerts").getAttribute("data-state")).toBe(
+      null,
+    );
+
+    mockStore.autoRefresh = true;
+    mockStore.notificationsEnabled = false;
+    rerender(<SettingsPage />);
+    expect(
+      screen.getByText("Refresh Interval").getAttribute("data-state"),
+    ).toBe(null);
+    expect(screen.getByText("Sound Alerts").getAttribute("data-state")).toBe(
+      "closed",
+    );
+  });
 });

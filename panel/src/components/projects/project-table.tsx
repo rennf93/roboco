@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink, Pencil, GitBranch, Key, KeyRound, Radar } from "lucide-react";
 import type { ProjectSummary, ProjectTaskCounts, Team } from "@/types";
 import { EditProjectDialog } from "./edit-project-dialog";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ProjectTableProps {
   projects: ProjectSummary[] | undefined;
@@ -46,20 +47,36 @@ const teamColors: Record<Team, string> = {
 };
 
 function getTokenBadge(hasGitToken: boolean) {
-  if (hasGitToken) {
-    return (
-      <Badge className="bg-green-500/10 text-green-500">
-        <Key className="h-3 w-3 mr-1" />
-        Token Set
-      </Badge>
-    );
-  }
-  return (
+  const badge = hasGitToken ? (
+    <Badge className="bg-green-500/10 text-green-500">
+      <Key className="h-3 w-3 mr-1" />
+      Token Set
+    </Badge>
+  ) : (
     <Badge variant="outline" className="text-amber-500 border-amber-500/30">
       <KeyRound className="h-3 w-3 mr-1" />
       No Token
     </Badge>
   );
+  return (
+    <HelpTip label="A token is required for HTTPS clone, push, and PR operations; stored encrypted and never displayed once set.">
+      {badge}
+    </HelpTip>
+  );
+}
+
+function getStatusBadge(isActive: boolean) {
+  const badge = isActive ? (
+    <Badge className="bg-green-500/10 text-green-500">Active</Badge>
+  ) : (
+    <Badge variant="outline" className="text-muted-foreground">
+      Inactive
+    </Badge>
+  );
+  const hint = isActive
+    ? "Shown by default and eligible as the fallback project for idle-agent spawns."
+    : "Hidden from the default project list and skipped as the fallback project for idle-agent spawns; existing tasks are unaffected.";
+  return <HelpTip label={hint}>{badge}</HelpTip>;
 }
 
 function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
@@ -67,19 +84,25 @@ function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
     return <span className="text-muted-foreground text-xs">—</span>;
   }
   const atRisk = counts.blocked > 0;
+  const dotHint = atRisk
+    ? "At risk — this project has blocked tasks needing attention."
+    : counts.done > 0
+      ? "Healthy — tasks are completing with none currently blocked."
+      : "No completed or blocked tasks yet.";
   return (
     <div className="flex items-center gap-2">
-      <span
-        className={
-          "h-2 w-2 rounded-full " +
-          (atRisk
-            ? "bg-amber-500"
-            : counts.done > 0
-              ? "bg-emerald-500"
-              : "bg-muted")
-        }
-        title={atRisk ? "At risk: blocked tasks" : "Healthy"}
-      />
+      <HelpTip label={dotHint}>
+        <span
+          className={
+            "h-2 w-2 rounded-full inline-block " +
+            (atRisk
+              ? "bg-amber-500"
+              : counts.done > 0
+                ? "bg-emerald-500"
+                : "bg-muted")
+          }
+        />
+      </HelpTip>
       <div className="flex items-center gap-2 text-xs">
         <span className="text-emerald-600 dark:text-emerald-400">
           {counts.done} done
@@ -98,14 +121,15 @@ function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
 function CiWatchBadge({ enabled }: { enabled: boolean }) {
   if (!enabled) return null;
   return (
-    <Badge
-      variant="outline"
-      className="bg-sky-500/10 text-sky-500 border-sky-500/30"
-      title="CI-watch armed"
-    >
-      <Radar className="h-3 w-3 mr-1" />
-      CI-Watch
-    </Badge>
+    <HelpTip label="Opens a fix task automatically when this project's CI goes red on its default branch.">
+      <Badge
+        variant="outline"
+        className="bg-sky-500/10 text-sky-500 border-sky-500/30"
+      >
+        <Radar className="h-3 w-3 mr-1" />
+        CI-Watch
+      </Badge>
+    </HelpTip>
   );
 }
 
@@ -197,44 +221,35 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     <TableCell>
                       {getTokenBadge(project.has_git_token)}
                     </TableCell>
-                    <TableCell>
-                      {project.is_active ? (
-                        <Badge className="bg-green-500/10 text-green-500">
-                          Active
-                        </Badge>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-muted-foreground"
-                        >
-                          Inactive
-                        </Badge>
-                      )}
-                    </TableCell>
+                    <TableCell>{getStatusBadge(project.is_active)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setEditingProjectId(project.id)}
-                          title="Edit project"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          asChild
-                          title="View repository"
-                        >
-                          <a
-                            href={getExternalUrl(project)}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                        <HelpTip label="Edit project settings and CI/CD commands">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setEditingProjectId(project.id)}
+                            aria-label="Edit project"
                           >
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </HelpTip>
+                        <HelpTip label="Open the git repository in a new tab">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            asChild
+                            aria-label="View repository"
+                          >
+                            <a
+                              href={getExternalUrl(project)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </Button>
+                        </HelpTip>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -261,28 +276,32 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setEditingProjectId(project.id)}
-                      title="Edit project"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      asChild
-                      title="View repository"
-                    >
-                      <a
-                        href={getExternalUrl(project)}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                    <HelpTip label="Edit project settings and CI/CD commands">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setEditingProjectId(project.id)}
+                        aria-label="Edit project"
                       >
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
-                    </Button>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </HelpTip>
+                    <HelpTip label="Open the git repository in a new tab">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        asChild
+                        aria-label="View repository"
+                      >
+                        <a
+                          href={getExternalUrl(project)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </Button>
+                    </HelpTip>
                   </div>
                 </div>
                 <div className="mt-3 divide-y">
@@ -299,18 +318,7 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                   </ResponsiveTableCardRow>
                   <ResponsiveTableCardRow label="Status">
                     <div className="flex items-center gap-2">
-                      {project.is_active ? (
-                        <Badge className="bg-green-500/10 text-green-500">
-                          Active
-                        </Badge>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="text-muted-foreground"
-                        >
-                          Inactive
-                        </Badge>
-                      )}
+                      {getStatusBadge(project.is_active)}
                       {project.ci_watch_enabled && <CiWatchBadge enabled />}
                     </div>
                   </ResponsiveTableCardRow>

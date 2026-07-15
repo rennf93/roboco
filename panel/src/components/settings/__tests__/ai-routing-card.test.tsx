@@ -206,6 +206,27 @@ describe("AIRoutingCard", () => {
     ).toHaveLength(20);
   });
 
+  it("tooltip-wraps the Grok/Ollama key labels and status badges, not the raw Switch", async () => {
+    render(withQueryClient(<AIRoutingCard />));
+    await screen.findByText("Grok (xAI) API key");
+
+    // TooltipTrigger always stamps data-state onto its asChild target, so
+    // its presence is a reliable proxy for "this element is tooltip-wrapped"
+    // without simulating hover (Radix only portals content once open).
+    expect(
+      screen.getByText("Grok (xAI) API key").getAttribute("data-state"),
+    ).toBe("closed");
+    expect(
+      screen.getByText("Ollama Cloud API key").getAttribute("data-state"),
+    ).toBe("closed");
+
+    const notSetBadges = screen.getAllByText("not set");
+    expect(notSetBadges).toHaveLength(2);
+    for (const badge of notSetBadges) {
+      expect(badge.getAttribute("data-state")).toBe("closed");
+    }
+  });
+
   it("saving the mix with no picks shows an error and never calls applyMode", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Per-agent override (mix mode)");

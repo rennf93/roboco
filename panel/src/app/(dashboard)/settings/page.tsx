@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Settings, Palette, Bell, Server, User } from "lucide-react";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
@@ -75,9 +76,11 @@ export default function SettingsPage() {
                 <p className="text-sm text-muted-foreground">
                   Chief Executive Officer
                 </p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Agent ID: 00000000-0000-0000-0000-000000000001
-                </p>
+                <HelpTip label="The CEO's fixed agent id — used to attribute your notifications, notes, and approvals across the API.">
+                  <p className="text-xs text-muted-foreground mt-1 w-fit">
+                    Agent ID: 00000000-0000-0000-0000-000000000001
+                  </p>
+                </HelpTip>
               </div>
             </div>
           </CardContent>
@@ -97,7 +100,9 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <Label>Theme</Label>
+                <HelpTip label="Saved to this browser only — doesn't sync across devices.">
+                  <Label>Theme</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   Select your preferred color scheme
                 </p>
@@ -142,7 +147,9 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <Label>Auto Refresh</Label>
+                <HelpTip label="Also enables the Refresh Interval picker below.">
+                  <Label>Auto Refresh</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   Periodically re-fetch the current page&apos;s data
                 </p>
@@ -152,7 +159,15 @@ export default function SettingsPage() {
             <Separator />
             <div className="flex items-center justify-between">
               <div>
-                <Label>Refresh Interval</Label>
+                <HelpTip
+                  label={
+                    !autoRefresh
+                      ? "Disabled — turn on Auto Refresh above to pick an interval."
+                      : undefined
+                  }
+                >
+                  <Label>Refresh Interval</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   How often to fetch new data (seconds)
                 </p>
@@ -191,7 +206,9 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <Label>Enable Notifications</Label>
+                <HelpTip label="Also gates Sound Alerts below.">
+                  <Label>Enable Notifications</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   Toast + bell for incoming agent notifications
                 </p>
@@ -204,7 +221,15 @@ export default function SettingsPage() {
             <Separator />
             <div className="flex items-center justify-between">
               <div>
-                <Label>Sound Alerts</Label>
+                <HelpTip
+                  label={
+                    !notificationsEnabled
+                      ? "Disabled — turn on Enable Notifications above first."
+                      : undefined
+                  }
+                >
+                  <Label>Sound Alerts</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   Chime on new notifications
                 </p>
@@ -231,11 +256,15 @@ export default function SettingsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>API URL</Label>
+              <HelpTip label="Read-only — set via NEXT_PUBLIC_API_URL at build time.">
+                <Label>API URL</Label>
+              </HelpTip>
               <Input value={API_URL} readOnly className="bg-muted" />
             </div>
             <div className="space-y-2">
-              <Label>WebSocket URL</Label>
+              <HelpTip label="Read-only — set via NEXT_PUBLIC_WS_URL at build time.">
+                <Label>WebSocket URL</Label>
+              </HelpTip>
               <Input value={WS_URL} readOnly className="bg-muted" />
             </div>
             <p className="text-xs text-muted-foreground">

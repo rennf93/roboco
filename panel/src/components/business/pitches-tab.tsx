@@ -7,6 +7,7 @@ import { Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
 import { RequiredNotesDialog } from "@/components/ui/required-notes-dialog";
@@ -62,6 +63,12 @@ interface PitchCardProps {
   busy: boolean;
 }
 
+const PITCH_STATUS_HINTS: Record<string, string> = {
+  proposed: "Awaiting your approve/reject decision",
+  provisioned: "Approved — a product and workspace were auto-provisioned",
+  rejected: "Rejected — no product or workspace was created",
+};
+
 function PitchCard({ pitch, onApprove, onReject, busy }: PitchCardProps) {
   const [approveOpen, setApproveOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -73,9 +80,11 @@ function PitchCard({ pitch, onApprove, onReject, busy }: PitchCardProps) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg">{pitch.title}</CardTitle>
-            <Badge variant={proposed ? "default" : "secondary"}>
-              {pitch.status}
-            </Badge>
+            <HelpTip label={PITCH_STATUS_HINTS[pitch.status]}>
+              <Badge variant={proposed ? "default" : "secondary"}>
+                {pitch.status}
+              </Badge>
+            </HelpTip>
           </div>
           {pitch.target_cells.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">

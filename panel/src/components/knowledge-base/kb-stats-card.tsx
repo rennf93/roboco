@@ -2,6 +2,8 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
+import { getIndexTypeDescription } from "./kb-index-type-badge";
 import { KBStats, KBIndexType } from "@/types";
 import {
   Database,
@@ -111,10 +113,12 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
             key={idx.index_type}
             className="flex items-center justify-between text-sm"
           >
-            <div className="flex items-center gap-2">
-              {indexIcons[idx.index_type]}
-              <span>{indexLabels[idx.index_type]}</span>
-            </div>
+            <HelpTip label={getIndexTypeDescription(idx.index_type)}>
+              <div className="flex items-center gap-2 w-fit">
+                {indexIcons[idx.index_type]}
+                <span>{indexLabels[idx.index_type]}</span>
+              </div>
+            </HelpTip>
             <div className="text-right">
               <span className="font-medium">
                 {idx.document_count.toLocaleString()}
@@ -131,7 +135,9 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
             </span>
           </div>
           <div className="flex items-center justify-between text-xs text-muted-foreground mt-1">
-            <span>Chunks</span>
+            <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
+              <span className="w-fit">Chunks</span>
+            </HelpTip>
             <span>{stats.total_chunks.toLocaleString()}</span>
           </div>
         </div>

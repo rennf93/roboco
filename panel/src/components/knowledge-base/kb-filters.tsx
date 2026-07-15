@@ -3,6 +3,8 @@
 import { KBIndexType } from "@/types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
+import { getIndexTypeDescription } from "./kb-index-type-badge";
 import {
   FileText,
   MessageSquare,
@@ -107,8 +109,12 @@ export function KBFilters({ selectedTypes, onTypesChange }: KBFiltersProps) {
                 checked={isChecked}
                 onCheckedChange={() => toggleType(type)}
               />
-              {config.icon}
-              <span className="text-sm">{config.label}</span>
+              <HelpTip label={getIndexTypeDescription(type)}>
+                <span className="flex items-center gap-2 w-fit">
+                  {config.icon}
+                  <span className="text-sm">{config.label}</span>
+                </span>
+              </HelpTip>
             </label>
           );
         })}

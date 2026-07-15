@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { RAGCitation } from "@/types";
 import { KBIndexTypeBadge } from "./kb-index-type-badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Quote, Hash } from "lucide-react";
 
 interface RAGCitationCardProps {
@@ -43,14 +44,18 @@ export function RAGCitationCard({ citation, index }: RAGCitationCardProps) {
                 indexType={citation.index_type}
                 className="text-xs"
               />
-              <span className="text-xs text-muted-foreground flex items-center gap-0.5">
-                <Hash className="h-3 w-3" />
-                {scorePercent}%
-              </span>
+              <HelpTip label="Similarity score — how closely this chunk matches your query in the embedding search.">
+                <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+                  <Hash className="h-3 w-3" />
+                  {scorePercent}%
+                </span>
+              </HelpTip>
             </div>
-            <p className="text-xs text-muted-foreground font-mono truncate mb-1">
-              {formatSource(citation.source)}
-            </p>
+            <HelpTip label={citation.source}>
+              <p className="text-xs text-muted-foreground font-mono truncate mb-1">
+                {formatSource(citation.source)}
+              </p>
+            </HelpTip>
             <div className="flex items-start gap-1">
               <Quote className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
               <p className="text-sm text-foreground/80 line-clamp-3">

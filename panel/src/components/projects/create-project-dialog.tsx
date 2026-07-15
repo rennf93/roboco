@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import { Team, type ProjectCreate } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -182,7 +183,9 @@ export function CreateProjectDialog() {
             {/* Git Token */}
             <div className="grid gap-2">
               <Label htmlFor="git_token" className="flex items-center gap-1">
-                <Key className="h-3.5 w-3.5" />
+                <HelpTip label="Optional at creation — stored encrypted (Fernet) and never re-displayed once saved; add or replace it later from the project's edit settings.">
+                  <Key className="h-3.5 w-3.5" />
+                </HelpTip>
                 GitHub Token
               </Label>
               <Input

@@ -32,6 +32,7 @@ import {
 import { XCredentialsForm } from "@/components/settings/x-credentials-card";
 import { TikTokCredentialsForm } from "@/components/settings/tiktok-credentials-card";
 import { TelegramCredentialsForm } from "@/components/settings/telegram-credentials-card";
+import { HelpTip } from "@/components/ui/help-tip";
 import { cn } from "@/lib/utils";
 import { Flag, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -96,6 +97,69 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Index your own vault notes (default RoboCo/Notes/) into the knowledge base so the fleet can retrieve what you write — every note is screened for injection attempts before it's indexed. Needs the Obsidian vault projection on.",
   telegram_enabled:
     "Best-effort Telegram DMs to you alongside in-app notifications when a task is escalated for your approval or completes. Server-side fan-out — never blocks the in-app notification. Stays inert until you set bot-token + chat-id credentials in the Telegram card below.",
+};
+
+// Short hover tips for the label of each flag row — a terser companion to
+// FLAG_DESCRIPTIONS' always-visible paragraph above. Keyed by settings-key,
+// not label text, since label text alone is sometimes ambiguous.
+const FLAG_TOOLTIPS: Record<string, string> = {
+  external_pr_enabled:
+    "Reviews inbound external/fork pull requests before merge.",
+  internal_pr_enabled: "Safety-reviews internal PRs before merge.",
+  research_enabled: "Lets Board and PM agents research the web for planning.",
+  strategy_engine_enabled: "Runs the background company strategy engine.",
+  self_heal_enabled:
+    "Watches RoboCo's own CI and flags regressions; never auto-fixes.",
+  self_heal_originate_enabled:
+    "On a CI regression, opens a fix task held for CEO approval.",
+  provisioning_enabled: "Auto-provisions infra for approved Board pitches.",
+  toolchain_match_enabled:
+    "Matches an agent's runtime toolchain to its project.",
+  conventions_enabled: "Enforces each project's architectural placement rules.",
+  possibilities_matrix_enabled:
+    "Fast-paths work that's already been done elsewhere.",
+  rag_auto_update_enabled:
+    "Keeps the RAG knowledge index automatically refreshed.",
+  transcript_prune_enabled:
+    "Prunes old agent transcripts per the retention setting.",
+  gateway_health_enabled:
+    "Recycles an agent whose tool gateway is broken but alive.",
+  ci_watch_enabled:
+    "Watches opted-in projects' CI and opens a fix task on red builds.",
+  dep_update_enabled:
+    "Weekly checks for dependency upgrades and opens a task if one applies.",
+  env_sync_enabled: "Cascades prod branch changes down to dev branches.",
+  docs_sync_enabled:
+    "Opens a docs-update task when a release drifts from the docs.",
+  release_manager_enabled:
+    "Assembles a release proposal for CEO approval; never auto-publishes.",
+  org_memory_enabled:
+    "Captures task learnings and re-injects them into future briefings.",
+  sandbox_db_enabled:
+    "Gives agents on-demand disposable DB/Redis sandboxes for testing.",
+  routing_strict:
+    "Fails closed instead of silently falling back on a disabled provider.",
+  x_engine_enabled: "Drafts X posts for CEO review; nothing auto-posts.",
+  x_replies_enabled: "Drafts replies to X mentions (needs a paid X API tier).",
+  x_feature_spotlight_enabled:
+    "Periodically drafts a spotlight post for an under-publicized feature.",
+  video_engine_enabled:
+    "Authors and renders motion-graphics videos for social posts.",
+  video_on_release: "Drafts a video whenever a release publishes.",
+  video_on_spotlight:
+    "Drafts a video whenever a feature spotlight is drafted.",
+  roadmap_engine_enabled:
+    "Weekly has the Board draft a themed roadmap for CEO approval.",
+  fable_mode_enabled: "Adopts the Fable/Ponytail behavioral doctrine fleet-wide.",
+  obsidian_vault_enabled:
+    "Projects tasks/journals/A2A into a human-readable Obsidian vault.",
+  vault_intake_enabled:
+    "Turns #roboco-tagged vault notes into board-review drafts.",
+  vault_report_enabled:
+    "Writes a weekly org metrics report note into the vault.",
+  vault_kb_enabled:
+    "Embeds the CEO's own vault notes into RAG for agent retrieval.",
+  telegram_enabled: "Sends CEO notification DMs over Telegram.",
 };
 
 export function FeatureFlagsCard() {
@@ -185,7 +249,14 @@ export function FeatureFlagsCard() {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <Label htmlFor={`flag-${flag.key}`}>{flag.label}</Label>
+                    {/* HelpTip wraps the Label, not the Switch: Switch is a
+                        Radix stateful trigger whose internal render spreads
+                        props after its own literal data-state, so a
+                        TooltipTrigger asChild wrapping it would clobber the
+                        on/off data-state the Switch's own CSS depends on. */}
+                    <HelpTip label={FLAG_TOOLTIPS[flag.key]}>
+                      <Label htmlFor={`flag-${flag.key}`}>{flag.label}</Label>
+                    </HelpTip>
                     <p className="text-sm text-muted-foreground">
                       {FLAG_DESCRIPTIONS[flag.key] ?? ""}
                     </p>

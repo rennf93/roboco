@@ -48,6 +48,7 @@ import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { HelpTip } from "@/components/ui/help-tip";
 
 // Matches the roboco agents_config AGENT_ROLE_MAP / AGENT_TEAM_MAP.
 // Hard-coded so Mix mode shows a stable 18-row picker without an extra
@@ -353,17 +354,23 @@ export function AIRoutingCard() {
             {/* -------- Grok (xAI) key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium">
-                  Grok (xAI) API key
-                </Label>
+                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                  <Label className="text-sm font-medium">
+                    Grok (xAI) API key
+                  </Label>
+                </HelpTip>
                 {hasGrokKey ? (
-                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                    <KeyRound className="h-3 w-3" /> key set
-                  </Badge>
+                  <HelpTip label="Enables the Grok mode button and any Grok row in Mix mode below.">
+                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                      <KeyRound className="h-3 w-3" /> key set
+                    </Badge>
+                  </HelpTip>
                 ) : (
-                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                    <Key className="h-3 w-3" /> not set
-                  </Badge>
+                  <HelpTip label="Required before any agent can route to a Grok model.">
+                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                      <Key className="h-3 w-3" /> not set
+                    </Badge>
+                  </HelpTip>
                 )}
               </div>
               <div className="flex gap-2">
@@ -405,17 +412,23 @@ export function AIRoutingCard() {
             {/* -------- Ollama key -------- */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium">
-                  Ollama Cloud API key
-                </Label>
+                <HelpTip label="Stored encrypted server-side; never displayed once saved.">
+                  <Label className="text-sm font-medium">
+                    Ollama Cloud API key
+                  </Label>
+                </HelpTip>
                 {hasOllamaKey ? (
-                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                    <KeyRound className="h-3 w-3" /> key set
-                  </Badge>
+                  <HelpTip label="Enables the Ollama mode button and any Ollama row in Mix mode below.">
+                    <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                      <KeyRound className="h-3 w-3" /> key set
+                    </Badge>
+                  </HelpTip>
                 ) : (
-                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                    <Key className="h-3 w-3" /> not set
-                  </Badge>
+                  <HelpTip label="Required before any agent can route to an Ollama Cloud model.">
+                    <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                      <Key className="h-3 w-3" /> not set
+                    </Badge>
+                  </HelpTip>
                 )}
               </div>
               <div className="flex gap-2">
@@ -467,7 +480,9 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <Label className="text-sm font-medium">Routing mode</Label>
+          <HelpTip label="Anthropic / Grok / Ollama / Self-Hosted route every agent to one provider and clear all per-agent overrides below. Mix keeps whatever's picked in the table.">
+            <Label className="text-sm font-medium">Routing mode</Label>
+          </HelpTip>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
@@ -584,9 +599,11 @@ export function AIRoutingCard() {
         <Separator />
         <section className="space-y-3">
           <div className="flex items-center justify-between">
-            <Label className="text-sm font-medium">
-              Per-agent override (mix mode)
-            </Label>
+            <HelpTip label="A blank row falls back to that agent's role default, then the last global mode's model — not a separate 'mix default'.">
+              <Label className="text-sm font-medium">
+                Per-agent override (mix mode)
+              </Label>
+            </HelpTip>
             <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
               {applyMode.isPending ? "Saving…" : "Save mix"}
             </Button>

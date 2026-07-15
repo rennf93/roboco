@@ -23,6 +23,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Bell, Wifi, WifiOff, CheckCheck, MailOpen, Check } from "lucide-react";
 
 const BELL_LABEL = "View notifications";
@@ -39,6 +40,12 @@ export function NotificationBell() {
   const unreadCount = data?.unread_count ?? 0;
   const pendingAckCount = data?.pending_ack_count ?? 0;
   const items = (data?.items ?? []).slice(0, PREVIEW_LIMIT);
+  // The badge caps its own display at "9+", hiding the exact count — surface
+  // the real number here so it's never lost to sighted or AT users.
+  const bellLabel =
+    unreadCount > 0
+      ? `${BELL_LABEL} (${unreadCount} unread)`
+      : BELL_LABEL;
 
   const handleMarkRead = (id: string) => {
     void markRead.mutateAsync(id);
@@ -68,8 +75,8 @@ export function NotificationBell() {
                 variant="ghost"
                 size="icon"
                 className="relative"
-                aria-label={BELL_LABEL}
-                title={BELL_LABEL}
+                aria-label={bellLabel}
+                title={bellLabel}
               >
                 <Bell className="h-5 w-5" />
                 {unreadCount > 0 && (
@@ -80,7 +87,7 @@ export function NotificationBell() {
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent>{BELL_LABEL}</TooltipContent>
+          <TooltipContent>{bellLabel}</TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <PopoverContent className="w-80" align="end">
@@ -89,9 +96,13 @@ export function NotificationBell() {
             <div className="flex items-center gap-2">
               <h4 className="font-semibold">Notifications</h4>
               {isConnected ? (
-                <Wifi className="h-4 w-4 text-green-500" aria-label="connected" />
+                <HelpTip label="Live update stream connected">
+                  <Wifi className="h-4 w-4 text-green-500" aria-label="connected" />
+                </HelpTip>
               ) : (
-                <WifiOff className="h-4 w-4 text-gray-400" aria-label="disconnected" />
+                <HelpTip label="Live update stream disconnected — list may be stale">
+                  <WifiOff className="h-4 w-4 text-gray-400" aria-label="disconnected" />
+                </HelpTip>
               )}
             </div>
             {unreadCount > 0 && (

@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { HelpTip } from "@/components/ui/help-tip";
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -85,29 +86,45 @@ export function RerenderControl({
       ),
   });
 
+  // Always non-empty: HelpTip unmounts/remounts its child when `label`
+  // toggles between falsy and truthy, which would lose the button's DOM
+  // identity right as the mutation settles (mirrors x-post-queue's
+  // approveHint comment).
+  const rerenderHint = rerenderMutation.isPending
+    ? "Re-render in progress"
+    : rerenderMutation.isError
+      ? `Re-render failed: ${
+          rerenderMutation.error instanceof Error
+            ? rerenderMutation.error.message
+            : "unknown error"
+        } — click to retry`
+      : "Discards the current render and queues a fresh one from the same composition";
+
   return (
     <>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={rerenderMutation.isPending}
-        onClick={() => setConfirmOpen(true)}
-        className={
-          rerenderMutation.isError
-            ? "border-destructive text-destructive"
-            : undefined
-        }
-      >
-        <RefreshCw
-          className={`mr-1 h-4 w-4 ${rerenderMutation.isPending ? "animate-spin" : ""}`}
-        />
-        {rerenderMutation.isPending
-          ? "Re-rendering..."
-          : rerenderMutation.isError
-            ? "Retry re-render"
-            : "Re-render"}
-      </Button>
+      <HelpTip label={rerenderHint}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={rerenderMutation.isPending}
+          onClick={() => setConfirmOpen(true)}
+          className={
+            rerenderMutation.isError
+              ? "border-destructive text-destructive"
+              : undefined
+          }
+        >
+          <RefreshCw
+            className={`mr-1 h-4 w-4 ${rerenderMutation.isPending ? "animate-spin" : ""}`}
+          />
+          {rerenderMutation.isPending
+            ? "Re-rendering..."
+            : rerenderMutation.isError
+              ? "Retry re-render"
+              : "Re-render"}
+        </Button>
+      </HelpTip>
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>

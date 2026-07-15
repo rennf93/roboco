@@ -156,6 +156,7 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                   className="absolute bottom-2 right-2"
                   onClick={() => handleSubmit()}
                   disabled={!input.trim() || isLoading}
+                  aria-label="Send to your mentor"
                 >
                   <Send className="h-4 w-4" />
                 </Button>
@@ -327,6 +328,7 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                 className="absolute bottom-2 right-2"
                 onClick={() => handleSubmit()}
                 disabled={!input.trim() || isLoading}
+                aria-label="Send to your mentor"
               >
                 {isLoading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />

@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
+import { HelpTip } from "@/components/ui/help-tip";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -309,7 +310,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
         {/* Brand voice */}
         <div className="space-y-2">
-          <Label htmlFor="brand-voice">Brand voice</Label>
+          <HelpTip label="Feeds every X/TikTok draft and the Head of Marketing's feature-spotlight posts">
+            <Label htmlFor="brand-voice">Brand voice</Label>
+          </HelpTip>
           <Textarea
             id="brand-voice"
             rows={3}
@@ -335,7 +338,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
         {/* Objectives */}
         <div className="space-y-2">
-          <Label>Objectives</Label>
+          <HelpTip label="Free-form KPI rows injected into every agent's briefing — not yet reflected in the Scorecard tab's Objectives section, which is a placeholder">
+            <Label>Objectives</Label>
+          </HelpTip>
           <ObjectivesEditor
             items={objectivesVal}
             onChange={(items) => setObjectives(items)}
@@ -345,7 +350,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
         {/* Operating policy */}
         <div className="space-y-2">
-          <Label>Operating policy</Label>
+          <HelpTip label="Free-form operational key-values — set monthly_budget_cap (a number, in USD) here to enable the Scorecard tab's over-budget flag">
+            <Label>Operating policy</Label>
+          </HelpTip>
           <PolicyEditor
             policy={policyVal}
             onChange={(p) => setPolicy(p)}

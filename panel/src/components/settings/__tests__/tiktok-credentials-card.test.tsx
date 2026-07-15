@@ -37,6 +37,14 @@ describe("TikTokCredentialsForm", () => {
     ).toBeInTheDocument();
   });
 
+  it("tooltip-wraps each field label with the write-only storage note", async () => {
+    render(withQueryClient(<TikTokCredentialsForm />));
+    await screen.findByText("No credentials configured");
+    expect(screen.getByText("Client key").getAttribute("data-state")).toBe(
+      "closed",
+    );
+  });
+
   it("disables Save until all 4 fields are filled", async () => {
     render(withQueryClient(<TikTokCredentialsForm />));
     await screen.findByText("No credentials configured");

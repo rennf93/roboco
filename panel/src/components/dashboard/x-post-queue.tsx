@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { HelpTip } from "@/components/ui/help-tip";
 import { AtSign, CheckCircle2, Rocket, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,10 +31,42 @@ const MAX_TWEET_CHARS = 280;
 const _MIN_REASON_CHARS = 4;
 
 function sourceMeta(source: XPost["source"]) {
-  if (source === "x_post") return { label: "Release post", icon: Rocket };
+  if (source === "x_post")
+    return {
+      label: "Release post",
+      icon: Rocket,
+      hint: "Drafted automatically when a release publishes",
+    };
   if (source === "x_feature")
-    return { label: "Feature spotlight", icon: Sparkles };
-  return { label: "Mention reply", icon: AtSign };
+    return {
+      label: "Feature spotlight",
+      icon: Sparkles,
+      hint: "Drafted periodically by the Head of Marketing's feature-spotlight sweep",
+    };
+  return {
+    label: "Mention reply",
+    icon: AtSign,
+    hint: "Drafted automatically in reply to a meaningful mention on X",
+  };
+}
+
+// Explains what Approve does, or why it's disabled — surfaced on the button
+// itself so the CEO doesn't have to guess between "already posting", "over
+// the limit", or "empty". Always returns a non-empty string (never null):
+// HelpTip renders a bare child vs. a Tooltip-wrapped one depending on
+// truthiness, and toggling that branch on a live-changing condition (like
+// `approving`) unmounts/remounts the child, losing any DOM reference a
+// caller captured before the state flip.
+function approveHint(
+  approving: boolean,
+  overLimit: boolean,
+  bodyEmpty: boolean,
+): string {
+  if (approving) return "Already posting this draft";
+  if (overLimit)
+    return `Over X's ${MAX_TWEET_CHARS}-character limit — trim the draft to enable`;
+  if (bodyEmpty) return "Draft body is empty";
+  return "Post this draft to X";
 }
 
 function describeExecuteResult(result: XPostExecuteResult): string {
@@ -69,8 +102,12 @@ function XPostRow({
   return (
     <div className="rounded-lg border p-4 transition-colors hover:bg-muted/50">
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <meta.icon className="h-4 w-4 text-muted-foreground" />
-        <span className="font-medium">{meta.label}</span>
+        <HelpTip label={meta.hint}>
+          <span className="inline-flex items-center gap-1.5">
+            <meta.icon className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">{meta.label}</span>
+          </span>
+        </HelpTip>
         {post.release_version && (
           <Badge variant="outline">v{post.release_version}</Badge>
         )}
@@ -92,13 +129,15 @@ function XPostRow({
         rows={3}
         className={overLimit ? "border-destructive" : undefined}
       />
-      <p
-        className={`mt-1 text-right text-xs ${
-          overLimit ? "text-destructive" : "text-muted-foreground"
-        }`}
-      >
-        {body.length}/{MAX_TWEET_CHARS}
-      </p>
+      <HelpTip label={`X's per-post character limit (${MAX_TWEET_CHARS})`}>
+        <p
+          className={`mt-1 text-right text-xs ${
+            overLimit ? "text-destructive" : "text-muted-foreground"
+          }`}
+        >
+          {body.length}/{MAX_TWEET_CHARS}
+        </p>
+      </HelpTip>
 
       <div className="mt-2 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
         <Button
@@ -110,15 +149,19 @@ function XPostRow({
           <XCircle className="mr-1 h-4 w-4" />
           Reject
         </Button>
-        <Button
-          size="sm"
-          className="bg-green-600 hover:bg-green-700"
-          disabled={approving || overLimit || body.trim().length === 0}
-          onClick={() => onApprove(post.task_id, body)}
+        <HelpTip
+          label={approveHint(approving, overLimit, body.trim().length === 0)}
         >
-          <CheckCircle2 className="mr-1 h-4 w-4" />
-          Approve &amp; post
-        </Button>
+          <Button
+            size="sm"
+            className="bg-green-600 hover:bg-green-700"
+            disabled={approving || overLimit || body.trim().length === 0}
+            onClick={() => onApprove(post.task_id, body)}
+          >
+            <CheckCircle2 className="mr-1 h-4 w-4" />
+            Approve &amp; post
+          </Button>
+        </HelpTip>
       </div>
     </div>
   );

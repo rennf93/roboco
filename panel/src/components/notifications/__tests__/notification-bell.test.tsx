@@ -117,6 +117,16 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     expect(screen.getByText("9+")).toBeInTheDocument();
   });
 
+  it("surfaces the exact unread count via the button's accessible name, even when the badge caps at 9+", () => {
+    useNotifications.mockReturnValue({
+      data: { items: [], total: 42, unread_count: 42, pending_ack_count: 0 },
+    });
+    render(<NotificationBell />);
+    expect(
+      screen.getByRole("button", { name: "View notifications (42 unread)" }),
+    ).toBeInTheDocument();
+  });
+
   it("renders no badge when there is nothing unread", () => {
     useNotifications.mockReturnValue({
       data: { items: [], total: 0, unread_count: 0, pending_ack_count: 0 },
@@ -138,7 +148,8 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     });
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.click(screen.getByRole("button", { name: "View notifications" }));
+    // Name now carries "(1 unread)" — match the stable prefix.
+    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
     const markReadBtn = await screen.findByRole("button", { name: /Mark Read/ });
     await user.click(markReadBtn);
     await waitFor(() => expect(markRead).toHaveBeenCalledWith("notif-1"));
@@ -163,7 +174,7 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     });
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.click(screen.getByRole("button", { name: "View notifications" }));
+    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
     const ackBtn = await screen.findByRole("button", { name: /Acknowledge/ });
     await user.click(ackBtn);
     await waitFor(() => expect(ack).toHaveBeenCalledWith("notif-2"));
@@ -182,7 +193,7 @@ describe("NotificationBell — read/ack integration (W9-1)", () => {
     });
     const user = userEvent.setup();
     render(<NotificationBell />);
-    await user.click(screen.getByRole("button", { name: "View notifications" }));
+    await user.click(screen.getByRole("button", { name: /^View notifications/ }));
     const allBtn = await screen.findByRole("button", { name: /Mark all read/ });
     await user.click(allBtn);
     await waitFor(() => expect(markAllRead).toHaveBeenCalled());

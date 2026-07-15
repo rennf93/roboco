@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { MentorAskResponse } from "@/types";
 import { RAGCitationCard } from "./rag-citation-card";
 import { Markdown } from "@/components/ui/markdown";
@@ -232,13 +233,21 @@ export function MentorAnswerDisplay({
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(response.search_stats).map(
                 ([indexType, count]) => (
-                  <Badge
+                  <HelpTip
                     key={indexType}
-                    variant={count > 0 ? "secondary" : "outline"}
-                    className={`text-xs ${count === -1 ? "text-red-500" : ""}`}
+                    label={
+                      count === -1
+                        ? `The ${indexType} index failed to search — its results may be missing from this answer.`
+                        : `${count} matching result${count === 1 ? "" : "s"} from the ${indexType} knowledge-base index.`
+                    }
                   >
-                    {indexType}: {count === -1 ? "error" : count}
-                  </Badge>
+                    <Badge
+                      variant={count > 0 ? "secondary" : "outline"}
+                      className={`text-xs ${count === -1 ? "text-red-500" : ""}`}
+                    >
+                      {indexType}: {count === -1 ? "error" : count}
+                    </Badge>
+                  </HelpTip>
                 ),
               )}
             </div>

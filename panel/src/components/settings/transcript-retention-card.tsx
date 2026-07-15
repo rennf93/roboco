@@ -13,6 +13,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { HardDrive, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -72,9 +73,11 @@ export function TranscriptRetentionCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="transcript-retention-days">
-            Retention window (days)
-          </Label>
+          <HelpTip label="Only takes effect while the transcript_prune_enabled feature flag is on.">
+            <Label htmlFor="transcript-retention-days">
+              Retention window (days)
+            </Label>
+          </HelpTip>
           <Input
             id="transcript-retention-days"
             type="number"
