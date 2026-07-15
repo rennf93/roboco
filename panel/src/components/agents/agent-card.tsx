@@ -72,10 +72,10 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
         : null;
 
   return (
-    <Card className={cn("gap-2 py-3", isActive && "border-green-500/50")}>
-      <CardHeader className="gap-0.5 px-3">
+    <Card className={cn("gap-2.5 py-4", isActive && "border-green-500/50")}>
+      <CardHeader className="gap-1 px-4">
         <div className="flex items-center justify-between gap-1">
-          <CardTitle className="truncate text-sm">
+          <CardTitle className="truncate text-base">
             {agent.name || "Unknown Agent"}
           </CardTitle>
           <DropdownMenu>
@@ -126,7 +126,7 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
           {agent.team && " • " + agent.team.replace(/_/g, " ")}
         </CardDescription>
       </CardHeader>
-      <CardContent className="px-3">
+      <CardContent className="px-4">
         <HelpTip label={agentStateDescription(state)}>
           <span className="inline-flex items-center gap-1.5 text-xs font-medium">
             <span

@@ -13,10 +13,10 @@ interface AgentGridProps {
   isLoading: boolean;
 }
 
-// Compact cards need far less width per card than the old large ones, so
-// wide screens fit up to 8 across instead of wrapping a tall, ragged grid.
-const GRID_COLS =
-  "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8";
+// Intrinsic sizing: every card gets at least 17rem and rows fill whatever
+// the viewport offers — one column on a phone, eight on a 27" — with a
+// consistent card width across all team sections at any width.
+const GRID_COLS = "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]";
 
 export function AgentGrid({
   title,
@@ -38,8 +38,8 @@ export function AgentGrid({
       <div className={"grid gap-3 " + GRID_COLS}>
         {isLoading
           ? Array.from({ length: agents.length || 3 }).map((_, i) => (
-              <Card key={i} className="gap-2 py-3">
-                <CardHeader className="gap-1 px-3">
+              <Card key={i} className="gap-2.5 py-4">
+                <CardHeader className="gap-1 px-4">
                   <Skeleton className="h-4 w-24" />
                   <Skeleton className="h-3 w-16" />
                 </CardHeader>
