@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - master
+      # The dev branch: the gated release manager's readiness sweep is
+      # fail-closed on the head rung's CI conclusion — no run reads as
+      # "unknown", which blocks every release proposal.
+      - slave
       # Fleet task branches (GitService push/merge, roboco/services/git.py).
       # A revision commit that lands on a PR's head via the merge API
       # (squash-merging a subtask PR into a parent branch) doesn't reliably
@@ -32,6 +36,12 @@ on:
       - 'uv.lock'
       - 'alembic.ini'
       - '.github/workflows/ci.yml'
+      # Slave carries docs/panel-only commits too; the release gate needs a
+      # verdict on every head, so cover what actually lands there.
+      - 'panel/**'
+      - 'CLAUDE.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
   pull_request:
     branches:
       - master
