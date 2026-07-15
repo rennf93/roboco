@@ -119,7 +119,11 @@ function FindingCard({
         </div>
         {finding.evidence && (
           <details className="text-xs text-muted-foreground">
-            <summary className="cursor-pointer select-none">Evidence</summary>
+            <HelpTip label="The raw evidence text the reviewer captured for this finding">
+              <summary className="cursor-pointer select-none w-fit">
+                Evidence
+              </summary>
+            </HelpTip>
             <pre className="mt-1 whitespace-pre-wrap rounded bg-muted/50 p-2">
               {finding.evidence}
             </pre>
@@ -174,20 +178,31 @@ export function TabFindings({ task }: TabFindingsProps) {
       {(data?.summary.length ?? 0) > 0 && (
         <div className="flex flex-wrap gap-2">
           {data!.summary.map((s) => (
-            <Badge key={s.origin} variant="outline">
-              {ORIGIN_LABEL[s.origin] ?? s.origin}: {s.open} open ·{" "}
-              {s.addressed + s.verified + s.waived} closed
-            </Badge>
+            <HelpTip
+              key={s.origin}
+              label="Closed combines addressed, verified, and waived findings"
+            >
+              <Badge variant="outline">
+                {ORIGIN_LABEL[s.origin] ?? s.origin}: {s.open} open ·{" "}
+                {s.addressed + s.verified + s.waived} closed
+              </Badge>
+            </HelpTip>
           ))}
         </div>
       )}
       {rounds.map((group) => (
         <div key={group.round} className="space-y-3">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold">Round {group.round}</h3>
-            <Badge variant="outline">
-              {ORIGIN_LABEL[group.origin] ?? group.origin}
-            </Badge>
+            <HelpTip label="Each bounce back to the assignee starts a new round">
+              <h3 className="text-sm font-semibold w-fit">
+                Round {group.round}
+              </h3>
+            </HelpTip>
+            <HelpTip label="Which reviewer stage raised this round's findings">
+              <Badge variant="outline">
+                {ORIGIN_LABEL[group.origin] ?? group.origin}
+              </Badge>
+            </HelpTip>
           </div>
           <div className="space-y-3">
             {group.items.map((f) => (

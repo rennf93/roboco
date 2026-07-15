@@ -92,19 +92,27 @@ export function GitBranchPanel({
             Branches
           </span>
           <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-            <DialogTrigger asChild>
-              <Button size="sm" variant="outline">
-                <Plus className="h-3 w-3 mr-1" />
-                New
-              </Button>
-            </DialogTrigger>
+            <HelpTip label="Creates a new branch named {type}/{team}/{task-id}, branched from the task's parent branch (or the project default).">
+              <span className="inline-block">
+                <DialogTrigger asChild>
+                  <Button size="sm" variant="outline">
+                    <Plus className="h-3 w-3 mr-1" />
+                    New
+                  </Button>
+                </DialogTrigger>
+              </span>
+            </HelpTip>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Create Task Branch</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Branch Type</label>
+                  <HelpTip label="Sets the branch-name prefix (feature/bug/chore/docs/hotfix) — doesn't otherwise change behavior.">
+                    <label className="text-sm font-medium w-fit">
+                      Branch Type
+                    </label>
+                  </HelpTip>
                   <Select
                     value={newBranchType}
                     onValueChange={(v) => setNewBranchType(v as BranchType)}
@@ -122,7 +130,11 @@ export function GitBranchPanel({
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">Task ID</label>
+                  <HelpTip label="Identifies the task this branch is for — gets embedded in the branch name (shortened to 8 chars).">
+                    <label className="text-sm font-medium w-fit">
+                      Task ID
+                    </label>
+                  </HelpTip>
                   <Input
                     placeholder="Enter task ID..."
                     value={taskId}
@@ -156,41 +168,56 @@ export function GitBranchPanel({
           <div className="space-y-3">
             {/* Local Branches */}
             <div>
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                Local ({localBranches.length})
-              </h4>
+              <HelpTip label="Branches that exist in your local clone's .git — checking one out is instant, no fetch needed.">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1 w-fit">
+                  Local ({localBranches.length})
+                </h4>
+              </HelpTip>
               <div className="space-y-0.5">
                 {localBranches.map((branch) => (
-                  <Button
+                  <HelpTip
                     key={branch.name}
-                    onClick={() =>
-                      !branch.is_current && onCheckout(branch.name)
-                    }
-                    disabled={branch.is_current || isCheckingOut}
-                    variant="ghost"
-                    className={
-                      "w-full h-auto justify-between px-2 py-1.5 text-sm font-normal whitespace-normal " +
-                      (branch.is_current
-                        ? "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary"
-                        : "hover:bg-muted")
+                    label={
+                      branch.is_current
+                        ? "This is the branch you're already on."
+                        : "Switches your workspace to this branch (git checkout). Non-conflicting uncommitted changes carry over."
                     }
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      {branch.is_current && (
-                        <Check className="h-3 w-3 text-primary shrink-0" />
-                      )}
-                      <span className="truncate font-mono text-xs">
-                        {branch.name}
-                      </span>
-                    </div>
-                    {branch.last_commit && (
-                      <HelpTip label="Short commit hash on this branch">
-                        <span className="text-xs text-muted-foreground font-mono shrink-0">
-                          {branch.last_commit.slice(0, 7)}
-                        </span>
-                      </HelpTip>
-                    )}
-                  </Button>
+                    <span
+                      className="block"
+                      tabIndex={branch.is_current ? 0 : undefined}
+                    >
+                      <Button
+                        onClick={() =>
+                          !branch.is_current && onCheckout(branch.name)
+                        }
+                        disabled={branch.is_current || isCheckingOut}
+                        variant="ghost"
+                        className={
+                          "w-full h-auto justify-between px-2 py-1.5 text-sm font-normal whitespace-normal " +
+                          (branch.is_current
+                            ? "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary"
+                            : "hover:bg-muted")
+                        }
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          {branch.is_current && (
+                            <Check className="h-3 w-3 text-primary shrink-0" />
+                          )}
+                          <span className="truncate font-mono text-xs">
+                            {branch.name}
+                          </span>
+                        </div>
+                        {branch.last_commit && (
+                          <HelpTip label="Short commit hash on this branch">
+                            <span className="text-xs text-muted-foreground font-mono shrink-0">
+                              {branch.last_commit.slice(0, 7)}
+                            </span>
+                          </HelpTip>
+                        )}
+                      </Button>
+                    </span>
+                  </HelpTip>
                 ))}
               </div>
             </div>
@@ -198,23 +225,31 @@ export function GitBranchPanel({
             {/* Remote Branches */}
             {remoteBranches.length > 0 && (
               <div>
-                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1">
-                  <Cloud className="h-3 w-3" />
-                  Remote ({remoteBranches.length})
-                </h4>
+                <HelpTip label="Branches on origin without a local counterpart yet — checking one out creates a local tracking branch.">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1 flex items-center gap-1 w-fit">
+                    <Cloud className="h-3 w-3" />
+                    Remote ({remoteBranches.length})
+                  </h4>
+                </HelpTip>
                 <div className="space-y-0.5">
                   {remoteBranches.map((branch) => (
-                    <Button
+                    <HelpTip
                       key={branch.name}
-                      onClick={() => onCheckout(branch.name)}
-                      disabled={isCheckingOut}
-                      variant="ghost"
-                      className="w-full h-auto justify-start px-2 py-1.5 text-sm font-normal whitespace-normal hover:bg-muted"
+                      label="Creates a local branch tracking this remote ref and switches to it."
                     >
-                      <span className="truncate font-mono text-xs text-muted-foreground">
-                        {branch.name}
+                      <span className="block">
+                        <Button
+                          onClick={() => onCheckout(branch.name)}
+                          disabled={isCheckingOut}
+                          variant="ghost"
+                          className="w-full h-auto justify-start px-2 py-1.5 text-sm font-normal whitespace-normal hover:bg-muted"
+                        >
+                          <span className="truncate font-mono text-xs text-muted-foreground">
+                            {branch.name}
+                          </span>
+                        </Button>
                       </span>
-                    </Button>
+                    </HelpTip>
                   ))}
                 </div>
               </div>

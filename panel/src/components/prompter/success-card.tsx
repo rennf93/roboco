@@ -41,9 +41,11 @@ export function SuccessCard({
       <CardContent className="pb-3 space-y-2">
         <p className="text-sm font-medium">{taskTitle}</p>
         <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-xs">
-            {team.replace("_", " ")}
-          </Badge>
+          <HelpTip label="Delivery cell this task was routed to">
+            <Badge variant="secondary" className="text-xs">
+              {team.replace("_", " ")}
+            </Badge>
+          </HelpTip>
           <HelpTip label={`Full task ID: ${taskId}`}>
             <span className="text-xs text-muted-foreground">
               ID: {taskId.slice(0, 8)}…
@@ -53,21 +55,25 @@ export function SuccessCard({
       </CardContent>
 
       <CardFooter className="gap-2 pt-0">
-        <Button variant="outline" size="sm" asChild className="flex-1">
-          <Link
-            prefetch={false}
-            href={`/tasks/${taskId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-            View Task
-          </Link>
-        </Button>
-        <Button size="sm" className="flex-1" onClick={onStartAnother}>
-          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          Start Another
-        </Button>
+        <HelpTip label="Opens the new task's detail page in a new tab">
+          <Button variant="outline" size="sm" asChild className="flex-1">
+            <Link
+              prefetch={false}
+              href={`/tasks/${taskId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+              View Task
+            </Link>
+          </Button>
+        </HelpTip>
+        <HelpTip label="Ends this session and resets to a fresh intake chat">
+          <Button size="sm" className="flex-1" onClick={onStartAnother}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            Start Another
+          </Button>
+        </HelpTip>
       </CardFooter>
     </Card>
   );

@@ -61,7 +61,11 @@ export function EscalateToCeoDialog({
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="reason">Reason for escalation</Label>
+            <HelpTip label="Shown to the CEO in their approval queue alongside this task">
+              <Label htmlFor="reason" className="w-fit">
+                Reason for escalation
+              </Label>
+            </HelpTip>
             <Textarea
               id="reason"
               value={reason}
@@ -72,15 +76,24 @@ export function EscalateToCeoDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleConfirm}
-            disabled={!reason.trim() || isPending}
-          >
-            {isPending ? "Escalating..." : "Escalate"}
-          </Button>
+          <HelpTip label="Closes without escalating; the task stays in its current status">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+          </HelpTip>
+          <HelpTip label={!reason.trim() ? "Enter a reason to enable" : null}>
+            <span
+              className="inline-block"
+              tabIndex={!reason.trim() ? 0 : undefined}
+            >
+              <Button
+                onClick={handleConfirm}
+                disabled={!reason.trim() || isPending}
+              >
+                {isPending ? "Escalating..." : "Escalate"}
+              </Button>
+            </span>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -126,7 +139,11 @@ export function CeoRejectDialog({
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="notes">Required changes</Label>
+            <HelpTip label="Recorded as the CEO's rejection reason; the task returns to needs_revision">
+              <Label htmlFor="notes" className="w-fit">
+                Required changes
+              </Label>
+            </HelpTip>
             <Textarea
               id="notes"
               value={notes}
@@ -137,16 +154,25 @@ export function CeoRejectDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={handleConfirm}
-            disabled={!notes.trim() || isPending}
-          >
-            {isPending ? "Submitting..." : "Request Changes"}
-          </Button>
+          <HelpTip label="Closes without rejecting; the task stays in awaiting CEO approval">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+          </HelpTip>
+          <HelpTip label={!notes.trim() ? "Explain what changes are needed to enable" : null}>
+            <span
+              className="inline-block"
+              tabIndex={!notes.trim() ? 0 : undefined}
+            >
+              <Button
+                variant="destructive"
+                onClick={handleConfirm}
+                disabled={!notes.trim() || isPending}
+              >
+                {isPending ? "Submitting..." : "Request Changes"}
+              </Button>
+            </span>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -179,13 +205,15 @@ export function ApproveAndMergeDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={isPending}
-          >
-            Cancel
-          </Button>
+          <HelpTip label="Closes without approving or merging">
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+          </HelpTip>
           <Button onClick={onConfirm} disabled={isPending}>
             {isPending ? "Merging..." : "Approve & Merge"}
           </Button>
@@ -263,13 +291,19 @@ export function CeoApproveDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <HelpTip label={remainingCharsTip(notes.trim().length, _CEO_NOTES_MIN)}>
-            <Button onClick={handleConfirm} disabled={tooShort || isPending}>
-              {isPending ? "Approving..." : "Approve & Merge"}
+          <HelpTip label="Closes without approving; the task stays in awaiting CEO approval">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
             </Button>
+          </HelpTip>
+          {/* Button's own disabled:pointer-events-none would swallow hover, so
+              the tip sits on a wrapping span rather than the Button itself. */}
+          <HelpTip label={remainingCharsTip(notes.trim().length, _CEO_NOTES_MIN)}>
+            <span className="inline-block" tabIndex={tooShort ? 0 : undefined}>
+              <Button onClick={handleConfirm} disabled={tooShort || isPending}>
+                {isPending ? "Approving..." : "Approve & Merge"}
+              </Button>
+            </span>
           </HelpTip>
         </DialogFooter>
       </DialogContent>
@@ -344,17 +378,23 @@ export function RequiredNotesDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <HelpTip label={remainingCharsTip(text.trim().length, minChars)}>
-            <Button
-              variant={destructive ? "destructive" : "default"}
-              onClick={handleConfirm}
-              disabled={tooShort || isPending}
-            >
-              {isPending ? "Working..." : confirmLabel}
+          <HelpTip label="Closes without confirming; nothing is changed">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
             </Button>
+          </HelpTip>
+          {/* Button's own disabled:pointer-events-none would swallow hover, so
+              the tip sits on a wrapping span rather than the Button itself. */}
+          <HelpTip label={remainingCharsTip(text.trim().length, minChars)}>
+            <span className="inline-block" tabIndex={tooShort ? 0 : undefined}>
+              <Button
+                variant={destructive ? "destructive" : "default"}
+                onClick={handleConfirm}
+                disabled={tooShort || isPending}
+              >
+                {isPending ? "Working..." : confirmLabel}
+              </Button>
+            </span>
           </HelpTip>
         </DialogFooter>
       </DialogContent>
@@ -401,7 +441,11 @@ export function CreateBranchDialog({
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="branch-type">Branch Type</Label>
+            <HelpTip label="Chooses the branch-name prefix — see the naming preview below">
+              <Label htmlFor="branch-type" className="w-fit">
+                Branch Type
+              </Label>
+            </HelpTip>
             <Select value={branchType} onValueChange={setBranchType}>
               <SelectTrigger>
                 <SelectValue />
@@ -420,12 +464,16 @@ export function CreateBranchDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleConfirm} disabled={isPending}>
-            {isPending ? "Creating..." : "Create Branch"}
-          </Button>
+          <HelpTip label="Closes without creating a branch">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+          </HelpTip>
+          <HelpTip label="Creates and checks out the branch immediately — no confirmation after this">
+            <Button onClick={handleConfirm} disabled={isPending}>
+              {isPending ? "Creating..." : "Create Branch"}
+            </Button>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -482,7 +530,11 @@ export function CreatePRDialog({
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="pr-title">Title</Label>
+            <HelpTip label="Seeded from the task title by default — edit before creating">
+              <Label htmlFor="pr-title" className="w-fit">
+                Title
+              </Label>
+            </HelpTip>
             <Input
               id="pr-title"
               value={title}
@@ -491,7 +543,11 @@ export function CreatePRDialog({
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="pr-body">Description</Label>
+            <HelpTip label="Becomes the pull request's description on GitHub">
+              <Label htmlFor="pr-body" className="w-fit">
+                Description
+              </Label>
+            </HelpTip>
             <Textarea
               id="pr-body"
               value={body}
@@ -502,12 +558,24 @@ export function CreatePRDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleConfirm} disabled={!title.trim() || isPending}>
-            {isPending ? "Creating..." : "Create PR"}
-          </Button>
+          <HelpTip label="Closes without creating a PR">
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Cancel
+            </Button>
+          </HelpTip>
+          <HelpTip label={!title.trim() ? "Enter a title to enable" : null}>
+            <span
+              className="inline-block"
+              tabIndex={!title.trim() ? 0 : undefined}
+            >
+              <Button
+                onClick={handleConfirm}
+                disabled={!title.trim() || isPending}
+              >
+                {isPending ? "Creating..." : "Create PR"}
+              </Button>
+            </span>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>

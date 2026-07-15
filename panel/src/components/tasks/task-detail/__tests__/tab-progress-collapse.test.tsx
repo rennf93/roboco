@@ -44,11 +44,15 @@ describe("TabProgress progress-update collapse", () => {
     const task = buildTask({ progress_updates: makeUpdates(30) });
     const { container } = render(<TabProgress task={task} />);
 
-    // Each update's collapse trigger is the only <button> in its <li> that
-    // carries Radix's data-state attribute; list order matches sort order
-    // (newest first), so the first two entries are the 2 most recent.
+    // Scope to the collapse trigger specifically via its test id — the row
+    // also carries a delete button wrapped in a HelpTip/Tooltip, which
+    // stamps its own Radix data-state, so a bare "button[data-state]"
+    // selector would match both. List order matches sort order (newest
+    // first), so the first two entries are the 2 most recent.
     const triggers = Array.from(
-      container.querySelectorAll("li button[data-state]"),
+      container.querySelectorAll(
+        'li button[data-testid="progress-update-trigger"]',
+      ),
     );
     expect(triggers).toHaveLength(30);
     expect(triggers[0]).toHaveAttribute("data-state", "open");

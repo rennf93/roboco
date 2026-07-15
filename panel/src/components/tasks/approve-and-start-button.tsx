@@ -74,14 +74,16 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
 
   return (
     <>
-      <Button
-        size="sm"
-        className="bg-green-600 hover:bg-green-700"
-        onClick={() => setOpen(true)}
-      >
-        <Rocket className="h-4 w-4 mr-1" />
-        Approve &amp; Start
-      </Button>
+      <HelpTip label="Hands this task to the Main PM and unblocks any BACKLOG child tasks (CEO-only).">
+        <Button
+          size="sm"
+          className="bg-green-600 hover:bg-green-700"
+          onClick={() => setOpen(true)}
+        >
+          <Rocket className="h-4 w-4 mr-1" />
+          Approve &amp; Start
+        </Button>
+      </HelpTip>
 
       <Dialog
         open={open}
@@ -97,7 +99,9 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
           </DialogHeader>
 
           <div className="space-y-2">
-            <Label>Board review (Product Owner &amp; Head of Marketing)</Label>
+            <HelpTip label="Fetched live only while this dialog is open — read it before approving.">
+              <Label>Board review (Product Owner &amp; Head of Marketing)</Label>
+            </HelpTip>
             {boardLoading ? (
               <p className="text-xs text-muted-foreground">
                 Loading board review…
@@ -140,18 +144,27 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={closeDialog}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirm}
-              disabled={approveAndStartMutation.isPending}
-              className="bg-green-600 hover:bg-green-700"
-            >
-              {approveAndStartMutation.isPending
-                ? "Starting..."
-                : "Approve & Start"}
-            </Button>
+            <HelpTip label="Closes without approving; the note above is discarded.">
+              <Button variant="outline" onClick={closeDialog}>
+                Cancel
+              </Button>
+            </HelpTip>
+            <HelpTip label="Submits the approval note and hands the task to the Main PM.">
+              <span
+                className="inline-block"
+                tabIndex={approveAndStartMutation.isPending ? 0 : undefined}
+              >
+                <Button
+                  onClick={handleConfirm}
+                  disabled={approveAndStartMutation.isPending}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {approveAndStartMutation.isPending
+                    ? "Starting..."
+                    : "Approve & Start"}
+                </Button>
+              </span>
+            </HelpTip>
           </DialogFooter>
         </DialogContent>
       </Dialog>

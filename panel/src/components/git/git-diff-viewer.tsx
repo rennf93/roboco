@@ -104,21 +104,30 @@ export function GitDiffViewer({
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <FileCode className="h-4 w-4" />
-            Changes
-          </CardTitle>
-          <Button
-            variant={wrap ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7 px-2 text-xs"
-            aria-pressed={wrap}
-            onClick={() => setWrap((w) => !w)}
-            title="Toggle line wrap"
+          <HelpTip label="Green = added lines, red = removed, blue = hunk header (@@ ... @@ shows the surrounding line range).">
+            <CardTitle className="text-sm flex items-center gap-2 w-fit">
+              <FileCode className="h-4 w-4" />
+              Changes
+            </CardTitle>
+          </HelpTip>
+          <HelpTip
+            label={
+              wrap
+                ? "Long lines wrap to fit the panel — click to scroll horizontally instead."
+                : "Long lines overflow with horizontal scroll — click to wrap them instead."
+            }
           >
-            <WrapText className="h-3.5 w-3.5 mr-1" />
-            Wrap
-          </Button>
+            <Button
+              variant={wrap ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              aria-pressed={wrap}
+              onClick={() => setWrap((w) => !w)}
+            >
+              <WrapText className="h-3.5 w-3.5 mr-1" />
+              Wrap
+            </Button>
+          </HelpTip>
         </div>
       </CardHeader>
       <CardContent className="p-0">

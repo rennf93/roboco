@@ -62,17 +62,22 @@ export function GitLogPanel({
         <CardTitle className="text-sm flex items-center gap-2">
           <GitCommit className="h-4 w-4" />
           Commit History
-          <Badge variant="secondary" className="ml-auto text-xs">
-            {log.branch}
-          </Badge>
+          <HelpTip label="Commits reachable from this branch, newest first.">
+            <Badge variant="secondary" className="ml-auto text-xs">
+              {log.branch}
+            </Badge>
+          </HelpTip>
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
         <ScrollArea className="h-80">
           <div className="p-4 space-y-0">
             {log.commits.map((commit, index) => (
-              <Button
+              <HelpTip
                 key={commit.hash}
+                label={onSelectCommit ? "Select this commit" : ""}
+              >
+              <Button
                 onClick={() => onSelectCommit?.(commit)}
                 variant="ghost"
                 className={cn(
@@ -120,16 +125,19 @@ export function GitLogPanel({
                         <User className="h-3 w-3" />
                         {commit.author}
                       </span>
-                      <span className="flex items-center gap-1">
-                        <Calendar className="h-3 w-3" />
-                        {formatDistanceToNow(new Date(commit.date), {
-                          addSuffix: true,
-                        })}
-                      </span>
+                      <HelpTip label={new Date(commit.date).toLocaleString()}>
+                        <span className="flex items-center gap-1 w-fit">
+                          <Calendar className="h-3 w-3" />
+                          {formatDistanceToNow(new Date(commit.date), {
+                            addSuffix: true,
+                          })}
+                        </span>
+                      </HelpTip>
                     </div>
                   </div>
                 </div>
               </Button>
+              </HelpTip>
             ))}
           </div>
         </ScrollArea>

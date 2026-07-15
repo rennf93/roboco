@@ -3,6 +3,7 @@
 import { Task } from "@/types";
 import { useTask } from "@/hooks/use-tasks";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 
@@ -28,14 +29,16 @@ export function TaskBreadcrumb({ task }: TaskBreadcrumbProps) {
       {isLoading || !parent ? (
         <Skeleton className="h-4 w-32" />
       ) : (
-        <Link
-          href={`/tasks/${parent.id}`}
-          prefetch={false}
-          className="truncate hover:text-foreground hover:underline"
-          title={parent.title}
-        >
-          {parent.title}
-        </Link>
+        <HelpTip label="Go to the parent task — only the immediate parent is shown here, not the full ancestry chain">
+          <Link
+            href={`/tasks/${parent.id}`}
+            prefetch={false}
+            className="truncate hover:text-foreground hover:underline"
+            title={parent.title}
+          >
+            {parent.title}
+          </Link>
+        </HelpTip>
       )}
       <ChevronRight className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate text-foreground/70" title={task.title}>

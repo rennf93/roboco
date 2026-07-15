@@ -244,16 +244,20 @@ function SortableHeader({
 
   return (
     <TableHead className={className}>
-      <Button
-        onClick={() => onSort(field)}
-        variant="ghost"
-        className="h-auto -ml-2 px-2 py-1 gap-1 font-normal"
-      >
-        {label}
-        {!isActive && <ArrowUpDown className="h-4 w-4 text-muted-foreground" />}
-        {direction === "asc" && <ArrowUp className="h-4 w-4" />}
-        {direction === "desc" && <ArrowDown className="h-4 w-4" />}
-      </Button>
+      <HelpTip label="Sorts ascending, then descending, then clears — click again to cycle.">
+        <Button
+          onClick={() => onSort(field)}
+          variant="ghost"
+          className="h-auto -ml-2 px-2 py-1 gap-1 font-normal"
+        >
+          {label}
+          {!isActive && (
+            <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
+          )}
+          {direction === "asc" && <ArrowUp className="h-4 w-4" />}
+          {direction === "desc" && <ArrowDown className="h-4 w-4" />}
+        </Button>
+      </HelpTip>
     </TableHead>
   );
 }
@@ -473,22 +477,26 @@ export function TaskTable({
         {hasAnyChildren && !isLoading && (
           <div className="flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
             <span className="text-sm text-muted-foreground">Tree view:</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={expandAll}
-            >
-              Expand all
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={collapseAll}
-            >
-              Collapse all
-            </Button>
+            <HelpTip label="Opens every parent row so all subtasks show inline, ignoring current sort.">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={expandAll}
+              >
+                Expand all
+              </Button>
+            </HelpTip>
+            <HelpTip label="Hides every subtask row, showing only root-level tasks.">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={collapseAll}
+              >
+                Collapse all
+              </Button>
+            </HelpTip>
           </div>
         )}
 
@@ -510,7 +518,9 @@ export function TaskTable({
                     onSort={handleSort}
                     className="whitespace-nowrap"
                   />
-                  <TableHead className="whitespace-nowrap">Git</TableHead>
+                  <HelpTip label="Branch, PR, or docs/PR progress — whichever this task's git workflow has reached.">
+                    <TableHead className="whitespace-nowrap">Git</TableHead>
+                  </HelpTip>
                   <SortableHeader
                     label="Team"
                     field="team"
@@ -518,9 +528,11 @@ export function TaskTable({
                     onSort={handleSort}
                     className="whitespace-nowrap"
                   />
-                  <TableHead className="whitespace-nowrap">
-                    Project / Product
-                  </TableHead>
+                  <HelpTip label="A direct Project shows its name; a fan-out task shows its Product instead.">
+                    <TableHead className="whitespace-nowrap">
+                      Project / Product
+                    </TableHead>
+                  </HelpTip>
                   <SortableHeader
                     label="Priority"
                     field="priority"
@@ -589,19 +601,27 @@ export function TaskTable({
                             style={{ paddingLeft: `${node.depth * 1.5}rem` }}
                           >
                             {hasChildren ? (
-                              <Button
-                                onClick={() => toggleExpand(task.id)}
-                                variant="ghost"
-                                size="icon-sm"
-                                className="p-0.5 h-5 w-5 shrink-0"
-                                aria-label={isExpanded ? "Collapse" : "Expand"}
+                              <HelpTip
+                                label={
+                                  isExpanded
+                                    ? "Hides this task's subtasks"
+                                    : "Shows this task's subtasks inline"
+                                }
                               >
-                                {isExpanded ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRightIcon className="h-4 w-4" />
-                                )}
-                              </Button>
+                                <Button
+                                  onClick={() => toggleExpand(task.id)}
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="p-0.5 h-5 w-5 shrink-0"
+                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronRightIcon className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </HelpTip>
                             ) : (
                               <span className="w-5 shrink-0" />
                             )}
@@ -625,13 +645,15 @@ export function TaskTable({
                                   </HelpTip>
                                 )}
                                 {childCount > 0 && (
-                                  <Badge
-                                    variant="secondary"
-                                    className="text-xs shrink-0"
-                                  >
-                                    {childCount} subtask
-                                    {childCount !== 1 ? "s" : ""}
-                                  </Badge>
+                                  <HelpTip label="Direct subtasks under this task, regardless of their current status.">
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-xs shrink-0"
+                                    >
+                                      {childCount} subtask
+                                      {childCount !== 1 ? "s" : ""}
+                                    </Badge>
+                                  </HelpTip>
                                 )}
                               </div>
                             </Link>
@@ -677,14 +699,28 @@ export function TaskTable({
                           </Badge>
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          <Badge variant="outline">
-                            {getAgentDisplayName(task.assigned_to)}
-                          </Badge>
+                          <HelpTip
+                            label={
+                              task.assigned_to
+                                ? "The agent currently pinned to this task."
+                                : "No agent pinned — the orchestrator routes it by role and availability."
+                            }
+                          >
+                            <Badge variant="outline">
+                              {getAgentDisplayName(task.assigned_to)}
+                            </Badge>
+                          </HelpTip>
                         </TableCell>
                         <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                          {formatDistanceToNow(new Date(task.created_at), {
-                            addSuffix: true,
-                          })}
+                          <HelpTip
+                            label={new Date(task.created_at).toLocaleString()}
+                          >
+                            <span>
+                              {formatDistanceToNow(new Date(task.created_at), {
+                                addSuffix: true,
+                              })}
+                            </span>
+                          </HelpTip>
                         </TableCell>
                         <TableCell>
                           <TaskActions task={task} />
@@ -720,19 +756,27 @@ export function TaskTable({
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             {hasChildren && (
-                              <Button
-                                onClick={() => toggleExpand(task.id)}
-                                variant="ghost"
-                                size="icon-sm"
-                                className="h-5 w-5 shrink-0 p-0.5"
-                                aria-label={isExpanded ? "Collapse" : "Expand"}
+                              <HelpTip
+                                label={
+                                  isExpanded
+                                    ? "Hides this task's subtasks"
+                                    : "Shows this task's subtasks inline"
+                                }
                               >
-                                {isExpanded ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRightIcon className="h-4 w-4" />
-                                )}
-                              </Button>
+                                <Button
+                                  onClick={() => toggleExpand(task.id)}
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  className="h-5 w-5 shrink-0 p-0.5"
+                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronRightIcon className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </HelpTip>
                             )}
                             <Link
                               prefetch={false}
@@ -757,10 +801,12 @@ export function TaskTable({
                                 </HelpTip>
                               )}
                               {childCount > 0 && (
-                                <Badge variant="secondary" className="text-xs">
-                                  {childCount} subtask
-                                  {childCount !== 1 ? "s" : ""}
-                                </Badge>
+                                <HelpTip label="Direct subtasks under this task, regardless of their current status.">
+                                  <Badge variant="secondary" className="text-xs">
+                                    {childCount} subtask
+                                    {childCount !== 1 ? "s" : ""}
+                                  </Badge>
+                                </HelpTip>
                               )}
                             </div>
                           ) : null}
@@ -805,14 +851,28 @@ export function TaskTable({
                           </Badge>
                         </ResponsiveTableCardRow>
                         <ResponsiveTableCardRow label="Assigned">
-                          <Badge variant="outline">
-                            {getAgentDisplayName(task.assigned_to)}
-                          </Badge>
+                          <HelpTip
+                            label={
+                              task.assigned_to
+                                ? "The agent currently pinned to this task."
+                                : "No agent pinned — the orchestrator routes it by role and availability."
+                            }
+                          >
+                            <Badge variant="outline">
+                              {getAgentDisplayName(task.assigned_to)}
+                            </Badge>
+                          </HelpTip>
                         </ResponsiveTableCardRow>
                         <ResponsiveTableCardRow label="Created">
-                          {formatDistanceToNow(new Date(task.created_at), {
-                            addSuffix: true,
-                          })}
+                          <HelpTip
+                            label={new Date(task.created_at).toLocaleString()}
+                          >
+                            <span>
+                              {formatDistanceToNow(new Date(task.created_at), {
+                                addSuffix: true,
+                              })}
+                            </span>
+                          </HelpTip>
                         </ResponsiveTableCardRow>
                       </div>
                     </ResponsiveTableCard>
@@ -827,7 +887,9 @@ export function TaskTable({
         {!isLoading && tasks && tasks.length > 0 && (
           <div className="flex flex-wrap items-center justify-end gap-4 px-4 py-3 border-t">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span>Rows:</span>
+              <HelpTip label="How many rows show per page; resets to page 1 when changed.">
+                <span>Rows:</span>
+              </HelpTip>
               <Select
                 value={String(pageSize)}
                 onValueChange={handlePageSizeChange}
@@ -844,30 +906,46 @@ export function TaskTable({
                 </SelectContent>
               </Select>
             </div>
-            <span className="text-sm text-muted-foreground">
-              {startIndex + 1}-{endIndex} of {totalItems}
-            </span>
+            <HelpTip label="Range within the current filtered/sorted, flattened tree view — not the total unfiltered task count.">
+              <span className="text-sm text-muted-foreground">
+                {startIndex + 1}-{endIndex} of {totalItems}
+              </span>
+            </HelpTip>
             <div className="flex items-center gap-1">
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => goToPage(currentPage - 1)}
-                disabled={currentPage === 1}
-                aria-label="Previous page"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => goToPage(currentPage + 1)}
-                disabled={currentPage === totalPages}
-                aria-label="Next page"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Previous page.">
+                <span
+                  className="inline-block"
+                  tabIndex={currentPage === 1 ? 0 : undefined}
+                >
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => goToPage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                </span>
+              </HelpTip>
+              <HelpTip label="Next page.">
+                <span
+                  className="inline-block"
+                  tabIndex={currentPage === totalPages ? 0 : undefined}
+                >
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => goToPage(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    aria-label="Next page"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </span>
+              </HelpTip>
             </div>
           </div>
         )}

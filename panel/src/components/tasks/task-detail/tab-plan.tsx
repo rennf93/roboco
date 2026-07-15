@@ -126,6 +126,11 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       actions={
         isEditing ? (
           <>
+            {/* Write/Preview is a stateful TabsTrigger — wrapping it in
+                HelpTip would clobber Radix's data-state (see task-tabs.tsx),
+                and the two-word label + icon already say what it does, so
+                it's left untipped rather than reassert-patched for a
+                same-line write/preview toggle. */}
             <Tabs
               value={editMode}
               onValueChange={(v) => setEditMode(v as "write" | "preview")}
@@ -151,21 +156,25 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 <X className="h-4 w-4" />
               </Button>
             </HelpTip>
-            <Button
-              size="sm"
-              onClick={handleSave}
-              onMouseDown={(e) => e.preventDefault()}
-              disabled={updateTask.isPending}
-            >
-              <Check className="h-4 w-4 mr-1" />
-              Save
-            </Button>
+            <HelpTip label="Save this approach text to the task's plan">
+              <Button
+                size="sm"
+                onClick={handleSave}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={updateTask.isPending}
+              >
+                <Check className="h-4 w-4 mr-1" />
+                Save
+              </Button>
+            </HelpTip>
           </>
         ) : (
-          <Button size="sm" variant="ghost" onClick={startEditing}>
-            <Edit3 className="h-4 w-4 mr-1" />
-            Edit
-          </Button>
+          <HelpTip label="Open the approach text for editing">
+            <Button size="sm" variant="ghost" onClick={startEditing}>
+              <Edit3 className="h-4 w-4 mr-1" />
+              Edit
+            </Button>
+          </HelpTip>
         )
       }
     >
@@ -302,10 +311,12 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
             {completedCount}/{subTasks.length} completed
           </span>
           {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
+            <HelpTip label="Add a new sub-task to this plan">
+              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
+            </HelpTip>
           )}
         </>
       }
@@ -318,11 +329,24 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               key={subtask.id}
               className="flex items-center gap-3 py-2 group"
             >
-              <Checkbox
-                checked={subtask.completed}
-                onCheckedChange={() => handleToggle(subtask.id)}
-                disabled={updateTask.isPending}
-              />
+              <HelpTip
+                label={
+                  subtask.completed
+                    ? "Mark this sub-task incomplete"
+                    : "Mark this sub-task complete"
+                }
+              >
+                {/* Checkbox exposes Radix's own data-state=checked/unchecked
+                    for its check-mark styling; re-assert it explicitly after
+                    the Tooltip wrap so the Slot merge can't clobber it (same
+                    trap as task-tabs.tsx's TabsTrigger). */}
+                <Checkbox
+                  checked={subtask.completed}
+                  data-state={subtask.completed ? "checked" : "unchecked"}
+                  onCheckedChange={() => handleToggle(subtask.id)}
+                  disabled={updateTask.isPending}
+                />
+              </HelpTip>
               {editingId === subtask.id ? (
                 <div className="flex-1 flex items-center gap-2">
                   <Input
@@ -339,24 +363,28 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </div>
               ) : (
                 <>
-                  <span
-                    className={`flex-1 cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded ${
-                      subtask.completed
-                        ? "line-through text-muted-foreground"
-                        : ""
-                    }`}
-                    onClick={() => {
-                      setEditingId(subtask.id);
-                      setEditTitle(subtask.title);
-                    }}
-                  >
-                    {subtask.title}
-                    {subtask.estimated_hours && (
-                      <Badge variant="outline" className="ml-2 text-xs">
-                        ~{subtask.estimated_hours}h
-                      </Badge>
-                    )}
-                  </span>
+                  <HelpTip label="Click to rename this sub-task">
+                    <span
+                      className={`flex-1 cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded ${
+                        subtask.completed
+                          ? "line-through text-muted-foreground"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        setEditingId(subtask.id);
+                        setEditTitle(subtask.title);
+                      }}
+                    >
+                      {subtask.title}
+                      {subtask.estimated_hours && (
+                        <HelpTip label="Estimated effort for this sub-task, in hours">
+                          <Badge variant="outline" className="ml-2 text-xs">
+                            ~{subtask.estimated_hours}h
+                          </Badge>
+                        </HelpTip>
+                      )}
+                    </span>
+                  </HelpTip>
                   <HelpTip label="Delete this sub-task">
                     <Button
                       size="sm"
@@ -509,10 +537,12 @@ function TechConsiderationsSection({
       }
       actions={
         !isAdding && (
-          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add
-          </Button>
+          <HelpTip label="Add a new technical consideration">
+            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add
+            </Button>
+          </HelpTip>
         )
       }
     >
@@ -536,15 +566,17 @@ function TechConsiderationsSection({
               </div>
             ) : (
               <>
-                <span
-                  className="flex-1 text-sm cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded"
-                  onClick={() => {
-                    setEditingIdx(idx);
-                    setEditValue(item);
-                  }}
-                >
-                  {item}
-                </span>
+                <HelpTip label="Click to edit this consideration">
+                  <span
+                    className="flex-1 text-sm cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded"
+                    onClick={() => {
+                      setEditingIdx(idx);
+                      setEditValue(item);
+                    }}
+                  >
+                    {item}
+                  </span>
+                </HelpTip>
                 <HelpTip label="Delete this consideration">
                   <Button
                     size="sm"
@@ -708,10 +740,12 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       }
       actions={
         !isAdding && (
-          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add
-          </Button>
+          <HelpTip label="Add a new risk with a mitigation and severity">
+            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add
+            </Button>
+          </HelpTip>
         )
       }
     >
@@ -733,16 +767,18 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 className="text-sm"
               />
               <div className="flex items-center gap-2">
-                <Select value={editSeverity} onValueChange={setEditSeverity}>
-                  <SelectTrigger className="w-32 h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                  </SelectContent>
-                </Select>
+                <HelpTip label="How likely/costly this risk is — see the severity badge for what each level means">
+                  <Select value={editSeverity} onValueChange={setEditSeverity}>
+                    <SelectTrigger className="w-32 h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="high">High</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </HelpTip>
                 <div className="flex-1" />
                 <HelpTip label="Discard and cancel">
                   <Button
@@ -826,16 +862,18 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               className="text-sm"
             />
             <div className="flex items-center gap-2">
-              <Select value={newSeverity} onValueChange={setNewSeverity}>
-                <SelectTrigger className="w-32 h-8">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="high">High</SelectItem>
-                </SelectContent>
-              </Select>
+              <HelpTip label="How likely/costly this risk is — see the severity badge for what each level means">
+                <Select value={newSeverity} onValueChange={setNewSeverity}>
+                  <SelectTrigger className="w-32 h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              </HelpTip>
               <div className="flex-1" />
               <HelpTip label="Discard and cancel">
                 <Button
@@ -964,10 +1002,12 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       }
       actions={
         !isAdding && (
-          <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add
-          </Button>
+          <HelpTip label="Add a new open question">
+            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Plus className="h-4 w-4 mr-1" />
+              Add
+            </Button>
+          </HelpTip>
         )
       }
     >
@@ -1051,12 +1091,14 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </div>
               ) : (
                 <div className="ml-7">
-                  <Badge
-                    variant="outline"
-                    className="text-yellow-600 border-yellow-300"
-                  >
-                    Awaiting Answer
-                  </Badge>
+                  <HelpTip label="No answer recorded yet — click this card to add one">
+                    <Badge
+                      variant="outline"
+                      className="text-yellow-600 border-yellow-300"
+                    >
+                      Awaiting Answer
+                    </Badge>
+                  </HelpTip>
                 </div>
               )}
             </div>
@@ -1157,10 +1199,12 @@ export function TabPlan({ task }: TabPlanProps) {
               A plan will be created once an agent claims and starts working on
               this task.
             </p>
-            <Button onClick={createPlan} disabled={updateTask.isPending}>
-              <Plus className="h-4 w-4 mr-2" />
-              Create Plan
-            </Button>
+            <HelpTip label="Creates an empty plan object on this task so approach/sub-tasks/risks can be filled in manually">
+              <Button onClick={createPlan} disabled={updateTask.isPending}>
+                <Plus className="h-4 w-4 mr-2" />
+                Create Plan
+              </Button>
+            </HelpTip>
           </div>
         </CardContent>
       </Card>

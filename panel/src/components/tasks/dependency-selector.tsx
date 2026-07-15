@@ -20,6 +20,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Search, X, Link2 } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface DependencySelectorProps {
   selectedIds: string[];
@@ -68,7 +69,9 @@ export function DependencySelector({
 
   return (
     <div className="space-y-2">
-      <Label>Dependencies (optional)</Label>
+      <HelpTip label="This task cannot be claimed until every dependency listed here reaches a terminal state.">
+        <Label>Dependencies (optional)</Label>
+      </HelpTip>
 
       {/* Selected dependencies */}
       {selectedTasks.length > 0 && (
@@ -81,9 +84,14 @@ export function DependencySelector({
               <div className="flex items-center gap-2 min-w-0">
                 <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
                 <span className="text-sm truncate">{task.title}</span>
-                <Badge variant="outline" className="font-mono text-xs shrink-0">
-                  {task.id.slice(0, 8)}
-                </Badge>
+                <HelpTip label="First 8 characters of this task's full ID.">
+                  <Badge
+                    variant="outline"
+                    className="font-mono text-xs shrink-0"
+                  >
+                    {task.id.slice(0, 8)}
+                  </Badge>
+                </HelpTip>
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -106,25 +114,29 @@ export function DependencySelector({
 
       {/* Add dependency popover */}
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full justify-start"
-          >
-            <Search className="h-4 w-4 mr-2" />
-            Search tasks to add as dependencies...
-          </Button>
-        </PopoverTrigger>
+        <HelpTip label="Only shows tasks that aren't already completed or cancelled — those can't block anything.">
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full justify-start"
+            >
+              <Search className="h-4 w-4 mr-2" />
+              Search tasks to add as dependencies...
+            </Button>
+          </PopoverTrigger>
+        </HelpTip>
         <PopoverContent className="w-80 sm:w-96 p-0" align="start">
           <div className="p-2 border-b">
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by title or ID..."
-              className="h-8"
-              autoFocus
-            />
+            <HelpTip label="Matches against task title or ID as you type.">
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by title or ID..."
+                className="h-8"
+                autoFocus
+              />
+            </HelpTip>
           </div>
           <ScrollArea className="h-[240px]">
             {filteredTasks.length === 0 ? (
@@ -136,36 +148,44 @@ export function DependencySelector({
                 {filteredTasks.map((task) => {
                   const isSelected = selectedIds.includes(task.id);
                   return (
-                    <Button
+                    <HelpTip
                       key={task.id}
-                      type="button"
-                      variant="ghost"
-                      className={`w-full h-auto justify-start gap-2 p-2 font-normal whitespace-normal ${
-                        isSelected ? "bg-primary/10 hover:bg-primary/10" : ""
-                      }`}
-                      onClick={() => toggleTask(task.id)}
+                      label={
+                        isSelected
+                          ? "Click to remove this dependency"
+                          : "Click to add this dependency"
+                      }
                     >
-                      <Checkbox
-                        checked={isSelected}
-                        tabIndex={-1}
-                        className="pointer-events-none shrink-0"
-                        aria-hidden
-                      />
-                      <div className="flex-1 min-w-0 text-left">
-                        <p className="text-sm truncate">{task.title}</p>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Badge
-                            variant="outline"
-                            className="font-mono text-xs"
-                          >
-                            {task.id.slice(0, 8)}
-                          </Badge>
-                          <span className="capitalize">
-                            {task.status.replace(/_/g, " ")}
-                          </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className={`w-full h-auto justify-start gap-2 p-2 font-normal whitespace-normal ${
+                          isSelected ? "bg-primary/10 hover:bg-primary/10" : ""
+                        }`}
+                        onClick={() => toggleTask(task.id)}
+                      >
+                        <Checkbox
+                          checked={isSelected}
+                          tabIndex={-1}
+                          className="pointer-events-none shrink-0"
+                          aria-hidden
+                        />
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="text-sm truncate">{task.title}</p>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Badge
+                              variant="outline"
+                              className="font-mono text-xs"
+                            >
+                              {task.id.slice(0, 8)}
+                            </Badge>
+                            <span className="capitalize">
+                              {task.status.replace(/_/g, " ")}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    </Button>
+                      </Button>
+                    </HelpTip>
                   );
                 })}
               </div>

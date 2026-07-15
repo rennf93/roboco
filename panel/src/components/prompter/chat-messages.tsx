@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "@/components/ui/copy-button";
+import { HelpTip } from "@/components/ui/help-tip";
 import type { ChatMessage, StartRoute } from "@/hooks/use-prompter";
 import { DraftProposalCard } from "./draft-proposal-card";
 
@@ -110,7 +111,11 @@ export function ChatMessages({
           return (
             <div key={msg.id} className="flex justify-start">
               <div className="group relative flex max-w-[70%] items-start gap-2 rounded-2xl rounded-tl-sm border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <HelpTip label="A request to the agent failed — this message did not come from it">
+                  <span className="mt-0.5 shrink-0" tabIndex={0}>
+                    <AlertTriangle className="h-4 w-4" />
+                  </span>
+                </HelpTip>
                 <span>{msg.content}</span>
                 <CopyButton
                   value={msg.content}

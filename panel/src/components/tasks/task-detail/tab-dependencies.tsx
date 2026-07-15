@@ -26,6 +26,17 @@ interface TabDependenciesProps {
   task: Task;
 }
 
+// Grounded in roboco/services/gateway/claim_guards.py: dependency_ids
+// genuinely gates claim (a task can't be claimed until every dependency
+// reaches completed/cancelled); blocker_ids is the pure-informational
+// inverse ("tasks this one is blocking") and does not itself gate anything.
+const FIELD_TIPS: Record<DependencyListProps["field"], string> = {
+  dependency_ids:
+    "Tasks that must reach completed/cancelled before this one can be claimed.",
+  blocker_ids:
+    "Tasks that depend on this one — informational; does not block this task's own claim.",
+};
+
 interface DependencyListProps {
   task: Task;
   field: "dependency_ids" | "blocker_ids";
@@ -124,19 +135,33 @@ function DependencyList({
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg flex items-center gap-2">
-            {icon}
-            {title}
+            <HelpTip label={FIELD_TIPS[field]}>
+              <span className="flex items-center gap-2">
+                {icon}
+                {title}
+              </span>
+            </HelpTip>
             {ids.length > 0 && field === "blocker_ids" && (
-              <Badge variant="destructive" className="ml-2">
-                {ids.length}
-              </Badge>
+              <HelpTip label="Number of other tasks currently depending on this one">
+                <Badge variant="destructive" className="ml-2">
+                  {ids.length}
+                </Badge>
+              </HelpTip>
             )}
           </CardTitle>
           {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
+            <HelpTip
+              label={
+                field === "dependency_ids"
+                  ? "Add a task ID this task must wait on"
+                  : "Add a task ID that this task is blocking"
+              }
+            >
+              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
+            </HelpTip>
           )}
         </div>
       </CardHeader>
@@ -167,9 +192,17 @@ function DependencyList({
                       </span>
                     </Link>
                   </HelpTip>
-                  <Badge variant="outline" className={badgeClass}>
-                    {badgeLabel}
-                  </Badge>
+                  <HelpTip
+                    label={
+                      field === "dependency_ids"
+                        ? "Click the id to open this dependency task"
+                        : "This task is blocking the linked task's claim"
+                    }
+                  >
+                    <Badge variant="outline" className={badgeClass}>
+                      {badgeLabel}
+                    </Badge>
+                  </HelpTip>
                   <HelpTip label="Remove this dependency">
                     <Button
                       size="sm"
@@ -198,25 +231,35 @@ function DependencyList({
                   className="h-8 text-sm flex-1 font-mono"
                   disabled={updateTask.isPending}
                 />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setNewId("");
-                    setIsAdding(false);
-                  }}
-                  className="h-7 w-7 p-0"
+                <HelpTip label="Discard and cancel">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setNewId("");
+                      setIsAdding(false);
+                    }}
+                    className="h-7 w-7 p-0"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
+                <HelpTip
+                  label={
+                    field === "dependency_ids"
+                      ? "Add this task ID as a dependency"
+                      : "Add this task ID as a blocked task"
+                  }
                 >
-                  <X className="h-4 w-4" />
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleAdd}
-                  disabled={!newId.trim() || updateTask.isPending}
-                  className="h-7 w-7 p-0"
-                >
-                  <Check className="h-4 w-4" />
-                </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleAdd}
+                    disabled={!newId.trim() || updateTask.isPending}
+                    className="h-7 w-7 p-0"
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
               </li>
             )}
           </ul>
@@ -367,8 +410,12 @@ export function TabDependencies({ task }: TabDependenciesProps) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg flex items-center gap-2">
-              <ArrowUp className="h-5 w-5 text-purple-500" />
-              Parent Task
+              <HelpTip label="The coordination task this one was delegated under, if any">
+                <span className="flex items-center gap-2">
+                  <ArrowUp className="h-5 w-5 text-purple-500" />
+                  Parent Task
+                </span>
+              </HelpTip>
             </CardTitle>
           </div>
         </CardHeader>
@@ -386,26 +433,30 @@ export function TabDependencies({ task }: TabDependenciesProps) {
                 className="h-8 text-sm flex-1 font-mono"
                 disabled={updateTask.isPending}
               />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setParentValue(task.parent_task_id ?? "");
-                  setEditingParent(false);
-                }}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleParentSave}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={updateTask.isPending}
-                className="h-7 w-7 p-0"
-              >
-                <Check className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setParentValue(task.parent_task_id ?? "");
+                    setEditingParent(false);
+                  }}
+                  className="h-7 w-7 p-0"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Save this parent task ID">
+                <Button
+                  size="sm"
+                  onClick={handleParentSave}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={updateTask.isPending}
+                  className="h-7 w-7 p-0"
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
+              </HelpTip>
             </div>
           ) : task.parent_task_id ? (
             <div
@@ -427,17 +478,19 @@ export function TabDependencies({ task }: TabDependenciesProps) {
               <Badge variant="outline" className="ml-auto">
                 View Parent
               </Badge>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startEditingParent();
-                }}
-                className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <Trash2 className="h-3 w-3 text-destructive" />
-              </Button>
+              <HelpTip label="Opens editing to change or clear the parent task — does not delete anything">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEditingParent();
+                  }}
+                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <Trash2 className="h-3 w-3 text-destructive" />
+                </Button>
+              </HelpTip>
             </div>
           ) : (
             <p
@@ -455,8 +508,12 @@ export function TabDependencies({ task }: TabDependenciesProps) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-lg flex items-center gap-2">
-              <Hash className="h-5 w-5 text-amber-500" />
-              Sequence
+              <HelpTip label="A same-parent sibling with a strictly lower sequence must go terminal before this one can be claimed; ties run in parallel">
+                <span className="flex items-center gap-2">
+                  <Hash className="h-5 w-5 text-amber-500" />
+                  Sequence
+                </span>
+              </HelpTip>
             </CardTitle>
           </div>
         </CardHeader>
@@ -475,23 +532,27 @@ export function TabDependencies({ task }: TabDependenciesProps) {
                 className="h-8 text-sm flex-1"
                 disabled={updateTask.isPending}
               />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setEditingSequence(false)}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleSequenceSave}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={updateTask.isPending}
-                className="h-7 w-7 p-0"
-              >
-                <Check className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setEditingSequence(false)}
+                  className="h-7 w-7 p-0"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Save this sequence number">
+                <Button
+                  size="sm"
+                  onClick={handleSequenceSave}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={updateTask.isPending}
+                  className="h-7 w-7 p-0"
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
+              </HelpTip>
             </div>
           ) : (
             <div
@@ -504,17 +565,19 @@ export function TabDependencies({ task }: TabDependenciesProps) {
               <span className="ml-2 text-xs text-muted-foreground">
                 Order within siblings — lower runs first
               </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startEditingSequence();
-                }}
-                className="ml-auto h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <Pencil className="h-3 w-3" />
-              </Button>
+              <HelpTip label="Edit the sequence number">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEditingSequence();
+                  }}
+                  className="ml-auto h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+              </HelpTip>
             </div>
           )}
         </CardContent>

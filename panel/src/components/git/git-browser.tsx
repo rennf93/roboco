@@ -18,6 +18,7 @@ import { GitDiffViewer } from "./git-diff-viewer";
 import { GitActionsPanel } from "./git-actions-panel";
 import { GitBranch, FolderGit2 } from "lucide-react";
 import { useGitBrowser } from "@/hooks/use-git-browser";
+import { HelpTip } from "@/components/ui/help-tip";
 
 function GitBrowserContent() {
   const {
@@ -80,25 +81,29 @@ function GitBrowserContent() {
         </div>
         <div className="flex items-center gap-2">
           {/* Project Selector */}
-          <Select value={projectSlug} onValueChange={handleProjectChange}>
-            <SelectTrigger className="w-full sm:w-64">
-              <FolderGit2 className="h-4 w-4 mr-2" />
-              <SelectValue placeholder="Select a project..." />
-            </SelectTrigger>
-            <SelectContent>
-              {loadingProjects ? (
-                <div className="p-2">
-                  <Skeleton className="h-8 w-full" />
-                </div>
-              ) : (
-                projects?.map((p) => (
-                  <SelectItem key={p.id} value={p.slug}>
-                    {p.name}
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
+          <HelpTip label="Switches every panel below (status, branches, log, diff) to this project's clone on disk.">
+            <span className="w-full sm:w-64">
+              <Select value={projectSlug} onValueChange={handleProjectChange}>
+                <SelectTrigger className="w-full sm:w-64">
+                  <FolderGit2 className="h-4 w-4 mr-2" />
+                  <SelectValue placeholder="Select a project..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {loadingProjects ? (
+                    <div className="p-2">
+                      <Skeleton className="h-8 w-full" />
+                    </div>
+                  ) : (
+                    projects?.map((p) => (
+                      <SelectItem key={p.id} value={p.slug}>
+                        {p.name}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </span>
+          </HelpTip>
         </div>
       </div>
 

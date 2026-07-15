@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { usePrompter } from "@/hooks/use-prompter";
 import { Team } from "@/types";
 import {
@@ -77,16 +78,25 @@ export default function PrompterPage() {
         </div>
         {/* End chat — reap the agent and return to the form (any chat state) */}
         {!showForm && state !== "success" && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto text-muted-foreground"
-            onClick={startAnother}
-            disabled={state === "launching"}
-          >
-            <X className="mr-1 h-4 w-4" />
-            End chat
-          </Button>
+          <HelpTip label="Stops the agent session and clears this chat — you'll return to the intake form">
+            {/* disabled sets pointer-events:none on the Button, which would
+                swallow hover — the tip sits on a wrapping span instead. */}
+            <span
+              className="ml-auto"
+              tabIndex={state === "launching" ? undefined : 0}
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={startAnother}
+                disabled={state === "launching"}
+              >
+                <X className="mr-1 h-4 w-4" />
+                End chat
+              </Button>
+            </span>
+          </HelpTip>
         )}
       </div>
 

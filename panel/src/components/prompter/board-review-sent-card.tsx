@@ -78,21 +78,25 @@ export function BoardReviewSentCard({
       </CardContent>
 
       <CardFooter className="gap-2 pt-0">
-        <Button variant="outline" size="sm" asChild className="flex-1">
-          <Link
-            prefetch={false}
-            href={`/tasks/${taskId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-            View umbrella task
-          </Link>
-        </Button>
-        <Button size="sm" className="flex-1" onClick={onStartAnother}>
-          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-          Start another
-        </Button>
+        <HelpTip label="Opens the umbrella task in a new tab — use Approve & Start there once the board finishes">
+          <Button variant="outline" size="sm" asChild className="flex-1">
+            <Link
+              prefetch={false}
+              href={`/tasks/${taskId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+              View umbrella task
+            </Link>
+          </Button>
+        </HelpTip>
+        <HelpTip label="Ends this session and resets to a fresh intake chat">
+          <Button size="sm" className="flex-1" onClick={onStartAnother}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            Start another
+          </Button>
+        </HelpTip>
       </CardFooter>
     </Card>
   );

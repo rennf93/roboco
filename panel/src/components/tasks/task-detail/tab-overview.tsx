@@ -54,7 +54,9 @@ export function TabOverview({ task }: TabOverviewProps) {
       {task.quick_context && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Quick Context</CardTitle>
+            <HelpTip label="Short notes for resuming work after an interruption — mirrored on the Notes tab">
+              <CardTitle className="text-lg w-fit">Quick Context</CardTitle>
+            </HelpTip>
           </CardHeader>
           <CardContent>
             <Markdown className="text-sm">{task.quick_context}</Markdown>
@@ -65,7 +67,9 @@ export function TabOverview({ task }: TabOverviewProps) {
       {/* Verification Status */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Verification Status</CardTitle>
+          <HelpTip label="Two independent checks: the developer's self-verification, then QA's separate review">
+            <CardTitle className="text-lg w-fit">Verification Status</CardTitle>
+          </HelpTip>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-4">
@@ -73,29 +77,33 @@ export function TabOverview({ task }: TabOverviewProps) {
               <span className="text-sm text-muted-foreground">
                 Self Verified:
               </span>
-              <Badge variant={task.self_verified ? "default" : "secondary"}>
-                {task.self_verified ? "Yes" : "No"}
-              </Badge>
+              <HelpTip label="The developer confirmed they tested their own work before requesting QA review">
+                <Badge variant={task.self_verified ? "default" : "secondary"}>
+                  {task.self_verified ? "Yes" : "No"}
+                </Badge>
+              </HelpTip>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">
                 QA Verified:
               </span>
-              <Badge
-                variant={
-                  task.qa_verified === true
-                    ? "default"
+              <HelpTip label="Whether QA reviewed this task: Passed, Failed (back to needs_revision), or Pending (not reviewed yet)">
+                <Badge
+                  variant={
+                    task.qa_verified === true
+                      ? "default"
+                      : task.qa_verified === false
+                        ? "destructive"
+                        : "secondary"
+                  }
+                >
+                  {task.qa_verified === true
+                    ? "Passed"
                     : task.qa_verified === false
-                      ? "destructive"
-                      : "secondary"
-                }
-              >
-                {task.qa_verified === true
-                  ? "Passed"
-                  : task.qa_verified === false
-                    ? "Failed"
-                    : "Pending"}
-              </Badge>
+                      ? "Failed"
+                      : "Pending"}
+                </Badge>
+              </HelpTip>
             </div>
           </div>
         </CardContent>

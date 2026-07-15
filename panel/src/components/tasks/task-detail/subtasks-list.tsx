@@ -65,30 +65,34 @@ export function SubtasksList({ task }: SubtasksListProps) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <ListTree className="h-5 w-5" />
-            Subtasks
-            {totalCount > 0 && (
-              <Badge variant="secondary" className="ml-2">
-                {completedCount}/{totalCount}
-              </Badge>
-            )}
-          </CardTitle>
+          <HelpTip label="Direct children of this task; badge is completed/total">
+            <CardTitle className="text-lg flex items-center gap-2 w-fit">
+              <ListTree className="h-5 w-5" />
+              Subtasks
+              {totalCount > 0 && (
+                <Badge variant="secondary" className="ml-2">
+                  {completedCount}/{totalCount}
+                </Badge>
+              )}
+            </CardTitle>
+          </HelpTip>
           <div className="flex items-center gap-2">
             {totalCount > 0 && (
               <span className="text-sm text-muted-foreground">
                 {completionPercent}% complete
               </span>
             )}
-            <Link
-              href={`/tasks?parent=${task.id}&team=${task.team}`}
-              prefetch={false}
-            >
-              <Button size="sm" variant="ghost">
-                <Plus className="h-4 w-4 mr-1" />
-                Add
-              </Button>
-            </Link>
+            <HelpTip label="Opens the Tasks list, pre-filtered to this parent and team, to create a new subtask">
+              <Link
+                href={`/tasks?parent=${task.id}&team=${task.team}`}
+                prefetch={false}
+              >
+                <Button size="sm" variant="ghost">
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add
+                </Button>
+              </Link>
+            </HelpTip>
           </div>
         </div>
       </CardHeader>

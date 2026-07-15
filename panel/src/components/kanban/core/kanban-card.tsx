@@ -17,6 +17,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { PriorityIndicator } from "../shared/priority-indicator";
 import { BlockedBadge } from "../shared/blocked-badge";
 import { AssigneeAvatar } from "../shared/assignee-avatar";
@@ -109,12 +110,13 @@ export function KanbanCard({
           <div className="flex-1 min-w-0 overflow-hidden">
             <Link href={"/tasks/" + task.id} className="block" prefetch={false}>
               <p className="font-medium text-sm line-clamp-2 hover:underline break-words">
-                <span
-                  className="font-mono text-muted-foreground"
-                  title={task.id}
+                <HelpTip
+                  label={`Full ID ${task.id} — the 8-char prefix is what commits and branch names for this task use`}
                 >
-                  #{task.id.slice(0, 8)}
-                </span>{" "}
+                  <span className="font-mono text-muted-foreground">
+                    #{task.id.slice(0, 8)}
+                  </span>
+                </HelpTip>{" "}
                 {task.title}
               </p>
             </Link>
@@ -144,9 +146,11 @@ export function KanbanCard({
 
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-1 flex-wrap">
-            <Badge variant="outline" className="text-xs">
-              {task.team.replace(/_/g, " ")}
-            </Badge>
+            <HelpTip label="Delivery cell that owns this task — only its agents can claim it">
+              <Badge variant="outline" className="text-xs">
+                {task.team.replace(/_/g, " ")}
+              </Badge>
+            </HelpTip>
             <TaskTypeBadge type={task.task_type} showLabel={false} />
             {task.sequence != null && (
               <Tooltip>

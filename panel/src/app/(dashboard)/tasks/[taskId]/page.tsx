@@ -29,6 +29,7 @@ import { AlertTriangle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TaskDetailPageProps {
   params: Promise<{ taskId: string }>;
@@ -415,12 +416,14 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   if (error || !task) {
     return (
       <div className="space-y-6">
-        <Link href="/tasks" prefetch={false}>
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Tasks
-          </Button>
-        </Link>
+        <HelpTip label="Returns to the task list, preserving whatever filters/sort/page you had set there.">
+          <Link href="/tasks" prefetch={false}>
+            <Button variant="ghost" size="sm">
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Tasks
+            </Button>
+          </Link>
+        </HelpTip>
 
         <Card>
           <CardContent className="pt-6">
@@ -432,9 +435,11 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
                   "The task you're looking for doesn't exist or has been deleted."}
               </p>
               <div className="flex justify-center gap-4">
-                <Link href="/tasks" prefetch={false}>
-                  <Button>View All Tasks</Button>
-                </Link>
+                <HelpTip label="Leaves this not-found error and returns to the full task list.">
+                  <Link href="/tasks" prefetch={false}>
+                    <Button>View All Tasks</Button>
+                  </Link>
+                </HelpTip>
               </div>
             </div>
           </CardContent>
@@ -474,12 +479,14 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         task.team !== Team.MAIN_PM && (
           <div className="flex justify-end gap-2">
             {task.team === Team.BOARD && (
-              <Button
-                variant="outline"
-                onClick={() => router.push(`/prompter?redraft=${task.id}`)}
-              >
-                Re-draft with board feedback
-              </Button>
+              <HelpTip label="Re-opens the intake chat, threading in the board's review notes so the draft can be revised.">
+                <Button
+                  variant="outline"
+                  onClick={() => router.push(`/prompter?redraft=${task.id}`)}
+                >
+                  Re-draft with board feedback
+                </Button>
+              </HelpTip>
             )}
             <ApproveAndStartButton task={task} />
           </div>

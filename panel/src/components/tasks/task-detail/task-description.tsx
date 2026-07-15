@@ -189,7 +189,9 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
           defaultOpen={false}
           title={
             <>
-              <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <HelpTip label="Read-only architectural rules derived from the project's conventions — auto-attached, not editable here">
+                <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              </HelpTip>
               <span className="text-amber-800 dark:text-amber-300">
                 Constraints
               </span>

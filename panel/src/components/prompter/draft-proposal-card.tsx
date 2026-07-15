@@ -88,17 +88,23 @@ export function DraftProposalCard({
           </CardTitle>
           <div className="flex flex-wrap items-center gap-1 shrink-0">
             {draft.team && (
-              <Badge variant="secondary" className="text-xs">
-                {draft.team}
-              </Badge>
+              <HelpTip label="Delivery cell this task will be routed to">
+                <Badge variant="secondary" className="text-xs">
+                  {draft.team}
+                </Badge>
+              </HelpTip>
             )}
-            <Badge variant="outline" className="text-xs">
-              {priorityLabel}
-            </Badge>
-            {draft.task_type && (
+            <HelpTip label="How urgently agents work this once created — higher priority is claimed first">
               <Badge variant="outline" className="text-xs">
-                {draft.task_type}
+                {priorityLabel}
               </Badge>
+            </HelpTip>
+            {draft.task_type && (
+              <HelpTip label="Kind of work this is — affects which role picks it up">
+                <Badge variant="outline" className="text-xs">
+                  {draft.task_type}
+                </Badge>
+              </HelpTip>
             )}
             <CopyButton value={draftToText(draft)} className="ml-0.5" />
           </div>
@@ -161,15 +167,17 @@ export function DraftProposalCard({
       </CardContent>
 
       <CardFooter className="flex-wrap gap-2 pt-0">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onKeepChatting}
-          disabled={isLaunching}
-        >
-          <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
-          Keep chatting
-        </Button>
+        <HelpTip label="Dismisses this card and returns to chat — nothing is launched, the draft is kept">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onKeepChatting}
+            disabled={isLaunching}
+          >
+            <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
+            Keep chatting
+          </Button>
+        </HelpTip>
         {/* Board review & Start → PENDING, assigned to PO + HoM for review */}
         <HelpTip label="Routes this task through the Product Owner and Head of Marketing for review before any work starts.">
           <Button

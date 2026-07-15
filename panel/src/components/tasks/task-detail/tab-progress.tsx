@@ -30,6 +30,7 @@ import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { exceedsReadabilityThreshold } from "@/lib/content-readability";
+import { HelpTip } from "@/components/ui/help-tip";
 
 /**
  * Only the 2 most recent entries default to expanded; older entries (and
@@ -159,29 +160,35 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Progress Updates</CardTitle>
+          <HelpTip label="A timestamped log of status updates entered by devs, QA, or the CEO">
+            <CardTitle className="text-lg">Progress Updates</CardTitle>
+          </HelpTip>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">
               {updates.length} update{updates.length !== 1 ? "s" : ""}
             </span>
             {!isAdding && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsAdding(true)}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add
-              </Button>
+              <HelpTip label="Log a new progress update, optionally with a completion percentage">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setIsAdding(true)}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add
+                </Button>
+              </HelpTip>
             )}
           </div>
         </div>
         {latestWithPercentage && (
           <div className="mt-2">
-            <div className="flex items-center justify-between text-sm mb-1">
-              <span className="text-muted-foreground">Overall Progress</span>
-              <span className="font-medium">{currentProgress}%</span>
-            </div>
+            <HelpTip label="The percentage from the most recent update that included one — manually entered, not computed from acceptance criteria">
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-muted-foreground">Overall Progress</span>
+                <span className="font-medium">{currentProgress}%</span>
+              </div>
+            </HelpTip>
             <Progress value={currentProgress} className="h-2" />
           </div>
         )}
@@ -197,35 +204,41 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
               className="text-sm min-h-[80px]"
             />
             <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                value={newPercentage}
-                onChange={(e) => setNewPercentage(e.target.value)}
-                placeholder="Progress %"
-                className="w-32 h-8 text-sm"
-                min="0"
-                max="100"
-              />
+              <HelpTip label="Optional — leave blank to log a note with no percentage">
+                <Input
+                  type="number"
+                  value={newPercentage}
+                  onChange={(e) => setNewPercentage(e.target.value)}
+                  placeholder="Progress %"
+                  className="w-32 h-8 text-sm"
+                  min="0"
+                  max="100"
+                />
+              </HelpTip>
               <div className="flex-1" />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setNewMessage("");
-                  setNewPercentage("");
-                  setIsAdding(false);
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                disabled={!newMessage.trim() || updateTask.isPending}
-              >
-                <Check className="h-4 w-4 mr-1" />
-                Add Update
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewMessage("");
+                    setNewPercentage("");
+                    setIsAdding(false);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Save this progress update to the task">
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  disabled={!newMessage.trim() || updateTask.isPending}
+                >
+                  <Check className="h-4 w-4 mr-1" />
+                  Add Update
+                </Button>
+              </HelpTip>
             </div>
           </div>
         )}
@@ -253,9 +266,16 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                     className="bg-muted/50 rounded-lg p-3"
                   >
                     <div className="flex items-center justify-between mb-1">
+                      {/* CollapsibleTrigger is a stateful Radix trigger — HelpTip's
+                          asChild Slot would clobber its open/closed data-state
+                          (same trap as task-tabs.tsx), and this Collapsible is
+                          uncontrolled so there's no local state to re-assert.
+                          Left untipped; the chevron + agent name are visually
+                          self-explanatory as an expand/collapse row. */}
                       <CollapsibleTrigger asChild>
                         <button
                           type="button"
+                          data-testid="progress-update-trigger"
                           className="group/trigger flex min-w-0 items-center gap-1 text-left"
                         >
                           <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=closed]/trigger:-rotate-90" />
@@ -273,14 +293,16 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                           {formatTime(update.timestamp)} ·{" "}
                           {formatAbsoluteTimestamp(update.timestamp)}
                         </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleDelete(idx)}
-                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                        <HelpTip label="Delete this progress update">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDelete(idx)}
+                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </HelpTip>
                       </div>
                     </div>
                     <CollapsibleContent>
@@ -382,23 +404,27 @@ function CheckpointsSection({ task }: { task: Task }) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Bookmark className="h-5 w-5" />
-            Checkpoints
-          </CardTitle>
+          <HelpTip label="A saved snapshot of task state + remaining work, useful for handoff between agents">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Bookmark className="h-5 w-5" />
+              Checkpoints
+            </CardTitle>
+          </HelpTip>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">
               {checkpoints.length} saved
             </span>
             {!isAdding && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsAdding(true)}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add
-              </Button>
+              <HelpTip label="Save a new checkpoint of the current state and remaining work">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setIsAdding(true)}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add
+                </Button>
+              </HelpTip>
             )}
           </div>
         </div>
@@ -442,26 +468,30 @@ function CheckpointsSection({ task }: { task: Task }) {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex-1" />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setNewSummary("");
-                  setNewRemaining("");
-                  setNewNotes("");
-                  setIsAdding(false);
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                disabled={!newSummary.trim() || updateTask.isPending}
-              >
-                <Check className="h-4 w-4 mr-1" />
-                Save Checkpoint
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewSummary("");
+                    setNewRemaining("");
+                    setNewNotes("");
+                    setIsAdding(false);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Save this checkpoint to the task">
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  disabled={!newSummary.trim() || updateTask.isPending}
+                >
+                  <Check className="h-4 w-4 mr-1" />
+                  Save Checkpoint
+                </Button>
+              </HelpTip>
             </div>
           </div>
         )}
@@ -491,6 +521,8 @@ function CheckpointsSection({ task }: { task: Task }) {
                     defaultOpen={defaultEntryOpen(idx, checkpointContent)}
                   >
                     <div className="bg-primary/10 px-4 py-2 flex items-center justify-between">
+                      {/* Uncontrolled CollapsibleTrigger — left untipped, see
+                          the identical note in ProgressUpdatesSection above. */}
                       <CollapsibleTrigger asChild>
                         <button
                           type="button"
@@ -512,14 +544,16 @@ function CheckpointsSection({ task }: { task: Task }) {
                           {formatTime(checkpoint.timestamp)} ·{" "}
                           {formatAbsoluteTimestamp(checkpoint.timestamp)}
                         </span>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => handleDelete(checkpoint.id)}
-                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                        <HelpTip label="Delete this checkpoint">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleDelete(checkpoint.id)}
+                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </HelpTip>
                       </div>
                     </div>
                     <CollapsibleContent>

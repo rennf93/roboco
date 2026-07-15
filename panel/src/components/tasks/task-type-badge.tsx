@@ -2,11 +2,7 @@
 
 import { TaskType } from "@/types";
 import { Badge } from "@/components/ui/badge";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Code,
   FileText,
@@ -21,6 +17,18 @@ interface TaskTypeBadgeProps {
   showLabel?: boolean;
   className?: string;
 }
+
+// What each task type classifies as its artifact kind. Every type still
+// follows the identical full git workflow (branch, commits, PR) — this is
+// classification only, not a different pipeline.
+const TYPE_DESCRIPTIONS: Record<TaskType, string> = {
+  [TaskType.CODE]: "Source code changes.",
+  [TaskType.DOCUMENTATION]: "Documentation updates.",
+  [TaskType.RESEARCH]: "Research findings, committed as notes.",
+  [TaskType.PLANNING]: "Plans or architecture, committed as docs.",
+  [TaskType.DESIGN]: "Designs or specs, committed as assets.",
+  [TaskType.ADMINISTRATIVE]: "Process docs, committed as notes.",
+};
 
 const TYPE_CONFIG: Record<
   TaskType,
@@ -71,16 +79,13 @@ export function TaskTypeBadge({
   if (!config) return null;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Badge variant="outline" className={`${config.color} ${className}`}>
-          <span className="flex items-center gap-1">
-            {config.icon}
-            {showLabel && <span>{config.label}</span>}
-          </span>
-        </Badge>
-      </TooltipTrigger>
-      <TooltipContent>Task type: {config.label}</TooltipContent>
-    </Tooltip>
+    <HelpTip label={TYPE_DESCRIPTIONS[type]}>
+      <Badge variant="outline" className={`${config.color} ${className}`}>
+        <span className="flex items-center gap-1">
+          {config.icon}
+          {showLabel && <span>{config.label}</span>}
+        </span>
+      </Badge>
+    </HelpTip>
   );
 }

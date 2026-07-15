@@ -139,9 +139,11 @@ export function IntakeForm({
               onValueChange={onProjectId}
               disabled={isPreparing}
             >
-              <SelectTrigger>
-                <SelectValue placeholder="Select a project…" />
-              </SelectTrigger>
+              <HelpTip label="Only this project's repo is cloned and read by the agent">
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a project…" />
+                </SelectTrigger>
+              </HelpTip>
               <SelectContent>
                 {projects.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
@@ -201,9 +203,11 @@ export function IntakeForm({
                 onValueChange={onProductId}
                 disabled={isPreparing}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a product…" />
-                </SelectTrigger>
+                <HelpTip label="Every cell repo mapped to this product is cloned and read by the agent">
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a product…" />
+                  </SelectTrigger>
+                </HelpTip>
                 <SelectContent>
                   {products.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
@@ -229,14 +233,16 @@ export function IntakeForm({
             What do you want to build?{" "}
             <span className="text-destructive">*</span>
           </Label>
-          <Textarea
-            id="intake-initial-message"
-            value={initialMessage}
-            onChange={(e) => onInitialMessage(e.target.value)}
-            placeholder="Describe the idea. The agent will read the code and ask sharp follow-ups…"
-            rows={4}
-            disabled={isPreparing}
-          />
+          <HelpTip label="Kicks off the interview — you can refine details in chat afterward">
+            <Textarea
+              id="intake-initial-message"
+              value={initialMessage}
+              onChange={(e) => onInitialMessage(e.target.value)}
+              placeholder="Describe the idea. The agent will read the code and ask sharp follow-ups…"
+              rows={4}
+              disabled={isPreparing}
+            />
+          </HelpTip>
         </div>
 
         {/* Button's own disabled:pointer-events-none would swallow hover, so

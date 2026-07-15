@@ -191,16 +191,18 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
               {session.branch_name}
             </code>
           </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>Base:</span>
-            <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">
-              {session.base_branch}
-            </code>
-            <span>→</span>
-            <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">
-              {session.target_branch}
-            </code>
-          </div>
+          <HelpTip label="Base is the branch this session forked from; target is where its PR merges into">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground w-fit">
+              <span>Base:</span>
+              <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">
+                {session.base_branch}
+              </code>
+              <span>→</span>
+              <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">
+                {session.target_branch}
+              </code>
+            </div>
+          </HelpTip>
         </div>
 
         {/* PR Info */}
@@ -226,36 +228,42 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
               </div>
             </div>
             {session.pr_url && (
-              <Button variant="outline" size="sm" asChild>
-                <a
-                  href={session.pr_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <ExternalLink className="h-4 w-4 mr-1" />
-                  View PR
-                </a>
-              </Button>
+              <HelpTip label="Opens the pull request on GitHub in a new tab">
+                <Button variant="outline" size="sm" asChild>
+                  <a
+                    href={session.pr_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <ExternalLink className="h-4 w-4 mr-1" />
+                    View PR
+                  </a>
+                </Button>
+              </HelpTip>
             )}
           </div>
         )}
 
         {/* Stats Row */}
         <div className="flex items-center gap-4 pt-2">
-          <div className="flex items-center gap-2">
-            <GitCommit className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">
-              {session.commits.length} commit
-              {session.commits.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <FileCode className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">
-              {session.files_modified.length} file
-              {session.files_modified.length !== 1 ? "s" : ""}
-            </span>
-          </div>
+          <HelpTip label="Commits recorded against this branch's work session">
+            <div className="flex items-center gap-2 w-fit">
+              <GitCommit className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">
+                {session.commits.length} commit
+                {session.commits.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+          </HelpTip>
+          <HelpTip label="Distinct files touched across this session's commits">
+            <div className="flex items-center gap-2 w-fit">
+              <FileCode className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">
+                {session.files_modified.length} file
+                {session.files_modified.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+          </HelpTip>
           <HelpTip label={formatAbsoluteTimestamp(session.started_at)}>
             <div className="text-sm text-muted-foreground ml-auto w-fit">
               Started{" "}
@@ -268,12 +276,14 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
 
         {/* View Full Session Link */}
         <div className="flex justify-end pt-2">
-          <Link href={`/work-sessions/${session.id}`} prefetch={false}>
-            <Button variant="outline" size="sm" className="gap-2">
-              <ExternalLink className="h-3 w-3" />
-              View Details
-            </Button>
-          </Link>
+          <HelpTip label="Opens the full work-session record — branch, every commit, and status history">
+            <Link href={`/work-sessions/${session.id}`} prefetch={false}>
+              <Button variant="outline" size="sm" className="gap-2">
+                <ExternalLink className="h-3 w-3" />
+                View Details
+              </Button>
+            </Link>
+          </HelpTip>
         </div>
       </CardContent>
     </Card>

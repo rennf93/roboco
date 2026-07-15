@@ -56,6 +56,7 @@ import {
 import { toast } from "sonner";
 import { TaskTypeBadge } from "../task-type-badge";
 import { CopyButton } from "@/components/ui/copy-button";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Tooltip,
   TooltipContent,
@@ -115,6 +116,55 @@ const statusLabels: Record<TaskStatus, string> = {
   [TaskStatus.AWAITING_CEO_APPROVAL]: "CEO Approval",
   [TaskStatus.COMPLETED]: "Completed",
   [TaskStatus.CANCELLED]: "Cancelled",
+};
+
+// Per-action explanation of the real backend consequence — grounded in
+// roboco/foundation/policy/lifecycle.py (ActionSpec/IntentSpec source +
+// target statuses, allowed_roles) and the handlers in
+// app/(dashboard)/tasks/[taskId]/page.tsx (handleAction). Some of these
+// route through an admin-override PATCH rather than a dedicated lifecycle
+// verb — the tip says so where that's the case.
+const ACTION_TIPS: Record<string, string> = {
+  claim: "Locks this task to you so no one else can claim it (pending → claimed).",
+  start: "Begins active work on the task (claimed → in_progress).",
+  "create-branch":
+    "Creates the git branch for this task; status does not change.",
+  pause:
+    "Pauses active work (in_progress → paused); use Resume to continue later.",
+  block:
+    "Flags an external blocker (in_progress → blocked); only a PM can unblock it.",
+  "create-pr":
+    "Opens the pull request for this task's branch; status does not change.",
+  verify: "Marks work self-verified, the step before QA (in_progress → verifying).",
+  unblock: "PM-only: clears the blocker and resumes work (blocked → in_progress).",
+  resume: "Resumes paused work (paused → in_progress).",
+  "submit-qa": "Hands the task to QA for review (verifying → awaiting_qa).",
+  "pass-qa":
+    "QA-only: passes review and starts docs (awaiting_qa → awaiting_documentation).",
+  "fail-qa":
+    "QA-only: sends the task back to the developer (awaiting_qa → needs_revision).",
+  "docs-complete":
+    "Documenter-only: marks docs done, moves to PM review (→ awaiting_pm_review).",
+  "submit-pm-review":
+    "Sends the finished work to the PM for merge review (→ awaiting_pm_review).",
+  complete:
+    "PM-only: approves and marks the task completed (awaiting_pm_review → completed).",
+  "escalate-to-ceo":
+    "Sends this task to the CEO for final sign-off (→ awaiting_ceo_approval).",
+  "request-changes":
+    "Sends the task back to the developer for changes (→ needs_revision).",
+  "ceo-approve":
+    "CEO-only: approves and completes the task (→ completed); requires a note.",
+  "approve-and-merge":
+    "CEO-only: merges the PR and marks the task completed in one step.",
+  "ceo-reject": "CEO-only: sends the task back for revision (→ needs_revision).",
+  reopen: "Admin override: force-sets a cancelled task back to pending.",
+  activate: "PM-only: releases the task from backlog into the claim pool (→ pending).",
+  "start-revision":
+    "Admin override: forces the task straight to in_progress, skipping re-claim.",
+  cancel: "PM/CEO-only: cancels the task permanently; requires a documented reason.",
+  "merge-pr":
+    "Merges this task's PR on GitHub; the backend updates task state as a side effect.",
 };
 
 interface TaskHeaderProps {
@@ -515,13 +565,14 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                 disabled={updateTask.isPending}
               />
             ) : (
-              <h1
-                className="text-2xl font-bold cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors truncate"
-                onClick={startEditingTitle}
-                title={task.title}
-              >
-                {task.title}
-              </h1>
+              <HelpTip label={`Click to rename — full title: "${task.title}"`}>
+                <h1
+                  className="text-2xl font-bold cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors truncate"
+                  onClick={startEditingTitle}
+                >
+                  {task.title}
+                </h1>
+              </HelpTip>
             )}
 
             {/* Row 2: copyable task id + status + team + type. The dropdowns are
@@ -530,13 +581,12 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                 flex-wrap: on narrow viewports the id/status/team/type group
                 wraps to further rows instead of overflowing horizontally. */}
             <div className="flex flex-wrap items-center gap-2 mt-1.5">
-              <span
-                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border bg-muted/40 px-2.5 font-mono text-sm text-muted-foreground"
-                title={task.id}
-              >
-                #{task.id.slice(0, 8)}
-                <CopyButton value={task.id} className="-mr-1 px-1 py-0" />
-              </span>
+              <HelpTip label={`Full task ID: ${task.id}`}>
+                <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border bg-muted/40 px-2.5 font-mono text-sm text-muted-foreground">
+                  #{task.id.slice(0, 8)}
+                  <CopyButton value={task.id} className="-mr-1 px-1 py-0" />
+                </span>
+              </HelpTip>
 
               <span className="text-muted-foreground shrink-0">|</span>
 
@@ -669,42 +719,49 @@ export function TaskHeader({ task, onAction, nav }: TaskHeaderProps) {
                 </TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end">
-                {/* Lifecycle actions (non-cancel) */}
+                {/* Lifecycle actions (non-cancel) — each tip states the real
+                    source→target status transition and which role can fire
+                    it, grounded in lifecycle.py's ActionSpec/IntentSpec table. */}
                 {actions
                   .filter((a) => a.action !== "cancel")
                   .map((action) => (
-                    <DropdownMenuItem
-                      key={action.action}
-                      onClick={() => handleAction(action.action)}
-                    >
-                      {action.icon}
-                      {action.label}
-                    </DropdownMenuItem>
+                    <HelpTip key={action.action} label={ACTION_TIPS[action.action]}>
+                      <DropdownMenuItem
+                        onClick={() => handleAction(action.action)}
+                      >
+                        {action.icon}
+                        {action.label}
+                      </DropdownMenuItem>
+                    </HelpTip>
                   ))}
 
                 {/* Cancel action */}
                 {actions.some((a) => a.action === "cancel") && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={() => handleAction("cancel")}
-                      className="text-orange-600"
-                    >
-                      <XCircle className="h-4 w-4 mr-2" />
-                      Cancel Task
-                    </DropdownMenuItem>
+                    <HelpTip label={ACTION_TIPS.cancel}>
+                      <DropdownMenuItem
+                        onClick={() => handleAction("cancel")}
+                        className="text-orange-600"
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Cancel Task
+                      </DropdownMenuItem>
+                    </HelpTip>
                   </>
                 )}
 
                 {/* Delete option */}
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => setDeleteOpen(true)}
-                  className="text-red-600"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Delete Task
-                </DropdownMenuItem>
+                <HelpTip label="Permanently deletes this task record from the database; cannot be undone.">
+                  <DropdownMenuItem
+                    onClick={() => setDeleteOpen(true)}
+                    className="text-red-600"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Task
+                  </DropdownMenuItem>
+                </HelpTip>
               </DropdownMenuContent>
             </DropdownMenu>
           )}

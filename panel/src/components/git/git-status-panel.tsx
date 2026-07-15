@@ -70,20 +70,24 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
             Repository Status
           </span>
           {!hasChanges && (
-            <Badge variant="outline" className="text-green-600">
-              <CheckCircle className="h-3 w-3 mr-1" />
-              Clean
-            </Badge>
+            <HelpTip label="No staged, modified, or untracked files — the working tree matches HEAD.">
+              <Badge variant="outline" className="text-green-600">
+                <CheckCircle className="h-3 w-3 mr-1" />
+                Clean
+              </Badge>
+            </HelpTip>
           )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Branch Info */}
         <div className="flex items-center gap-4 text-sm">
-          <div className="flex items-center gap-2">
-            <GitBranch className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium">{status.current_branch}</span>
-          </div>
+          <HelpTip label="The branch currently checked out in this project's workspace.">
+            <div className="flex items-center gap-2 w-fit">
+              <GitBranch className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">{status.current_branch}</span>
+            </div>
+          </HelpTip>
           {(status.ahead > 0 || status.behind > 0) && (
             <div className="flex items-center gap-2">
               {status.ahead > 0 && (

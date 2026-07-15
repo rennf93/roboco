@@ -24,6 +24,7 @@ import {
   ResponsiveTableCardRow,
 } from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   GitBranch,
   GitPullRequest,
@@ -39,6 +40,15 @@ interface WorkSessionTableProps {
   sessions: WorkSessionSummary[] | undefined;
   isLoading: boolean;
 }
+
+// Mirrors the status hints in work-session-filters.tsx's dropdown — grounded
+// in roboco/services/work_session.py's transition triggers.
+const STATUS_HINTS: Record<WorkSessionStatus, string> = {
+  active: "An agent is currently working this branch.",
+  completed: "The session's PR was merged — the branch's work is done.",
+  abandoned:
+    "Superseded by a re-claim, cancellation, or project deletion — never an auto-timeout.",
+};
 
 function getStatusBadge(status: WorkSessionStatus) {
   switch (status) {
@@ -66,6 +76,29 @@ function getStatusBadge(status: WorkSessionStatus) {
     default:
       return <Badge variant="outline">{status}</Badge>;
   }
+}
+
+function StatusBadge({ status }: { status: WorkSessionStatus }) {
+  return (
+    <HelpTip label={STATUS_HINTS[status]}>
+      <span className="w-fit">{getStatusBadge(status)}</span>
+    </HelpTip>
+  );
+}
+
+function PrBadge({ hasPr }: { hasPr: boolean }) {
+  return hasPr ? (
+    <HelpTip label="This session's branch has an open pull request on GitHub.">
+      <Badge className="bg-purple-500/10 text-purple-500 w-fit">
+        <GitPullRequest className="h-3 w-3 mr-1" />
+        PR Open
+      </Badge>
+    </HelpTip>
+  ) : (
+    <HelpTip label="No pull request opened yet for this session's branch.">
+      <span className="text-sm text-muted-foreground w-fit">No PR</span>
+    </HelpTip>
+  );
 }
 
 export function WorkSessionTable({
@@ -115,42 +148,44 @@ export function WorkSessionTable({
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <GitBranch className="h-4 w-4 text-muted-foreground" />
-                      <Link
-                        prefetch={false}
-                        href={`/work-sessions/${session.id}`}
-                        className="font-medium hover:underline font-mono text-sm"
-                      >
-                        {session.branch_name}
-                      </Link>
+                      <HelpTip label="Open this session's detail page.">
+                        <Link
+                          prefetch={false}
+                          href={`/work-sessions/${session.id}`}
+                          className="font-medium hover:underline font-mono text-sm"
+                        >
+                          {session.branch_name}
+                        </Link>
+                      </HelpTip>
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Link
-                      prefetch={false}
-                      href={`/tasks/${session.task_id}`}
-                      className="text-sm text-muted-foreground hover:text-foreground hover:underline"
-                      title={session.task_id}
-                    >
-                      {session.task_id.slice(0, 8)}...
-                    </Link>
+                    <HelpTip label={`Open task ${session.task_id}`}>
+                      <Link
+                        prefetch={false}
+                        href={`/tasks/${session.task_id}`}
+                        className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+                      >
+                        {session.task_id.slice(0, 8)}...
+                      </Link>
+                    </HelpTip>
                   </TableCell>
-                  <TableCell>{getStatusBadge(session.status)}</TableCell>
                   <TableCell>
-                    {session.has_pr ? (
-                      <Badge className="bg-purple-500/10 text-purple-500">
-                        <GitPullRequest className="h-3 w-3 mr-1" />
-                        PR Open
-                      </Badge>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">
-                        No PR
-                      </span>
-                    )}
+                    <StatusBadge status={session.status} />
+                  </TableCell>
+                  <TableCell>
+                    <PrBadge hasPr={session.has_pr} />
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {formatDistanceToNow(new Date(session.started_at), {
-                      addSuffix: true,
-                    })}
+                    <HelpTip
+                      label={new Date(session.started_at).toLocaleString()}
+                    >
+                      <span className="w-fit">
+                        {formatDistanceToNow(new Date(session.started_at), {
+                          addSuffix: true,
+                        })}
+                      </span>
+                    </HelpTip>
                   </TableCell>
                   <TableCell>
                     <Tooltip>
@@ -180,14 +215,17 @@ export function WorkSessionTable({
               <div className="flex items-start justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <Link
-                    prefetch={false}
-                    href={`/work-sessions/${session.id}`}
-                    className="truncate font-mono text-sm font-medium hover:underline"
-                    title={session.branch_name}
+                  <HelpTip
+                    label={`Open this session's detail page — ${session.branch_name}`}
                   >
-                    {session.branch_name}
-                  </Link>
+                    <Link
+                      prefetch={false}
+                      href={`/work-sessions/${session.id}`}
+                      className="truncate font-mono text-sm font-medium hover:underline"
+                    >
+                      {session.branch_name}
+                    </Link>
+                  </HelpTip>
                 </div>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -205,32 +243,32 @@ export function WorkSessionTable({
               </div>
               <div className="mt-3 divide-y">
                 <ResponsiveTableCardRow label="Task">
-                  <Link
-                    prefetch={false}
-                    href={`/tasks/${session.task_id}`}
-                    className="text-muted-foreground hover:text-foreground hover:underline"
-                    title={session.task_id}
-                  >
-                    {session.task_id.slice(0, 8)}...
-                  </Link>
+                  <HelpTip label={`Open task ${session.task_id}`}>
+                    <Link
+                      prefetch={false}
+                      href={`/tasks/${session.task_id}`}
+                      className="text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      {session.task_id.slice(0, 8)}...
+                    </Link>
+                  </HelpTip>
                 </ResponsiveTableCardRow>
                 <ResponsiveTableCardRow label="Status">
-                  {getStatusBadge(session.status)}
+                  <StatusBadge status={session.status} />
                 </ResponsiveTableCardRow>
                 <ResponsiveTableCardRow label="PR">
-                  {session.has_pr ? (
-                    <Badge className="bg-purple-500/10 text-purple-500">
-                      <GitPullRequest className="h-3 w-3 mr-1" />
-                      PR Open
-                    </Badge>
-                  ) : (
-                    <span className="text-muted-foreground">No PR</span>
-                  )}
+                  <PrBadge hasPr={session.has_pr} />
                 </ResponsiveTableCardRow>
                 <ResponsiveTableCardRow label="Started">
-                  {formatDistanceToNow(new Date(session.started_at), {
-                    addSuffix: true,
-                  })}
+                  <HelpTip
+                    label={new Date(session.started_at).toLocaleString()}
+                  >
+                    <span className="w-fit">
+                      {formatDistanceToNow(new Date(session.started_at), {
+                        addSuffix: true,
+                      })}
+                    </span>
+                  </HelpTip>
                 </ResponsiveTableCardRow>
               </div>
             </ResponsiveTableCard>

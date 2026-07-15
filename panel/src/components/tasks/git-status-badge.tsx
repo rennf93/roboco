@@ -52,10 +52,12 @@ export function GitStatusBadge({
   if (task.pr_number) {
     return (
       <MaybeLink href={task.pr_url ?? pullUrl(repoUrl, task.pr_number)}>
-        <Badge className="gap-1 text-xs bg-purple-500/10 text-purple-600 dark:text-purple-400">
-          <GitPullRequest className="h-3 w-3" />
-          PR #{task.pr_number}
-        </Badge>
+        <HelpTip label="Opens this task's pull request on GitHub in a new tab.">
+          <Badge className="gap-1 text-xs bg-purple-500/10 text-purple-600 dark:text-purple-400">
+            <GitPullRequest className="h-3 w-3" />
+            PR #{task.pr_number}
+          </Badge>
+        </HelpTip>
       </MaybeLink>
     );
   }

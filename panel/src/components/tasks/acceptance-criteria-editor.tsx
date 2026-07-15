@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, X, GripVertical } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface AcceptanceCriteriaEditorProps {
   criteria: string[];
@@ -53,12 +54,16 @@ export function AcceptanceCriteriaEditor({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <Label>
-          Acceptance Criteria <span className="text-destructive">*</span>
-        </Label>
-        <span className="text-xs text-muted-foreground">
-          {criteria.length} item{criteria.length !== 1 ? "s" : ""}
-        </span>
+        <HelpTip label="QA and reviewers check each of these directly against the shipped work to decide pass/fail.">
+          <Label>
+            Acceptance Criteria <span className="text-destructive">*</span>
+          </Label>
+        </HelpTip>
+        <HelpTip label="How many criteria are defined so far — at least one is required to submit.">
+          <span className="text-xs text-muted-foreground">
+            {criteria.length} item{criteria.length !== 1 ? "s" : ""}
+          </span>
+        </HelpTip>
       </div>
 
       {/* Existing criteria list */}
@@ -70,11 +75,13 @@ export function AcceptanceCriteriaEditor({
               <span className="text-sm text-muted-foreground w-6">
                 {index + 1}.
               </span>
-              <Input
-                value={criterion}
-                onChange={(e) => handleUpdate(index, e.target.value)}
-                className="flex-1 h-8"
-              />
+              <HelpTip label="Edit this criterion's text directly — changes save as you type.">
+                <Input
+                  value={criterion}
+                  onChange={(e) => handleUpdate(index, e.target.value)}
+                  className="flex-1 h-8"
+                />
+              </HelpTip>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -96,22 +103,31 @@ export function AcceptanceCriteriaEditor({
 
       {/* Add new criterion */}
       <div className="flex items-center gap-2">
-        <Input
-          value={newCriterion}
-          onChange={(e) => setNewCriterion(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter acceptance criterion and press Enter..."
-          className="flex-1"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleAdd}
-          disabled={!newCriterion.trim()}
-        >
-          <Plus className="h-4 w-4 mr-1" />
-          Add
-        </Button>
+        <HelpTip label="A specific, testable condition — Enter or Add appends it to the list above.">
+          <Input
+            value={newCriterion}
+            onChange={(e) => setNewCriterion(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Enter acceptance criterion and press Enter..."
+            className="flex-1"
+          />
+        </HelpTip>
+        <HelpTip label="Appends the text on the left as a new criterion; disabled until you type something.">
+          <span
+            className="inline-block"
+            tabIndex={!newCriterion.trim() ? 0 : undefined}
+          >
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleAdd}
+              disabled={!newCriterion.trim()}
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Add
+            </Button>
+          </span>
+        </HelpTip>
       </div>
 
       {/* Helper text */}

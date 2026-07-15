@@ -8,6 +8,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Textarea } from "@/components/ui/textarea";
 
 interface ChatComposerProps {
@@ -57,16 +58,18 @@ export function ChatComposer({
       className="flex items-end gap-2 border-t bg-background px-4 py-3"
       style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
     >
-      <Textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        disabled={disabled || isSending}
-        rows={2}
-        className="flex-1 resize-none text-sm"
-      />
+      <HelpTip label="Enter sends; Shift+Enter inserts a newline">
+        <Textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={disabled || isSending}
+          rows={2}
+          className="flex-1 resize-none text-sm"
+        />
+      </HelpTip>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button

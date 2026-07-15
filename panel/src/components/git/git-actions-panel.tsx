@@ -150,28 +150,51 @@ export function GitActionsPanel({
           open={showCommitDialog}
           onOpenChange={handleCommitDialogOpenChange}
         >
-          <DialogTrigger asChild>
-            <Button
-              className="w-full justify-start"
-              variant={hasStagedChanges ? "default" : "outline"}
-              disabled={!hasStagedChanges}
+          {/* HelpTip+span wraps the whole DialogTrigger, not the Button
+              itself — the Button stays DialogTrigger's asChild target so
+              Radix's Slot merge is undisturbed, and the outer span keeps the
+              tip hoverable even while disabled (disabled sets
+              pointer-events:none on the button, which would swallow hover on
+              anything nested inside it). */}
+          <HelpTip
+            label={
+              hasStagedChanges
+                ? "Records the staged files as a local commit — doesn't push to the remote."
+                : "Nothing staged yet — stage files first before a commit can be made."
+            }
+          >
+            <span
+              className="block w-full"
+              tabIndex={!hasStagedChanges ? 0 : undefined}
             >
-              <GitCommit className="h-4 w-4 mr-2" />
-              Commit Changes
-              {hasStagedChanges && (
-                <Badge variant="secondary" className="ml-auto">
-                  {status?.staged_files.length} files
-                </Badge>
-              )}
-            </Button>
-          </DialogTrigger>
+              <DialogTrigger asChild>
+                <Button
+                  className="w-full justify-start"
+                  variant={hasStagedChanges ? "default" : "outline"}
+                  disabled={!hasStagedChanges}
+                >
+                  <GitCommit className="h-4 w-4 mr-2" />
+                  Commit Changes
+                  {hasStagedChanges && (
+                    <Badge variant="secondary" className="ml-auto">
+                      {status?.staged_files.length} files
+                    </Badge>
+                  )}
+                </Button>
+              </DialogTrigger>
+            </span>
+          </HelpTip>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Commit Changes</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Commit Message</label>
+                <HelpTip label="Becomes the commit's message — shows up in the log panel and the PR's commit history.">
+                  <label className="text-sm font-medium w-fit">
+                    Commit Message
+                  </label>
+                </HelpTip>
                 <Textarea
                   placeholder="Describe your changes..."
                   value={commitMessage}
@@ -216,52 +239,82 @@ export function GitActionsPanel({
         </Dialog>
 
         {/* Push Action */}
-        <Button
-          className="w-full justify-start"
-          variant={canPush ? "default" : "outline"}
-          disabled={!canPush || isPushing}
-          onClick={() => onPush(false)}
+        <HelpTip
+          label={
+            canPush
+              ? "git push -u origin <branch>. Uploads your local commits to GitHub — never force, safe to repeat."
+              : "Nothing to push — no local commits sit ahead of the remote branch yet."
+          }
         >
-          {isPushing ? (
-            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <Upload className="h-4 w-4 mr-2" />
-          )}
-          Push to Remote
-          {status?.ahead !== undefined && status.ahead > 0 && (
-            <HelpTip label="Commits not yet pushed to the remote repository">
-              <Badge variant="secondary" className="ml-auto">
-                <ArrowUp className="h-3 w-3 mr-1" />
-                {status.ahead}
-              </Badge>
-            </HelpTip>
-          )}
-        </Button>
+          <span
+            className="block w-full"
+            tabIndex={!canPush ? 0 : undefined}
+          >
+            <Button
+              className="w-full justify-start"
+              variant={canPush ? "default" : "outline"}
+              disabled={!canPush || isPushing}
+              onClick={() => onPush(false)}
+            >
+              {isPushing ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Upload className="h-4 w-4 mr-2" />
+              )}
+              Push to Remote
+              {status?.ahead !== undefined && status.ahead > 0 && (
+                <HelpTip label="Commits not yet pushed to the remote repository">
+                  <Badge variant="secondary" className="ml-auto">
+                    <ArrowUp className="h-3 w-3 mr-1" />
+                    {status.ahead}
+                  </Badge>
+                </HelpTip>
+              )}
+            </Button>
+          </span>
+        </HelpTip>
 
         {/* Create PR Action */}
         <Dialog open={showPRDialog} onOpenChange={handlePRDialogOpenChange}>
-          <DialogTrigger asChild>
-            <Button
-              className="w-full justify-start"
-              variant="outline"
-              disabled={!canCreatePR}
+          <HelpTip
+            label={
+              canCreatePR
+                ? "Opens GitHub's PR creation flow for this branch against main."
+                : "Already on main with nothing ahead of it — there's no branch content to open a PR for."
+            }
+          >
+            <span
+              className="block w-full"
+              tabIndex={!canCreatePR ? 0 : undefined}
             >
-              <GitPullRequest className="h-4 w-4 mr-2" />
-              Create Pull Request
-            </Button>
-          </DialogTrigger>
+              <DialogTrigger asChild>
+                <Button
+                  className="w-full justify-start"
+                  variant="outline"
+                  disabled={!canCreatePR}
+                >
+                  <GitPullRequest className="h-4 w-4 mr-2" />
+                  Create Pull Request
+                </Button>
+              </DialogTrigger>
+            </span>
+          </HelpTip>
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Create Pull Request</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-4">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Badge variant="outline">{status?.current_branch}</Badge>
-                <span>→</span>
-                <Badge variant="outline">main</Badge>
-              </div>
+              <HelpTip label="Source branch on the left merges into the target branch on the right.">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground w-fit">
+                  <Badge variant="outline">{status?.current_branch}</Badge>
+                  <span>→</span>
+                  <Badge variant="outline">main</Badge>
+                </div>
+              </HelpTip>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Title</label>
+                <HelpTip label="Becomes the pull request's title on GitHub.">
+                  <label className="text-sm font-medium w-fit">Title</label>
+                </HelpTip>
                 <Input
                   placeholder="PR title..."
                   value={prTitle}
@@ -269,7 +322,11 @@ export function GitActionsPanel({
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Description</label>
+                <HelpTip label="The PR's body on GitHub — markdown supported, shown to reviewers.">
+                  <label className="text-sm font-medium w-fit">
+                    Description
+                  </label>
+                </HelpTip>
                 <Textarea
                   placeholder="Describe your changes..."
                   value={prBody}
@@ -300,23 +357,31 @@ export function GitActionsPanel({
           open={showMergeDialog}
           onOpenChange={handleMergeDialogOpenChange}
         >
-          <DialogTrigger asChild>
-            <Button className="w-full justify-start" variant="outline">
-              {isMerging ? (
-                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <GitMerge className="h-4 w-4 mr-2" />
-              )}
-              Merge PR
-            </Button>
-          </DialogTrigger>
+          <HelpTip label="Merges an open PR via GitHub's API — squash by default, falls back to merge/rebase if blocked by branch protection.">
+            <span className="block w-full">
+              <DialogTrigger asChild>
+                <Button className="w-full justify-start" variant="outline">
+                  {isMerging ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <GitMerge className="h-4 w-4 mr-2" />
+                  )}
+                  Merge PR
+                </Button>
+              </DialogTrigger>
+            </span>
+          </HelpTip>
           <DialogContent className="max-w-sm">
             <DialogHeader>
               <DialogTitle>Merge Pull Request</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">PR Number</label>
+                <HelpTip label="The GitHub PR number to merge, e.g. the 42 in .../pull/42.">
+                  <label className="text-sm font-medium w-fit">
+                    PR Number
+                  </label>
+                </HelpTip>
                 <Input
                   type="number"
                   placeholder="e.g. 42"
@@ -351,51 +416,63 @@ export function GitActionsPanel({
         </Dialog>
 
         {/* Pull Action */}
-        <Button
-          className="w-full justify-start"
-          variant="outline"
-          disabled={isPulling}
-          onClick={onPull}
-        >
-          {isPulling ? (
-            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <Download className="h-4 w-4 mr-2" />
-          )}
-          Pull from Remote
-        </Button>
-
-        {/* Fetch Action */}
-        <Button
-          className="w-full justify-start"
-          variant="outline"
-          disabled={isFetching}
-          onClick={onFetch}
-        >
-          {isFetching ? (
-            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <RefreshCcw className="h-4 w-4 mr-2" />
-          )}
-          Fetch Remote
-        </Button>
-
-        {/* Rebase Action — destructive, requires confirmation */}
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
+        <HelpTip label="Fetches origin, then fast-forwards your branch onto it. Refuses (no merge commit) if history has diverged.">
+          <span className="block w-full">
             <Button
               className="w-full justify-start"
               variant="outline"
-              disabled={isRebasing}
+              disabled={isPulling}
+              onClick={onPull}
             >
-              {isRebasing ? (
+              {isPulling ? (
                 <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
               ) : (
-                <GitGraph className="h-4 w-4 mr-2" />
+                <Download className="h-4 w-4 mr-2" />
               )}
-              Rebase onto Remote
+              Pull from Remote
             </Button>
-          </AlertDialogTrigger>
+          </span>
+        </HelpTip>
+
+        {/* Fetch Action */}
+        <HelpTip label="Updates remote-tracking refs from origin only — never touches your working directory or local branch.">
+          <span className="block w-full">
+            <Button
+              className="w-full justify-start"
+              variant="outline"
+              disabled={isFetching}
+              onClick={onFetch}
+            >
+              {isFetching ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCcw className="h-4 w-4 mr-2" />
+              )}
+              Fetch Remote
+            </Button>
+          </span>
+        </HelpTip>
+
+        {/* Rebase Action — destructive, requires confirmation */}
+        <AlertDialog>
+          <HelpTip label="Rewrites this branch's commit history on top of another branch. Requires a force-push afterward — use with care.">
+            <span className="block w-full">
+              <AlertDialogTrigger asChild>
+                <Button
+                  className="w-full justify-start"
+                  variant="outline"
+                  disabled={isRebasing}
+                >
+                  {isRebasing ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <GitGraph className="h-4 w-4 mr-2" />
+                  )}
+                  Rebase onto Remote
+                </Button>
+              </AlertDialogTrigger>
+            </span>
+          </HelpTip>
           <AlertDialogContent className="border-destructive bg-destructive/5">
             <AlertDialogHeader>
               <AlertDialogTitle>Rebase onto target branch?</AlertDialogTitle>
@@ -407,7 +484,11 @@ export function GitActionsPanel({
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="px-6 py-2 space-y-2">
-              <label className="text-sm font-medium">Target branch</label>
+              <HelpTip label="Branch/ref to replay commits onto, e.g. origin/main. On conflict, rebase auto-aborts — your tree stays untouched.">
+                <label className="text-sm font-medium w-fit">
+                  Target branch
+                </label>
+              </HelpTip>
               <Input
                 placeholder="Remote ref (e.g. origin/HEAD)"
                 value={rebaseTargetBranch}

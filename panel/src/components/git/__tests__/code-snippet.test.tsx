@@ -71,6 +71,9 @@ describe("CodeSnippet", () => {
     // The active line's content is "b"; its row carries the highlight class.
     const row = screen.getByText("b").parentElement;
     expect(row?.className).toContain("bg-blue-500/15");
+    // The active line's number is now a real HelpTip trigger (Radix injects
+    // data-state via asChild), not a bare span.
+    expect(screen.getByText("2").getAttribute("data-state")).toBe("closed");
   });
 
   it("renders the fail-open hint on an error", () => {

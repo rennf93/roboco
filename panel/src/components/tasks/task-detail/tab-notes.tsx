@@ -62,7 +62,17 @@ function prReviewBadge(task: Task): React.ReactNode {
     failed: { label: "Failed", cls: "bg-red-500" },
   };
   const v = map[verdict] ?? { label: verdict, cls: "bg-gray-500" };
-  return <Badge className={`ml-2 ${v.cls} text-white`}>{v.label}</Badge>;
+  const tip: Record<string, string> = {
+    approved: "The PR reviewer approved this task's assembled PR.",
+    passed: "The PR reviewer passed the in-path gate — on to PM review.",
+    changes_requested: "The PR reviewer asked for changes before merging.",
+    failed: "The PR reviewer failed this task back to needs_revision.",
+  };
+  return (
+    <HelpTip label={tip[verdict]}>
+      <Badge className={`ml-2 ${v.cls} text-white`}>{v.label}</Badge>
+    </HelpTip>
+  );
 }
 
 // The card background mirrors the PR reviewer's verdict, so a FAILED review reads
@@ -269,14 +279,17 @@ function EditableNoteCard({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleCancel}
-              disabled={updateTask.isPending}
-            >
-              <X className="h-4 w-4" />
-            </Button>
+            <HelpTip label="Discard changes without saving">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleCancel}
+                disabled={updateTask.isPending}
+                aria-label="Cancel edit"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </HelpTip>
             <Button
               size="sm"
               onClick={handleSave}
@@ -362,7 +375,11 @@ export function TabNotes({ task }: TabNotesProps) {
         task={task}
         field="dev_notes"
         title="Developer Notes"
-        icon={<Code className="h-5 w-5" />}
+        icon={
+          <HelpTip label="Written by the developer — approach, decisions, anything QA should know">
+            <Code className="h-5 w-5" />
+          </HelpTip>
+        }
         bgClass="bg-muted/50"
       />
 
@@ -371,7 +388,11 @@ export function TabNotes({ task }: TabNotesProps) {
         task={task}
         field="doc_notes"
         title="Documenter Notes"
-        icon={<BookText className="h-5 w-5" />}
+        icon={
+          <HelpTip label="Written by the documenter during the awaiting_documentation phase">
+            <BookText className="h-5 w-5" />
+          </HelpTip>
+        }
         bgClass="bg-muted/50"
       />
 
@@ -382,22 +403,32 @@ export function TabNotes({ task }: TabNotesProps) {
         title="QA Notes"
         icon={<TestTube className="h-5 w-5" />}
         badge={
-          <Badge
-            variant={
+          <HelpTip
+            label={
               task.qa_verified === true
-                ? "default"
+                ? "QA passed this task on to documentation."
                 : task.qa_verified === false
-                  ? "destructive"
-                  : "secondary"
+                  ? "QA failed this task back to needs_revision."
+                  : "QA hasn't reviewed this task yet."
             }
-            className="ml-2"
           >
-            {task.qa_verified === true
-              ? "Passed"
-              : task.qa_verified === false
-                ? "Failed"
-                : "Pending"}
-          </Badge>
+            <Badge
+              variant={
+                task.qa_verified === true
+                  ? "default"
+                  : task.qa_verified === false
+                    ? "destructive"
+                    : "secondary"
+              }
+              className="ml-2"
+            >
+              {task.qa_verified === true
+                ? "Passed"
+                : task.qa_verified === false
+                  ? "Failed"
+                  : "Pending"}
+            </Badge>
+          </HelpTip>
         }
         bgClass={
           task.qa_verified === true

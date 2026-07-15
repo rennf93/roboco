@@ -77,7 +77,9 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
             </code>
           )}
           {sib.pr_number != null && (
-            <Badge variant="outline">#{sib.pr_number}</Badge>
+            <HelpTip label="This sibling's pull request number, if one has been opened yet">
+              <Badge variant="outline">#{sib.pr_number}</Badge>
+            </HelpTip>
           )}
           {sib.adds_migration && (
             <HelpTip label={MIGRATION_TIP}>
@@ -130,9 +132,11 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
 
         {sib.undeclared.length > 0 && (
           <div className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-2 text-xs">
-            <span className="text-amber-700 dark:text-amber-300 font-medium">
-              Drift — touched but not declared:
-            </span>
+            <HelpTip label="Files this sibling actually touched in commits but never declared in its collision surface">
+              <span className="text-amber-700 dark:text-amber-300 font-medium w-fit">
+                Drift — touched but not declared:
+              </span>
+            </HelpTip>
             <div className="mt-1 flex flex-wrap gap-1">
               {sib.undeclared.map((f) => (
                 <code
@@ -197,9 +201,11 @@ export function TabCollision({ task }: TabCollisionProps) {
     <div className="space-y-4">
       <DeclaredSurfaceCard data={data} />
       <div>
-        <h3 className="text-sm font-semibold mb-3">
-          {siblings.length} colliding sibling{siblings.length > 1 ? "s" : ""}
-        </h3>
+        <HelpTip label="Siblings whose declared file surface overlaps yours, or that share a migration/shared-file chain">
+          <h3 className="text-sm font-semibold mb-3 w-fit">
+            {siblings.length} colliding sibling{siblings.length > 1 ? "s" : ""}
+          </h3>
+        </HelpTip>
         <div className="space-y-3">
           {siblings.map((sib) => (
             <SiblingCard key={sib.id} sib={sib} />
@@ -218,7 +224,9 @@ function DeclaredSurfaceCard({ data }: { data: CollisionMap }) {
   return (
     <Card>
       <CardContent className="pt-4 space-y-2">
-        <h3 className="text-sm font-semibold">Declared surface</h3>
+        <HelpTip label="The file globs, migration flag, and shared-surface flag this task pre-declared for sequencing">
+          <h3 className="text-sm font-semibold w-fit">Declared surface</h3>
+        </HelpTip>
         {hasSurface ? (
           <>
             {data.intends_to_touch.length > 0 && (

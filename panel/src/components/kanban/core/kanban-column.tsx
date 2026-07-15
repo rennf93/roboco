@@ -8,6 +8,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
+import { taskStatusDescription } from "@/components/tasks/task-status-badge";
 import { KanbanCard } from "./kanban-card";
 import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
@@ -55,9 +57,19 @@ export function KanbanColumn({
       )}
     >
       <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">
-          {title}
-        </h3>
+        {/* Reuses the canonical per-status copy (task-status-badge.tsx) so a
+            column header explains what a drag-drop here actually does. */}
+        <HelpTip
+          label={
+            taskStatusDescription(status)
+              ? `Dropping a card here fires this transition: ${taskStatusDescription(status)}`
+              : null
+          }
+        >
+          <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100 w-fit">
+            {title}
+          </h3>
+        </HelpTip>
         <Tooltip>
           <TooltipTrigger asChild>
             <Badge

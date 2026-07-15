@@ -54,8 +54,14 @@ describe("Task detail readability: long progress history + long criteria list", 
     const task = buildTask({ progress_updates: makeUpdates(32) });
     const { container } = render(<TabProgress task={task} />);
 
+    // Scope to the collapse trigger specifically via its test id — the row
+    // also carries a delete button wrapped in a HelpTip/Tooltip, which
+    // stamps its own Radix data-state, so a bare "button[data-state]"
+    // selector would match both.
     const triggers = Array.from(
-      container.querySelectorAll("li button[data-state]"),
+      container.querySelectorAll(
+        'li button[data-testid="progress-update-trigger"]',
+      ),
     );
     expect(triggers).toHaveLength(32);
     const openCount = triggers.filter(

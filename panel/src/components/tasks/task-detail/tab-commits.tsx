@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { HelpTip } from "@/components/ui/help-tip";
 
 interface TabCommitsProps {
@@ -114,13 +115,15 @@ export function TabCommits({ task }: TabCommitsProps) {
     <Card>
       <CardHeader className="pb-3">
         <div className="grid grid-cols-3 items-center gap-4">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <GitCommit className="h-5 w-5" />
-            Linked Commits
-            <span className="text-sm font-normal text-muted-foreground">
-              ({commits.length})
-            </span>
-          </CardTitle>
+          <HelpTip label="Commits attributed to this task — new ones link automatically as devs push">
+            <CardTitle className="text-lg flex items-center gap-2 w-fit">
+              <GitCommit className="h-5 w-5" />
+              Linked Commits
+              <span className="text-sm font-normal text-muted-foreground">
+                ({commits.length})
+              </span>
+            </CardTitle>
+          </HelpTip>
           <div className="flex items-center justify-center gap-2">
             {task.branch_name && (
               <HelpTip label="Git branch this task is being worked on">
@@ -149,14 +152,16 @@ export function TabCommits({ task }: TabCommitsProps) {
           </div>
           <div className="flex justify-end">
             {!isAdding && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsAdding(true)}
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Link
-              </Button>
+              <HelpTip label="Manually attach a commit hash — normally commits link automatically via the commit verb">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setIsAdding(true)}
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Link
+                </Button>
+              </HelpTip>
             )}
           </div>
         </div>
@@ -167,9 +172,11 @@ export function TabCommits({ task }: TabCommitsProps) {
           <div className="border rounded-lg p-4 mb-4 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium mb-1 block">
-                  Commit Hash
-                </label>
+                <HelpTip label="7-40 character git SHA; a short hash is fine">
+                  <label className="text-sm font-medium mb-1 block w-fit">
+                    Commit Hash
+                  </label>
+                </HelpTip>
                 <Input
                   ref={hashRef}
                   value={newHash}
@@ -179,9 +186,11 @@ export function TabCommits({ task }: TabCommitsProps) {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium mb-1 block">
-                  Commit Message
-                </label>
+                <HelpTip label="Free-text description shown wherever this commit is displayed">
+                  <label className="text-sm font-medium mb-1 block w-fit">
+                    Commit Message
+                  </label>
+                </HelpTip>
                 <Input
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
@@ -224,10 +233,12 @@ export function TabCommits({ task }: TabCommitsProps) {
             <p className="text-sm mt-2 mb-4">
               Commits will be linked as developers push code for this task.
             </p>
-            <Button variant="outline" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Link Commit Manually
-            </Button>
+            <HelpTip label="Manually attach a commit hash if auto-linking missed one">
+              <Button variant="outline" onClick={() => setIsAdding(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Link Commit Manually
+              </Button>
+            </HelpTip>
           </div>
         ) : (
           <div className="space-y-3">
@@ -266,10 +277,12 @@ export function TabCommits({ task }: TabCommitsProps) {
                           )}
 
                           {/* Time */}
-                          <span className="flex items-center gap-1">
-                            <Clock className="h-3 w-3" />
-                            {formatTime(commit.timestamp)}
-                          </span>
+                          <HelpTip label={formatAbsoluteTimestamp(commit.timestamp)}>
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {formatTime(commit.timestamp)}
+                            </span>
+                          </HelpTip>
                         </div>
                       </div>
                     </div>

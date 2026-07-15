@@ -41,12 +41,20 @@ export function MarkdownEditor({
         >
           <TabsList className="h-8">
             <TabsTrigger value="write" className="text-xs px-2 h-6">
-              <Edit3 className="h-3 w-3 mr-1" />
-              Write
+              <HelpTip label="Edit the raw markdown text.">
+                <span className="flex items-center">
+                  <Edit3 className="h-3 w-3 mr-1" />
+                  Write
+                </span>
+              </HelpTip>
             </TabsTrigger>
             <TabsTrigger value="preview" className="text-xs px-2 h-6">
-              <Eye className="h-3 w-3 mr-1" />
-              Preview
+              <HelpTip label="Renders the markdown as it will appear elsewhere in the app.">
+                <span className="flex items-center">
+                  <Eye className="h-3 w-3 mr-1" />
+                  Preview
+                </span>
+              </HelpTip>
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -76,9 +84,11 @@ export function MarkdownEditor({
           <span>Markdown supported</span>
         </HelpTip>
         {minLength && (
-          <span className={value.length < minLength ? "text-destructive" : ""}>
-            {value.length}/{minLength} min characters
-          </span>
+          <HelpTip label="Submission is blocked until the count reaches this minimum.">
+            <span className={value.length < minLength ? "text-destructive" : ""}>
+              {value.length}/{minLength} min characters
+            </span>
+          </HelpTip>
         )}
       </div>
 

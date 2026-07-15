@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { MessageSquare, Clock } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { formatAbsoluteTimestamp } from "@/lib/utils";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ProgressTimelineProps {
   updates: ProgressUpdate[];
@@ -45,17 +46,21 @@ export function ProgressTimeline({ updates }: ProgressTimelineProps) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg">Progress Updates</CardTitle>
+          <HelpTip label="Timestamped status updates posted while agents work this task, newest first">
+            <CardTitle className="text-lg w-fit">Progress Updates</CardTitle>
+          </HelpTip>
           <span className="text-sm text-muted-foreground">
             {updates.length} update{updates.length !== 1 ? "s" : ""}
           </span>
         </div>
         {latestWithPercentage && (
           <div className="mt-2">
-            <div className="flex items-center justify-between text-sm mb-1">
-              <span className="text-muted-foreground">Overall Progress</span>
-              <span className="font-medium">{currentProgress}%</span>
-            </div>
+            <HelpTip label="The most recent percentage reported — self-reported or derived from completed plan steps">
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-muted-foreground">Overall Progress</span>
+                <span className="font-medium">{currentProgress}%</span>
+              </div>
+            </HelpTip>
             <Progress value={currentProgress} className="h-2" />
           </div>
         )}
@@ -100,9 +105,11 @@ export function ProgressTimeline({ updates }: ProgressTimelineProps) {
                             value={update.percentage}
                             className="h-1.5 flex-1"
                           />
-                          <span className="text-xs text-muted-foreground w-10 text-right">
-                            {update.percentage}%
-                          </span>
+                          <HelpTip label="This update's reported completion percentage, out of 100">
+                            <span className="text-xs text-muted-foreground w-10 text-right">
+                              {update.percentage}%
+                            </span>
+                          </HelpTip>
                         </div>
                       </div>
                     )}

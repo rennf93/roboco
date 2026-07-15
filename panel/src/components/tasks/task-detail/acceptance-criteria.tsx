@@ -180,19 +180,27 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
 
   return (
     <CollapsibleSection
-      title="Acceptance Criteria"
+      title={
+        <HelpTip label="What proves this task is done — reviewers and the auto-submit gate check coverage against these">
+          <span className="w-fit">Acceptance Criteria</span>
+        </HelpTip>
+      }
       content={criteriaText}
       open={isAdding || editingIndex !== null ? true : undefined}
       actions={
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">
-            {completedCount}/{criteria.length} completed
-          </span>
+          <HelpTip label="Criteria whose checkbox is checked, out of the total">
+            <span className="text-sm text-muted-foreground w-fit">
+              {completedCount}/{criteria.length} completed
+            </span>
+          </HelpTip>
           {!isAdding && (
-            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add
-            </Button>
+            <HelpTip label="Adds a new empty criterion to this list">
+              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
+            </HelpTip>
           )}
         </div>
       }

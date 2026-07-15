@@ -151,10 +151,12 @@ export function TaskSelector({
       <SelectContent className="max-h-[300px]">
         {allowClear && value && (
           <SelectItem value="__clear__" className="text-muted-foreground">
-            <span className="flex items-center gap-2">
-              <X className="h-4 w-4" />
-              No parent (standalone task)
-            </span>
+            <HelpTip label="Clears the parent link — this becomes a standalone root task.">
+              <span className="flex items-center gap-2">
+                <X className="h-4 w-4" />
+                No parent (standalone task)
+              </span>
+            </HelpTip>
           </SelectItem>
         )}
 

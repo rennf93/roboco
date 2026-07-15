@@ -166,7 +166,9 @@ function EditTaskDialogInner({
         <form onSubmit={handleSubmit} className="space-y-6 mt-4">
           {/* Title */}
           <div className="space-y-2">
-            <Label htmlFor="edit-title">Title</Label>
+            <HelpTip label="5-200 characters. Shown in the task list, task detail, and used as the default PR title.">
+              <Label htmlFor="edit-title">Title</Label>
+            </HelpTip>
             <Input
               id="edit-title"
               value={title}
@@ -187,7 +189,9 @@ function EditTaskDialogInner({
           {/* Team, Priority, Complexity, Nature */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="space-y-2">
-              <Label>Team</Label>
+              <HelpTip label="Which cell owns this task — governs claim eligibility. Changing it after a branch exists doesn't rename the branch.">
+                <Label>Team</Label>
+              </HelpTip>
               <Select value={team} onValueChange={(v) => setTeam(v as Team)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -202,7 +206,9 @@ function EditTaskDialogInner({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Priority</Label>
+              <HelpTip label="Orders claim/dispatch queues — P0 tasks surface first. Doesn't force who claims it or block lower priorities.">
+                <Label>Priority</Label>
+              </HelpTip>
               <Select
                 value={String(priority)}
                 onValueChange={(v) => setPriority(parseInt(v, 10))}
@@ -220,7 +226,9 @@ function EditTaskDialogInner({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Complexity</Label>
+              <HelpTip label="Medium/High auto-routes a code task to the cell or Main PM to break down; a bare High dev task with no subtasks self-blocks.">
+                <Label>Complexity</Label>
+              </HelpTip>
               <Select
                 value={complexity}
                 onValueChange={(v) => setComplexity(v as Complexity)}
@@ -238,7 +246,9 @@ function EditTaskDialogInner({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Nature</Label>
+              <HelpTip label="Filtering only: Non-Technical root tasks awaiting PM review surface in the Board's strategic queue.">
+                <Label>Nature</Label>
+              </HelpTip>
               <Select
                 value={nature}
                 onValueChange={(v) => setNature(v as TaskNature)}
@@ -265,7 +275,9 @@ function EditTaskDialogInner({
                 type="button"
                 className="w-full justify-between"
               >
-                <span>Advanced Options</span>
+                <HelpTip label="Agent assignment, target date, task type, and repo routing.">
+                  <span>Advanced Options</span>
+                </HelpTip>
                 {advancedOpen ? (
                   <ChevronDown className="h-4 w-4" />
                 ) : (
@@ -276,7 +288,9 @@ function EditTaskDialogInner({
             <CollapsibleContent className="space-y-4 pt-4">
               {/* Assigned To */}
               <div className="space-y-2">
-                <Label>Assigned To</Label>
+                <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
+                  <Label>Assigned To</Label>
+                </HelpTip>
                 <AgentSelector
                   value={assignedTo}
                   onChange={setAssignedTo}
@@ -287,7 +301,9 @@ function EditTaskDialogInner({
 
               {/* Target Date */}
               <div className="space-y-2">
-                <Label>Target Date</Label>
+                <HelpTip label="Informational deadline only — nothing in the lifecycle enforces or auto-escalates on it.">
+                  <Label>Target Date</Label>
+                </HelpTip>
                 <Input
                   type="datetime-local"
                   value={targetDate}
@@ -328,7 +344,9 @@ function EditTaskDialogInner({
 
                 {/* Project Selector (required - all tasks follow git workflow) */}
                 <div className="space-y-2">
-                  <Label>Project</Label>
+                  <HelpTip label="The repo the branch/PR are opened against. Locked once a branch exists — see below.">
+                    <Label>Project</Label>
+                  </HelpTip>
                   <ProjectSelector
                     value={projectId || null}
                     onChange={(value) => setProjectId(value || "")}
@@ -347,16 +365,25 @@ function EditTaskDialogInner({
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-4 border-t">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={updateTask.isPending}>
-              {updateTask.isPending ? "Saving..." : "Save Changes"}
-            </Button>
+            <HelpTip label="Discards any edits made above and closes without saving.">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+              >
+                Cancel
+              </Button>
+            </HelpTip>
+            <HelpTip label="Sends the changed fields to the API and updates the task in place.">
+              <span
+                className="inline-block"
+                tabIndex={updateTask.isPending ? 0 : undefined}
+              >
+                <Button type="submit" disabled={updateTask.isPending}>
+                  {updateTask.isPending ? "Saving..." : "Save Changes"}
+                </Button>
+              </span>
+            </HelpTip>
           </div>
         </form>
       </DialogContent>

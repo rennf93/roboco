@@ -16,6 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -391,34 +392,54 @@ export function KanbanBoard({
         {/* Mobile: single-column view with prev/next navigator (hidden on sm+) */}
         <div className="sm:hidden flex flex-1 min-h-0 flex-col">
           <div className="flex items-center gap-2 mb-4 shrink-0">
-            <Button
-              variant="outline"
-              size="icon"
-              className="min-h-11 min-w-11 shrink-0"
-              onClick={() => setActiveColumnIndex((i) => Math.max(0, i - 1))}
-              disabled={activeColumnIndex === 0}
-              aria-label="Previous column"
-            >
-              <ChevronLeft className="h-5 w-5" />
-            </Button>
+            {/* Buttons wrapped in a span, not tipped directly: disabled sets
+                pointer-events:none on the Button and would swallow hover. */}
+            <HelpTip label="Swipe to the previous lifecycle stage — each column is one task status">
+              <span
+                className="shrink-0"
+                tabIndex={activeColumnIndex === 0 ? undefined : 0}
+              >
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="min-h-11 min-w-11 shrink-0"
+                  onClick={() => setActiveColumnIndex((i) => Math.max(0, i - 1))}
+                  disabled={activeColumnIndex === 0}
+                  aria-label="Previous column"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </Button>
+              </span>
+            </HelpTip>
             <p className="flex-1 text-center text-sm font-semibold">
               <span className="text-muted-foreground font-normal text-xs mr-1">
                 {activeColumnIndex + 1}/{columns.length}
               </span>
               {columns[activeColumnIndex]?.title}
             </p>
-            <Button
-              variant="outline"
-              size="icon"
-              className="min-h-11 min-w-11 shrink-0"
-              onClick={() =>
-                setActiveColumnIndex((i) => Math.min(columns.length - 1, i + 1))
-              }
-              disabled={activeColumnIndex === columns.length - 1}
-              aria-label="Next column"
-            >
-              <ChevronRight className="h-5 w-5" />
-            </Button>
+            <HelpTip label="Swipe to the next lifecycle stage — each column is one task status">
+              <span
+                className="shrink-0"
+                tabIndex={
+                  activeColumnIndex === columns.length - 1 ? undefined : 0
+                }
+              >
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="min-h-11 min-w-11 shrink-0"
+                  onClick={() =>
+                    setActiveColumnIndex((i) =>
+                      Math.min(columns.length - 1, i + 1),
+                    )
+                  }
+                  disabled={activeColumnIndex === columns.length - 1}
+                  aria-label="Next column"
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </Button>
+              </span>
+            </HelpTip>
           </div>
           {columns[activeColumnIndex] && (
             <KanbanColumn

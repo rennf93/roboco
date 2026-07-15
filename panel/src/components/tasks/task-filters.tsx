@@ -143,27 +143,31 @@ export function TaskFilters({
       <CardContent className="pt-6">
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
-            <Input
-              placeholder="Search tasks..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
+            <HelpTip label="Debounced server-side search across title, description, and task ID prefix.">
+              <Input
+                placeholder="Search tasks..."
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+              />
+            </HelpTip>
           </div>
           <div className="flex flex-wrap gap-2">
             {/* Status Multi-Select */}
             <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="min-w-32 justify-between">
-                  <span className="truncate">
-                    {statusFilter.length === 0
-                      ? "All Statuses"
-                      : statusFilter.length === 1
-                        ? STATUS_LABELS[statusFilter[0]]
-                        : `${statusFilter.length} statuses`}
-                  </span>
-                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
+              <HelpTip label="Multi-select — pick any number of statuses; the list shows tasks matching any of them.">
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="min-w-32 justify-between">
+                    <span className="truncate">
+                      {statusFilter.length === 0
+                        ? "All Statuses"
+                        : statusFilter.length === 1
+                          ? STATUS_LABELS[statusFilter[0]]
+                          : `${statusFilter.length} statuses`}
+                    </span>
+                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+              </HelpTip>
               <PopoverContent className="w-56 p-2" align="start">
                 <div className="flex items-center justify-between mb-2 pb-2 border-b">
                   <span className="text-sm font-medium">Status</span>
@@ -197,18 +201,20 @@ export function TaskFilters({
 
             {/* Team Multi-Select */}
             <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="min-w-32 justify-between">
-                  <span className="truncate">
-                    {teamFilter.length === 0
-                      ? "All Teams"
-                      : teamFilter.length === 1
-                        ? TEAM_LABELS[teamFilter[0]]
-                        : `${teamFilter.length} teams`}
-                  </span>
-                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
+              <HelpTip label="Multi-select — pick any number of teams; the list shows tasks matching any of them.">
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="min-w-32 justify-between">
+                    <span className="truncate">
+                      {teamFilter.length === 0
+                        ? "All Teams"
+                        : teamFilter.length === 1
+                          ? TEAM_LABELS[teamFilter[0]]
+                          : `${teamFilter.length} teams`}
+                    </span>
+                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+              </HelpTip>
               <PopoverContent className="w-48 p-2" align="start">
                 <div className="flex items-center justify-between mb-2 pb-2 border-b">
                   <span className="text-sm font-medium">Team</span>
@@ -243,21 +249,23 @@ export function TaskFilters({
             {/* Task Type Multi-Select (optional) */}
             {onTaskTypeChange && (
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="min-w-32 justify-between"
-                  >
-                    <span className="truncate">
-                      {taskTypeFilter.length === 0
-                        ? "All Types"
-                        : taskTypeFilter.length === 1
-                          ? TASK_TYPE_LABELS[taskTypeFilter[0]]
-                          : `${taskTypeFilter.length} types`}
-                    </span>
-                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
+                <HelpTip label="Multi-select — pick any number of task types; the list shows tasks matching any of them.">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="min-w-32 justify-between"
+                    >
+                      <span className="truncate">
+                        {taskTypeFilter.length === 0
+                          ? "All Types"
+                          : taskTypeFilter.length === 1
+                            ? TASK_TYPE_LABELS[taskTypeFilter[0]]
+                            : `${taskTypeFilter.length} types`}
+                      </span>
+                      <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                </HelpTip>
                 <PopoverContent className="w-48 p-2" align="start">
                   <div className="flex items-center justify-between mb-2 pb-2 border-b">
                     <span className="text-sm font-medium">Task Type</span>
@@ -295,21 +303,23 @@ export function TaskFilters({
             {/* Project Multi-Select (optional) */}
             {onProjectChange && projectOptions.length > 0 && (
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="min-w-32 justify-between"
-                  >
-                    <span className="truncate">
-                      {projectFilter.length === 0
-                        ? "All Projects"
-                        : projectFilter.length === 1
-                          ? projectLabel(projectFilter[0])
-                          : `${projectFilter.length} projects`}
-                    </span>
-                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
+                <HelpTip label="Multi-select — pick any number of projects; the list shows tasks matching any of them.">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="min-w-32 justify-between"
+                    >
+                      <span className="truncate">
+                        {projectFilter.length === 0
+                          ? "All Projects"
+                          : projectFilter.length === 1
+                            ? projectLabel(projectFilter[0])
+                            : `${projectFilter.length} projects`}
+                      </span>
+                      <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                </HelpTip>
                 <PopoverContent className="w-56 p-2" align="start">
                   <div className="flex items-center justify-between mb-2 pb-2 border-b">
                     <span className="text-sm font-medium">Project</span>
@@ -345,21 +355,23 @@ export function TaskFilters({
             {/* Product Multi-Select (optional) */}
             {onProductChange && productOptions.length > 0 && (
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="min-w-32 justify-between"
-                  >
-                    <span className="truncate">
-                      {productFilter.length === 0
-                        ? "All Products"
-                        : productFilter.length === 1
-                          ? productLabel(productFilter[0])
-                          : `${productFilter.length} products`}
-                    </span>
-                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
+                <HelpTip label="Multi-select — pick any number of products; the list shows tasks matching any of them.">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="min-w-32 justify-between"
+                    >
+                      <span className="truncate">
+                        {productFilter.length === 0
+                          ? "All Products"
+                          : productFilter.length === 1
+                            ? productLabel(productFilter[0])
+                            : `${productFilter.length} products`}
+                      </span>
+                      <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                </HelpTip>
                 <PopoverContent className="w-56 p-2" align="start">
                   <div className="flex items-center justify-between mb-2 pb-2 border-b">
                     <span className="text-sm font-medium">Product</span>
@@ -466,20 +478,22 @@ export function TaskFilters({
               taskTypeFilter.length > 0 ||
               projectFilter.length > 0 ||
               productFilter.length > 0) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => {
-                  clearStatuses();
-                  clearTeams();
-                  clearTaskTypes();
-                  clearProjects();
-                  clearProducts();
-                }}
-              >
-                Clear all
-              </Button>
+              <HelpTip label="Removes every active filter above, restoring the unfiltered task list.">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => {
+                    clearStatuses();
+                    clearTeams();
+                    clearTaskTypes();
+                    clearProjects();
+                    clearProducts();
+                  }}
+                >
+                  Clear all
+                </Button>
+              </HelpTip>
             )}
           </div>
         )}

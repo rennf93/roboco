@@ -18,6 +18,7 @@ import type { TaskFilters as TaskApiFilters } from "@/lib/api/tasks";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePageRefresh } from "@/hooks";
 import { useScrollRestorationStore } from "@/lib/stores";
+import { HelpTip } from "@/components/ui/help-tip";
 
 function TasksPageContent() {
   const router = useRouter();
@@ -304,9 +305,11 @@ function TasksPageContent() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Tasks</h1>
-          <p className="text-muted-foreground">
-            Manage and track all tasks across teams
-          </p>
+          <HelpTip label="Filters, sort, and pagination all persist in the URL — this view is bookmarkable and shareable.">
+            <p className="text-muted-foreground">
+              Manage and track all tasks across teams
+            </p>
+          </HelpTip>
         </div>
         <div className="flex items-center gap-2">
           <CreateTaskDialog />

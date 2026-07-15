@@ -233,9 +233,11 @@ export function CreateTaskDialog() {
         <form onSubmit={handleSubmit} className="space-y-6 mt-4">
           {/* Title */}
           <div className="space-y-2">
-            <Label htmlFor="title">
-              Title <span className="text-destructive">*</span>
-            </Label>
+            <HelpTip label="5-200 characters. Shown in the task list, task detail, and used as the default PR title.">
+              <Label htmlFor="title">
+                Title <span className="text-destructive">*</span>
+              </Label>
+            </HelpTip>
             <Input
               id="title"
               value={title}
@@ -262,9 +264,11 @@ export function CreateTaskDialog() {
           {/* Team, Priority, Complexity, Status, Nature */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="space-y-2">
-              <Label>
-                Team <span className="text-destructive">*</span>
-              </Label>
+              <HelpTip label="Which cell owns this task — governs claim eligibility and the branch name (feature/{team}/...).">
+                <Label>
+                  Team <span className="text-destructive">*</span>
+                </Label>
+              </HelpTip>
               <Select value={team} onValueChange={(v) => setTeam(v as Team)}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -279,7 +283,9 @@ export function CreateTaskDialog() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Status</Label>
+              <HelpTip label="Pending is claimable immediately; Backlog waits for PM setup (dependencies/session) before it can be activated.">
+                <Label>Status</Label>
+              </HelpTip>
               <Select
                 value={status}
                 onValueChange={(v) => setStatus(v as TaskStatus)}
@@ -297,7 +303,9 @@ export function CreateTaskDialog() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Priority</Label>
+              <HelpTip label="Orders claim/dispatch queues — P0 tasks surface first. Doesn't force who claims it or block lower priorities.">
+                <Label>Priority</Label>
+              </HelpTip>
               <Select
                 value={String(priority)}
                 onValueChange={(v) => setPriority(parseInt(v, 10))}
@@ -315,7 +323,9 @@ export function CreateTaskDialog() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Complexity</Label>
+              <HelpTip label="Medium/High auto-routes a code task to the cell or Main PM to break down; a bare High dev task with no subtasks self-blocks.">
+                <Label>Complexity</Label>
+              </HelpTip>
               <Select
                 value={complexity}
                 onValueChange={(v) => setComplexity(v as Complexity)}
@@ -333,7 +343,9 @@ export function CreateTaskDialog() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Nature</Label>
+              <HelpTip label="Filtering only: Non-Technical root tasks awaiting PM review surface in the Board's strategic queue.">
+                <Label>Nature</Label>
+              </HelpTip>
               <Select
                 value={nature}
                 onValueChange={(v) => setNature(v as TaskNature)}
@@ -373,7 +385,9 @@ export function CreateTaskDialog() {
                 type="button"
                 className="w-full justify-between"
               >
-                <span>Advanced Options</span>
+                <HelpTip label="Parent task, agent assignment, task type, and repo/product routing.">
+                  <span>Advanced Options</span>
+                </HelpTip>
                 {advancedOpen ? (
                   <ChevronDown className="h-4 w-4" />
                 ) : (
@@ -384,7 +398,9 @@ export function CreateTaskDialog() {
             <CollapsibleContent className="space-y-4 pt-4">
               {/* Parent Task */}
               <div className="space-y-2">
-                <Label>Parent Task (for subtasks)</Label>
+                <HelpTip label="Nests this task under another — its claim order is then gated by sequence relative to siblings under the same parent.">
+                  <Label>Parent Task (for subtasks)</Label>
+                </HelpTip>
                 <TaskSelector
                   value={parentTaskId}
                   onChange={setParentTaskId}
@@ -398,7 +414,9 @@ export function CreateTaskDialog() {
 
               {/* Assign To */}
               <div className="space-y-2">
-                <Label>Assign To</Label>
+                <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
+                  <Label>Assign To</Label>
+                </HelpTip>
                 <AgentSelector
                   value={assignedTo}
                   onChange={setAssignedTo}
@@ -415,9 +433,11 @@ export function CreateTaskDialog() {
               <div className="space-y-4 pt-4 border-t">
                 <div className="flex items-center gap-2 mb-2">
                   <GitBranch className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium text-sm">
-                    Git & Work Configuration
-                  </span>
+                  <HelpTip label="Every task type follows the same branch → commits → PR workflow; these fields just route it.">
+                    <span className="font-medium text-sm">
+                      Git & Work Configuration
+                    </span>
+                  </HelpTip>
                 </div>
 
                 {/* Task Type */}
@@ -447,7 +467,9 @@ export function CreateTaskDialog() {
 
                 {/* Project — required UNLESS a Product is picked (fan-out task) */}
                 <div className="space-y-2">
-                  <Label>Project</Label>
+                  <HelpTip label="The repo the branch/PR are opened against once this task is claimed.">
+                    <Label>Project</Label>
+                  </HelpTip>
                   <ProjectSelector
                     value={projectId || null}
                     onChange={(value) => setProjectId(value || "")}
@@ -467,7 +489,9 @@ export function CreateTaskDialog() {
 
                 {/* Product (optional) — drives per-cell project routing of subtasks */}
                 <div className="space-y-2">
-                  <Label>Product</Label>
+                  <HelpTip label="Fan-out: each delegated subtask routes to that cell's own mapped project instead of one repo.">
+                    <Label>Product</Label>
+                  </HelpTip>
                   <Select
                     value={productId || "none"}
                     onValueChange={(v) => setProductId(v === "none" ? "" : v)}
@@ -497,19 +521,28 @@ export function CreateTaskDialog() {
 
           {/* Actions */}
           <div className="flex justify-end gap-2 pt-4 border-t">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setOpen(false);
-                resetForm();
-              }}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={createTask.isPending}>
-              {createTask.isPending ? "Creating..." : "Create Task"}
-            </Button>
+            <HelpTip label="Discards everything entered above without creating a task.">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setOpen(false);
+                  resetForm();
+                }}
+              >
+                Cancel
+              </Button>
+            </HelpTip>
+            <HelpTip label="Validates the required fields, then creates the task via the API.">
+              <span
+                className="inline-block"
+                tabIndex={createTask.isPending ? 0 : undefined}
+              >
+                <Button type="submit" disabled={createTask.isPending}>
+                  {createTask.isPending ? "Creating..." : "Create Task"}
+                </Button>
+              </span>
+            </HelpTip>
           </div>
         </form>
       </DialogContent>

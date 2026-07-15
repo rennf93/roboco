@@ -267,15 +267,17 @@ export function BatchReviewCard({
         )}
 
         <div className="flex flex-wrap gap-2 pt-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onKeepChatting}
-            disabled={isLaunching}
-          >
-            <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
-            Keep chatting
-          </Button>
+          <HelpTip label="Dismisses this review and returns to chat — nothing is launched, the draft batch is kept">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onKeepChatting}
+              disabled={isLaunching}
+            >
+              <MessageCircle className="mr-1.5 h-3.5 w-3.5" />
+              Keep chatting
+            </Button>
+          </HelpTip>
           {/* Board review & Start → the Board reviews the whole batch first */}
           <HelpTip label="Routes the whole MegaTask through the Product Owner and Head of Marketing for review before any work starts.">
             <Button

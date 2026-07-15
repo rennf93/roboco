@@ -31,6 +31,7 @@ import {
 import { toast } from "sonner";
 import { getAgentDisplayName, resolveToSlug } from "@/lib/agent-utils";
 import { branchUrl } from "@/lib/repo-url";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { CopyButton } from "@/components/ui/copy-button";
 import { HelpTip } from "@/components/ui/help-tip";
 import { TaskTypeBadge } from "../task-type-badge";
@@ -232,28 +233,30 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <AlertTriangle className="h-4 w-4" />
             Priority
           </div>
-          <Select
-            value={task.priority.toString()}
-            onValueChange={handlePriorityChange}
-            disabled={updateTask.isPending}
-          >
-            <SelectTrigger
-              className={`w-full h-8 text-sm border-0 ${priorityColors[task.priority] ?? priorityColors[2]}`}
+          <HelpTip label="How urgently this should be worked — P0 is highest, P3 is lowest">
+            <Select
+              value={task.priority.toString()}
+              onValueChange={handlePriorityChange}
+              disabled={updateTask.isPending}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(priorityLabels).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  <span
-                    className={`px-2 py-0.5 rounded ${priorityColors[parseInt(value)]}`}
-                  >
-                    {label}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              <SelectTrigger
+                className={`w-full h-8 text-sm border-0 ${priorityColors[task.priority] ?? priorityColors[2]}`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(priorityLabels).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    <span
+                      className={`px-2 py-0.5 rounded ${priorityColors[parseInt(value)]}`}
+                    >
+                      {label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -264,22 +267,24 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Target className="h-4 w-4" />
             Complexity
           </div>
-          <Select
-            value={task.estimated_complexity}
-            onValueChange={handleComplexityChange}
-            disabled={updateTask.isPending}
-          >
-            <SelectTrigger className="w-full h-8 text-sm border-0 bg-transparent hover:bg-muted/50">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.values(Complexity).map((complexity) => (
-                <SelectItem key={complexity} value={complexity}>
-                  {complexityLabels[complexity]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <HelpTip label="A manual estimate of implementation effort; not derived from the plan or ACs">
+            <Select
+              value={task.estimated_complexity}
+              onValueChange={handleComplexityChange}
+              disabled={updateTask.isPending}
+            >
+              <SelectTrigger className="w-full h-8 text-sm border-0 bg-transparent hover:bg-muted/50">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.values(Complexity).map((complexity) => (
+                  <SelectItem key={complexity} value={complexity}>
+                    {complexityLabels[complexity]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -302,13 +307,14 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
               disabled={updateTask.isPending}
             />
           ) : (
-            <span
-              className="font-medium cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors inline-block"
-              onClick={startEditingAssigned}
-              title="Click to edit"
-            >
-              {getAgentDisplayName(task.assigned_to)}
-            </span>
+            <HelpTip label="Click to reassign — enter an agent slug (e.g. be-dev-1), or clear to unassign">
+              <span
+                className="font-medium cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors inline-block"
+                onClick={startEditingAssigned}
+              >
+                {getAgentDisplayName(task.assigned_to)}
+              </span>
+            </HelpTip>
           )}
         </CardContent>
       </Card>
@@ -320,9 +326,11 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <User className="h-4 w-4" />
             Created By
           </div>
-          <span className="font-medium">
-            {getAgentDisplayName(task.created_by)}
-          </span>
+          <HelpTip label="The agent or human who originally created this task record">
+            <span className="font-medium">
+              {getAgentDisplayName(task.created_by)}
+            </span>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -348,9 +356,17 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Calendar className="h-4 w-4" />
             Created
           </div>
-          <span className="font-medium">
-            {formatRelativeTime(task.created_at)}
-          </span>
+          <HelpTip
+            label={
+              task.created_at
+                ? `Exact timestamp: ${formatAbsoluteTimestamp(task.created_at)}`
+                : ""
+            }
+          >
+            <span className="font-medium">
+              {formatRelativeTime(task.created_at)}
+            </span>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -361,9 +377,17 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Clock className="h-4 w-4" />
             Started
           </div>
-          <span className="font-medium">
-            {formatRelativeTime(task.started_at)}
-          </span>
+          <HelpTip
+            label={
+              task.started_at
+                ? `Exact timestamp: ${formatAbsoluteTimestamp(task.started_at)}`
+                : ""
+            }
+          >
+            <span className="font-medium">
+              {formatRelativeTime(task.started_at)}
+            </span>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -386,13 +410,14 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
               disabled={updateTask.isPending}
             />
           ) : (
-            <span
-              className="font-medium cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors inline-block"
-              onClick={startEditingTargetDate}
-              title="Click to edit"
-            >
-              {task.target_date ? formatDate(task.target_date) : "Not set"}
-            </span>
+            <HelpTip label="Click to set/change the target completion date">
+              <span
+                className="font-medium cursor-pointer hover:bg-muted/50 px-2 py-1 -mx-2 rounded transition-colors inline-block"
+                onClick={startEditingTargetDate}
+              >
+                {task.target_date ? formatDate(task.target_date) : "Not set"}
+              </span>
+            </HelpTip>
           )}
         </CardContent>
       </Card>
@@ -404,9 +429,17 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Clock className="h-4 w-4" />
             Completed
           </div>
-          <span className="font-medium">
-            {formatRelativeTime(task.completed_at)}
-          </span>
+          <HelpTip
+            label={
+              task.completed_at
+                ? `Exact timestamp: ${formatAbsoluteTimestamp(task.completed_at)}`
+                : ""
+            }
+          >
+            <span className="font-medium">
+              {formatRelativeTime(task.completed_at)}
+            </span>
+          </HelpTip>
         </CardContent>
       </Card>
 
@@ -462,21 +495,24 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             </div>
             <div className="flex items-center gap-1">
               {branchHref ? (
-                <a
-                  href={branchHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open branch in GitHub"
-                  className="inline-flex transition-opacity hover:opacity-80"
-                >
+                <HelpTip label="Open this branch on GitHub in a new tab">
+                  <a
+                    href={branchHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex transition-opacity hover:opacity-80"
+                  >
+                    <Badge variant="outline" className="font-mono text-sm">
+                      {task.branch_name}
+                    </Badge>
+                  </a>
+                </HelpTip>
+              ) : (
+                <HelpTip label="The git branch for this task; no project git_url configured to link out to it">
                   <Badge variant="outline" className="font-mono text-sm">
                     {task.branch_name}
                   </Badge>
-                </a>
-              ) : (
-                <Badge variant="outline" className="font-mono text-sm">
-                  {task.branch_name}
-                </Badge>
+                </HelpTip>
               )}
               <CopyButton value={task.branch_name} />
             </div>
@@ -493,17 +529,21 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
               Pull Request
             </div>
             {task.pr_url ? (
-              <a
-                href={task.pr_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-blue-600 hover:underline dark:text-blue-400"
-              >
-                PR #{task.pr_number}
-                <ExternalLink className="h-3 w-3" />
-              </a>
+              <HelpTip label="Opens this task's pull request on GitHub in a new tab">
+                <a
+                  href={task.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  PR #{task.pr_number}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </HelpTip>
             ) : (
-              <span className="font-medium">#{task.pr_number}</span>
+              <HelpTip label="PR number on record; no pr_url stored to link out to it">
+                <span className="font-medium">#{task.pr_number}</span>
+              </HelpTip>
             )}
           </CardContent>
         </Card>
@@ -517,15 +557,19 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             Project
           </div>
           {task.project_id && project ? (
-            <Link
-              prefetch={false}
-              href={`/projects`}
-              className="font-medium text-blue-600 hover:underline dark:text-blue-400"
-            >
-              {project.name}
-            </Link>
+            <HelpTip label="Opens the Projects list (not a deep link to this specific project)">
+              <Link
+                prefetch={false}
+                href={`/projects`}
+                className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+              >
+                {project.name}
+              </Link>
+            </HelpTip>
           ) : (
-            <span className="font-medium text-muted-foreground">-</span>
+            <HelpTip label="This task has no associated project">
+              <span className="font-medium text-muted-foreground">-</span>
+            </HelpTip>
           )}
         </CardContent>
       </Card>

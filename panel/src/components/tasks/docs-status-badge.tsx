@@ -81,34 +81,50 @@ export function DocsStatusBadge({
   // Full variant with labels
   return (
     <div className={cn("flex flex-col gap-2", className)}>
-      <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-1 text-muted-foreground">
-          <FileCheck className="h-4 w-4" />
-          Documentation
-        </span>
-        <span className="flex items-center gap-1">
-          {docsComplete ? (
-            <Check className="h-4 w-4 text-green-600" />
-          ) : (
-            <X className="h-4 w-4 text-amber-600" />
-          )}
-          {docsComplete ? "Complete" : "Pending"}
-        </span>
-      </div>
-      <div className="flex items-center justify-between text-sm">
-        <span className="flex items-center gap-1 text-muted-foreground">
-          <GitPullRequest className="h-4 w-4" />
-          Pull Request
-        </span>
-        <span className="flex items-center gap-1">
-          {prCreated ? (
-            <Check className="h-4 w-4 text-green-600" />
-          ) : (
-            <X className="h-4 w-4 text-amber-600" />
-          )}
-          {prCreated ? "Created" : "Pending"}
-        </span>
-      </div>
+      <HelpTip
+        label={
+          docsComplete
+            ? DOCS_DESCRIPTIONS.complete
+            : "Blocks the awaiting_documentation → awaiting_pm_review handoff until the documenter marks it done."
+        }
+      >
+        <div className="flex items-center justify-between text-sm">
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <FileCheck className="h-4 w-4" />
+            Documentation
+          </span>
+          <span className="flex items-center gap-1">
+            {docsComplete ? (
+              <Check className="h-4 w-4 text-green-600" />
+            ) : (
+              <X className="h-4 w-4 text-amber-600" />
+            )}
+            {docsComplete ? "Complete" : "Pending"}
+          </span>
+        </div>
+      </HelpTip>
+      <HelpTip
+        label={
+          prCreated
+            ? PR_DESCRIPTIONS.created
+            : "The PR is opened before QA review, not after — this task hasn't reached that step yet."
+        }
+      >
+        <div className="flex items-center justify-between text-sm">
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <GitPullRequest className="h-4 w-4" />
+            Pull Request
+          </span>
+          <span className="flex items-center gap-1">
+            {prCreated ? (
+              <Check className="h-4 w-4 text-green-600" />
+            ) : (
+              <X className="h-4 w-4 text-amber-600" />
+            )}
+            {prCreated ? "Created" : "Pending"}
+          </span>
+        </div>
+      </HelpTip>
     </div>
   );
 }
