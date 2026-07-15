@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
+import { HelpTip } from "@/components/ui/help-tip";
 import { CollapsibleSection } from "./collapsible-section";
 import { Edit3, Eye, Check, X, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -102,14 +103,17 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={handleCancel}
-                disabled={updateTask.isPending}
-              >
-                <X className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Discard changes without saving">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleCancel}
+                  disabled={updateTask.isPending}
+                  aria-label="Cancel edit"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
               <Button
                 size="sm"
                 onClick={handleSave}

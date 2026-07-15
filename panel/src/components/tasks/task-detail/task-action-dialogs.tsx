@@ -13,6 +13,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Select,
   SelectContent,
@@ -194,6 +195,15 @@ export function ApproveAndMergeDialog({
   );
 }
 
+// Explains a minChars-gated disabled submit button — the character counter
+// beneath the textarea already states the minimum, but not how many more
+// characters are still needed to cross it.
+function remainingCharsTip(current: number, min: number): string {
+  const remaining = min - current;
+  if (remaining <= 0) return "";
+  return `Needs ${remaining} more character${remaining === 1 ? "" : "s"} to enable`;
+}
+
 // CEO Approve Dialog — the sign-off note is the audit record for merging to
 // production, so it is REQUIRED and must be substantive (>= 20 chars), matching
 // the server's CEO_NOTES_REQUIRED gate.
@@ -256,9 +266,11 @@ export function CeoApproveDialog({
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleConfirm} disabled={tooShort || isPending}>
-            {isPending ? "Approving..." : "Approve & Merge"}
-          </Button>
+          <HelpTip label={remainingCharsTip(notes.trim().length, _CEO_NOTES_MIN)}>
+            <Button onClick={handleConfirm} disabled={tooShort || isPending}>
+              {isPending ? "Approving..." : "Approve & Merge"}
+            </Button>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -335,13 +347,15 @@ export function RequiredNotesDialog({
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            variant={destructive ? "destructive" : "default"}
-            onClick={handleConfirm}
-            disabled={tooShort || isPending}
-          >
-            {isPending ? "Working..." : confirmLabel}
-          </Button>
+          <HelpTip label={remainingCharsTip(text.trim().length, minChars)}>
+            <Button
+              variant={destructive ? "destructive" : "default"}
+              onClick={handleConfirm}
+              disabled={tooShort || isPending}
+            >
+              {isPending ? "Working..." : confirmLabel}
+            </Button>
+          </HelpTip>
         </DialogFooter>
       </DialogContent>
     </Dialog>

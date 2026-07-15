@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { ListTree, X } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
+import { taskStatusDescription } from "./task-status-badge";
 
 interface TaskSelectorProps {
   value: string | null;
@@ -32,6 +34,20 @@ const STATUS_COLORS: Partial<Record<TaskStatus, string>> = {
   [TaskStatus.IN_PROGRESS]: "bg-blue-100 text-blue-700",
   [TaskStatus.COMPLETED]: "bg-green-100 text-green-700",
 };
+
+// Title is truncated for layout; surface the untruncated text on hover
+// rather than only when the row happens to be wide enough. No tip when
+// nothing was actually cut.
+function TaskTitleCell({ title, maxLen }: { title: string; maxLen: number }) {
+  const cut = title.length > maxLen;
+  return (
+    <HelpTip label={cut ? title : null}>
+      <span className="truncate">
+        {cut ? `${title.slice(0, maxLen)}...` : title}
+      </span>
+    </HelpTip>
+  );
+}
 
 export function TaskSelector({
   value,
@@ -114,11 +130,6 @@ export function TaskSelector({
     }
   };
 
-  const truncateTitle = (title: string, maxLen = 40) => {
-    if (title.length <= maxLen) return title;
-    return title.slice(0, maxLen) + "...";
-  };
-
   return (
     <Select
       value={value || ""}
@@ -130,9 +141,7 @@ export function TaskSelector({
           {selectedTask ? (
             <div className="flex items-center gap-2 overflow-hidden">
               <ListTree className="h-4 w-4 shrink-0" />
-              <span className="truncate">
-                {truncateTitle(selectedTask.title)}
-              </span>
+              <TaskTitleCell title={selectedTask.title} maxLen={40} />
             </div>
           ) : (
             placeholder
@@ -156,15 +165,15 @@ export function TaskSelector({
             {groupedTasks.board.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}
@@ -178,15 +187,15 @@ export function TaskSelector({
             {groupedTasks.main_pm.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}
@@ -200,15 +209,15 @@ export function TaskSelector({
             {groupedTasks.backend.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}
@@ -222,15 +231,15 @@ export function TaskSelector({
             {groupedTasks.frontend.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}
@@ -244,15 +253,15 @@ export function TaskSelector({
             {groupedTasks.ux_ui.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}
@@ -266,15 +275,15 @@ export function TaskSelector({
             {groupedTasks.marketing.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">
-                    {truncateTitle(task.title, 30)}
-                  </span>
-                  <Badge
-                    variant="secondary"
-                    className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
-                  >
-                    {task.status.replace(/_/g, " ")}
-                  </Badge>
+                  <TaskTitleCell title={task.title} maxLen={30} />
+                  <HelpTip label={taskStatusDescription(task.status)}>
+                    <Badge
+                      variant="secondary"
+                      className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
+                    >
+                      {task.status.replace(/_/g, " ")}
+                    </Badge>
+                  </HelpTip>
                 </div>
               </SelectItem>
             ))}

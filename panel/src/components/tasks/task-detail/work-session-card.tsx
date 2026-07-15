@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   GitBranch,
   GitPullRequest,
@@ -17,34 +18,57 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { WorkSessionStatus } from "@/types";
 
 interface WorkSessionCardProps {
   taskId: string;
 }
 
+// Per-state description maps (task-status-badge.tsx idiom), local to the
+// WorkSession domain — a distinct lifecycle from TaskStatus.
+const SESSION_STATUS_DESCRIPTIONS: Record<string, string> = {
+  [WorkSessionStatus.ACTIVE]: "This session's branch is still being worked on.",
+  [WorkSessionStatus.COMPLETED]: "The branch was merged and the session closed out.",
+  [WorkSessionStatus.ABANDONED]: "The session was dropped without merging.",
+};
+
+const PR_STATUS_DESCRIPTIONS: Record<string, string> = {
+  open: "The pull request is open and awaiting review or merge.",
+  merged: "The pull request was merged.",
+  closed: "The pull request was closed without merging.",
+  draft: "The pull request is a draft, not yet ready for review.",
+};
+
 function getStatusBadge(status: WorkSessionStatus) {
+  const tip = SESSION_STATUS_DESCRIPTIONS[status] ?? "";
   switch (status) {
     case WorkSessionStatus.ACTIVE:
       return (
-        <Badge className="bg-blue-500/10 text-blue-500">
-          <Clock className="h-3 w-3 mr-1" />
-          Active
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge className="bg-blue-500/10 text-blue-500">
+            <Clock className="h-3 w-3 mr-1" />
+            Active
+          </Badge>
+        </HelpTip>
       );
     case WorkSessionStatus.COMPLETED:
       return (
-        <Badge className="bg-green-500/10 text-green-500">
-          <CheckCircle2 className="h-3 w-3 mr-1" />
-          Completed
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge className="bg-green-500/10 text-green-500">
+            <CheckCircle2 className="h-3 w-3 mr-1" />
+            Completed
+          </Badge>
+        </HelpTip>
       );
     case WorkSessionStatus.ABANDONED:
       return (
-        <Badge variant="destructive">
-          <XCircle className="h-3 w-3 mr-1" />
-          Abandoned
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge variant="destructive">
+            <XCircle className="h-3 w-3 mr-1" />
+            Abandoned
+          </Badge>
+        </HelpTip>
       );
     default:
       return <Badge variant="outline">{status}</Badge>;
@@ -53,35 +77,44 @@ function getStatusBadge(status: WorkSessionStatus) {
 
 function getPRStatusBadge(prStatus: string | null) {
   if (!prStatus) return null;
+  const tip = PR_STATUS_DESCRIPTIONS[prStatus] ?? "";
 
   switch (prStatus) {
     case "open":
       return (
-        <Badge className="bg-green-500/10 text-green-500">
-          <GitPullRequest className="h-3 w-3 mr-1" />
-          Open
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge className="bg-green-500/10 text-green-500">
+            <GitPullRequest className="h-3 w-3 mr-1" />
+            Open
+          </Badge>
+        </HelpTip>
       );
     case "merged":
       return (
-        <Badge className="bg-purple-500/10 text-purple-500">
-          <GitPullRequest className="h-3 w-3 mr-1" />
-          Merged
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge className="bg-purple-500/10 text-purple-500">
+            <GitPullRequest className="h-3 w-3 mr-1" />
+            Merged
+          </Badge>
+        </HelpTip>
       );
     case "closed":
       return (
-        <Badge variant="destructive">
-          <GitPullRequest className="h-3 w-3 mr-1" />
-          Closed
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge variant="destructive">
+            <GitPullRequest className="h-3 w-3 mr-1" />
+            Closed
+          </Badge>
+        </HelpTip>
       );
     case "draft":
       return (
-        <Badge variant="outline">
-          <GitPullRequest className="h-3 w-3 mr-1" />
-          Draft
-        </Badge>
+        <HelpTip label={tip}>
+          <Badge variant="outline">
+            <GitPullRequest className="h-3 w-3 mr-1" />
+            Draft
+          </Badge>
+        </HelpTip>
       );
     default:
       return (
@@ -181,12 +214,14 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
                   {getPRStatusBadge(session.pr_status)}
                 </div>
                 {session.pr_created_at && (
-                  <p className="text-xs text-muted-foreground">
-                    Created{" "}
-                    {formatDistanceToNow(new Date(session.pr_created_at), {
-                      addSuffix: true,
-                    })}
-                  </p>
+                  <HelpTip label={formatAbsoluteTimestamp(session.pr_created_at)}>
+                    <p className="text-xs text-muted-foreground w-fit">
+                      Created{" "}
+                      {formatDistanceToNow(new Date(session.pr_created_at), {
+                        addSuffix: true,
+                      })}
+                    </p>
+                  </HelpTip>
                 )}
               </div>
             </div>
@@ -221,12 +256,14 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
               {session.files_modified.length !== 1 ? "s" : ""}
             </span>
           </div>
-          <div className="text-sm text-muted-foreground ml-auto">
-            Started{" "}
-            {formatDistanceToNow(new Date(session.started_at), {
-              addSuffix: true,
-            })}
-          </div>
+          <HelpTip label={formatAbsoluteTimestamp(session.started_at)}>
+            <div className="text-sm text-muted-foreground ml-auto w-fit">
+              Started{" "}
+              {formatDistanceToNow(new Date(session.started_at), {
+                addSuffix: true,
+              })}
+            </div>
+          </HelpTip>
         </div>
 
         {/* View Full Session Link */}

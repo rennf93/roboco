@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import type { Team } from "@/types";
 
 interface SuccessCardProps {
@@ -43,9 +44,11 @@ export function SuccessCard({
           <Badge variant="secondary" className="text-xs">
             {team.replace("_", " ")}
           </Badge>
-          <span className="text-xs text-muted-foreground">
-            ID: {taskId.slice(0, 8)}…
-          </span>
+          <HelpTip label={`Full task ID: ${taskId}`}>
+            <span className="text-xs text-muted-foreground">
+              ID: {taskId.slice(0, 8)}…
+            </span>
+          </HelpTip>
         </div>
       </CardContent>
 

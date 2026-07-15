@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const { mutateAsync } = vi.hoisted(() => ({
   mutateAsync: vi.fn().mockResolvedValue(undefined),
@@ -202,5 +203,21 @@ describe("CreateTaskDialog — project/product mutual exclusivity (F085)", () =>
     const payload = mutateAsync.mock.calls[0][0] as Record<string, unknown>;
     expect(payload.product_id).toBe("prod-1");
     expect(payload.project_id).toBeUndefined();
+  });
+});
+
+describe("CreateTaskDialog — Task Type tooltip (W9-5 follow-up)", () => {
+  it("explains what the selected task type produces on hover", async () => {
+    const user = userEvent.setup();
+    render(<CreateTaskDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /New Task/i }));
+
+    // Task Type defaults to CODE; the Collapsible mock renders Advanced
+    // Options open, so the field is reachable without a pointer toggle.
+    await user.hover(screen.getByText("Task Type"));
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /source code changes/i,
+    );
   });
 });

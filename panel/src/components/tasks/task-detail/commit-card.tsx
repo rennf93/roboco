@@ -5,6 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { GitCommit, Clock, User } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { formatAbsoluteTimestamp } from "@/lib/utils";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface CommitCardProps {
   commit: CommitRef;
@@ -44,9 +46,11 @@ export function CommitCard({ commit }: CommitCardProps) {
               {/* Meta info */}
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 {/* Hash */}
-                <Badge variant="outline" className="font-mono text-xs">
-                  {commit.hash.slice(0, 7)}
-                </Badge>
+                <HelpTip label="Short git commit hash (first 7 characters)">
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {commit.hash.slice(0, 7)}
+                  </Badge>
+                </HelpTip>
 
                 {/* Author */}
                 {commit.author_agent_id && (
@@ -57,10 +61,12 @@ export function CommitCard({ commit }: CommitCardProps) {
                 )}
 
                 {/* Time */}
-                <span className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  {formatTime(commit.timestamp)}
-                </span>
+                <HelpTip label={formatAbsoluteTimestamp(commit.timestamp)}>
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {formatTime(commit.timestamp)}
+                  </span>
+                </HelpTip>
               </div>
             </div>
           </div>

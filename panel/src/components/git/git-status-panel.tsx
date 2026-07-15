@@ -14,11 +14,21 @@ import {
   ArrowDown,
   CheckCircle,
 } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitStatusPanelProps {
   status: GitStatusResponse | undefined;
   isLoading: boolean;
 }
+
+// Plain-language explanation per file bucket, mirroring the task-status-badge
+// per-state description map so non-git-fluent readers (CEO, PM) know what
+// each section means without having to already know git jargon.
+const FILE_SECTION_DESCRIPTIONS = {
+  staged: "Changes staged and ready to be included in the next commit.",
+  unstaged: "Tracked files with changes not yet staged for commit.",
+  untracked: "New files git isn't tracking yet.",
+} as const;
 
 export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
   if (isLoading) {
@@ -77,16 +87,20 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
           {(status.ahead > 0 || status.behind > 0) && (
             <div className="flex items-center gap-2">
               {status.ahead > 0 && (
-                <Badge variant="secondary" className="text-xs">
-                  <ArrowUp className="h-3 w-3 mr-1" />
-                  {status.ahead} ahead
-                </Badge>
+                <HelpTip label="Local commits not yet pushed to the remote.">
+                  <Badge variant="secondary" className="text-xs">
+                    <ArrowUp className="h-3 w-3 mr-1" />
+                    {status.ahead} ahead
+                  </Badge>
+                </HelpTip>
               )}
               {status.behind > 0 && (
-                <Badge variant="secondary" className="text-xs">
-                  <ArrowDown className="h-3 w-3 mr-1" />
-                  {status.behind} behind
-                </Badge>
+                <HelpTip label="Remote commits not yet merged into your local branch.">
+                  <Badge variant="secondary" className="text-xs">
+                    <ArrowDown className="h-3 w-3 mr-1" />
+                    {status.behind} behind
+                  </Badge>
+                </HelpTip>
               )}
             </div>
           )}
@@ -99,9 +113,11 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
               {/* Staged Files */}
               {status.staged_files.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-green-600 uppercase tracking-wider mb-1">
-                    Staged ({status.staged_files.length})
-                  </h4>
+                  <HelpTip label={FILE_SECTION_DESCRIPTIONS.staged}>
+                    <h4 className="text-xs font-semibold text-green-600 uppercase tracking-wider mb-1 w-fit">
+                      Staged ({status.staged_files.length})
+                    </h4>
+                  </HelpTip>
                   <div className="space-y-0.5">
                     {status.staged_files.map((file) => (
                       <div
@@ -121,9 +137,11 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
               {/* Unstaged Files */}
               {status.unstaged_files.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-orange-600 uppercase tracking-wider mb-1">
-                    Modified ({status.unstaged_files.length})
-                  </h4>
+                  <HelpTip label={FILE_SECTION_DESCRIPTIONS.unstaged}>
+                    <h4 className="text-xs font-semibold text-orange-600 uppercase tracking-wider mb-1 w-fit">
+                      Modified ({status.unstaged_files.length})
+                    </h4>
+                  </HelpTip>
                   <div className="space-y-0.5">
                     {status.unstaged_files.map((file) => (
                       <div
@@ -143,9 +161,11 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
               {/* Untracked Files */}
               {status.untracked_files.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-1">
-                    Untracked ({status.untracked_files.length})
-                  </h4>
+                  <HelpTip label={FILE_SECTION_DESCRIPTIONS.untracked}>
+                    <h4 className="text-xs font-semibold text-blue-600 uppercase tracking-wider mb-1 w-fit">
+                      Untracked ({status.untracked_files.length})
+                    </h4>
+                  </HelpTip>
                   <div className="space-y-0.5">
                     {status.untracked_files.map((file) => (
                       <div

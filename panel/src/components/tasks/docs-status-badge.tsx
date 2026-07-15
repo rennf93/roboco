@@ -1,6 +1,19 @@
 import { Badge } from "@/components/ui/badge";
 import { FileCheck, GitPullRequest, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { HelpTip } from "@/components/ui/help-tip";
+
+// The compact badges below abbreviate to a single word ("Docs"/"Pending",
+// "PR"/"Pending") that reads ambiguously out of context — these spell out
+// what each state actually means.
+const DOCS_DESCRIPTIONS = {
+  complete: "Documentation for this task is complete.",
+  pending: "Documentation has not been written yet.",
+};
+const PR_DESCRIPTIONS = {
+  created: "A pull request has been opened for this task.",
+  pending: "No pull request has been opened yet.",
+};
 
 interface DocsStatusBadgeProps {
   docsComplete?: boolean;
@@ -24,32 +37,42 @@ export function DocsStatusBadge({
     return (
       <div className={cn("flex items-center gap-1", className)}>
         {docsComplete !== undefined && (
-          <Badge
-            variant="outline"
-            className={cn(
-              "text-xs",
-              docsComplete
-                ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-            )}
+          <HelpTip
+            label={
+              docsComplete ? DOCS_DESCRIPTIONS.complete : DOCS_DESCRIPTIONS.pending
+            }
           >
-            <FileCheck className="h-3 w-3 mr-1" />
-            {docsComplete ? "Docs" : "Pending"}
-          </Badge>
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-xs",
+                docsComplete
+                  ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                  : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
+              )}
+            >
+              <FileCheck className="h-3 w-3 mr-1" />
+              {docsComplete ? "Docs" : "Pending"}
+            </Badge>
+          </HelpTip>
         )}
         {prCreated !== undefined && (
-          <Badge
-            variant="outline"
-            className={cn(
-              "text-xs",
-              prCreated
-                ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
-            )}
+          <HelpTip
+            label={prCreated ? PR_DESCRIPTIONS.created : PR_DESCRIPTIONS.pending}
           >
-            <GitPullRequest className="h-3 w-3 mr-1" />
-            {prCreated ? "PR" : "Pending"}
-          </Badge>
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-xs",
+                prCreated
+                  ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                  : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
+              )}
+            >
+              <GitPullRequest className="h-3 w-3 mr-1" />
+              {prCreated ? "PR" : "Pending"}
+            </Badge>
+          </HelpTip>
         )}
       </div>
     );

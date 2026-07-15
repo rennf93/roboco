@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Rocket } from "lucide-react";
 import type { Task } from "@/types";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ApproveAndStartButtonProps {
   task: Task;
@@ -124,9 +125,11 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="approve-and-start-notes">
-              Approval notes (required)
-            </Label>
+            <HelpTip label="Minimum 20 characters — this is the permanent audit record for starting the work.">
+              <Label htmlFor="approve-and-start-notes">
+                Approval notes (required)
+              </Label>
+            </HelpTip>
             <Textarea
               id="approve-and-start-notes"
               placeholder="Board review read; requirements are clear. Build it..."

@@ -17,6 +17,7 @@ import {
 import { useProjects } from "@/hooks/use-projects";
 import { useProducts } from "@/hooks/use-products";
 import type { TargetKind } from "@/hooks/use-prompter";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface IntakeFormProps {
   targetKind: TargetKind;
@@ -111,14 +112,23 @@ export function IntakeForm({
             onValueChange={(v) => onTargetKind(v as TargetKind)}
           >
             <TabsList className="grid w-full grid-cols-3">
+              {/* Tooltip goes on the inner span, not TabsTrigger itself —
+                  TooltipTrigger's asChild merge would clobber the trigger's
+                  own data-state and break the active-tab highlight. */}
               <TabsTrigger value="project" disabled={isPreparing}>
-                Single cell
+                <HelpTip label="One task delegated to a single delivery cell (Backend, Frontend, or UX/UI) — the common case.">
+                  <span>Single cell</span>
+                </HelpTip>
               </TabsTrigger>
               <TabsTrigger value="product" disabled={isPreparing}>
-                Board-led
+                <HelpTip label="A feature spanning a product's cells — the Product Owner and Head of Marketing review it before delivery starts.">
+                  <span>Board-led</span>
+                </HelpTip>
               </TabsTrigger>
               <TabsTrigger value="megatask" disabled={isPreparing}>
-                MegaTask
+                <HelpTip label="Several related tasks across one or more repos, sequenced into conflict-free waves so independent ones run in parallel.">
+                  <span>MegaTask</span>
+                </HelpTip>
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -229,20 +239,36 @@ export function IntakeForm({
           />
         </div>
 
-        <Button
-          className="w-full"
-          onClick={onStart}
-          disabled={!isValid || isPreparing}
+        {/* Button's own disabled:pointer-events-none would swallow hover, so
+            the tip sits on a wrapping span (a well-worn disabled-tooltip
+            workaround) rather than the Button itself. */}
+        <HelpTip
+          label={
+            !isValid && !isPreparing
+              ? "Pick a scope above and describe what you want to build to continue."
+              : null
+          }
         >
-          {isPreparing ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Preparing the agent…
-            </>
-          ) : (
-            "Start chatting"
-          )}
-        </Button>
+          <span
+            className="block w-full"
+            tabIndex={!isValid && !isPreparing ? 0 : undefined}
+          >
+            <Button
+              className="w-full"
+              onClick={onStart}
+              disabled={!isValid || isPreparing}
+            >
+              {isPreparing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Preparing the agent…
+                </>
+              ) : (
+                "Start chatting"
+              )}
+            </Button>
+          </span>
+        </HelpTip>
 
         {isPreparing && (
           <div className="space-y-1.5" aria-live="polite">

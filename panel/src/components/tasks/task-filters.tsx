@@ -12,6 +12,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ChevronDown, X } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TaskFiltersProps {
   searchQuery: string;
@@ -403,46 +404,61 @@ export function TaskFilters({
             {statusFilter.map((status) => (
               <Badge key={status} variant="secondary" className="gap-1">
                 {STATUS_LABELS[status]}
-                <X
-                  className="h-3 w-3 cursor-pointer hover:text-destructive"
-                  onClick={() => toggleStatus(status)}
-                />
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => toggleStatus(status)}
+                    aria-label={`Remove ${STATUS_LABELS[status]} filter`}
+                  />
+                </HelpTip>
               </Badge>
             ))}
             {teamFilter.map((team) => (
               <Badge key={team} variant="secondary" className="gap-1">
                 {TEAM_LABELS[team]}
-                <X
-                  className="h-3 w-3 cursor-pointer hover:text-destructive"
-                  onClick={() => toggleTeam(team)}
-                />
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => toggleTeam(team)}
+                    aria-label={`Remove ${TEAM_LABELS[team]} filter`}
+                  />
+                </HelpTip>
               </Badge>
             ))}
             {taskTypeFilter.map((type) => (
               <Badge key={type} variant="secondary" className="gap-1">
                 {TASK_TYPE_LABELS[type]}
-                <X
-                  className="h-3 w-3 cursor-pointer hover:text-destructive"
-                  onClick={() => toggleTaskType(type)}
-                />
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => toggleTaskType(type)}
+                    aria-label={`Remove ${TASK_TYPE_LABELS[type]} filter`}
+                  />
+                </HelpTip>
               </Badge>
             ))}
             {projectFilter.map((id) => (
               <Badge key={id} variant="secondary" className="gap-1">
                 {projectLabel(id)}
-                <X
-                  className="h-3 w-3 cursor-pointer hover:text-destructive"
-                  onClick={() => toggleProject(id)}
-                />
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => toggleProject(id)}
+                    aria-label={`Remove ${projectLabel(id)} filter`}
+                  />
+                </HelpTip>
               </Badge>
             ))}
             {productFilter.map((id) => (
               <Badge key={id} variant="secondary" className="gap-1">
                 {productLabel(id)}
-                <X
-                  className="h-3 w-3 cursor-pointer hover:text-destructive"
-                  onClick={() => toggleProduct(id)}
-                />
+                <HelpTip label="Remove this filter">
+                  <X
+                    className="h-3 w-3 cursor-pointer hover:text-destructive"
+                    onClick={() => toggleProduct(id)}
+                    aria-label={`Remove ${productLabel(id)} filter`}
+                  />
+                </HelpTip>
               </Badge>
             ))}
             {(statusFilter.length > 0 ||

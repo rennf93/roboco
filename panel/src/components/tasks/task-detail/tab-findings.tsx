@@ -6,6 +6,7 @@ import type { TaskFinding } from "@/lib/api/tasks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ListChecks } from "lucide-react";
 import { CodeSnippet } from "@/components/git/code-snippet";
 
@@ -38,6 +39,22 @@ const ORIGIN_LABEL: Record<string, string> = {
   ceo: "CEO",
 };
 
+// Per-state description maps (task-status-badge.tsx idiom), local to the
+// findings-ledger domain (roboco/foundation/policy/conventions/findings.py).
+const SEVERITY_DESCRIPTIONS: Record<string, string> = {
+  blocker: "Must be fixed before this task can pass review.",
+  major: "A significant defect; should be fixed but isn't review-blocking alone.",
+  minor: "A smaller defect worth fixing.",
+  nit: "A nitpick — cosmetic or stylistic; fix if convenient.",
+};
+
+const STATUS_DESCRIPTIONS: Record<string, string> = {
+  open: "Not yet addressed by the assignee.",
+  addressed: "The assignee says this is fixed — awaiting reviewer verification.",
+  verified: "A reviewer confirmed the fix.",
+  waived: "Explicitly waived — no fix required.",
+};
+
 function FindingCard({
   finding,
   branch,
@@ -49,12 +66,16 @@ function FindingCard({
     <Card>
       <CardContent className="pt-4 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge className={SEVERITY_CLASS[finding.severity] ?? SEVERITY_CLASS.nit}>
-            {finding.severity}
-          </Badge>
-          <Badge variant="outline" className={STATUS_CLASS[finding.status]}>
-            {finding.status}
-          </Badge>
+          <HelpTip label={SEVERITY_DESCRIPTIONS[finding.severity]}>
+            <Badge className={SEVERITY_CLASS[finding.severity] ?? SEVERITY_CLASS.nit}>
+              {finding.severity}
+            </Badge>
+          </HelpTip>
+          <HelpTip label={STATUS_DESCRIPTIONS[finding.status]}>
+            <Badge variant="outline" className={STATUS_CLASS[finding.status]}>
+              {finding.status}
+            </Badge>
+          </HelpTip>
           {finding.file && (
             <code className="text-xs text-muted-foreground">
               {finding.file}
@@ -67,9 +88,11 @@ function FindingCard({
             </span>
           )}
           {finding.addressed_by_commit && (
-            <code className="ml-auto text-xs text-muted-foreground">
-              {finding.addressed_by_commit.slice(0, 7)}
-            </code>
+            <HelpTip label="Short git commit hash (first 7 characters) that addressed this finding">
+              <code className="ml-auto text-xs text-muted-foreground">
+                {finding.addressed_by_commit.slice(0, 7)}
+              </code>
+            </HelpTip>
           )}
         </div>
         {finding.file && (

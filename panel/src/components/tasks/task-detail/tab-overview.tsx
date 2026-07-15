@@ -8,6 +8,7 @@ import { WorkSessionCard } from "./work-session-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/ui/markdown";
+import { HelpTip } from "@/components/ui/help-tip";
 import Link from "next/link";
 
 interface TabOverviewProps {
@@ -23,13 +24,15 @@ export function TabOverview({ task }: TabOverviewProps) {
           <CardContent className="py-3">
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">Subtask of:</span>
-              <Link
-                prefetch={false}
-                href={`/tasks/${task.parent_task_id}`}
-                className="text-primary hover:underline font-medium"
-              >
-                Parent Task #{task.parent_task_id.slice(0, 8)}
-              </Link>
+              <HelpTip label={task.parent_task_id}>
+                <Link
+                  prefetch={false}
+                  href={`/tasks/${task.parent_task_id}`}
+                  className="text-primary hover:underline font-medium"
+                >
+                  Parent Task #{task.parent_task_id.slice(0, 8)}
+                </Link>
+              </HelpTip>
             </div>
           </CardContent>
         </Card>

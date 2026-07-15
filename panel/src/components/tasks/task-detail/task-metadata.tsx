@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import { getAgentDisplayName, resolveToSlug } from "@/lib/agent-utils";
 import { branchUrl } from "@/lib/repo-url";
 import { CopyButton } from "@/components/ui/copy-button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { TaskTypeBadge } from "../task-type-badge";
 import { DocsStatusBadge } from "../docs-status-badge";
 import Link from "next/link";
@@ -333,7 +334,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
               <Hash className="h-4 w-4" />
               Sequence
             </div>
-            <span className="font-medium">#{task.sequence}</span>
+            <HelpTip label="Delegation order among same-parent siblings — a sibling with a strictly lower sequence must reach a terminal state before this task can be claimed. Ties run in parallel.">
+              <span className="font-medium">#{task.sequence}</span>
+            </HelpTip>
           </CardContent>
         </Card>
       )}
@@ -425,18 +428,26 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Briefcase className="h-4 w-4" />
             Nature
           </div>
-          <Badge
-            variant="outline"
-            className={
+          <HelpTip
+            label={
               task.nature === TaskNature.TECHNICAL
-                ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
-                : "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+                ? "Code/dev work — routes through the normal PM chain."
+                : "Strategic work (product/marketing) — routes to the Board for review."
             }
           >
-            {task.nature === TaskNature.TECHNICAL
-              ? "Technical"
-              : "Non-Technical"}
-          </Badge>
+            <Badge
+              variant="outline"
+              className={
+                task.nature === TaskNature.TECHNICAL
+                  ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                  : "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
+              }
+            >
+              {task.nature === TaskNature.TECHNICAL
+                ? "Technical"
+                : "Non-Technical"}
+            </Badge>
+          </HelpTip>
         </CardContent>
       </Card>
 

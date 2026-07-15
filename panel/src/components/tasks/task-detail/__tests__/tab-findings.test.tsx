@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import React from "react";
 import { TaskStatus, Team, TaskType, type Task } from "@/types";
 import type { TaskFindingsResponse } from "@/lib/api/tasks";
@@ -139,5 +140,43 @@ describe("TabFindings", () => {
     expect(
       screen.getByText("… 500 more not shown (501 total)"),
     ).toBeInTheDocument();
+  });
+
+  it("explains a severity badge on hover", async () => {
+    const response: TaskFindingsResponse = {
+      findings: [
+        {
+          id: "dddddddd-0000-0000-0000-000000000000",
+          task_id: "t1",
+          origin: "qa",
+          round: 1,
+          author_slug: "be-qa",
+          file: null,
+          line: null,
+          severity: "blocker",
+          criterion: null,
+          expected: "x",
+          actual: "y",
+          fix: null,
+          evidence: null,
+          status: "open",
+          addressed_by_commit: null,
+          resolution_note: null,
+          created_at: "2026-07-11T00:00:00Z",
+          updated_at: null,
+        },
+      ],
+      summary: [],
+      total: 1,
+      truncated: false,
+    };
+    useTaskFindings.mockReturnValue({ data: response, isLoading: false });
+    render(<TabFindings task={buildTask()} />);
+
+    const user = userEvent.setup();
+    await user.hover(screen.getByText("blocker"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Must be fixed before this task can pass review.",
+    );
   });
 });

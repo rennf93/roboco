@@ -5,6 +5,7 @@ import { GitBranch, GitPullRequest, FileCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Task, TaskStatus } from "@/types";
 import { branchUrl, pullUrl } from "@/lib/repo-url";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitStatusBadgeProps {
   task: Task;
@@ -59,53 +60,74 @@ export function GitStatusBadge({
     );
   }
 
-  // Parallel phase indicators (for AWAITING_DOCUMENTATION)
+  // Parallel phase indicators (for AWAITING_DOCUMENTATION). In compact mode
+  // these render icon-only (no text at all), so they need a tooltip + an
+  // aria-label to have any accessible name.
   if (task.status === TaskStatus.AWAITING_DOCUMENTATION) {
+    const docsLabel = task.docs_complete
+      ? "Documentation complete"
+      : "Documentation pending";
+    const prLabel = task.pr_created
+      ? "Pull request opened"
+      : "Pull request not yet opened";
     return (
       <div className="flex gap-1">
-        <Badge
-          variant={task.docs_complete ? "default" : "outline"}
-          className={`gap-1 text-xs ${
-            task.docs_complete
-              ? "bg-green-500/10 text-green-600 dark:text-green-400"
-              : "text-muted-foreground"
-          }`}
-        >
-          <FileCheck className="h-3 w-3" />
-          {compact ? "" : "Docs"}
-        </Badge>
-        <Badge
-          variant={task.pr_created ? "default" : "outline"}
-          className={`gap-1 text-xs ${
-            task.pr_created
-              ? "bg-green-500/10 text-green-600 dark:text-green-400"
-              : "text-muted-foreground"
-          }`}
-        >
-          <GitPullRequest className="h-3 w-3" />
-          {compact ? "" : "PR"}
-        </Badge>
+        <HelpTip label={docsLabel}>
+          <Badge
+            variant={task.docs_complete ? "default" : "outline"}
+            aria-label={docsLabel}
+            className={`gap-1 text-xs ${
+              task.docs_complete
+                ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                : "text-muted-foreground"
+            }`}
+          >
+            <FileCheck className="h-3 w-3" />
+            {compact ? "" : "Docs"}
+          </Badge>
+        </HelpTip>
+        <HelpTip label={prLabel}>
+          <Badge
+            variant={task.pr_created ? "default" : "outline"}
+            aria-label={prLabel}
+            className={`gap-1 text-xs ${
+              task.pr_created
+                ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                : "text-muted-foreground"
+            }`}
+          >
+            <GitPullRequest className="h-3 w-3" />
+            {compact ? "" : "PR"}
+          </Badge>
+        </HelpTip>
       </div>
     );
   }
 
-  // Show branch badge (when branch exists but no PR yet)
+  // Show branch badge (when branch exists but no PR yet). Compact mode
+  // collapses the label to "Branch", hiding the actual name — surface it in
+  // the tooltip instead of only on hover-to-full-width.
   if (task.branch_name) {
     return (
       <MaybeLink href={branchUrl(repoUrl, task.branch_name)}>
-        <Badge variant="outline" className="gap-1 text-xs">
-          <GitBranch className="h-3 w-3" />
-          {compact ? "Branch" : task.branch_name}
-        </Badge>
+        <HelpTip label={compact ? task.branch_name : null}>
+          <Badge variant="outline" className="gap-1 text-xs">
+            <GitBranch className="h-3 w-3" />
+            {compact ? "Branch" : task.branch_name}
+          </Badge>
+        </HelpTip>
       </MaybeLink>
     );
   }
 
-  // Git task without branch yet
+  // Git task without branch yet — branches are created automatically once
+  // the task is claimed, so this means the task hasn't started work.
   return (
-    <Badge variant="outline" className="gap-1 text-xs text-muted-foreground">
-      <GitBranch className="h-3 w-3" />
-      {compact ? "Git" : "No branch"}
-    </Badge>
+    <HelpTip label="No branch yet — created automatically once the task is claimed.">
+      <Badge variant="outline" className="gap-1 text-xs text-muted-foreground">
+        <GitBranch className="h-3 w-3" />
+        {compact ? "Git" : "No branch"}
+      </Badge>
+    </HelpTip>
   );
 }

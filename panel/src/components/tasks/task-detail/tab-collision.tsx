@@ -1,12 +1,20 @@
 "use client";
 
-import { Task } from "@/types";
+import { Task, TaskStatus } from "@/types";
 import { useTaskCollisionMap } from "@/hooks/use-tasks";
 import type { CollisionMap, CollisionSibling } from "@/lib/api/tasks";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
+import { taskStatusDescription } from "../task-status-badge";
 import { GitBranch, AlertTriangle } from "lucide-react";
+
+// Reused verbatim in both the declared-surface card and each sibling card.
+const MIGRATION_TIP =
+  "Adds a database migration. Migrations apply in a fixed order, so colliding siblings that also add one are chained serially.";
+const SHARED_TIP =
+  "Touches a shared/common file surface. Siblings editing the same shared surface are sequenced to avoid collisions.";
 
 interface TabCollisionProps {
   task: Task;
@@ -55,11 +63,13 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
           {sib.title && (
             <span className="text-sm font-medium truncate">{sib.title}</span>
           )}
-          <Badge
-            className={STATUS_CLASS[sib.status] ?? STATUS_CLASS.pending}
-          >
-            {sib.status}
-          </Badge>
+          <HelpTip label={taskStatusDescription(sib.status as TaskStatus)}>
+            <Badge
+              className={STATUS_CLASS[sib.status] ?? STATUS_CLASS.pending}
+            >
+              {sib.status}
+            </Badge>
+          </HelpTip>
           {sib.branch_name && (
             <code className="text-xs text-muted-foreground flex items-center gap-1">
               <GitBranch className="h-3 w-3" />
@@ -70,19 +80,25 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
             <Badge variant="outline">#{sib.pr_number}</Badge>
           )}
           {sib.adds_migration && (
-            <Badge variant="outline" className="text-amber-700">
-              +migration
-            </Badge>
+            <HelpTip label={MIGRATION_TIP}>
+              <Badge variant="outline" className="text-amber-700">
+                +migration
+              </Badge>
+            </HelpTip>
           )}
           {sib.touches_shared && (
-            <Badge variant="outline" className="text-orange-700">
-              shared
-            </Badge>
+            <HelpTip label={SHARED_TIP}>
+              <Badge variant="outline" className="text-orange-700">
+                shared
+              </Badge>
+            </HelpTip>
           )}
           {sib.sequence != null && (
-            <span className="ml-auto text-xs text-muted-foreground">
-              seq {sib.sequence}
-            </span>
+            <HelpTip label="Delegation sequence — siblings with a lower sequence must reach a terminal state before this one can be claimed.">
+              <span className="ml-auto text-xs text-muted-foreground">
+                seq {sib.sequence}
+              </span>
+            </HelpTip>
           )}
         </div>
 
@@ -219,14 +235,18 @@ function DeclaredSurfaceCard({ data }: { data: CollisionMap }) {
             )}
             <div className="flex flex-wrap gap-2">
               {data.adds_migration && (
-                <Badge variant="outline" className="text-amber-700">
-                  adds migration
-                </Badge>
+                <HelpTip label={MIGRATION_TIP}>
+                  <Badge variant="outline" className="text-amber-700">
+                    adds migration
+                  </Badge>
+                </HelpTip>
               )}
               {data.touches_shared && (
-                <Badge variant="outline" className="text-orange-700">
-                  touches shared
-                </Badge>
+                <HelpTip label={SHARED_TIP}>
+                  <Badge variant="outline" className="text-orange-700">
+                    touches shared
+                  </Badge>
+                </HelpTip>
               )}
             </div>
           </>

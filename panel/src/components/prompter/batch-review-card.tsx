@@ -124,11 +124,16 @@ export function BatchReviewCard({
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm font-semibold leading-tight">
-            MegaTask: {batch.title || "Untitled"}
+            <HelpTip label="A MegaTask sequences several related tasks — even across unrelated repos — into conflict-free waves, coordinated by the Main PM as one umbrella.">
+              <span>MegaTask</span>
+            </HelpTip>
+            : {batch.title || "Untitled"}
           </CardTitle>
-          <Badge variant="secondary" className="shrink-0 text-xs">
-            {batch.drafts.length} tasks
-          </Badge>
+          <HelpTip label="Each becomes a real root-subtask with its own project, branch, and PR.">
+            <Badge variant="secondary" className="shrink-0 text-xs">
+              {batch.drafts.length} tasks
+            </Badge>
+          </HelpTip>
         </div>
         <p className="text-xs text-muted-foreground">
           One batch, sequenced into conflict-free waves. Each task keeps its own
@@ -191,7 +196,10 @@ export function BatchReviewCard({
                         : "text-muted-foreground"
                     }`}
                   >
-                    Projects {selected.length === 0 && "— pick at least one"}
+                    <HelpTip label="One repo per delivery cell — checking a different repo in the same cell swaps out the one already selected there.">
+                      <span>Projects</span>
+                    </HelpTip>{" "}
+                    {selected.length === 0 && "— pick at least one"}
                   </p>
                   {CELL_TEAMS.map((cell) => {
                     const repos = scopedByCell(cell);
@@ -231,9 +239,11 @@ export function BatchReviewCard({
         {/* Wave plan — how the batch will be sequenced */}
         {waves && waves.length > 0 && (
           <div className="rounded-md border border-dashed px-3 py-2">
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Wave plan ({waves.length} wave{waves.length === 1 ? "" : "s"})
-            </p>
+            <HelpTip label="Tasks in the same wave don't overlap and run in parallel; a later wave waits for its dependencies in an earlier wave to land first.">
+              <p className="mb-1 w-fit text-xs font-medium text-muted-foreground">
+                Wave plan ({waves.length} wave{waves.length === 1 ? "" : "s"})
+              </p>
+            </HelpTip>
             <ol className="space-y-0.5">
               {waves.map((wave, w) => (
                 <li
@@ -267,32 +277,36 @@ export function BatchReviewCard({
             Keep chatting
           </Button>
           {/* Board review & Start → the Board reviews the whole batch first */}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => onConfirm("board")}
-            disabled={isLaunching || missingProject}
-          >
-            {isLaunching ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Users className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            Board review &amp; Start
-          </Button>
+          <HelpTip label="Routes the whole MegaTask through the Product Owner and Head of Marketing for review before any work starts.">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => onConfirm("board")}
+              disabled={isLaunching || missingProject}
+            >
+              {isLaunching ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Users className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Board review &amp; Start
+            </Button>
+          </HelpTip>
           {/* Approve & Start → straight to the Main PM, waves dispatch at once */}
-          <Button
-            size="sm"
-            onClick={() => onConfirm("main_pm")}
-            disabled={isLaunching || missingProject}
-          >
-            {isLaunching ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Rocket className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            Approve &amp; Start
-          </Button>
+          <HelpTip label="Skips board review — dispatches wave 1 to the Main PM immediately.">
+            <Button
+              size="sm"
+              onClick={() => onConfirm("main_pm")}
+              disabled={isLaunching || missingProject}
+            >
+              {isLaunching ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Rocket className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Approve &amp; Start
+            </Button>
+          </HelpTip>
         </div>
       </CardContent>
     </Card>

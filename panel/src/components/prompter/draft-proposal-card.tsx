@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/ui/copy-button";
+import { HelpTip } from "@/components/ui/help-tip";
 import type { DraftProposal } from "@/lib/api/prompter";
 import type { StartRoute } from "@/hooks/use-prompter";
 
@@ -116,7 +117,13 @@ export function DraftProposalCard({
         {distinctTeams.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">
-              {distinctTeams.length > 1 ? "Board-led across" : "Cell:"}
+              {distinctTeams.length > 1 ? (
+                <HelpTip label="This feature spans multiple delivery cells of one product — the Board reviews it before delivery starts.">
+                  <span>Board-led across</span>
+                </HelpTip>
+              ) : (
+                "Cell:"
+              )}
             </span>
             {distinctTeams.map((team) => (
               <Badge key={team} variant="outline" className="text-xs">
@@ -164,32 +171,36 @@ export function DraftProposalCard({
           Keep chatting
         </Button>
         {/* Board review & Start → PENDING, assigned to PO + HoM for review */}
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => onStart("board")}
-          disabled={isLaunching}
-        >
-          {isLaunching ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Users className="mr-1.5 h-3.5 w-3.5" />
-          )}
-          Board review &amp; Start
-        </Button>
+        <HelpTip label="Routes this task through the Product Owner and Head of Marketing for review before any work starts.">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onStart("board")}
+            disabled={isLaunching}
+          >
+            {isLaunching ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Users className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            Board review &amp; Start
+          </Button>
+        </HelpTip>
         {/* Approve & Start → PENDING, straight to Main PM (skip the board) */}
-        <Button
-          size="sm"
-          onClick={() => onStart("main_pm")}
-          disabled={isLaunching}
-        >
-          {isLaunching ? (
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Rocket className="mr-1.5 h-3.5 w-3.5" />
-          )}
-          Approve &amp; Start
-        </Button>
+        <HelpTip label="Skips board review — dispatches this task immediately.">
+          <Button
+            size="sm"
+            onClick={() => onStart("main_pm")}
+            disabled={isLaunching}
+          >
+            {isLaunching ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Rocket className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            Approve &amp; Start
+          </Button>
+        </HelpTip>
       </CardFooter>
     </Card>
   );

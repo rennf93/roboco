@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import React from "react";
 import { TaskStatus, Team, TaskType, type Task } from "@/types";
 
@@ -95,5 +96,19 @@ describe("TaskDescription", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /preview/i }));
     expect(screen.getByText("Editable text.")).toBeInTheDocument();
+  });
+
+  it("explains the icon-only cancel button on hover", async () => {
+    const task = buildTask({ description: "Editable text." });
+    render(<TaskDescription task={task} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const cancelButton = screen.getByRole("button", { name: "Cancel edit" });
+
+    const user = userEvent.setup();
+    await user.hover(cancelButton);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Discard changes without saving",
+    );
   });
 });

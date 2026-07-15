@@ -35,6 +35,7 @@ import { DependencySelector } from "./dependency-selector";
 import { TaskSelector } from "./task-selector";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { ProjectSelector } from "@/components/projects/project-selector";
+import { HelpTip } from "@/components/ui/help-tip";
 
 // Priority options (0=P0 highest, 3=P3 lowest)
 const PRIORITY_OPTIONS = [
@@ -66,6 +67,21 @@ const TASK_TYPE_OPTIONS = [
   { value: TaskType.DESIGN, label: "Design" },
   { value: TaskType.ADMINISTRATIVE, label: "Administrative" },
 ];
+
+// What each task type produces. All types follow the same full git workflow
+// (branch, commits, PR) — this only classifies the kind of artifact.
+const TASK_TYPE_DESCRIPTIONS: Record<TaskType, string> = {
+  [TaskType.CODE]: "Source code changes. Follows the full git workflow.",
+  [TaskType.DOCUMENTATION]: "Documentation updates. Follows the full git workflow.",
+  [TaskType.RESEARCH]:
+    "Research findings, committed as notes. Follows the full git workflow.",
+  [TaskType.PLANNING]:
+    "Plans or architecture, committed as docs. Follows the full git workflow.",
+  [TaskType.DESIGN]:
+    "Designs or specs, committed as assets. Follows the full git workflow.",
+  [TaskType.ADMINISTRATIVE]:
+    "Process docs, committed as notes. Follows the full git workflow.",
+};
 
 // Initial status options (only PENDING and BACKLOG for creation)
 const STATUS_OPTIONS = [
@@ -406,7 +422,9 @@ export function CreateTaskDialog() {
 
                 {/* Task Type */}
                 <div className="space-y-2">
-                  <Label>Task Type</Label>
+                  <HelpTip label={TASK_TYPE_DESCRIPTIONS[taskType]}>
+                    <Label>Task Type</Label>
+                  </HelpTip>
                   <Select
                     value={taskType}
                     onValueChange={(v) => setTaskType(v as TaskType)}

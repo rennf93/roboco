@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface BoardReviewSentCardProps {
   /** The umbrella task id — the single board-review / CEO-approve unit. */
@@ -52,15 +53,21 @@ export function BoardReviewSentCard({
       <CardContent className="pb-3 space-y-2">
         <p className="text-sm font-medium">{taskTitle}</p>
         <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-xs">
-            {rootSubtaskCount} task{rootSubtaskCount === 1 ? "" : "s"}
-          </Badge>
-          <Badge variant="outline" className="text-xs">
-            {waveCount} wave{waveCount === 1 ? "" : "s"}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            ID: {taskId.slice(0, 8)}…
-          </span>
+          <HelpTip label="Each is a real root-subtask with its own project, branch, and PR, coordinated by the Main PM.">
+            <Badge variant="secondary" className="text-xs">
+              {rootSubtaskCount} task{rootSubtaskCount === 1 ? "" : "s"}
+            </Badge>
+          </HelpTip>
+          <HelpTip label="Tasks in the same wave don't overlap and run in parallel; later waves wait for their dependencies to land first.">
+            <Badge variant="outline" className="text-xs">
+              {waveCount} wave{waveCount === 1 ? "" : "s"}
+            </Badge>
+          </HelpTip>
+          <HelpTip label={`Full umbrella task ID: ${taskId}`}>
+            <span className="text-xs text-muted-foreground">
+              ID: {taskId.slice(0, 8)}…
+            </span>
+          </HelpTip>
         </div>
         <p className="text-xs text-muted-foreground">
           The Product Owner and Head of Marketing are reviewing this MegaTask.

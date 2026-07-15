@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface PriorityIndicatorProps {
   priority: number;
@@ -20,10 +21,19 @@ const priorityLabels: Record<number, string> = {
   3: "P3 - Low",
 };
 
+const priorityDescriptions: Record<number, string> = {
+  0: "Highest urgency — work this before anything else.",
+  1: "High urgency — prioritize over P2/P3 work.",
+  2: "Standard priority — the default for most tasks.",
+  3: "Low urgency — fine to defer behind higher-priority work.",
+};
+
 export function PriorityIndicator({ priority }: PriorityIndicatorProps) {
   return (
-    <Badge className={priorityColors[priority] ?? priorityColors[2]}>
-      {priorityLabels[priority] ?? "P2 - Medium"}
-    </Badge>
+    <HelpTip label={priorityDescriptions[priority] ?? priorityDescriptions[2]}>
+      <Badge className={priorityColors[priority] ?? priorityColors[2]}>
+        {priorityLabels[priority] ?? "P2 - Medium"}
+      </Badge>
+    </HelpTip>
   );
 }

@@ -10,6 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { FileCode, FileDiff, WrapText } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitDiffViewerProps {
   stagedDiff: GitDiffResponse | undefined;
@@ -124,21 +125,39 @@ export function GitDiffViewer({
         <Tabs defaultValue="unstaged">
           <div className="px-4 border-b">
             <TabsList className="h-9">
+              {/* HelpTip wraps an inner span, never the TabsTrigger itself —
+                  TooltipTrigger's asChild would clobber the trigger's own
+                  data-state and break the active-tab highlight (see
+                  task-tabs.tsx for the fuller writeup of this bug class). */}
               <TabsTrigger value="unstaged" className="text-xs gap-1">
-                Working Directory
-                {unstagedCount > 0 && (
-                  <Badge variant="secondary" className="h-4 px-1 text-[10px]">
-                    {unstagedCount}
-                  </Badge>
-                )}
+                <HelpTip label="Files changed on disk that haven't been staged for the next commit yet">
+                  <span className="inline-flex items-center gap-1">
+                    Working Directory
+                    {unstagedCount > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="h-4 px-1 text-[10px]"
+                      >
+                        {unstagedCount}
+                      </Badge>
+                    )}
+                  </span>
+                </HelpTip>
               </TabsTrigger>
               <TabsTrigger value="staged" className="text-xs gap-1">
-                Staged
-                {stagedCount > 0 && (
-                  <Badge variant="secondary" className="h-4 px-1 text-[10px]">
-                    {stagedCount}
-                  </Badge>
-                )}
+                <HelpTip label="Files staged and ready to be included in the next commit">
+                  <span className="inline-flex items-center gap-1">
+                    Staged
+                    {stagedCount > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="h-4 px-1 text-[10px]"
+                      >
+                        {stagedCount}
+                      </Badge>
+                    )}
+                  </span>
+                </HelpTip>
               </TabsTrigger>
             </TabsList>
           </div>

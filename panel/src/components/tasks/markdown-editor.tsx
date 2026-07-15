@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
 import { Eye, Edit3 } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface MarkdownEditorProps {
   label: string;
@@ -71,7 +72,9 @@ export function MarkdownEditor({
       )}
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Markdown supported</span>
+        <HelpTip label="GitHub Flavored Markdown: headings, bold/italic, lists, tables, checkboxes, links, code blocks.">
+          <span>Markdown supported</span>
+        </HelpTip>
         {minLength && (
           <span className={value.length < minLength ? "text-destructive" : ""}>
             {value.length}/{minLength} min characters

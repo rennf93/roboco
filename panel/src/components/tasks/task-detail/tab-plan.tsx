@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
 import { CollapsibleSection } from "./collapsible-section";
@@ -44,6 +45,15 @@ const severityColors: Record<string, string> = {
   medium:
     "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
   high: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+};
+
+// Plain-language explanation per risk severity, in the per-state description
+// map idiom (see task-status-badge.tsx) — local to this domain since risk
+// severity isn't the shared TaskStatus enum.
+const severityDescriptions: Record<string, string> = {
+  low: "Low risk — unlikely to happen or easy to recover from.",
+  medium: "Medium risk — worth watching; could cause moderate rework.",
+  high: "High risk — likely or costly; needs an explicit mitigation plan.",
 };
 
 // Generate a simple unique ID
@@ -131,9 +141,16 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <Button size="sm" variant="ghost" onClick={handleCancel}>
-              <X className="h-4 w-4" />
-            </Button>
+            <HelpTip label="Discard changes without saving">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={handleCancel}
+                aria-label="Cancel"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </HelpTip>
             <Button
               size="sm"
               onClick={handleSave}
@@ -340,14 +357,17 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                       </Badge>
                     )}
                   </span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleDelete(subtask.id)}
-                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  <HelpTip label="Delete this sub-task">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleDelete(subtask.id)}
+                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                      aria-label="Delete sub-task"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </HelpTip>
                 </>
               )}
             </div>
@@ -369,26 +389,32 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               placeholder="Add sub-task..."
               className="h-8 text-sm flex-1"
             />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setNewTitle("");
-                setIsAdding(false);
-              }}
-              className="h-7 w-7 p-0"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleAdd}
-              onMouseDown={(e) => e.preventDefault()}
-              disabled={!newTitle.trim()}
-              className="h-7 w-7 p-0"
-            >
-              <Check className="h-4 w-4" />
-            </Button>
+            <HelpTip label="Discard and cancel">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewTitle("");
+                  setIsAdding(false);
+                }}
+                className="h-7 w-7 p-0"
+                aria-label="Cancel"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </HelpTip>
+            <HelpTip label="Add sub-task">
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newTitle.trim()}
+                className="h-7 w-7 p-0"
+                aria-label="Add sub-task"
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+            </HelpTip>
           </div>
         )}
         {subTasks.length === 0 && !isAdding && (
@@ -519,14 +545,17 @@ function TechConsiderationsSection({
                 >
                   {item}
                 </span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => handleDelete(idx)}
-                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
+                <HelpTip label="Delete this consideration">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleDelete(idx)}
+                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                    aria-label="Delete consideration"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </HelpTip>
               </>
             )}
           </li>
@@ -548,26 +577,32 @@ function TechConsiderationsSection({
               placeholder="Add consideration..."
               className="h-8 text-sm flex-1"
             />
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setNewItem("");
-                setIsAdding(false);
-              }}
-              className="h-7 w-7 p-0"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleAdd}
-              onMouseDown={(e) => e.preventDefault()}
-              disabled={!newItem.trim()}
-              className="h-7 w-7 p-0"
-            >
-              <Check className="h-4 w-4" />
-            </Button>
+            <HelpTip label="Discard and cancel">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewItem("");
+                  setIsAdding(false);
+                }}
+                className="h-7 w-7 p-0"
+                aria-label="Cancel"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </HelpTip>
+            <HelpTip label="Add consideration">
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newItem.trim()}
+                className="h-7 w-7 p-0"
+                aria-label="Add consideration"
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+            </HelpTip>
           </li>
         )}
       </ul>
@@ -709,20 +744,26 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                   </SelectContent>
                 </Select>
                 <div className="flex-1" />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setEditingIdx(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleEdit}
-                  onMouseDown={(e) => e.preventDefault()}
-                >
-                  <Check className="h-4 w-4" />
-                </Button>
+                <HelpTip label="Discard and cancel">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingIdx(null)}
+                    aria-label="Cancel"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
+                <HelpTip label="Save changes">
+                  <Button
+                    size="sm"
+                    onClick={handleEdit}
+                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label="Save changes"
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
               </div>
             </div>
           ) : (
@@ -740,21 +781,26 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 <span className="font-medium text-sm">{risk.description}</span>
                 <div className="flex items-center gap-2">
                   {risk.severity && (
-                    <Badge className={severityColors[risk.severity]}>
-                      {risk.severity}
-                    </Badge>
+                    <HelpTip label={severityDescriptions[risk.severity]}>
+                      <Badge className={severityColors[risk.severity]}>
+                        {risk.severity}
+                      </Badge>
+                    </HelpTip>
                   )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(idx);
-                    }}
-                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  <HelpTip label="Delete this risk">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(idx);
+                      }}
+                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                      aria-label="Delete risk"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </HelpTip>
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">
@@ -791,25 +837,31 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </SelectContent>
               </Select>
               <div className="flex-1" />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setNewDesc("");
-                  setNewMit("");
-                  setIsAdding(false);
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!newDesc.trim()}
-              >
-                <Check className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewDesc("");
+                    setNewMit("");
+                    setIsAdding(false);
+                  }}
+                  aria-label="Cancel"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Add risk">
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={!newDesc.trim()}
+                  aria-label="Add risk"
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
+              </HelpTip>
             </div>
           </div>
         )}
@@ -938,20 +990,26 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               />
               <div className="flex items-center gap-2">
                 <div className="flex-1" />
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setEditingIdx(null)}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleEdit}
-                  onMouseDown={(e) => e.preventDefault()}
-                >
-                  <Check className="h-4 w-4" />
-                </Button>
+                <HelpTip label="Discard and cancel">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingIdx(null)}
+                    aria-label="Cancel"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
+                <HelpTip label="Save changes">
+                  <Button
+                    size="sm"
+                    onClick={handleEdit}
+                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label="Save changes"
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
               </div>
             </div>
           ) : (
@@ -967,17 +1025,20 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               <div className="flex items-start gap-2 mb-2">
                 <HelpCircle className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
                 <span className="font-medium text-sm flex-1">{q.question}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDelete(idx);
-                  }}
-                  className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
+                <HelpTip label="Delete this question">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(idx);
+                    }}
+                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                    aria-label="Delete question"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </HelpTip>
               </div>
               {q.answer ? (
                 <div className="ml-7 text-sm">
@@ -1019,24 +1080,30 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
             />
             <div className="flex items-center gap-2">
               <div className="flex-1" />
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setNewQuestion("");
-                  setIsAdding(false);
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleAdd}
-                onMouseDown={(e) => e.preventDefault()}
-                disabled={!newQuestion.trim()}
-              >
-                <Check className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Discard and cancel">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewQuestion("");
+                    setIsAdding(false);
+                  }}
+                  aria-label="Cancel"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </HelpTip>
+              <HelpTip label="Add question">
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={!newQuestion.trim()}
+                  aria-label="Add question"
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
+              </HelpTip>
             </div>
           </div>
         )}
