@@ -2,7 +2,7 @@
 Token Usage Analytics API
 
 Provides endpoints for querying token usage metrics across agents,
-teams, and models. Supports period-based queries (24h, 7d, 30d).
+teams, and models. Supports period-based queries (24h, 7d, 30d, 90d).
 """
 
 from typing import Annotated, Any, Literal
@@ -14,11 +14,11 @@ from roboco.services.usage import get_usage_service
 
 router = APIRouter(dependencies=[Depends(require_panel_token)])
 
-_PeriodType = Literal["24h", "7d", "30d"]
+_PeriodType = Literal["24h", "7d", "30d", "90d"]
 
 _PeriodQuery = Annotated[
     _PeriodType,
-    Query(description="Time period: 24h, 7d, 30d"),
+    Query(description="Time period: 24h, 7d, 30d, 90d"),
 ]
 
 
@@ -58,7 +58,7 @@ async def get_usage_time_series(
     """Return bucketed time-series data points.
 
     - 24h → hourly buckets
-    - 7d / 30d → daily buckets
+    - 7d / 30d / 90d → daily buckets
 
     Each point has: bucket (ISO timestamp), tokens_input, tokens_output,
     total_tokens, cost_usd.

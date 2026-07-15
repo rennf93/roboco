@@ -59,7 +59,7 @@ def _session_row(row: Any) -> dict[str, Any]:
 def _parse_period(period: str) -> tuple[datetime, int]:
     """Parse period string into (start_dt, hours).
 
-    Accepts '24h', '7d', '30d'. Defaults to 24h for unknown values.
+    Accepts '24h', '7d', '30d', '90d'. Defaults to 24h for unknown values.
     Returns (start_datetime_utc, total_hours).
     """
     now = datetime.now(UTC)
@@ -67,6 +67,8 @@ def _parse_period(period: str) -> tuple[datetime, int]:
         return now - timedelta(days=7), 7 * 24
     if period == "30d":
         return now - timedelta(days=30), 30 * 24
+    if period == "90d":
+        return now - timedelta(days=90), 90 * 24
     # default 24h
     return now - timedelta(hours=24), 24
 
@@ -176,7 +178,7 @@ class UsageService(BaseService):
         """Return bucketed time-series data points.
 
         - 24h → hourly buckets
-        - 7d / 30d → daily buckets
+        - 7d / 30d / 90d → daily buckets
 
         Each point has: bucket (ISO string), tokens_input, tokens_output,
         total_tokens, cost_usd.

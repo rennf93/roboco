@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   BarChart,
   Bar,
@@ -11,6 +12,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { AgentUsageRow } from "@/types";
 
@@ -24,8 +26,14 @@ function fmtK(n: number): string {
   return String(n);
 }
 
+const VIEW_OPTIONS = [
+  { value: "chart", label: "Chart" },
+  { value: "table", label: "Table" },
+];
+
 export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
   const isMobile = useIsMobile();
+  const [view, setView] = useState<"chart" | "table">("chart");
   // Fewer bars on a phone — 10 labels at ~30deg rotation still overlap below
   // ~400px, so cap the label density instead of shrinking text further.
   const chartData = [...(data ?? [])]
@@ -35,15 +43,51 @@ export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
       name: row.agent_slug,
       Tokens: row.total_tokens,
     }));
+  const tableRows = [...(data ?? [])].sort(
+    (a, b) => b.total_tokens - a.total_tokens,
+  );
 
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Agent Tokens Today</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base">Agent Tokens</CardTitle>
+          <SegmentedControl
+            options={VIEW_OPTIONS}
+            value={view}
+            onValueChange={(v) => setView(v as "chart" | "table")}
+            aria-label="Agent tokens view"
+          />
+        </div>
       </CardHeader>
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-52 w-full" />
+        ) : view === "table" ? (
+          <div className="max-h-52 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="text-muted-foreground text-xs">
+                <tr>
+                  <th className="text-left font-medium py-1">Agent</th>
+                  <th className="text-right font-medium py-1">Tokens</th>
+                  <th className="text-right font-medium py-1">%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableRows.map((row) => (
+                  <tr key={row.agent_slug} className="border-t">
+                    <td className="py-1 truncate">{row.agent_slug}</td>
+                    <td className="py-1 text-right tabular-nums">
+                      {row.total_tokens.toLocaleString()}
+                    </td>
+                    <td className="py-1 text-right tabular-nums">
+                      {row.pct_of_total.toFixed(1)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height={208}>
             <BarChart
