@@ -250,11 +250,11 @@ function PerformanceTabContent() {
 
   // Agent counts
   const runningAgents =
-    status?.by_state?.running ||
-    agentList.filter((a) => a.state === "running").length;
+    status?.by_state?.active ||
+    agentList.filter((a) => a.state === "active").length;
   const idleAgents =
     status?.by_state?.idle ||
-    agentList.filter((a) => a.state === "idle" || a.state === "stopped").length;
+    agentList.filter((a) => a.state === "idle" || a.state === "offline").length;
   const waitingAgents =
     status?.waiting_count ||
     agentList.filter((a) => a.state === "waiting_long").length;

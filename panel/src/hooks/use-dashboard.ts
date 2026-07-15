@@ -80,7 +80,7 @@ export function useMetrics() {
         blockers,
         agents: {
           total_agents: agentStatus?.total_agents ?? 0,
-          running: agentStatus?.by_state?.running ?? 0,
+          running: agentStatus?.by_state?.active ?? 0,
           idle: agentStatus?.by_state?.idle ?? 0,
           waiting: agentStatus?.waiting_count ?? 0,
           errors: 0,
