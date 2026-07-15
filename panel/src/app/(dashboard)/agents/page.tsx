@@ -87,8 +87,15 @@ export default function AgentsPage() {
         />
       ) : (
         <>
-          {/* Status Overview */}
-          <OrchestratorStatusCards status={status} isLoading={isLoading} />
+          {/* Status Overview — Total Agents is the full roster size, not the
+              orchestrator's live-instance count, so it stays truthful even
+              when most of the roster isn't currently spawned. */}
+          <OrchestratorStatusCards
+            status={status}
+            isLoading={isLoading}
+            rosterCount={agents.length}
+            rosterLoading={agentsLoading}
+          />
 
           {/* Waiting Agents Alert */}
           {waitingAgents && (
@@ -97,23 +104,14 @@ export default function AgentsPage() {
         </>
       )}
 
-      {/* Agent Grids - Dynamically loaded from API */}
+      {/* Agent Grids - Dynamically loaded from API. Board + Main PM fold into
+          one Leadership band so a lone Main PM card never wastes a full row. */}
       <AgentGrid
-        title="Board"
-        agents={getBoardAgents(agents)}
+        title="Leadership"
+        agents={[...getBoardAgents(agents), ...getMainPm(agents)]}
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
-        columns={4}
-      />
-
-      <AgentGrid
-        title="Main PM"
-        agents={getMainPm(agents)}
-        agentStatuses={agentStatuses}
-        agentUsage={agentUsageMap}
-        isLoading={(isLoading || agentsLoading) && !isOffline}
-        columns={4}
       />
 
       <AgentGrid
@@ -122,7 +120,6 @@ export default function AgentsPage() {
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
-        columns={5}
       />
 
       <AgentGrid
@@ -131,7 +128,6 @@ export default function AgentsPage() {
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
-        columns={5}
       />
 
       <AgentGrid
@@ -140,7 +136,6 @@ export default function AgentsPage() {
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
         isLoading={(isLoading || agentsLoading) && !isOffline}
-        columns={4}
       />
 
       {/* Support section: the CEO-direct helpers — Intake/Prompter, Secretary,
@@ -152,7 +147,6 @@ export default function AgentsPage() {
           agentStatuses={agentStatuses}
           agentUsage={agentUsageMap}
           isLoading={(isLoading || agentsLoading) && !isOffline}
-          columns={4}
         />
       )}
     </div>

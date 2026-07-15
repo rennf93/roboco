@@ -5,11 +5,7 @@ import { useStopAgent } from "@/hooks/use-agents";
 import { AgentStatusResponse } from "@/types";
 import { AgentDefinition } from "@/lib/agent-definitions";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Card,
   CardContent,
@@ -26,7 +22,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MoreHorizontal, Activity, Square } from "lucide-react";
 import { toast } from "sonner";
-import { AgentStateBadge } from "./agent-state-badge";
+import { cn } from "@/lib/utils";
+import { agentStateDescription, stateColors } from "./agent-state-badge";
 import { SpawnAgentDialog } from "./spawn-agent-dialog";
 import type { AgentUsageRow } from "@/types";
 
@@ -59,24 +56,39 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
     }
   };
 
+  // One secondary line, priority error > waiting > task, so a card never
+  // grows past two content rows regardless of how much is going on.
+  const detail = agentStatus?.error_count
+    ? {
+        text:
+          agentStatus.error_count +
+          (agentStatus.error_count === 1 ? " error" : " errors"),
+        className: "text-red-500",
+      }
+    : agentStatus?.waiting_for
+      ? { text: "Waiting: " + agentStatus.waiting_for, className: "text-yellow-600" }
+      : agentStatus?.task_id
+        ? { text: "Task " + agentStatus.task_id.slice(0, 8) + "…", className: "text-muted-foreground" }
+        : null;
+
   return (
-    <Card className={isActive ? "border-green-500/50" : ""}>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base">
+    <Card className={cn("gap-2 py-3", isActive && "border-green-500/50")}>
+      <CardHeader className="gap-0.5 px-3">
+        <div className="flex items-center justify-between gap-1">
+          <CardTitle className="truncate text-sm">
             {agent.name || "Unknown Agent"}
           </CardTitle>
           <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent>Agent actions</TooltipContent>
-            </Tooltip>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0"
+                aria-label="Agent actions"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {!isActive && (
                 <SpawnAgentDialog agentId={agent.id} agentName={agent.name} />
@@ -106,51 +118,35 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <CardDescription className="text-xs">
+        <CardDescription className="truncate text-xs">
           {agent.role?.replace(/_/g, " ") || "N/A"}
           {agent.team && " • " + agent.team.replace(/_/g, " ")}
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <AgentStateBadge state={state} />
-        {agentStatus?.task_id && (
-          <p className="text-xs text-muted-foreground mt-2">
-            Task: {agentStatus.task_id.slice(0, 8)}...
-          </p>
-        )}
-        {agentStatus?.waiting_for && (
-          <p className="text-xs text-yellow-600 mt-2 truncate">
-            Waiting: {agentStatus.waiting_for}
-          </p>
-        )}
-        {agentStatus && agentStatus.error_count > 0 && (
-          <p className="text-xs text-red-500 mt-2">
-            Errors: {agentStatus.error_count}
+      <CardContent className="px-3">
+        <HelpTip label={agentStateDescription(state)}>
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+            <span
+              className={cn(
+                "h-2 w-2 shrink-0 rounded-full",
+                stateColors[state] || "bg-gray-400",
+              )}
+            />
+            {state.replace(/_/g, " ")}
+          </span>
+        </HelpTip>
+        {detail && (
+          <p className={cn("mt-1 truncate text-xs", detail.className)}>
+            {detail.text}
           </p>
         )}
         {usageRow && (
-          <div className="mt-3 pt-2 border-t">
-            <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-              <span>
-                {usageRow.total_tokens >= 1_000
-                  ? (usageRow.total_tokens / 1_000).toFixed(1) + "K"
-                  : String(usageRow.total_tokens)}{" "}
-                tokens
-              </span>
-              <span className="font-medium text-foreground">
-                ${usageRow.cost_usd.toFixed(4)}
-              </span>
-            </div>
-            <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-[var(--chart-1)]"
-                style={{
-                  width:
-                    Math.min(100, (usageRow.total_tokens / 30_000) * 100) + "%",
-                }}
-              />
-            </div>
-          </div>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {usageRow.total_tokens >= 1_000
+              ? (usageRow.total_tokens / 1_000).toFixed(1) + "K"
+              : String(usageRow.total_tokens)}{" "}
+            tok · ${usageRow.cost_usd.toFixed(4)}
+          </p>
         )}
       </CardContent>
     </Card>

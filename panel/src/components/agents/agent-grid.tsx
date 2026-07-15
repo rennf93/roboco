@@ -1,5 +1,6 @@
 import { AgentStatusResponse, AgentUsageRow } from "@/types";
 import { AgentDefinition } from "@/lib/agent-definitions";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentCard } from "./agent-card";
@@ -10,8 +11,12 @@ interface AgentGridProps {
   agentStatuses: Record<string, AgentStatusResponse>;
   agentUsage?: Record<string, AgentUsageRow>;
   isLoading: boolean;
-  columns?: number;
 }
+
+// Compact cards need far less width per card than the old large ones, so
+// wide screens fit up to 8 across instead of wrapping a tall, ragged grid.
+const GRID_COLS =
+  "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8";
 
 export function AgentGrid({
   title,
@@ -19,26 +24,24 @@ export function AgentGrid({
   agentStatuses,
   agentUsage,
   isLoading,
-  columns = 4,
 }: AgentGridProps) {
-  const gridCols =
-    {
-      3: "md:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4",
-      4: "md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5",
-      5: "md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5",
-    }[columns] ||
-    "md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5";
-
   return (
     <div>
-      <h2 className="text-xl font-semibold mb-4">{title}</h2>
-      <div className={"grid gap-4 " + gridCols}>
+      <div className="mb-3 flex items-center gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {title}
+        </h2>
+        <Badge variant="secondary" className="text-xs">
+          {agents.length}
+        </Badge>
+      </div>
+      <div className={"grid gap-3 " + GRID_COLS}>
         {isLoading
           ? Array.from({ length: agents.length || 3 }).map((_, i) => (
-              <Card key={i}>
-                <CardHeader>
-                  <Skeleton className="h-5 w-32" />
-                  <Skeleton className="h-3 w-24" />
+              <Card key={i} className="gap-2 py-3">
+                <CardHeader className="gap-1 px-3">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-3 w-16" />
                 </CardHeader>
               </Card>
             ))
