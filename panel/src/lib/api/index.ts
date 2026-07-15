@@ -31,6 +31,8 @@ export type {
   XPostHistoryEntry,
   XCredentialsStatus,
 } from "./x";
+export { telegramApi } from "./telegram";
+export type { TelegramCredentialsStatus } from "./telegram";
 export { roadmapApi } from "./roadmap";
 export type {
   RoadmapCycle,

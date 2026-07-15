@@ -10,6 +10,7 @@ Also implements the ACK system for tracking acknowledgments.
 """
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -874,6 +875,43 @@ class NotificationDeliveryService(BaseService):
             escalator_slug=escalator.slug,
         )
 
+    async def _notify_telegram(self, *, task_id: UUID, subject: str) -> None:
+        """Best-effort Telegram DM to the CEO alongside an in-app notification.
+
+        Degrades to a no-op unless ``telegram_enabled`` is armed and credentials
+        are stored. Never raises into the caller — a network/credentials failure
+        only logs. The message carries a panel deep-link when ``panel_base_url``
+        is set.
+        """
+        from roboco.config import settings
+
+        if not settings.telegram_enabled:
+            return
+        from roboco.services.telegram_client import build_telegram_client
+        from roboco.services.telegram_credentials import (
+            get_telegram_credentials_service,
+        )
+
+        try:
+            creds = await get_telegram_credentials_service(self.session).get_decrypted()
+            client = build_telegram_client(
+                creds, timeout=settings.telegram_timeout_seconds
+            )
+            text = subject
+            if settings.panel_base_url:
+                link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
+                text = f"{subject}\n{link}"
+            result = await client.send_message(text)
+            if not result.sent:
+                _log.warning("telegram_notify_skip", detail=result.detail)
+        except Exception as exc:  # best-effort — never block the producer
+            _log.warning("telegram_notify_failed", error=str(exc))
+        finally:
+            close = getattr(locals().get("client"), "close", None)
+            if close is not None:
+                with contextlib.suppress(Exception):
+                    await close()
+
     async def notify_ceo_of_escalation(
         self,
         *,
@@ -904,6 +942,7 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
+        await self._notify_telegram(task_id=task_id, subject=notification.subject)
 
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
@@ -933,6 +972,7 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
         )
         await self._persist_and_deliver(notification)
+        await self._notify_telegram(task_id=task_id, subject=notification.subject)
 
     async def notify_auditor_of_rework(
         self,

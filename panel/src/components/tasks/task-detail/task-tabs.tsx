@@ -17,6 +17,7 @@ import { TabCommits } from "./tab-commits";
 import { TabNotes } from "./tab-notes";
 import { TabDependencies } from "./tab-dependencies";
 import { TabFindings } from "./tab-findings";
+import { TabCollision } from "./tab-collision";
 import {
   FileText,
   Layout,
@@ -25,6 +26,7 @@ import {
   StickyNote,
   Link2,
   ListChecks,
+  GitBranch,
   type LucideIcon,
 } from "lucide-react";
 
@@ -108,6 +110,12 @@ export function TaskTabs({ task }: TaskTabsProps) {
       hint: "Revision-findings ledger — QA / PR-review / PM / CEO bounce feedback",
       count: findingsCount > 0 ? findingsCount : undefined,
     },
+    {
+      value: "collision",
+      label: "Collision",
+      icon: GitBranch,
+      hint: "Sibling collision surface + declared-vs-actual drift",
+    },
   ];
 
   // The active tab lives in the URL (?tab=) so it survives reloads,
@@ -128,7 +136,7 @@ export function TaskTabs({ task }: TaskTabsProps) {
 
   return (
     <Tabs value={activeTab} onValueChange={handleTabChange} className="mt-6">
-      <TabsList className="grid w-full grid-cols-7 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-8 lg:w-auto lg:inline-grid">
         {tabs.map((tab) => (
           <Tooltip key={tab.value}>
             <TooltipTrigger asChild>
@@ -168,6 +176,9 @@ export function TaskTabs({ task }: TaskTabsProps) {
         </TabsContent>
         <TabsContent value="findings">
           <TabFindings task={task} />
+        </TabsContent>
+        <TabsContent value="collision">
+          <TabCollision task={task} />
         </TabsContent>
       </div>
     </Tabs>

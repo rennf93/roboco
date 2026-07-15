@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/collapsible";
 import { XCredentialsForm } from "@/components/settings/x-credentials-card";
 import { TikTokCredentialsForm } from "@/components/settings/tiktok-credentials-card";
+import { TelegramCredentialsForm } from "@/components/settings/telegram-credentials-card";
 import { cn } from "@/lib/utils";
 import { Flag, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -93,12 +94,15 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Materialize a weekly org-report note (velocity, cycle time, rework, cost) in the vault's Reports/ folder and notify you — deterministic numbers, no LLM. Needs the Obsidian vault projection on.",
   vault_kb_enabled:
     "Index your own vault notes (default RoboCo/Notes/) into the knowledge base so the fleet can retrieve what you write — every note is screened for injection attempts before it's indexed. Needs the Obsidian vault projection on.",
+  telegram_enabled:
+    "Best-effort Telegram DMs to you alongside in-app notifications when a task is escalated for your approval or completes. Server-side fan-out — never blocks the in-app notification. Stays inert until you set bot-token + chat-id credentials in the Telegram card below.",
 };
 
 export function FeatureFlagsCard() {
   const queryClient = useQueryClient();
   const [xCredsOpen, setXCredsOpen] = useState(false);
   const [tiktokCredsOpen, setTiktokCredsOpen] = useState(false);
+  const [telegramCredsOpen, setTelegramCredsOpen] = useState(false);
   // Off-transition awaiting operator confirm. Null = no dialog open.
   const [confirmFlag, setConfirmFlag] = useState<FeatureFlag | null>(null);
   // Every in-flight toggle key — added on mutate, removed on settle. Tracks
@@ -170,12 +174,13 @@ export function FeatureFlagsCard() {
           {flags.map((flag) => {
             const isXEngine = flag.key === "x_engine_enabled";
             const isVideoEngine = flag.key === "video_engine_enabled";
+            const isTelegram = flag.key === "telegram_enabled";
             return (
               <div
                 key={flag.key}
                 className={cn(
                   "rounded-lg border p-4",
-                  (isXEngine || isVideoEngine) && "md:col-span-2",
+                  (isXEngine || isVideoEngine || isTelegram) && "md:col-span-2",
                 )}
               >
                 <div className="flex items-start justify-between gap-4">
@@ -248,6 +253,31 @@ export function FeatureFlagsCard() {
                     </CollapsibleTrigger>
                     <CollapsibleContent className="pt-3">
                       <TikTokCredentialsForm />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+                {isTelegram && (
+                  <Collapsible
+                    open={telegramCredsOpen}
+                    onOpenChange={setTelegramCredsOpen}
+                    className="mt-3"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 text-muted-foreground"
+                      >
+                        <span className="text-sm">Telegram credentials</span>
+                        {telegramCredsOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      <TelegramCredentialsForm />
                     </CollapsibleContent>
                   </Collapsible>
                 )}

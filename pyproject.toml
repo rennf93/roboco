@@ -223,6 +223,10 @@ select = [
 # signature for keyword-argument compatibility (mypy override check), but the
 # stub bodies are empty — ARG002 would require renaming them, which breaks mypy.
 "tests/unit/services/test_optimal_grounding.py" = ["ARG002"]
+# Collision-builder test helpers mirror the builder's many keyword inputs
+# (parent/project/intends/migration/shared/sequence) — bundling them would
+# hurt readability more than the arg count hurts.
+"tests/unit/gateway/test_collision_context.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration

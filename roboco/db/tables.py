@@ -2361,6 +2361,27 @@ class XCredentialsTable(Base):
     )
 
 
+class TelegramCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted Telegram bot token + chat id
+    (mirrors ``XCredentialsTable``). At most one row ever exists;
+    ``TelegramCredentialsService`` upserts it. Decrypted only server-side, by
+    ``telegram_client`` — the API never returns plaintext."""
+
+    __tablename__ = "telegram_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
 class XSeenMentionTable(Base):
     """Dedup ledger for the mentions poll — one row per mention id the engine
     has ever turned into a held reply proposal (or decided to skip). Never

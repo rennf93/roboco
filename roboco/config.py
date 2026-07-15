@@ -1505,6 +1505,31 @@ class Settings(BaseSettings):
         description="Public base URL for commit-trailer links",
     )
 
+    # Telegram notifications bridge — best-effort DMs to the CEO on escalation +
+    # completion. Default-off; sending requires stored credentials AND
+    # telegram_enabled. Server-side fan-out, never raises into the producer.
+    telegram_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Telegram notifications bridge. OFF by "
+            "default; when off no Telegram API call is ever made. Even when "
+            "on, sending requires stored bot-token + chat-id credentials."
+        ),
+    )
+    telegram_timeout_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="Timeout (seconds) for a Telegram Bot API sendMessage call.",
+    )
+    panel_base_url: str = Field(
+        default="",
+        description=(
+            "External panel base URL for Telegram message deep-links. Empty "
+            "omits the link; e.g. https://panel.example.com -> "
+            ".../tasks/<id8>."
+        ),
+    )
+
     # Gateway coordination thresholds
     # Single source of truth for "claim heartbeat is stale", consumed via
     # `claimant_lock.is_stale` wherever a claim's freshness gates an action

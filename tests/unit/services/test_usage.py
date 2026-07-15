@@ -13,6 +13,7 @@ verify the arithmetic / logic of each analytics method:
 from __future__ import annotations
 
 import datetime
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -349,7 +350,7 @@ class TestGetTimeSeries:
         )
         svc = _service_with_execute(_result_fetchall([row]))
         await svc.get_time_series("7d", agent_slug="be-dev-1")
-        stmt = svc.session.execute.call_args_list[0][0][0]
+        stmt = cast("MagicMock", svc.session.execute).call_args_list[0][0][0]
         sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
         assert "be-dev-1" in sql
 
@@ -366,7 +367,7 @@ class TestGetTimeSeries:
         )
         svc = _service_with_execute(_result_fetchall([row]))
         await svc.get_time_series("7d")
-        stmt = svc.session.execute.call_args_list[0][0][0]
+        stmt = cast("MagicMock", svc.session.execute).call_args_list[0][0][0]
         sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
         assert "agent_slug" not in sql
 

@@ -75,6 +75,34 @@ export interface TaskFindingsResponse {
   truncated: boolean;
 }
 
+// One surfaced sibling that collides with the task under review — matches
+// the backend CollisionSibling schema (roboco/api/schemas/tasks.py).
+export interface CollisionSibling {
+  id: string;
+  title: string | null;
+  status: string;
+  branch_name: string | null;
+  pr_number: number | null;
+  sequence: number | null;
+  intends_to_touch: string[];
+  adds_migration: boolean;
+  touches_shared: boolean;
+  overlap: string[];
+  undeclared: string[];
+}
+
+// The collision map for a task — its own declared surface + the surfaced
+// siblings (same parent) that would collide with it. Matches
+// CollisionMapResponse.
+export interface CollisionMap {
+  task_id: string;
+  parent_task_id: string | null;
+  intends_to_touch: string[];
+  adds_migration: boolean;
+  touches_shared: boolean;
+  siblings: CollisionSibling[];
+}
+
 // Wire shape of GET /tasks/summary (backend TaskSummaryResponse) — exactly
 // the fields list views render; everything fat stays on GET /tasks/{id}.
 interface TaskSummaryWire {
@@ -209,6 +237,26 @@ export const tasksApi = {
       return { findings: [], summary: [], total: 0, truncated: false };
     const { data } = await api.get<TaskFindingsResponse>(
       "/tasks/" + taskId + "/findings",
+    );
+    return data;
+  },
+
+  // The reviewer/PM collision map — the task's own declared surface + the
+  // surfaced siblings (same parent) that would collide with it (file-overlap
+  // globs or a shared migration chain). Empty siblings for a root or a task
+  // with no colliding siblings. Feed for the panel's Collision tab.
+  getCollisionMap: async (taskId: string): Promise<CollisionMap> => {
+    if (isMockMode())
+      return {
+        task_id: taskId,
+        parent_task_id: null,
+        intends_to_touch: [],
+        adds_migration: false,
+        touches_shared: false,
+        siblings: [],
+      };
+    const { data } = await api.get<CollisionMap>(
+      "/tasks/" + taskId + "/collision-map",
     );
     return data;
   },

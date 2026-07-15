@@ -681,6 +681,46 @@ class TaskFindingsResponse(BaseModel):
     truncated: bool
 
 
+class CollisionSibling(BaseModel):
+    """One surfaced sibling that collides with the task under review.
+
+    The reviewer/PM collision map entry: the sibling's status/branch/PR +
+    declared surface + the overlap globs (the sibling globs that collide
+    with the task's declared globs) + declared-vs-actual drift (actual
+    files the task touched that no declared glob covers — present only on
+    the QA/PR-gate evidence path where the real touched files are known).
+    """
+
+    id: str
+    title: str | None = None
+    status: str
+    branch_name: str | None = None
+    pr_number: int | None = None
+    sequence: int | None = None
+    intends_to_touch: list[str] = []
+    adds_migration: bool = False
+    touches_shared: bool = False
+    overlap: list[str] = []
+    undeclared: list[str] = []
+
+
+class CollisionMapResponse(BaseModel):
+    """The collision map for a task — its own declared surface + the
+    surfaced siblings (same parent) that would collide with it.
+
+    ``siblings`` is empty for a root (no parent) or a task whose siblings
+    don't collide. The panel tab renders this read-only; the QA/PR-gate
+    evidence envelopes carry the same block (with drift) inline.
+    """
+
+    task_id: str
+    parent_task_id: str | None = None
+    intends_to_touch: list[str] = []
+    adds_migration: bool = False
+    touches_shared: bool = False
+    siblings: list[CollisionSibling] = []
+
+
 def convert_plan(plan_data: dict | None) -> TaskPlanResponse | None:
     """Convert plan JSON dict to TaskPlanResponse.
 

@@ -52,6 +52,7 @@ from roboco.foundation.policy.content import (
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
+from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -238,6 +239,21 @@ class QAMixin(_Base):
         prior_findings = await findings_lib.full_ledger_for_task(
             self.task.session, t.id
         )
+        # The collision map: surfaced siblings (same parent) that would
+        # collide with this task, with the declared-vs-actual drift (QA has
+        # the real touched files in hand). Best-effort — a fetch failure omits
+        # the block rather than breaking claim_review.
+        collision_context: list[dict[str, Any]] | None = None
+        try:
+            if t.parent_task_id:
+                siblings = await self.task.get_subtasks(t.parent_task_id)
+                collision_context = build_collision_context(
+                    task=t, siblings=siblings, actual_files=files_changed
+                )
+        except Exception as exc:  # best-effort enrichment, never breaks the verb
+            logger.warning(
+                "qa_collision_context_skip", task_id=str(t.id), error=str(exc)
+            )
         return build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
@@ -247,6 +263,7 @@ class QAMixin(_Base):
             revision_findings=open_findings,
             prior_findings=prior_findings,
             parent_context=parent_context,
+            collision_context=collision_context,
         )
 
     async def _verify_qa_owner(
