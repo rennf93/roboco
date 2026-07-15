@@ -2,6 +2,7 @@
 
 import { Radio } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { A2APairCard } from "./a2a-pair-card";
 import { groupPairsBySection, pairKey } from "./a2a-switchboard-utils";
@@ -56,12 +57,14 @@ export function A2ASwitchboard({
     <div className="h-full overflow-y-auto p-2 space-y-4">
       {sections.map((section) => (
         <div key={section.groupKey}>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2 px-1">
-            {section.label}
-            <span className="ml-1.5 text-muted-foreground/60 normal-case">
-              ({section.pairs.length})
-            </span>
-          </h3>
+          <HelpTip label="Pairs with prior conversation history are listed first">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2 px-1 w-fit">
+              {section.label}
+              <span className="ml-1.5 text-muted-foreground/60 normal-case">
+                ({section.pairs.length})
+              </span>
+            </h3>
+          </HelpTip>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {section.pairs.map((pair) => {
               const key = pairKey(pair.agent_a, pair.agent_b);

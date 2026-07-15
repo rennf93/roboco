@@ -16,6 +16,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { GitBranch, BookOpen } from "lucide-react";
 import { useUsageTimeSeries } from "@/hooks/use-usage";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
@@ -98,7 +99,9 @@ export function AgentActivityPanel({
       {/* Token activity sparkline */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Token Activity</CardTitle>
+          <HelpTip label="Daily token usage for this agent's sessions, from the usage rollup">
+            <CardTitle className="text-base w-fit">Token Activity</CardTitle>
+          </HelpTip>
           <CardDescription>Last 7 days</CardDescription>
         </CardHeader>
         <CardContent>
@@ -153,7 +156,9 @@ export function AgentActivityPanel({
       {/* Activity timeline */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Recent Activity</CardTitle>
+          <HelpTip label="Latest 8 work sessions and journal entries for this agent, merged and sorted newest first">
+            <CardTitle className="text-base w-fit">Recent Activity</CardTitle>
+          </HelpTip>
           <CardDescription>Work sessions &amp; journal entries</CardDescription>
         </CardHeader>
         <CardContent>
@@ -172,11 +177,19 @@ export function AgentActivityPanel({
               {timeline.map((item, i) => (
                 <li key={`${item.kind}-${i}`} className="flex gap-3">
                   <div className="mt-0.5 shrink-0">
-                    {item.kind === "session" ? (
-                      <GitBranch className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <BookOpen className="h-4 w-4 text-muted-foreground" />
-                    )}
+                    <HelpTip
+                      label={
+                        item.kind === "session"
+                          ? "Work session — git branch/task activity"
+                          : "Journal entry — agent's own log"
+                      }
+                    >
+                      {item.kind === "session" ? (
+                        <GitBranch className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <BookOpen className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </HelpTip>
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium truncate">{item.title}</p>
@@ -184,11 +197,13 @@ export function AgentActivityPanel({
                       {item.subtitle}
                     </p>
                   </div>
-                  <span className="text-muted-foreground text-xs whitespace-nowrap">
-                    {formatDistanceToNow(new Date(item.timestamp), {
-                      addSuffix: true,
-                    })}
-                  </span>
+                  <HelpTip label={new Date(item.timestamp).toLocaleString()}>
+                    <span className="text-muted-foreground text-xs whitespace-nowrap">
+                      {formatDistanceToNow(new Date(item.timestamp), {
+                        addSuffix: true,
+                      })}
+                    </span>
+                  </HelpTip>
                 </li>
               ))}
             </ol>

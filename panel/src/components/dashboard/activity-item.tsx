@@ -9,6 +9,7 @@ import {
   Clock,
 } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { HelpTip } from "@/components/ui/help-tip";
 
 export interface Activity {
   id: string;
@@ -66,9 +67,11 @@ export function ActivityItem({ activity }: ActivityItemProps) {
       <div className="mt-0.5">{icon}</div>
       <div className="flex-1 min-w-0">
         <p className="text-sm">
-          <span className="font-medium">
-            {getAgentDisplayName(activity.agent_id)}
-          </span>{" "}
+          <HelpTip label={`Agent slug: ${activity.agent_id}`}>
+            <span className="font-medium">
+              {getAgentDisplayName(activity.agent_id)}
+            </span>
+          </HelpTip>{" "}
           <span className="text-muted-foreground">{label}</span>
           {activity.task_title && (
             <>
@@ -77,9 +80,17 @@ export function ActivityItem({ activity }: ActivityItemProps) {
             </>
           )}
         </p>
-        <span className="text-xs text-muted-foreground">
-          {activity.timestamp ? formatTime(activity.timestamp) : "N/A"}
-        </span>
+        <HelpTip
+          label={
+            activity.timestamp
+              ? `Exact time: ${new Date(activity.timestamp).toLocaleString()}`
+              : ""
+          }
+        >
+          <span className="text-xs text-muted-foreground">
+            {activity.timestamp ? formatTime(activity.timestamp) : "N/A"}
+          </span>
+        </HelpTip>
       </div>
     </div>
   );

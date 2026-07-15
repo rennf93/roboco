@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { ModelUsageSlice } from "@/types";
 
@@ -39,7 +40,9 @@ export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">By Model</CardTitle>
+        <HelpTip label="Share of total tokens consumed per model in the selected window — hover a slice for exact tokens and cost">
+          <CardTitle className="text-base">By Model</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (

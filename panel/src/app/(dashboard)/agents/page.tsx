@@ -108,6 +108,7 @@ export default function AgentsPage() {
           one Leadership band so a lone Main PM card never wastes a full row. */}
       <AgentGrid
         title="Leadership"
+        titleHint="Board (Product Owner, Head of Marketing, Auditor) plus the Main PM"
         agents={[...getBoardAgents(agents), ...getMainPm(agents)]}
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
@@ -116,6 +117,7 @@ export default function AgentsPage() {
 
       <AgentGrid
         title="Backend Cell"
+        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
         agents={getBackendAgents(agents)}
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
@@ -124,6 +126,7 @@ export default function AgentsPage() {
 
       <AgentGrid
         title="Frontend Cell"
+        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
         agents={getFrontendAgents(agents)}
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
@@ -132,6 +135,7 @@ export default function AgentsPage() {
 
       <AgentGrid
         title="UX/UI Cell"
+        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
         agents={getUxAgents(agents)}
         agentStatuses={agentStatuses}
         agentUsage={agentUsageMap}
@@ -143,6 +147,7 @@ export default function AgentsPage() {
       {getSupportAgents(agents).length > 0 && (
         <AgentGrid
           title="Support"
+          titleHint="CEO-direct helpers: Intake/Prompter, Secretary, and the root PR Reviewer"
           agents={getSupportAgents(agents)}
           agentStatuses={agentStatuses}
           agentUsage={agentUsageMap}

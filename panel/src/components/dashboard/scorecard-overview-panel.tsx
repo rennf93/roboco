@@ -54,17 +54,23 @@ export function ScorecardOverviewPanel() {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Trophy className="h-5 w-5" />
-            Performance
-          </CardTitle>
+          <HelpTip label="Org-wide performance rollup for the last 30 days">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Trophy className="h-5 w-5" />
+              Performance
+            </CardTitle>
+          </HelpTip>
           <Link
             prefetch={false}
             href="/metrics?tab=scorecards"
             className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs"
           >
-            Scorecards
-            <ArrowRight className="h-3 w-3" />
+            <HelpTip label="Per-agent and per-team scorecards, full detail">
+              <span className="flex items-center gap-1">
+                Scorecards
+                <ArrowRight className="h-3 w-3" />
+              </span>
+            </HelpTip>
           </Link>
         </div>
       </CardHeader>

@@ -15,6 +15,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Play } from "lucide-react";
 import { toast } from "sonner";
 
@@ -70,10 +71,12 @@ export function SpawnAgentDialog({
   };
 
   const defaultTrigger = (
-    <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-      <Play className="h-4 w-4 mr-2" />
-      Spawn
-    </DropdownMenuItem>
+    <HelpTip label="Start this agent's container, optionally pre-claiming a task" side="left">
+      <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+        <Play className="h-4 w-4 mr-2" />
+        Spawn
+      </DropdownMenuItem>
+    </HelpTip>
   );
 
   return (
@@ -88,7 +91,9 @@ export function SpawnAgentDialog({
         </DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="taskId">Task ID (optional)</Label>
+            <HelpTip label="Pre-claims this task on spawn instead of pulling from the pool">
+              <Label htmlFor="taskId" className="w-fit">Task ID (optional)</Label>
+            </HelpTip>
             <Input
               id="taskId"
               value={taskId}
@@ -97,7 +102,9 @@ export function SpawnAgentDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="initialPrompt">Initial Prompt (optional)</Label>
+            <HelpTip label="Extra instructions passed to the agent's first turn">
+              <Label htmlFor="initialPrompt" className="w-fit">Initial Prompt (optional)</Label>
+            </HelpTip>
             <Input
               id="initialPrompt"
               value={initialPrompt}
@@ -106,12 +113,18 @@ export function SpawnAgentDialog({
             />
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSpawn} disabled={spawnAgent.isPending}>
-              {spawnAgent.isPending ? "Spawning..." : "Spawn Agent"}
-            </Button>
+            <HelpTip label="Closes without spawning">
+              <Button variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+            </HelpTip>
+            <HelpTip label="Already-running agents are skipped — no duplicate container is started">
+              <span>
+                <Button onClick={handleSpawn} disabled={spawnAgent.isPending}>
+                  {spawnAgent.isPending ? "Spawning..." : "Spawn Agent"}
+                </Button>
+              </span>
+            </HelpTip>
           </div>
         </div>
       </DialogContent>

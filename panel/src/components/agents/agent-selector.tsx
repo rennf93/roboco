@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { User, Users } from "lucide-react";
 import { resolveToSlug } from "@/lib/agent-utils";
 
@@ -151,30 +152,34 @@ export function AgentSelector({
       onValueChange={handleValueChange}
       disabled={disabled || isLoading}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder={placeholder}>
-          {selectedAgent ? (
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4" />
-              <span>{selectedAgent.name}</span>
-              {selectedAgent.role && (
-                <Badge variant="outline" className="text-xs">
-                  {ROLE_LABELS[selectedAgent.role] || selectedAgent.role}
-                </Badge>
-              )}
-            </div>
-          ) : (
-            placeholder
-          )}
-        </SelectValue>
-      </SelectTrigger>
+      <HelpTip label="Agents are grouped by team below — Board, Main PM, then each cell">
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={placeholder}>
+            {selectedAgent ? (
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4" />
+                <span>{selectedAgent.name}</span>
+                {selectedAgent.role && (
+                  <Badge variant="outline" className="text-xs">
+                    {ROLE_LABELS[selectedAgent.role] || selectedAgent.role}
+                  </Badge>
+                )}
+              </div>
+            ) : (
+              placeholder
+            )}
+          </SelectValue>
+        </SelectTrigger>
+      </HelpTip>
       <SelectContent>
         {allowClear && value && (
           <SelectItem value="__clear__" className="text-muted-foreground">
-            <span className="flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              Unassigned
-            </span>
+            <HelpTip label="Clears the current assignment">
+              <span className="flex items-center gap-2">
+                <Users className="h-4 w-4" />
+                Unassigned
+              </span>
+            </HelpTip>
           </SelectItem>
         )}
 

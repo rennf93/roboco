@@ -36,29 +36,116 @@ import { useUIStore } from "@/store";
 
 // Flat list, in the exact order product wants the sidebar to read top to
 // bottom. Notifications lives only in the header's NotificationBell now.
+// `tip` doubles as the collapsed icon-rail tooltip and the expanded-row
+// hover hint — one description, both surfaces.
 export const navItems = [
-  { title: "Overview", href: "/overview", icon: LayoutDashboard },
-  { title: "Task Assistant", href: "/prompter", icon: Sparkles },
-  { title: "Tasks", href: "/tasks", icon: ListTodo },
-  { title: "Kanban", href: "/kanban", icon: Kanban },
-  { title: "Git", href: "/git", icon: GitBranch },
-  { title: "Projects", href: "/projects", icon: FolderGit2 },
-  { title: "Products", href: "/products", icon: Boxes },
-  { title: "Social", href: "/social", icon: Share2 },
-  { title: "Knowledge Base", href: "/knowledge-base", icon: Database },
-  { title: "A2A", href: "/a2a", icon: Radio },
-  { title: "Agents", href: "/agents", icon: Bot },
-  { title: "Journals", href: "/journals", icon: BookOpen },
-  { title: "Auditor", href: "/auditor", icon: Shield },
-  { title: "Metrics", href: "/metrics", icon: Activity },
+  {
+    title: "Overview",
+    href: "/overview",
+    icon: LayoutDashboard,
+    tip: "Company-wide dashboard: key metrics, blockers, and approval queues",
+  },
+  {
+    title: "Task Assistant",
+    href: "/prompter",
+    icon: Sparkles,
+    tip: "Chat with Intake to draft and confirm new tasks, including MegaTask batches",
+  },
+  {
+    title: "Tasks",
+    href: "/tasks",
+    icon: ListTodo,
+    tip: "Full task list — filter, search, and open any task's detail",
+  },
+  {
+    title: "Kanban",
+    href: "/kanban",
+    icon: Kanban,
+    tip: "Task board grouped by lifecycle status",
+  },
+  {
+    title: "Git",
+    href: "/git",
+    icon: GitBranch,
+    tip: "Branches, commits, and diffs across every project workspace",
+  },
+  {
+    title: "Projects",
+    href: "/projects",
+    icon: FolderGit2,
+    tip: "Manage repos, git tokens, and per-project settings",
+  },
+  {
+    title: "Products",
+    href: "/products",
+    icon: Boxes,
+    tip: "Products the fleet ships against",
+  },
+  {
+    title: "Social",
+    href: "/social",
+    icon: Share2,
+    tip: "X and TikTok post queues, plus the video pipeline",
+  },
+  {
+    title: "Knowledge Base",
+    href: "/knowledge-base",
+    icon: Database,
+    tip: "Search the RAG corpus — playbooks, learnings, and vault notes",
+  },
+  {
+    title: "A2A",
+    href: "/a2a",
+    icon: Radio,
+    tip: "Live agent-to-agent message switchboard and history",
+  },
+  {
+    title: "Agents",
+    href: "/agents",
+    icon: Bot,
+    tip: "Every agent's live state, spawn controls, and activity stream",
+  },
+  {
+    title: "Journals",
+    href: "/journals",
+    icon: BookOpen,
+    tip: "Per-agent reflections and learnings",
+  },
+  {
+    title: "Auditor",
+    href: "/auditor",
+    icon: Shield,
+    tip: "Silent-observer quality flags and findings review queue",
+  },
+  {
+    title: "Metrics",
+    href: "/metrics",
+    icon: Activity,
+    tip: "Performance, token usage/cost, delivery, and scorecard analytics",
+  },
 ];
 
 // Business moved out of the main nav — it lives with the settings-adjacent
 // links, separated from navItems by a single Separator (see SidebarFooter).
 const footerItems = [
-  { title: "Business", href: "/business", icon: Building2 },
-  { title: "AI Providers", href: "/settings/ai-providers", icon: Cpu },
-  { title: "Settings", href: "/settings", icon: Settings },
+  {
+    title: "Business",
+    href: "/business",
+    icon: Building2,
+    tip: "Company goals, roadmap proposals, pitches, and secretary directives",
+  },
+  {
+    title: "AI Providers",
+    href: "/settings/ai-providers",
+    icon: Cpu,
+    tip: "Model routing and per-role provider assignments",
+  },
+  {
+    title: "Settings",
+    href: "/settings",
+    icon: Settings,
+    tip: "Feature flags, credentials, and panel preferences",
+  },
 ];
 
 /**
@@ -95,16 +182,17 @@ export function SidebarNav({
             {!collapsed && <span>{item.title}</span>}
           </Link>
         );
-        // Icon-only rail: the label moves into a tooltip.
-        return collapsed ? (
+        // Collapsed rail: tooltip is the only place the destination is named.
+        // Expanded row: the label is already visible, so the tooltip instead
+        // says what lives there — plain Link, safe to wrap (no stateful
+        // Radix trigger to clobber).
+        return (
           <Tooltip key={item.href}>
             <TooltipTrigger asChild>{link}</TooltipTrigger>
-            <TooltipContent side="right">{item.title}</TooltipContent>
+            <TooltipContent side="right">
+              {collapsed ? item.title : item.tip}
+            </TooltipContent>
           </Tooltip>
-        ) : (
-          <span key={item.href} className="block">
-            {link}
-          </span>
         );
       })}
     </nav>
@@ -144,15 +232,13 @@ export function SidebarFooter({
             {!collapsed && <span>{item.title}</span>}
           </Link>
         );
-        return collapsed ? (
+        return (
           <Tooltip key={item.href}>
             <TooltipTrigger asChild>{link}</TooltipTrigger>
-            <TooltipContent side="right">{item.title}</TooltipContent>
+            <TooltipContent side="right">
+              {collapsed ? item.title : item.tip}
+            </TooltipContent>
           </Tooltip>
-        ) : (
-          <span key={item.href} className="block">
-            {link}
-          </span>
         );
       })}
     </div>
@@ -175,22 +261,27 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex h-16 items-center justify-between border-b px-4">
         {!sidebarCollapsed && (
-          <Link
-            href="/overview"
-            className="flex items-center gap-2"
-            prefetch={false}
-          >
-            <Image
-              src="/roboco-logo.png"
-              alt="RoboCo"
-              width={32}
-              height={32}
-              priority
-              unoptimized
-              className="h-8 w-8 rounded"
-            />
-            <span className="font-semibold text-lg">RoboCo</span>
-          </Link>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Link
+                href="/overview"
+                className="flex items-center gap-2"
+                prefetch={false}
+              >
+                <Image
+                  src="/roboco-logo.png"
+                  alt="RoboCo"
+                  width={32}
+                  height={32}
+                  priority
+                  unoptimized
+                  className="h-8 w-8 rounded"
+                />
+                <span className="font-semibold text-lg">RoboCo</span>
+              </Link>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Back to Overview</TooltipContent>
+          </Tooltip>
         )}
         <TooltipProvider>
           <Tooltip>

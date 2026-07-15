@@ -40,12 +40,14 @@ function IdentityCard({ slug }: { slug: string }) {
         <div className="text-sm font-medium truncate">
           {getAgentDisplayName(slug)}
         </div>
-        <Badge
-          variant="outline"
-          className={cn("text-[10px] mt-0.5", TEAM_COLOR_CLASSES[teamColor])}
-        >
-          {teamColor.replace("_", "/")}
-        </Badge>
+        <HelpTip label="Team this agent belongs to in the org hierarchy">
+          <Badge
+            variant="outline"
+            className={cn("text-[10px] mt-0.5 w-fit", TEAM_COLOR_CLASSES[teamColor])}
+          >
+            {teamColor.replace("_", "/")}
+          </Badge>
+        </HelpTip>
       </div>
     </Link>
   );
@@ -70,10 +72,12 @@ export function A2AContextPane({
 
   return (
     <div className="p-3 space-y-4">
-      <div className="flex items-center gap-2 pb-2 border-b">
-        <Users className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Context</span>
-      </div>
+      <HelpTip label="Read-only: participant identities and the conversation's linked task">
+        <div className="flex items-center gap-2 pb-2 border-b w-fit">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Context</span>
+        </div>
+      </HelpTip>
 
       <div className="space-y-2">
         <IdentityCard slug={agentA} />
@@ -94,20 +98,24 @@ export function A2AContextPane({
           <div className="rounded-lg border p-2.5 space-y-1.5">
             <div className="text-sm font-medium truncate">{task.title}</div>
             <div className="flex items-center justify-between gap-2">
-              <Badge
-                variant={task.status === "completed" ? "default" : "secondary"}
-                className="text-xs"
-              >
-                {task.status}
-              </Badge>
-              <Link
-                prefetch={false}
-                href={`/tasks/${taskId}`}
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <ListTodo className="h-3 w-3" />
-                View task
-              </Link>
+              <HelpTip label="Current lifecycle status of the linked task">
+                <Badge
+                  variant={task.status === "completed" ? "default" : "secondary"}
+                  className="text-xs w-fit"
+                >
+                  {task.status}
+                </Badge>
+              </HelpTip>
+              <HelpTip label="Opens this task's full detail page">
+                <Link
+                  prefetch={false}
+                  href={`/tasks/${taskId}`}
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                >
+                  <ListTodo className="h-3 w-3" />
+                  View task
+                </Link>
+              </HelpTip>
             </div>
           </div>
         )}

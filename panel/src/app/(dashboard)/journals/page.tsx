@@ -9,6 +9,7 @@ import { JournalView } from "@/components/journals/journal-view";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { usePageRefresh } from "@/hooks";
 import { BookOpen, Search } from "lucide-react";
 
@@ -179,15 +180,17 @@ function JournalsPageContent() {
           <Card className="h-full flex flex-col">
             <CardContent className="p-3 flex flex-1 flex-col min-h-0">
               {/* Agent Search */}
-              <div className="relative mb-3">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={agentSearch}
-                  onChange={(e) => handleAgentSearch(e.target.value)}
-                  placeholder="Search agents..."
-                  className="pl-9"
-                />
-              </div>
+              <HelpTip label="Filters the agent list below by ID, role, or team">
+                <div className="relative mb-3">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={agentSearch}
+                    onChange={(e) => handleAgentSearch(e.target.value)}
+                    placeholder="Search agents..."
+                    className="pl-9"
+                  />
+                </div>
+              </HelpTip>
 
               {/* Agent List */}
               <AgentList

@@ -113,10 +113,12 @@ export function UsageOverviewPanel() {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Coins className="h-5 w-5" />
-            Token Usage &amp; Cost
-          </CardTitle>
+          <HelpTip label="Live token/cost across all agent sessions, from /ws/system or a 24h HTTP poll fallback">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Coins className="h-5 w-5" />
+              Token Usage &amp; Cost
+            </CardTitle>
+          </HelpTip>
           <HelpTip label="Connection to the live /ws/system stream — Polling means it's down and figures refresh via periodic HTTP fetch instead">
             <Badge className={badge.className}>
               {badge.icon}

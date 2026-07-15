@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TaskStatusSlice {
   name: string;
@@ -41,7 +42,9 @@ export function TaskStatusChart({ slices, isLoading }: TaskStatusChartProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Task Status Distribution</CardTitle>
+        <HelpTip label="Live snapshot of how many tasks currently sit in each lifecycle status">
+          <CardTitle className="text-base">Task Status Distribution</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (

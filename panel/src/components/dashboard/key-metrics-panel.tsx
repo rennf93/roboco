@@ -61,7 +61,9 @@ export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg">Key Metrics</CardTitle>
+        <HelpTip label="Org-wide 7-day delivery snapshot from DashboardService">
+          <CardTitle className="text-lg">Key Metrics</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (

@@ -98,24 +98,30 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
               )}
               {isActive && (
                 <>
-                  <DropdownMenuItem asChild>
-                    <Link href={"/agents/" + agent.id} prefetch={false}>
-                      <Activity className="h-4 w-4 mr-2" />
-                      View Details
-                    </Link>
-                  </DropdownMenuItem>
+                  <HelpTip label="Open this agent's status, activity, and live output stream" side="left">
+                    <DropdownMenuItem asChild>
+                      <Link href={"/agents/" + agent.id} prefetch={false}>
+                        <Activity className="h-4 w-4 mr-2" />
+                        View Details
+                      </Link>
+                    </DropdownMenuItem>
+                  </HelpTip>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => handleStop(true)}>
-                    <Square className="h-4 w-4 mr-2" />
-                    Stop Gracefully
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => handleStop(false)}
-                    className="text-red-600"
-                  >
-                    <Square className="h-4 w-4 mr-2" />
-                    Force Stop
-                  </DropdownMenuItem>
+                  <HelpTip label="Lets the agent finish its current step before stopping" side="left">
+                    <DropdownMenuItem onClick={() => handleStop(true)}>
+                      <Square className="h-4 w-4 mr-2" />
+                      Stop Gracefully
+                    </DropdownMenuItem>
+                  </HelpTip>
+                  <HelpTip label="Kills the container immediately, even mid-task" side="left">
+                    <DropdownMenuItem
+                      onClick={() => handleStop(false)}
+                      className="text-red-600"
+                    >
+                      <Square className="h-4 w-4 mr-2" />
+                      Force Stop
+                    </DropdownMenuItem>
+                  </HelpTip>
                 </>
               )}
             </DropdownMenuContent>
@@ -139,17 +145,29 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
           </span>
         </HelpTip>
         {detail && (
-          <p className={cn("mt-1 truncate text-xs", detail.className)}>
-            {detail.text}
-          </p>
+          <HelpTip
+            label={
+              agentStatus?.error_count
+                ? "Errors this agent hit in its current session"
+                : agentStatus?.waiting_for
+                  ? "What this agent is blocked on — needs human input to continue"
+                  : "The task this agent currently has claimed"
+            }
+          >
+            <p className={cn("mt-1 truncate text-xs w-fit", detail.className)}>
+              {detail.text}
+            </p>
+          </HelpTip>
         )}
         {usageRow && (
-          <p className="mt-1 truncate text-xs text-muted-foreground">
-            {usageRow.total_tokens >= 1_000
-              ? (usageRow.total_tokens / 1_000).toFixed(1) + "K"
-              : String(usageRow.total_tokens)}{" "}
-            tok · ${usageRow.cost_usd.toFixed(4)}
-          </p>
+          <HelpTip label="Token usage and cost for this agent over the last 24 hours">
+            <p className="mt-1 truncate text-xs text-muted-foreground w-fit">
+              {usageRow.total_tokens >= 1_000
+                ? (usageRow.total_tokens / 1_000).toFixed(1) + "K"
+                : String(usageRow.total_tokens)}{" "}
+              tok · ${usageRow.cost_usd.toFixed(4)}
+            </p>
+          </HelpTip>
         )}
       </CardContent>
     </Card>

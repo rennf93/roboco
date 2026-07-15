@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Activity as ActivityIcon, ArrowRight } from "lucide-react";
 import { ActivityItem, Activity } from "./activity-item";
 import Link from "next/link";
@@ -20,10 +21,12 @@ export function RecentActivityFeed({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <ActivityIcon className="h-5 w-5" />
-          Recent Activity
-        </CardTitle>
+        <HelpTip label="The 10 most recent agent actions from the last 24 hours">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <ActivityIcon className="h-5 w-5" />
+            Recent Activity
+          </CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -48,10 +51,12 @@ export function RecentActivityFeed({
         )}
         <div className="mt-4 pt-3 border-t">
           <Link href="/notifications" prefetch={false}>
-            <Button variant="ghost" size="sm" className="w-full">
-              View Full Activity
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
+            <HelpTip label="Opens Notifications — the complete activity history">
+              <Button variant="ghost" size="sm" className="w-full">
+                View Full Activity
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Button>
+            </HelpTip>
           </Link>
         </div>
       </CardContent>

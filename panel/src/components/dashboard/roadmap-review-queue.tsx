@@ -37,13 +37,19 @@ interface RejectTarget {
 function itemStatusBadge(item: RoadmapItem) {
   if (item.status === "approved") {
     return (
-      <Badge variant="secondary" className="bg-green-600/10 text-green-700">
-        Approved
-      </Badge>
+      <HelpTip label="Materialized as a BACKLOG task">
+        <Badge variant="secondary" className="bg-green-600/10 text-green-700">
+          Approved
+        </Badge>
+      </HelpTip>
     );
   }
   if (item.status === "rejected") {
-    return <Badge variant="outline">Rejected</Badge>;
+    return (
+      <HelpTip label="Recorded, not added to the backlog">
+        <Badge variant="outline">Rejected</Badge>
+      </HelpTip>
+    );
   }
   return null;
 }
@@ -95,24 +101,28 @@ function RoadmapItemRow({
       )}
       {isProposed && (
         <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => onReject({ taskId, item })}
-          >
-            <XCircle className="mr-1 h-4 w-4" />
-            Reject
-          </Button>
-          <Button
-            size="sm"
-            className="bg-green-600 hover:bg-green-700"
-            disabled={approving}
-            onClick={() => onApprove(taskId, item.id)}
-          >
-            <CheckCircle2 className="mr-1 h-4 w-4" />
-            Approve
-          </Button>
+          <HelpTip label="Records your reason and feeds the next cycle's prompt — not added to the backlog">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={() => onReject({ taskId, item })}
+            >
+              <XCircle className="mr-1 h-4 w-4" />
+              Reject
+            </Button>
+          </HelpTip>
+          <HelpTip label="Materializes this item as a BACKLOG task — needs normal PM activation to start">
+            <Button
+              size="sm"
+              className="bg-green-600 hover:bg-green-700"
+              disabled={approving}
+              onClick={() => onApprove(taskId, item.id)}
+            >
+              <CheckCircle2 className="mr-1 h-4 w-4" />
+              Approve
+            </Button>
+          </HelpTip>
         </div>
       )}
     </div>
@@ -138,7 +148,9 @@ function RoadmapCycleCard({
         <CardTitle className="flex items-center gap-2">
           <Map className="h-5 w-5" />
           Roadmap Cycle
-          <Badge variant="secondary">{pending} pending</Badge>
+          <HelpTip label="Items still awaiting your approve/reject decision">
+            <Badge variant="secondary">{pending} pending</Badge>
+          </HelpTip>
         </CardTitle>
         <CardDescription>{cycle.goal}</CardDescription>
       </CardHeader>

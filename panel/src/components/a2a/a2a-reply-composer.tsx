@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { Send } from "lucide-react";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import { useReplyAsCeo } from "@/hooks/use-a2a-live";
@@ -88,9 +89,11 @@ export function A2AReplyComposer({
         </div>
         <div className="flex flex-col gap-2">
           <Select value={recipient} onValueChange={setChosenRecipient}>
-            <SelectTrigger className="w-auto min-w-32 h-8">
-              <SelectValue />
-            </SelectTrigger>
+            <HelpTip label="Defaults to whoever sent the latest message — pick to override">
+              <SelectTrigger className="w-auto min-w-32 h-8">
+                <SelectValue />
+              </SelectTrigger>
+            </HelpTip>
             <SelectContent>
               {options.map((slug) => (
                 <SelectItem key={slug} value={slug}>
@@ -99,14 +102,18 @@ export function A2AReplyComposer({
               ))}
             </SelectContent>
           </Select>
-          <Button
-            type="submit"
-            size="sm"
-            disabled={!content.trim() || disabled || reply.isPending}
-          >
-            <Send className="h-4 w-4 mr-1" />
-            Send
-          </Button>
+          <HelpTip label="Sends as the CEO, visible to both participants">
+            <span>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!content.trim() || disabled || reply.isPending}
+              >
+                <Send className="h-4 w-4 mr-1" />
+                Send
+              </Button>
+            </span>
+          </HelpTip>
         </div>
       </div>
       <p className="text-xs text-muted-foreground mt-2">

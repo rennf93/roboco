@@ -34,35 +34,41 @@ export function TeamHealthCard({ health }: TeamHealthCardProps) {
       </CardHeader>
       <CardContent className="space-y-3">
         {/* Active Tasks */}
-        <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Users className="h-4 w-4" />
-            Active
+        <HelpTip label="Tasks this team currently has claimed or in progress">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Users className="h-4 w-4" />
+              Active
+            </div>
+            <span className="font-medium">{health.active_tasks}</span>
           </div>
-          <span className="font-medium">{health.active_tasks}</span>
-        </div>
+        </HelpTip>
 
         {/* Blocked Tasks */}
-        <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <AlertTriangle className="h-4 w-4" />
-            Blocked
+        <HelpTip label="Tasks this team currently has in the blocked status">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <AlertTriangle className="h-4 w-4" />
+              Blocked
+            </div>
+            <span
+              className={`font-medium ${health.blocked_tasks > 0 ? "text-red-600" : ""}`}
+            >
+              {health.blocked_tasks}
+            </span>
           </div>
-          <span
-            className={`font-medium ${health.blocked_tasks > 0 ? "text-red-600" : ""}`}
-          >
-            {health.blocked_tasks}
-          </span>
-        </div>
+        </HelpTip>
 
         {/* Completed This Week */}
-        <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <TrendingUp className="h-4 w-4" />
-            Completed (7d)
+        <HelpTip label="Tasks this team completed in the last 7 days">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <TrendingUp className="h-4 w-4" />
+              Completed (7d)
+            </div>
+            <span className="font-medium">{health.completed_this_week}</span>
           </div>
-          <span className="font-medium">{health.completed_this_week}</span>
-        </div>
+        </HelpTip>
 
         {/* Blocked Ratio */}
         {health.blocked_ratio > 0 && (

@@ -129,7 +129,9 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
             <div className="flex items-center gap-2 mb-1">
               <EntryTypeBadge type={entry.type} />
               {entry.sentiment && (
-                <Badge variant="outline">{entry.sentiment}</Badge>
+                <HelpTip label="Agent's self-reported sentiment when writing this entry">
+                  <Badge variant="outline">{entry.sentiment}</Badge>
+                </HelpTip>
               )}
             </div>
             <h1 className="text-2xl font-bold">{entry.title}</h1>
@@ -192,7 +194,9 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
       {/* Content */}
       <Card>
         <CardHeader>
-          <CardTitle>Content</CardTitle>
+          <HelpTip label="The entry body, rendered as Markdown">
+            <CardTitle>Content</CardTitle>
+          </HelpTip>
         </CardHeader>
         <CardContent>
           <div className="prose prose-sm dark:prose-invert max-w-none">
@@ -205,10 +209,12 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
       {entry.tags.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Tag className="h-4 w-4" />
-              Tags
-            </CardTitle>
+            <HelpTip label="Free-form labels the agent attached to this entry">
+              <CardTitle className="flex items-center gap-2">
+                <Tag className="h-4 w-4" />
+                Tags
+              </CardTitle>
+            </HelpTip>
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap gap-2">

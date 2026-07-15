@@ -48,59 +48,71 @@ export function GrowthSummary({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <TrendingUp className="h-5 w-5" />
-          Growth Summary
-        </CardTitle>
+        <HelpTip label="Aggregated counts and trends from this agent's journal entries">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <TrendingUp className="h-5 w-5" />
+            Growth Summary
+          </CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Total Entries */}
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">Total Entries</span>
-          <span className="font-medium">{journal.total_entries}</span>
-        </div>
+        <HelpTip label="Total journal entries this agent has written across all types">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Total Entries</span>
+            <span className="font-medium">{journal.total_entries}</span>
+          </div>
+        </HelpTip>
 
         {/* Entry Types Breakdown */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <BookOpen className="h-4 w-4 text-blue-500" />
-              Task Reflections
+          <HelpTip label="Wrap-up reflections the agent wrote after finishing tasks">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <BookOpen className="h-4 w-4 text-blue-500" />
+                Task Reflections
+              </div>
+              <span className="font-medium">
+                {entries["task_reflection"] || growth?.total_reflections || 0}
+              </span>
             </div>
-            <span className="font-medium">
-              {entries["task_reflection"] || growth?.total_reflections || 0}
-            </span>
-          </div>
+          </HelpTip>
 
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <GitBranch className="h-4 w-4 text-purple-500" />
-              Decision Logs
+          <HelpTip label="Records of decisions the agent made, with the reasoning behind them">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <GitBranch className="h-4 w-4 text-purple-500" />
+                Decision Logs
+              </div>
+              <span className="font-medium">
+                {entries["decision_log"] || growth?.total_decisions || 0}
+              </span>
             </div>
-            <span className="font-medium">
-              {entries["decision_log"] || growth?.total_decisions || 0}
-            </span>
-          </div>
+          </HelpTip>
 
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Lightbulb className="h-4 w-4 text-green-500" />
-              Learnings
+          <HelpTip label="Lessons learned; broadcast to other agents as a knowledge-share notification">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Lightbulb className="h-4 w-4 text-green-500" />
+                Learnings
+              </div>
+              <span className="font-medium">
+                {entries["learning"] || growth?.total_learnings || 0}
+              </span>
             </div>
-            <span className="font-medium">
-              {entries["learning"] || growth?.total_learnings || 0}
-            </span>
-          </div>
+          </HelpTip>
 
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <AlertTriangle className="h-4 w-4 text-orange-500" />
-              Struggles
+          <HelpTip label="Difficulties the agent hit; some are later marked resolved">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <AlertTriangle className="h-4 w-4 text-orange-500" />
+                Struggles
+              </div>
+              <span className="font-medium">
+                {entries["struggle"] || growth?.total_struggles || 0}
+              </span>
             </div>
-            <span className="font-medium">
-              {entries["struggle"] || growth?.total_struggles || 0}
-            </span>
-          </div>
+          </HelpTip>
         </div>
 
         {/* Struggle Resolution Rate */}

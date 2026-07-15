@@ -156,9 +156,11 @@ export function A2ATranscript({
           <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-50 text-destructive" />
           <p className="text-sm mb-3">Couldn&apos;t load this conversation</p>
           {onRetry && (
-            <Button variant="outline" size="sm" onClick={onRetry}>
-              Retry
-            </Button>
+            <HelpTip label="Re-fetches this conversation's messages">
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                Retry
+              </Button>
+            </HelpTip>
           )}
         </div>
       </div>
@@ -224,9 +226,11 @@ export function A2ATranscript({
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1.5">
-                    <span className="font-semibold text-sm">
-                      {getAgentDisplayName(message.from_agent)}
-                    </span>
+                    <HelpTip label={`${teamColor.replace("_", "/")} team`}>
+                      <span className="font-semibold text-sm w-fit">
+                        {getAgentDisplayName(message.from_agent)}
+                      </span>
+                    </HelpTip>
                     {message.message_kind && (
                       <HelpTip label="Type of agent-to-agent message">
                         <Badge variant="outline" className="text-[10px]">
@@ -234,9 +238,11 @@ export function A2ATranscript({
                         </Badge>
                       </HelpTip>
                     )}
-                    <span className="text-xs text-muted-foreground ml-auto">
-                      {formatDistanceToNow(new Date(message.created_at))} ago
-                    </span>
+                    <HelpTip label={new Date(message.created_at).toLocaleString()}>
+                      <span className="text-xs text-muted-foreground ml-auto w-fit">
+                        {formatDistanceToNow(new Date(message.created_at))} ago
+                      </span>
+                    </HelpTip>
                   </div>
                   <div className="text-sm prose prose-sm dark:prose-invert max-w-none">
                     <Markdown>{message.content}</Markdown>
@@ -248,19 +254,21 @@ export function A2ATranscript({
         </div>
       </div>
       {showJumpPill && (
-        <button
-          type="button"
-          onClick={scrollToBottom}
-          className={cn(
-            "absolute bottom-3 left-1/2 rounded-full bg-primary text-primary-foreground text-xs px-3 py-1 shadow-md",
-            "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
-            pillEntering
-              ? "opacity-0 translate-x-[-50%] translate-y-1 motion-reduce:opacity-100 motion-reduce:translate-y-0"
-              : "opacity-100 translate-x-[-50%] translate-y-0",
-          )}
-        >
-          New messages ↓
-        </button>
+        <HelpTip label="Scrolls down to the newest message">
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className={cn(
+              "absolute bottom-3 left-1/2 rounded-full bg-primary text-primary-foreground text-xs px-3 py-1 shadow-md",
+              "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+              pillEntering
+                ? "opacity-0 translate-x-[-50%] translate-y-1 motion-reduce:opacity-100 motion-reduce:translate-y-0"
+                : "opacity-100 translate-x-[-50%] translate-y-0",
+            )}
+          >
+            New messages ↓
+          </button>
+        </HelpTip>
       )}
     </div>
   );

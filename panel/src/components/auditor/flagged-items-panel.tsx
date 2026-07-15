@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Select,
   SelectContent,
@@ -70,12 +71,16 @@ export function FlaggedItemsPanel({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Flag className="h-5 w-5" />
-              Flagged Items
-            </CardTitle>
+            <HelpTip label="Issues manually flagged by the Auditor for quality tracking">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Flag className="h-5 w-5" />
+                Flagged Items
+              </CardTitle>
+            </HelpTip>
             {unresolvedCount > 0 && (
-              <Badge variant="destructive">{unresolvedCount}</Badge>
+              <HelpTip label="Count of currently unresolved flags">
+                <Badge variant="destructive">{unresolvedCount}</Badge>
+              </HelpTip>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -85,19 +90,23 @@ export function FlaggedItemsPanel({
                 setFilter(v as "all" | "unresolved" | "resolved")
               }
             >
-              <SelectTrigger className="w-auto min-w-24 h-8">
-                <SelectValue />
-              </SelectTrigger>
+              <HelpTip label="Filter the list by resolution status">
+                <SelectTrigger className="w-auto min-w-24 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+              </HelpTip>
               <SelectContent>
                 <SelectItem value="unresolved">Unresolved</SelectItem>
                 <SelectItem value="resolved">Resolved</SelectItem>
                 <SelectItem value="all">All</SelectItem>
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={() => setCreateDialogOpen(true)}>
-              <Plus className="h-4 w-4 mr-1" />
-              Flag
-            </Button>
+            <HelpTip label="Opens a form to manually create a new quality flag">
+              <Button size="sm" onClick={() => setCreateDialogOpen(true)}>
+                <Plus className="h-4 w-4 mr-1" />
+                Flag
+              </Button>
+            </HelpTip>
           </div>
         </div>
       </CardHeader>
@@ -109,10 +118,12 @@ export function FlaggedItemsPanel({
             ))}
           </div>
         ) : sortedFlags.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            <Flag className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            No {filter === "all" ? "" : filter} flags
-          </div>
+          <HelpTip label="No flags match the selected status filter">
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              <Flag className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              No {filter === "all" ? "" : filter} flags
+            </div>
+          </HelpTip>
         ) : (
           <ScrollArea className="h-[400px] pr-4">
             <div className="space-y-3">

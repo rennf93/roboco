@@ -27,6 +27,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   GitPullRequest,
   ExternalLink,
@@ -139,9 +140,11 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
           <CardTitle className="flex items-center gap-2">
             <GitPullRequest className="h-5 w-5" />
             PR Reviews
-            <Badge variant="secondary" className="ml-2">
-              {items.length}
-            </Badge>
+            <HelpTip label="External PRs in review or awaiting your call">
+              <Badge variant="secondary" className="ml-2">
+                {items.length}
+              </Badge>
+            </HelpTip>
           </CardTitle>
           <CardDescription>
             External PRs the org is reviewing or has reviewed — the reviewer
@@ -175,14 +178,18 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
                         {task.title}
                       </Link>
                       {awaiting ? (
-                        <Badge variant="secondary" className="shrink-0">
-                          Awaiting your call
-                        </Badge>
+                        <HelpTip label="The reviewer finished — pick Supersede or Dismiss below">
+                          <Badge variant="secondary" className="shrink-0">
+                            Awaiting your call
+                          </Badge>
+                        </HelpTip>
                       ) : (
-                        <Badge variant="outline" className="shrink-0 gap-1">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          Reviewing
-                        </Badge>
+                        <HelpTip label="The PR reviewer task hasn't reached completed yet">
+                          <Badge variant="outline" className="shrink-0 gap-1">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Reviewing
+                          </Badge>
+                        </HelpTip>
                       )}
                     </div>
                     {task.description && (
@@ -224,23 +231,27 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
                     </TooltipProvider>
                     {awaiting && (
                       <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => open(task, "dismiss")}
-                        >
-                          <XCircle className="h-4 w-4 mr-1" />
-                          Dismiss
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="bg-blue-600 hover:bg-blue-700"
-                          onClick={() => open(task, "supersede")}
-                        >
-                          <Rocket className="h-4 w-4 mr-1" />
-                          Supersede
-                        </Button>
+                        <HelpTip label="Drops this from the queue — the review stays on the GitHub PR">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => open(task, "dismiss")}
+                          >
+                            <XCircle className="h-4 w-4 mr-1" />
+                            Dismiss
+                          </Button>
+                        </HelpTip>
+                        <HelpTip label="The org takes the contribution over and finishes it">
+                          <Button
+                            size="sm"
+                            className="bg-blue-600 hover:bg-blue-700"
+                            onClick={() => open(task, "supersede")}
+                          >
+                            <Rocket className="h-4 w-4 mr-1" />
+                            Supersede
+                          </Button>
+                        </HelpTip>
                       </>
                     )}
                   </div>

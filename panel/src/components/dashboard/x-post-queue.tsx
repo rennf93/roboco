@@ -146,15 +146,17 @@ function XPostRow({
       </HelpTip>
 
       <div className="mt-2 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-destructive hover:text-destructive"
-          onClick={() => onReject(post)}
-        >
-          <XCircle className="mr-1 h-4 w-4" />
-          Reject
-        </Button>
+        <HelpTip label="Cancels this draft — it will not be posted">
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => onReject(post)}
+          >
+            <XCircle className="mr-1 h-4 w-4" />
+            Reject
+          </Button>
+        </HelpTip>
         <HelpTip
           label={approveHint(approving, overLimit, body.trim().length === 0)}
         >

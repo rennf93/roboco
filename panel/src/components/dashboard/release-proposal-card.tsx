@@ -172,7 +172,9 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           <CardTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5" />
             Release Proposal
-            <Badge variant="outline">v{report.proposed_version}</Badge>
+            <HelpTip label="Next version number, computed from the commit classification below">
+              <Badge variant="outline">v{report.proposed_version}</Badge>
+            </HelpTip>
             <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
               <Badge variant="secondary">{report.bump_kind}</Badge>
             </HelpTip>
@@ -208,18 +210,22 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           )}
 
           <div>
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Drafted CHANGELOG
-            </p>
+            <HelpTip label="Written by the release manager from conventional-commit messages since the last tag">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Drafted CHANGELOG
+              </p>
+            </HelpTip>
             <pre className="max-h-60 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
               {report.drafted_changelog}
             </pre>
           </div>
 
           <div>
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Version bump plan ({report.version_bump_plan.length} files)
-            </p>
+            <HelpTip label="Files the executor will rewrite with the new version number on approve">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Version bump plan ({report.version_bump_plan.length} files)
+              </p>
+            </HelpTip>
             <p className="text-sm text-muted-foreground">
               {report.version_bump_plan.join(", ")}
             </p>
@@ -227,9 +233,11 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
 
           {report.migration_notes.length > 0 && (
             <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Migrations
-              </p>
+              <HelpTip label="Alembic migrations included in this release — check for a single head">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Migrations
+                </p>
+              </HelpTip>
               <ul className="space-y-1 text-sm text-muted-foreground">
                 {report.migration_notes.map((note, i) => (
                   <li key={i}>{note}</li>
@@ -272,25 +280,47 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           )}
 
           <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              onClick={() => setAction("reject")}
-              disabled={executeInFlight}
+            <HelpTip
+              label={
+                executeInFlight
+                  ? "Disabled while the execute is running"
+                  : "Cancels the proposal — a fresh assessment runs next cycle"
+              }
             >
-              <XCircle className="mr-1 h-4 w-4" />
-              Reject with changes
-            </Button>
-            <Button
-              size="sm"
-              className="bg-green-600 hover:bg-green-700"
-              onClick={() => setAction("approve")}
-              disabled={executeInFlight}
+              <span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => setAction("reject")}
+                  disabled={executeInFlight}
+                >
+                  <XCircle className="mr-1 h-4 w-4" />
+                  Reject with changes
+                </Button>
+              </span>
+            </HelpTip>
+            <HelpTip
+              label={
+                executeInFlight
+                  ? "Disabled while the execute is running"
+                  : "Runs the fail-closed executor: bump + CHANGELOG + gate + CI + publish"
+              }
             >
-              <CheckCircle2 className="mr-1 h-4 w-4" />
-              {executeFailed ? "Retry approve & publish" : "Approve & publish"}
-            </Button>
+              <span>
+                <Button
+                  size="sm"
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={() => setAction("approve")}
+                  disabled={executeInFlight}
+                >
+                  <CheckCircle2 className="mr-1 h-4 w-4" />
+                  {executeFailed
+                    ? "Retry approve & publish"
+                    : "Approve & publish"}
+                </Button>
+              </span>
+            </HelpTip>
           </div>
         </CardContent>
       </Card>

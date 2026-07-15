@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ChevronUp, ChevronDown } from "lucide-react";
 import type { UsageSession } from "@/types";
 
@@ -41,17 +42,42 @@ type SortDir = "asc" | "desc";
 interface Column {
   key: SortKey;
   label: string;
+  tip: string;
 }
 
 const COLUMNS: Column[] = [
-  { key: "agent_slug", label: "Agent" },
-  { key: "model", label: "Model" },
-  { key: "started_at", label: "Started" },
-  { key: "total_tokens", label: "Total" },
-  { key: "tokens_input", label: "Input" },
-  { key: "tokens_output", label: "Output" },
-  { key: "tokens_cache", label: "Cache" },
-  { key: "cost", label: "Cost" },
+  { key: "agent_slug", label: "Agent", tip: "The agent slug that ran this session — click to sort" },
+  { key: "model", label: "Model", tip: "Claude/Grok model used for this session — click to sort" },
+  {
+    key: "started_at",
+    label: "Started",
+    tip: "Session start time, local timezone — click to sort oldest/newest",
+  },
+  {
+    key: "total_tokens",
+    label: "Total",
+    tip: "Input + output + cache tokens combined — click to sort",
+  },
+  {
+    key: "tokens_input",
+    label: "Input",
+    tip: "Prompt tokens sent to the model — click to sort",
+  },
+  {
+    key: "tokens_output",
+    label: "Output",
+    tip: "Completion tokens returned by the model — click to sort",
+  },
+  {
+    key: "tokens_cache",
+    label: "Cache",
+    tip: "Tokens served from Anthropic's prompt cache — click to sort",
+  },
+  {
+    key: "cost",
+    label: "Cost",
+    tip: "Provider-priced dollar cost (local/Ollama sessions are $0) — click to sort",
+  },
 ];
 
 function formatTime(ts: string): string {
@@ -116,7 +142,9 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Recent Sessions</CardTitle>
+        <HelpTip label="The most recent agent spawn sessions with their token/cost breakdown — sortable, 10 per page">
+          <CardTitle className="text-base">Recent Sessions</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -139,8 +167,12 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                             className="cursor-pointer select-none text-xs whitespace-nowrap"
                             onClick={() => toggleSort(col.key)}
                           >
-                            {col.label}
-                            <SortIcon col={col.key} />
+                            <HelpTip label={col.tip}>
+                              <span>
+                                {col.label}
+                                <SortIcon col={col.key} />
+                              </span>
+                            </HelpTip>
                           </TableHead>
                         ))}
                       </TableRow>
@@ -239,24 +271,32 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                   : `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, sorted.length)} of ${sorted.length}`}
               </span>
               <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                >
-                  Prev
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    setPage((p) => Math.min(totalPages - 1, p + 1))
-                  }
-                  disabled={page >= totalPages - 1}
-                >
-                  Next
-                </Button>
+                <HelpTip label={`Show the previous ${PAGE_SIZE} sessions`}>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      disabled={page === 0}
+                    >
+                      Prev
+                    </Button>
+                  </span>
+                </HelpTip>
+                <HelpTip label={`Show the next ${PAGE_SIZE} sessions`}>
+                  <span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setPage((p) => Math.min(totalPages - 1, p + 1))
+                      }
+                      disabled={page >= totalPages - 1}
+                    >
+                      Next
+                    </Button>
+                  </span>
+                </HelpTip>
               </div>
             </div>
           </>

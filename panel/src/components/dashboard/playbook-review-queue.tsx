@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { BookOpen, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const _MIN_REASON = 4;
 
@@ -89,9 +90,15 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
       <Card className={className}>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <BookOpen className="h-5 w-5" />
-            Playbook Review
-            <Badge variant="secondary">{drafts.length}</Badge>
+            <HelpTip label="Procedures agents drafted from real task runs, awaiting your curation call">
+              <span className="inline-flex items-center gap-2">
+                <BookOpen className="h-5 w-5" />
+                Playbook Review
+              </span>
+            </HelpTip>
+            <HelpTip label="Drafts awaiting a decision">
+              <Badge variant="secondary">{drafts.length}</Badge>
+            </HelpTip>
           </CardTitle>
           <CardDescription>
             Drafted playbooks awaiting your approval — approved ones are indexed
@@ -106,11 +113,17 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
             >
               <div className="mb-1 flex items-center gap-2">
                 <span className="font-medium">{pb.title}</span>
-                {pb.team && <Badge variant="outline">{pb.team}</Badge>}
+                {pb.team && (
+                  <HelpTip label="Team that authored this playbook">
+                    <Badge variant="outline">{pb.team}</Badge>
+                  </HelpTip>
+                )}
                 {pb.tags.map((t) => (
-                  <Badge key={t} variant="secondary" className="text-xs">
-                    {t}
-                  </Badge>
+                  <HelpTip key={t} label="Search/filter tag for this playbook">
+                    <Badge variant="secondary" className="text-xs">
+                      {t}
+                    </Badge>
+                  </HelpTip>
                 ))}
               </div>
               <p className="text-sm text-muted-foreground">
@@ -120,27 +133,31 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
                 {pb.procedure}
               </pre>
               <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setRejecting(pb)}
-                >
-                  <XCircle className="mr-1 h-4 w-4" />
-                  Reject
-                </Button>
-                <Button
-                  size="sm"
-                  className="bg-green-600 hover:bg-green-700"
-                  disabled={
-                    approveMutation.isPending &&
-                    approveMutation.variables === pb.id
-                  }
-                  onClick={() => approveMutation.mutate(pb.id)}
-                >
-                  <CheckCircle2 className="mr-1 h-4 w-4" />
-                  Approve
-                </Button>
+                <HelpTip label="Archives this draft — it is never indexed">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setRejecting(pb)}
+                  >
+                    <XCircle className="mr-1 h-4 w-4" />
+                    Reject
+                  </Button>
+                </HelpTip>
+                <HelpTip label="Indexes this playbook so it's auto-suggested to agents">
+                  <Button
+                    size="sm"
+                    className="bg-green-600 hover:bg-green-700"
+                    disabled={
+                      approveMutation.isPending &&
+                      approveMutation.variables === pb.id
+                    }
+                    onClick={() => approveMutation.mutate(pb.id)}
+                  >
+                    <CheckCircle2 className="mr-1 h-4 w-4" />
+                    Approve
+                  </Button>
+                </HelpTip>
               </div>
             </div>
           ))}

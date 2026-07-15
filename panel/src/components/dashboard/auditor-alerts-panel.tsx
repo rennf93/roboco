@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Shield, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface AuditorAlertsPanelProps {
   alerts: AuditorFlag[] | undefined;
@@ -49,12 +50,16 @@ export function AuditorAlertsPanel({
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <Shield className="h-5 w-5" />
-            Auditor Alerts
-          </CardTitle>
+          <HelpTip label="Unresolved flags raised by the silent Auditor role, most severe first">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Shield className="h-5 w-5" />
+              Auditor Alerts
+            </CardTitle>
+          </HelpTip>
           {unresolvedAlerts.length > 0 && (
-            <Badge variant="destructive">{unresolvedAlerts.length}</Badge>
+            <HelpTip label="Shown below — capped at 5, there may be more">
+              <Badge variant="destructive">{unresolvedAlerts.length}</Badge>
+            </HelpTip>
           )}
         </div>
       </CardHeader>
@@ -77,17 +82,33 @@ export function AuditorAlertsPanel({
                 key={alert.id}
                 className="flex items-start gap-3 p-3 rounded-lg border bg-muted/30"
               >
-                <span className="text-lg">{severityEmoji[alert.severity]}</span>
+                <HelpTip
+                  label={`Severity: ${alert.severity}${alert.category ? ` — ${alert.category}` : ""}`}
+                >
+                  <span className="text-lg">
+                    {severityEmoji[alert.severity]}
+                  </span>
+                </HelpTip>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-sm truncate">
                       {alert.title}
                     </span>
-                    <Badge
-                      className={severityColors[alert.severity] + " text-xs"}
+                    <HelpTip
+                      label={
+                        alert.severity === "urgent"
+                          ? "Urgent — needs attention now"
+                          : alert.severity === "warning"
+                            ? "Warning — worth a look soon"
+                            : "Info — no action required"
+                      }
                     >
-                      {alert.severity}
-                    </Badge>
+                      <Badge
+                        className={severityColors[alert.severity] + " text-xs"}
+                      >
+                        {alert.severity}
+                      </Badge>
+                    </HelpTip>
                   </div>
                   <p className="text-xs text-muted-foreground line-clamp-1">
                     {alert.description}
@@ -99,10 +120,12 @@ export function AuditorAlertsPanel({
         )}
         <div className="mt-4 pt-3 border-t">
           <Link href="/auditor" prefetch={false}>
-            <Button variant="ghost" size="sm" className="w-full">
-              View All Flags
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
+            <HelpTip label="Full Auditor report, including resolved flags">
+              <Button variant="ghost" size="sm" className="w-full">
+                View All Flags
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Button>
+            </HelpTip>
           </Link>
         </div>
       </CardContent>

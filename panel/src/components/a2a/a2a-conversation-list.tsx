@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { HelpTip } from "@/components/ui/help-tip";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import type { AdminConversationSummary } from "@/lib/api/a2a";
 import { usePulseFlash } from "@/hooks/use-pulse-flash";
@@ -81,42 +82,54 @@ function ConversationRow({
                 {conversation.topic}
               </div>
             )}
-            <div className="text-xs text-muted-foreground mt-1">
-              {formatDistanceToNow(
-                new Date(
-                  conversation.last_message_at ?? conversation.created_at,
-                ),
-              )}{" "}
-              ago
-            </div>
+            <HelpTip
+              label={new Date(
+                conversation.last_message_at ?? conversation.created_at,
+              ).toLocaleString()}
+            >
+              <div className="text-xs text-muted-foreground mt-1 w-fit">
+                {formatDistanceToNow(
+                  new Date(
+                    conversation.last_message_at ?? conversation.created_at,
+                  ),
+                )}{" "}
+                ago
+              </div>
+            </HelpTip>
             {conversation.last_message_preview && (
               <p className="text-xs text-muted-foreground truncate mt-1">
                 {conversation.last_message_preview}
               </p>
             )}
             {conversation.task_id && (
-              <Link
-                prefetch={false}
-                href={`/tasks/${conversation.task_id}`}
-                onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-1"
-              >
-                <ListTodo className="h-3 w-3" />
-                Task {conversation.task_id.slice(0, 8)}
-              </Link>
+              <HelpTip label="Opens the task this conversation is scoped to">
+                <Link
+                  prefetch={false}
+                  href={`/tasks/${conversation.task_id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-1"
+                >
+                  <ListTodo className="h-3 w-3" />
+                  Task {conversation.task_id.slice(0, 8)}
+                </Link>
+              </HelpTip>
             )}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <Badge
-            variant={conversation.status === "active" ? "default" : "secondary"}
-            className="text-xs"
-          >
-            {conversation.status}
-          </Badge>
-          <span className="text-xs text-muted-foreground">
-            {conversation.message_count} msgs
-          </span>
+          <HelpTip label={conversation.status === "active" ? "Actively exchanging messages" : "No longer active"}>
+            <Badge
+              variant={conversation.status === "active" ? "default" : "secondary"}
+              className="text-xs w-fit"
+            >
+              {conversation.status}
+            </Badge>
+          </HelpTip>
+          <HelpTip label="Total messages exchanged in this conversation">
+            <span className="text-xs text-muted-foreground w-fit">
+              {conversation.message_count} msgs
+            </span>
+          </HelpTip>
         </div>
       </div>
     </div>

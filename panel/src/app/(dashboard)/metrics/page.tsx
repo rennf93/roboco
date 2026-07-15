@@ -27,6 +27,11 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { OfflineState } from "@/components/ui/offline-state";
 import { HelpTip } from "@/components/ui/help-tip";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ResponsiveTable,
   ResponsiveTableCardList,
   ResponsiveTableCard,
@@ -89,6 +94,7 @@ interface MetricCardProps {
   icon: React.ReactNode;
   trend?: "up" | "down" | "neutral";
   trendValue?: string;
+  tip?: string;
 }
 
 function MetricCard({
@@ -98,16 +104,19 @@ function MetricCard({
   icon,
   trend,
   trendValue,
+  tip,
 }: MetricCardProps) {
   const displayValue = typeof value === "number" ? humanizeCount(value) : value;
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {title}
-        </CardTitle>
-        {icon}
-      </CardHeader>
+      <HelpTip label={tip}>
+        <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            {title}
+          </CardTitle>
+          {icon}
+        </CardHeader>
+      </HelpTip>
       <CardContent>
         <div className="text-2xl font-bold">{displayValue}</div>
         {subtitle && (
@@ -305,18 +314,21 @@ function PerformanceTabContent() {
             value={completedToday}
             subtitle="Tasks finished"
             icon={<Zap className="h-4 w-4 text-green-500" />}
+            tip="Tasks whose completed_at timestamp falls on today's calendar date"
           />
           <MetricCard
             title="Completed This Week"
             value={completedThisWeek}
             subtitle="Rolling 7 days"
             icon={<TrendingUp className="h-4 w-4 text-blue-500" />}
+            tip="Tasks completed in the trailing 7 days from now"
           />
           <MetricCard
             title="Total Completed"
             value={completed}
             subtitle="All time"
             icon={<CheckCircle className="h-4 w-4 text-green-500" />}
+            tip="Every task that has ever reached the completed status"
           />
           <MetricCard
             title="Completion Rate"
@@ -327,6 +339,7 @@ function PerformanceTabContent() {
             }
             subtitle="Of all tasks"
             icon={<Activity className="h-4 w-4 text-purple-500" />}
+            tip="Completed tasks divided by every task in the table, all-time"
           />
         </div>
       </div>
@@ -390,24 +403,28 @@ function PerformanceTabContent() {
             value={runningAgents}
             subtitle="Active agents"
             icon={<Users className="h-4 w-4 text-green-500" />}
+            tip="Agents currently spawned and actively working a task"
           />
           <MetricCard
             title="Idle"
             value={idleAgents}
             subtitle="Available"
             icon={<Users className="h-4 w-4 text-gray-500" />}
+            tip="Agents with no container running — free to be spawned for new work"
           />
           <MetricCard
             title="Waiting"
             value={waitingAgents}
             subtitle="Needs input"
             icon={<Clock className="h-4 w-4 text-yellow-500" />}
+            tip="Agents stuck waiting unusually long, possibly needing human attention"
           />
           <MetricCard
             title="Errors"
             value={errorAgents}
             subtitle="Failed agents"
             icon={<XCircle className="h-4 w-4 text-red-500" />}
+            tip="Agents whose last spawn exited in an error state"
           />
         </div>
       </div>
@@ -624,12 +641,14 @@ interface ProjectionCardProps {
 function ProjectionCard({ projection, isLoading }: ProjectionCardProps) {
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-blue-500" />
-          Monthly Projection
-        </CardTitle>
-      </CardHeader>
+      <HelpTip label="Projected month cost extrapolated from the recent daily-average spend, not a hard budget">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-blue-500" />
+            Monthly Projection
+          </CardTitle>
+        </CardHeader>
+      </HelpTip>
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-10 w-full" />
@@ -699,12 +718,14 @@ interface RoleUsageTableProps {
 function RoleUsageTable({ data, isLoading }: RoleUsageTableProps) {
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Users className="h-4 w-4 text-blue-500" />
-          Cost &amp; Cache by Role
-        </CardTitle>
-      </CardHeader>
+      <HelpTip label="Spend and cache-hit rate broken down by agent role (be-dev, qa, main_pm, ...) in the selected window">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="h-4 w-4 text-blue-500" />
+            Cost &amp; Cache by Role
+          </CardTitle>
+        </CardHeader>
+      </HelpTip>
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-40 w-full" />
@@ -869,6 +890,13 @@ const VALID_METRICS_TABS: MetricsTab[] = [
   "scorecards",
 ];
 
+const METRICS_TAB_HINTS: Record<MetricsTab, string> = {
+  performance: "Task velocity, status counts, agent load, and team health",
+  "token-usage": "Token spend, cost projections, cache efficiency, and per-session detail",
+  delivery: "Cycle time, bottlenecks, and rework rate reconstructed from the audit log",
+  scorecards: "Per-agent and per-team delivery scorecards",
+};
+
 function isValidMetricsTab(value: string | null): value is MetricsTab {
   return VALID_METRICS_TABS.includes(value as MetricsTab);
 }
@@ -905,10 +933,29 @@ function MetricsPageContent() {
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
-          <TabsTrigger value="performance">Performance</TabsTrigger>
-          <TabsTrigger value="token-usage">Token Usage</TabsTrigger>
-          <TabsTrigger value="delivery">Delivery</TabsTrigger>
-          <TabsTrigger value="scorecards">Scorecards</TabsTrigger>
+          {VALID_METRICS_TABS.map((tab) => (
+            <Tooltip key={tab}>
+              <TooltipTrigger asChild>
+                {/* TooltipTrigger's asChild Slot merge overwrites the
+                    data-state Radix Tabs sets on this trigger, so the
+                    data-[state=active] style never fires unless it's
+                    re-asserted explicitly after the merge. */}
+                <TabsTrigger
+                  value={tab}
+                  data-state={tab === activeTab ? "active" : "inactive"}
+                >
+                  {tab === "performance"
+                    ? "Performance"
+                    : tab === "token-usage"
+                      ? "Token Usage"
+                      : tab === "delivery"
+                        ? "Delivery"
+                        : "Scorecards"}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{METRICS_TAB_HINTS[tab]}</TooltipContent>
+            </Tooltip>
+          ))}
         </TabsList>
 
         <TabsContent value="performance" className="mt-6">

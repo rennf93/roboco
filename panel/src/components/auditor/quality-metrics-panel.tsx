@@ -81,10 +81,12 @@ export function QualityMetricsPanel({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <BarChart3 className="h-5 w-5" />
-          Quality Metrics
-        </CardTitle>
+        <HelpTip label="Rolling delivery metrics feeding the Auditor's oversight view, refreshed every 30s">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <BarChart3 className="h-5 w-5" />
+            Quality Metrics
+          </CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (

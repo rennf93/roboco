@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const SETTINGS_LABEL = "Open settings";
 
@@ -137,7 +138,11 @@ export function CommandCenter() {
 
       {/* Section 1: Quick Actions + the four key cards */}
       <section>
-        <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
+        <HelpTip label="One-click shortcuts to the pages you visit most often">
+          <h2 className="text-lg font-semibold mb-4 inline-block">
+            Quick Actions
+          </h2>
+        </HelpTip>
         <QuickActionsBar />
       </section>
 
@@ -153,7 +158,11 @@ export function CommandCenter() {
 
       {/* Section 2: Team Health (team cards + Task Intake + Secretary) */}
       <section>
-        <h2 className="text-lg font-semibold mb-4">Team Health</h2>
+        <HelpTip label="Per-team blocked ratio and throughput, plus the on-demand agents">
+          <h2 className="text-lg font-semibold mb-4 inline-block">
+            Team Health
+          </h2>
+        </HelpTip>
         <TeamHealthCards
           teams={overview?.health_status}
           isLoading={loadingOverview}

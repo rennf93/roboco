@@ -2,6 +2,7 @@
 
 import { Agent, Team, AgentRole } from "@/types";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { AgentItem } from "./agent-item";
 
 interface AgentListProps {
@@ -89,9 +90,11 @@ export function AgentList({
 
   if (!agents || agents.length === 0) {
     return (
-      <div className="p-4 text-center text-muted-foreground text-sm">
-        No agents found
-      </div>
+      <HelpTip label="No agents match the current search, or none are registered yet">
+        <div className="p-4 text-center text-muted-foreground text-sm">
+          No agents found
+        </div>
+      </HelpTip>
     );
   }
 
@@ -104,9 +107,11 @@ export function AgentList({
           if (teamAgents.length === 0) return null;
           return (
             <div key={teamKey}>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-2 mb-2">
-                {TEAM_LABELS[teamKey]}
-              </h3>
+              <HelpTip label="Agents are grouped by team; only teams with at least one agent are shown">
+                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider px-2 mb-2">
+                  {TEAM_LABELS[teamKey]}
+                </h3>
+              </HelpTip>
               <div className="space-y-1">
                 {teamAgents.map((agent) => (
                   <AgentItem

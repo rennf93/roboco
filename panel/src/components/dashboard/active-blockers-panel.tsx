@@ -44,12 +44,16 @@ export function ActiveBlockersPanel({
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-red-500" />
-            Active Blockers
-          </CardTitle>
+          <HelpTip label="Tasks in BLOCKED status, oldest first">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-500" />
+              Active Blockers
+            </CardTitle>
+          </HelpTip>
           {blockedTasks.length > 0 && (
-            <Badge variant="destructive">{blockedTasks.length}</Badge>
+            <HelpTip label="Shown below — capped at 5, there may be more">
+              <Badge variant="destructive">{blockedTasks.length}</Badge>
+            </HelpTip>
           )}
         </div>
       </CardHeader>
@@ -77,16 +81,20 @@ export function ActiveBlockersPanel({
                           Task #{task.id.slice(0, 8)}
                         </span>
                       </HelpTip>
-                      <Badge variant="outline" className="text-xs capitalize">
-                        {task.team.replace(/_/g, " ")}
-                      </Badge>
+                      <HelpTip label="Team currently responsible for this task">
+                        <Badge variant="outline" className="text-xs capitalize">
+                          {task.team.replace(/_/g, " ")}
+                        </Badge>
+                      </HelpTip>
                     </div>
                     <p className="text-sm truncate">{task.title}</p>
-                    <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      Blocked for{" "}
-                      {formatDuration(task.updated_at ?? task.created_at)}
-                    </div>
+                    <HelpTip label="Time since this task's last status update (or creation, if never updated)">
+                      <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        Blocked for{" "}
+                        {formatDuration(task.updated_at ?? task.created_at)}
+                      </div>
+                    </HelpTip>
                   </div>
                 </div>
               </Link>
@@ -95,10 +103,12 @@ export function ActiveBlockersPanel({
         )}
         <div className="mt-4 pt-3 border-t">
           <Link href="/tasks?status=blocked" prefetch={false}>
-            <Button variant="ghost" size="sm" className="w-full">
-              View All Blocked
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
+            <HelpTip label="The complete blocked-task list — not capped to 5">
+              <Button variant="ghost" size="sm" className="w-full">
+                View All Blocked
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Button>
+            </HelpTip>
           </Link>
         </div>
       </CardContent>

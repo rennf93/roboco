@@ -12,20 +12,22 @@ import { connectionDotClasses, connectionStateLabel } from "./a2a-utils";
  * conversation must read differently from a stream that is the problem. */
 export function A2AConnectionBadge({ state }: { state: ConnectionState }) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span
-        className={cn("h-2 w-2 rounded-full", connectionDotClasses(state))}
-      />
-      <span className="text-xs text-muted-foreground">
-        {connectionStateLabel(state)}
-      </span>
-      {(state === "connecting" || state === "reconnecting") && (
-        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-      )}
-      {state === "disconnected" && (
-        <WifiOff className="h-3 w-3 text-muted-foreground" />
-      )}
-    </div>
+    <HelpTip label="Live /ws/system connection status for this A2A view — auto-reconnects on drop">
+      <div className="flex items-center gap-1.5 w-fit">
+        <span
+          className={cn("h-2 w-2 rounded-full", connectionDotClasses(state))}
+        />
+        <span className="text-xs text-muted-foreground">
+          {connectionStateLabel(state)}
+        </span>
+        {(state === "connecting" || state === "reconnecting") && (
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        )}
+        {state === "disconnected" && (
+          <WifiOff className="h-3 w-3 text-muted-foreground" />
+        )}
+      </div>
+    </HelpTip>
   );
 }
 

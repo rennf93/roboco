@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Dialog,
   DialogContent,
@@ -102,7 +103,9 @@ export function CreateFlagDialog({
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 mt-4">
           <div className="space-y-2">
-            <Label htmlFor="title">Title *</Label>
+            <HelpTip label="Required. Short summary shown atop the flag in the queue">
+              <Label htmlFor="title">Title *</Label>
+            </HelpTip>
             <Input
               id="title"
               value={title}
@@ -113,7 +116,9 @@ export function CreateFlagDialog({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="description">Description *</Label>
+            <HelpTip label="Required. Full explanation, shown when the flag is expanded">
+              <Label htmlFor="description">Description *</Label>
+            </HelpTip>
             <Textarea
               id="description"
               value={description}
@@ -126,7 +131,9 @@ export function CreateFlagDialog({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Severity</Label>
+              <HelpTip label="Info/Warning are tracked only; Urgent flags surface a direct Report-to-CEO action">
+                <Label>Severity</Label>
+              </HelpTip>
               <Select
                 value={severity}
                 onValueChange={(v) => setSeverity(v as FlagSeverity)}
@@ -144,7 +151,9 @@ export function CreateFlagDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Category</Label>
+              <HelpTip label="Groups this flag for filtering and reporting purposes">
+                <Label>Category</Label>
+              </HelpTip>
               <Select value={category} onValueChange={setCategory}>
                 <SelectTrigger>
                   <SelectValue />
@@ -162,7 +171,9 @@ export function CreateFlagDialog({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="task">Related Task ID (optional)</Label>
+              <HelpTip label="Optional. Links this flag to a task — shown as a quick-link in the flags list">
+                <Label htmlFor="task">Related Task ID (optional)</Label>
+              </HelpTip>
               <Input
                 id="task"
                 value={relatedTaskId}
@@ -171,7 +182,9 @@ export function CreateFlagDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="agent">Related Agent ID (optional)</Label>
+              <HelpTip label="Optional. Associates this flag with a specific agent for audit tracking">
+                <Label htmlFor="agent">Related Agent ID (optional)</Label>
+              </HelpTip>
               <Input
                 id="agent"
                 value={relatedAgentId}
@@ -182,19 +195,25 @@ export function CreateFlagDialog({
           </div>
 
           <div className="flex justify-end gap-2 pt-4">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                onOpenChange(false);
-                resetForm();
-              }}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" disabled={createFlag.isPending}>
-              {createFlag.isPending ? "Creating..." : "Create Flag"}
-            </Button>
+            <HelpTip label="Discards this draft and closes the dialog">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  onOpenChange(false);
+                  resetForm();
+                }}
+              >
+                Cancel
+              </Button>
+            </HelpTip>
+            <HelpTip label="Saves the flag; it appears in Flagged Items right away">
+              <span>
+                <Button type="submit" disabled={createFlag.isPending}>
+                  {createFlag.isPending ? "Creating..." : "Create Flag"}
+                </Button>
+              </span>
+            </HelpTip>
           </div>
         </form>
       </DialogContent>

@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Search, ListTodo } from "lucide-react";
 
 interface EntryFilterProps {
@@ -43,22 +44,26 @@ export function EntryFilter({
 }: EntryFilterProps) {
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <div className="relative flex-1 min-w-48">
-        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search entries..."
-          className="pl-9"
-        />
-      </div>
+      <HelpTip label="Searches entry titles, content, and tags for this agent">
+        <div className="relative flex-1 min-w-48">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search entries..."
+            className="pl-9"
+          />
+        </div>
+      </HelpTip>
       <Select
         value={typeFilter}
         onValueChange={(v) => onTypeChange(v as JournalEntryType | "all")}
       >
-        <SelectTrigger className="w-auto min-w-32 shrink-0">
-          <SelectValue placeholder="Filter by type" />
-        </SelectTrigger>
+        <HelpTip label="Filter entries by type: reflection, decision, learning, struggle, or note">
+          <SelectTrigger className="w-auto min-w-32 shrink-0">
+            <SelectValue placeholder="Filter by type" />
+          </SelectTrigger>
+        </HelpTip>
         <SelectContent>
           {TYPE_OPTIONS.map((opt) => (
             <SelectItem key={opt.value} value={opt.value}>
@@ -71,12 +76,14 @@ export function EntryFilter({
         value={taskFilter ?? "all"}
         onValueChange={(v) => onTaskChange(v === "all" ? null : v)}
       >
-        <SelectTrigger className="w-auto min-w-40 shrink-0">
-          <div className="flex items-center gap-2">
-            <ListTodo className="h-4 w-4" />
-            <SelectValue placeholder="Filter by task" />
-          </div>
-        </SelectTrigger>
+        <HelpTip label="Filter entries to only those linked to a specific task">
+          <SelectTrigger className="w-auto min-w-40 shrink-0">
+            <div className="flex items-center gap-2">
+              <ListTodo className="h-4 w-4" />
+              <SelectValue placeholder="Filter by task" />
+            </div>
+          </SelectTrigger>
+        </HelpTip>
         <SelectContent>
           <SelectItem value="all">All Tasks</SelectItem>
           {tasksLoading ? (

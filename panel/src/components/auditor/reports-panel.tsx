@@ -69,18 +69,24 @@ export function ReportsPanel({
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            Reports
-          </CardTitle>
-          <Button
-            size="sm"
-            onClick={handleNewReport}
-            disabled={createReport.isPending}
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            New Report
-          </Button>
+          <HelpTip label="Audit reports for the CEO; drafts stay editable until sent">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Reports
+            </CardTitle>
+          </HelpTip>
+          <HelpTip label="Creates a new draft report you can edit and send below">
+            <span>
+              <Button
+                size="sm"
+                onClick={handleNewReport}
+                disabled={createReport.isPending}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                New Report
+              </Button>
+            </span>
+          </HelpTip>
         </div>
       </CardHeader>
       <CardContent>
@@ -91,10 +97,12 @@ export function ReportsPanel({
             ))}
           </div>
         ) : !reports || reports.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            No reports yet
-          </div>
+          <HelpTip label="No audit reports have been generated yet — use New Report to create one">
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              No reports yet
+            </div>
+          </HelpTip>
         ) : (
           <ScrollArea className="h-[300px] pr-4">
             <div className="space-y-3">
@@ -107,19 +115,29 @@ export function ReportsPanel({
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <Badge variant={isDraft ? "secondary" : "default"}>
-                          {isDraft ? "Draft" : "Sent"}
-                        </Badge>
+                        <HelpTip label="Draft reports aren't visible to the CEO until sent">
+                          <Badge variant={isDraft ? "secondary" : "default"}>
+                            {isDraft ? "Draft" : "Sent"}
+                          </Badge>
+                        </HelpTip>
                         <span className="font-medium text-sm truncate">
                           {report.title}
                         </span>
                       </div>
                       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                        <span className="capitalize">{report.report_type}</span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          {formatDate(report.created_at)}
-                        </span>
+                        <HelpTip label="Report category set when this report was created">
+                          <span className="capitalize">
+                            {report.report_type}
+                          </span>
+                        </HelpTip>
+                        <HelpTip
+                          label={new Date(report.created_at).toLocaleString()}
+                        >
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {formatDate(report.created_at)}
+                          </span>
+                        </HelpTip>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -129,15 +147,19 @@ export function ReportsPanel({
                         </Button>
                       </HelpTip>
                       {isDraft && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleSend(report.id)}
-                          disabled={sendReport.isPending}
-                        >
-                          <Send className="h-4 w-4 mr-1" />
-                          Send
-                        </Button>
+                        <HelpTip label="Sends this draft report to the CEO">
+                          <span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleSend(report.id)}
+                              disabled={sendReport.isPending}
+                            >
+                              <Send className="h-4 w-4 mr-1" />
+                              Send
+                            </Button>
+                          </span>
+                        </HelpTip>
                       )}
                     </div>
                   </div>

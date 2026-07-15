@@ -89,11 +89,19 @@ export function A2APairCard({
             {" ↔ "}
             {getAgentDisplayName(pair.agent_b)}
           </div>
-          <div className="text-xs text-muted-foreground">
-            {hasHistory && pair.last_message_at
-              ? `${formatDistanceToNow(new Date(pair.last_message_at))} ago`
-              : "No A2A yet"}
-          </div>
+          <HelpTip
+            label={
+              hasHistory && pair.last_message_at
+                ? new Date(pair.last_message_at).toLocaleString()
+                : "These two agents have never exchanged an A2A message"
+            }
+          >
+            <div className="text-xs text-muted-foreground w-fit">
+              {hasHistory && pair.last_message_at
+                ? `${formatDistanceToNow(new Date(pair.last_message_at))} ago`
+                : "No A2A yet"}
+            </div>
+          </HelpTip>
         </div>
         {hasHistory && (
           <HelpTip label="Total messages exchanged in this conversation">

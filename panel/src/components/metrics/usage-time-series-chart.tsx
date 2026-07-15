@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { UsageTimePoint } from "@/types";
 
@@ -51,7 +52,9 @@ export function UsageTimeSeriesChart({
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Token Usage Over Time</CardTitle>
+        <HelpTip label="Input (prompt) vs. output (completion) tokens per time bucket — hourly or daily, depending on the selected window">
+          <CardTitle className="text-base">Token Usage Over Time</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent>
         {isLoading ? (

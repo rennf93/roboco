@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useAgentStream, ConnectionState } from "@/hooks/use-websocket";
 import { Wifi, WifiOff, Loader2, Trash2 } from "lucide-react";
 
@@ -79,9 +80,11 @@ export function AgentStreamViewer({
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">
-            <Badge className={stateColors[state] + " text-white"}>
-              {stateLabels[state]}
-            </Badge>
+            <HelpTip label="Live WebSocket connection carrying this agent's output — auto-reconnects on drop">
+              <Badge className={stateColors[state] + " text-white"}>
+                {stateLabels[state]}
+              </Badge>
+            </HelpTip>
             {streamChunks.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -117,8 +120,12 @@ export function AgentStreamViewer({
           )}
         </pre>
         <div className="flex justify-between items-center mt-2 text-sm text-muted-foreground">
-          <span>{streamChunks.length} chunks received</span>
-          <span>{streamOutput.length} characters</span>
+          <HelpTip label="Number of stream messages received over this WebSocket connection">
+            <span className="w-fit">{streamChunks.length} chunks received</span>
+          </HelpTip>
+          <HelpTip label="Total length of the accumulated output text below">
+            <span className="w-fit">{streamOutput.length} characters</span>
+          </HelpTip>
         </div>
       </CardContent>
     </Card>

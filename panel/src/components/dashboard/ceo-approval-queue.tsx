@@ -225,7 +225,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-1">
           {getPriorityBadge(task.priority)}
-          <Badge variant="outline">{task.team}</Badge>
+          <HelpTip label="Team this task belongs to">
+            <Badge variant="outline">{task.team}</Badge>
+          </HelpTip>
         </div>
         <Link
           prefetch={false}
@@ -250,33 +252,39 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             </Button>
           </HelpTip>
         </Link>
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-destructive hover:text-destructive"
-          onClick={() => openDialog(task, "reject")}
-        >
-          <XCircle className="h-4 w-4 mr-1" />
-          Reject
-        </Button>
+        <HelpTip label="Sends this task back to needs_revision with your reason">
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => openDialog(task, "reject")}
+          >
+            <XCircle className="h-4 w-4 mr-1" />
+            Reject
+          </Button>
+        </HelpTip>
         {kind === "start" ? (
-          <Button
-            size="sm"
-            className="bg-blue-600 hover:bg-blue-700"
-            onClick={() => openDialog(task, "start")}
-          >
-            <Rocket className="h-4 w-4 mr-1" />
-            Approve &amp; Start
-          </Button>
+          <HelpTip label="Hands the task to the Main PM to delegate to the cells">
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700"
+              onClick={() => openDialog(task, "start")}
+            >
+              <Rocket className="h-4 w-4 mr-1" />
+              Approve &amp; Start
+            </Button>
+          </HelpTip>
         ) : (
-          <Button
-            size="sm"
-            className="bg-green-600 hover:bg-green-700"
-            onClick={() => openDialog(task, "approve")}
-          >
-            <CheckCircle2 className="h-4 w-4 mr-1" />
-            Approve
-          </Button>
+          <HelpTip label="Merges the PR and marks the task completed">
+            <Button
+              size="sm"
+              className="bg-green-600 hover:bg-green-700"
+              onClick={() => openDialog(task, "approve")}
+            >
+              <CheckCircle2 className="h-4 w-4 mr-1" />
+              Approve
+            </Button>
+          </HelpTip>
         )}
       </div>
     </div>
@@ -290,9 +298,11 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             <Clock className="h-5 w-5" />
             CEO Approval Queue
             {totalCount > 0 && (
-              <Badge variant="secondary" className="ml-2">
-                {totalCount}
-              </Badge>
+              <HelpTip label="Ready-to-start plus final-approval tasks combined">
+                <Badge variant="secondary" className="ml-2">
+                  {totalCount}
+                </Badge>
+              </HelpTip>
             )}
           </CardTitle>
           <CardDescription>Tasks waiting on your decision</CardDescription>
@@ -307,17 +317,21 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             <div className="space-y-5">
               {readyToStart.length > 0 && (
                 <div className="space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Ready to start · board reviewed
-                  </p>
+                  <HelpTip label="Board finished reviewing; still pending until you approve & start">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Ready to start · board reviewed
+                    </p>
+                  </HelpTip>
                   {readyToStart.map((task) => renderRow(task, "start"))}
                 </div>
               )}
               {pendingTasks.length > 0 && (
                 <div className="space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    Final approval · work complete
-                  </p>
+                  <HelpTip label="Delivery work is done; this is the last gate before merge">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Final approval · work complete
+                    </p>
+                  </HelpTip>
                   {pendingTasks.map((task) => renderRow(task, "approve"))}
                 </div>
               )}

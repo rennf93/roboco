@@ -46,12 +46,16 @@ export function FindingsQueuePanel({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <ListChecks className="h-5 w-5" />
-              Open Findings
-            </CardTitle>
+            <HelpTip label="Unresolved structured findings from QA, PR-gate, PM, and CEO review bounces">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <ListChecks className="h-5 w-5" />
+                Open Findings
+              </CardTitle>
+            </HelpTip>
             {sorted.length > 0 && (
-              <Badge variant="destructive">{sorted.length}</Badge>
+              <HelpTip label="Number of currently open findings in this list">
+                <Badge variant="destructive">{sorted.length}</Badge>
+              </HelpTip>
             )}
           </div>
         </div>
@@ -64,10 +68,12 @@ export function FindingsQueuePanel({
             ))}
           </div>
         ) : sorted.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            <ListChecks className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            No open review findings
-          </div>
+          <HelpTip label="No blocker/major/minor/nit findings are currently open on any task">
+            <div className="text-center py-8 text-muted-foreground text-sm">
+              <ListChecks className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              No open review findings
+            </div>
+          </HelpTip>
         ) : (
           <ScrollArea className="h-[400px] pr-4">
             <div className="space-y-3">
@@ -77,13 +83,15 @@ export function FindingsQueuePanel({
                   className="p-4 rounded-lg border bg-muted/50"
                 >
                   <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <Badge
-                      className={
-                        (severityColors[finding.severity] ?? "") + " text-xs"
-                      }
-                    >
-                      {finding.severity}
-                    </Badge>
+                    <HelpTip label="Severity: blocker > major > minor > nit, sorted most severe first">
+                      <Badge
+                        className={
+                          (severityColors[finding.severity] ?? "") + " text-xs"
+                        }
+                      >
+                        {finding.severity}
+                      </Badge>
+                    </HelpTip>
                     <HelpTip label="Where this finding was raised — QA review, PR gate, PM review, or CEO approval">
                       <Badge variant="outline" className="text-xs">
                         {finding.origin}
@@ -95,15 +103,19 @@ export function FindingsQueuePanel({
                       </span>
                     </HelpTip>
                   </div>
-                  <p className="text-sm text-muted-foreground mb-2">
-                    {finding.actual ?? finding.expected ?? finding.criterion ?? "—"}
-                  </p>
+                  <HelpTip label="Shows actual → expected → criterion text, whichever is available first">
+                    <p className="text-sm text-muted-foreground mb-2">
+                      {finding.actual ?? finding.expected ?? finding.criterion ?? "—"}
+                    </p>
+                  </HelpTip>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     {finding.file && (
-                      <span className="font-mono">
-                        {finding.file}
-                        {finding.line ? `:${finding.line}` : ""}
-                      </span>
+                      <HelpTip label="Repo-relative file and line where this issue was found">
+                        <span className="font-mono">
+                          {finding.file}
+                          {finding.line ? `:${finding.line}` : ""}
+                        </span>
+                      </HelpTip>
                     )}
                     <Link
                       href={"/tasks/" + finding.task_id}

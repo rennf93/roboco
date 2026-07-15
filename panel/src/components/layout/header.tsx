@@ -111,14 +111,23 @@ export function Header() {
         <NotificationAlerts />
 
         {/* User */}
-        <div className="flex items-center gap-2 ml-2 pl-4 border-l">
-          <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-            <span className="text-primary-foreground font-medium text-sm">
-              CEO
-            </span>
-          </div>
-          <span className="text-sm font-medium hidden sm:inline">Renzo</span>
-        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center gap-2 ml-2 pl-4 border-l">
+              <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
+                <span className="text-primary-foreground font-medium text-sm">
+                  CEO
+                </span>
+              </div>
+              <span className="text-sm font-medium hidden sm:inline">
+                Renzo
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            Signed in as the CEO — the panel's single human operator
+          </TooltipContent>
+        </Tooltip>
       </div>
     </header>
   );

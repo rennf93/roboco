@@ -52,30 +52,40 @@ export function FlaggedItem({
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3 flex-1 min-w-0">
-          <span className="text-xl">{severityEmoji[flag.severity]}</span>
+          <HelpTip label="Green = info, yellow = warning, red = urgent severity">
+            <span className="text-xl">{severityEmoji[flag.severity]}</span>
+          </HelpTip>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="font-medium text-sm">{flag.title}</span>
-              <Badge className={severityColors[flag.severity] + " text-xs"}>
-                {flag.severity}
-              </Badge>
-              <Badge variant="outline" className="text-xs">
-                {flag.category}
-              </Badge>
-              {isResolved && (
-                <Badge className="bg-green-100 text-green-700 text-xs">
-                  Resolved
+              <HelpTip label="Determines this flag's priority — Urgent sorts first in the queue">
+                <Badge className={severityColors[flag.severity] + " text-xs"}>
+                  {flag.severity}
                 </Badge>
+              </HelpTip>
+              <HelpTip label="Category assigned when this flag was created (quality, process, security, etc.)">
+                <Badge variant="outline" className="text-xs">
+                  {flag.category}
+                </Badge>
+              </HelpTip>
+              {isResolved && (
+                <HelpTip label="Hidden from the default Unresolved filter (still visible under Resolved or All)">
+                  <Badge className="bg-green-100 text-green-700 text-xs">
+                    Resolved
+                  </Badge>
+                </HelpTip>
               )}
             </div>
             <p className="text-sm text-muted-foreground mb-2">
               {flag.description}
             </p>
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {formatTime(flag.created_at)}
-              </span>
+              <HelpTip label={new Date(flag.created_at).toLocaleString()}>
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {formatTime(flag.created_at)}
+                </span>
+              </HelpTip>
               {flag.related_task_id && (
                 <Link href={"/tasks/" + flag.related_task_id} prefetch={false}>
                   <HelpTip label="Short task ID — first 8 characters of the full task identifier">
@@ -99,23 +109,27 @@ export function FlaggedItem({
                 </HelpTip>
               </Link>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onResolve?.(flag.id)}
-            >
-              <CheckCircle className="h-4 w-4 mr-1" />
-              Resolve
-            </Button>
-            {flag.severity === FlagSeverity.URGENT && (
+            <HelpTip label="Marks this flag resolved; it moves out of the default Unresolved filter">
               <Button
-                variant="default"
+                variant="outline"
                 size="sm"
-                onClick={() => onReportToCeo?.(flag)}
+                onClick={() => onResolve?.(flag.id)}
               >
-                <Send className="h-4 w-4 mr-1" />
-                Report CEO
+                <CheckCircle className="h-4 w-4 mr-1" />
+                Resolve
               </Button>
+            </HelpTip>
+            {flag.severity === FlagSeverity.URGENT && (
+              <HelpTip label="Only shown for Urgent-severity flags">
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => onReportToCeo?.(flag)}
+                >
+                  <Send className="h-4 w-4 mr-1" />
+                  Report CEO
+                </Button>
+              </HelpTip>
             )}
           </div>
         )}

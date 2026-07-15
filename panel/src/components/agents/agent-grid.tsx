@@ -3,10 +3,14 @@ import { AgentDefinition } from "@/lib/agent-definitions";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { AgentCard } from "./agent-card";
 
 interface AgentGridProps {
   title: string;
+  /** Optional hover explanation of what this section groups — e.g. which
+   * roles fold into "Leadership". Falsy renders the bare heading. */
+  titleHint?: string;
   agents: AgentDefinition[];
   agentStatuses: Record<string, AgentStatusResponse>;
   agentUsage?: Record<string, AgentUsageRow>;
@@ -20,6 +24,7 @@ const GRID_COLS = "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]";
 
 export function AgentGrid({
   title,
+  titleHint,
   agents,
   agentStatuses,
   agentUsage,
@@ -28,12 +33,16 @@ export function AgentGrid({
   return (
     <div>
       <div className="mb-3 flex items-center gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          {title}
-        </h2>
-        <Badge variant="secondary" className="text-xs">
-          {agents.length}
-        </Badge>
+        <HelpTip label={titleHint}>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground w-fit">
+            {title}
+          </h2>
+        </HelpTip>
+        <HelpTip label={`${agents.length} agent${agents.length === 1 ? "" : "s"} in this section`}>
+          <Badge variant="secondary" className="text-xs">
+            {agents.length}
+          </Badge>
+        </HelpTip>
       </div>
       <div className={"grid gap-3 " + GRID_COLS}>
         {isLoading

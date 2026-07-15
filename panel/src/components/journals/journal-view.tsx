@@ -13,6 +13,7 @@ import { EntryCard } from "./entry-card";
 import { EntryFilter } from "./entry-filter";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { HelpTip } from "@/components/ui/help-tip";
 import { BookOpen, User } from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 
@@ -99,10 +100,12 @@ export function JournalView({
           <h2 className="text-xl font-semibold">
             {getAgentDisplayName(agent.agent_id)}
           </h2>
-          <p className="text-sm text-muted-foreground capitalize">
-            {agent.role.replace(/_/g, " ")} -{" "}
-            {agent.team?.replace(/_/g, " ") || "N/A"}
-          </p>
+          <HelpTip label="Role gates claimable task types; team places this agent within the org hierarchy">
+            <p className="text-sm text-muted-foreground capitalize">
+              {agent.role.replace(/_/g, " ")} -{" "}
+              {agent.team?.replace(/_/g, " ") || "N/A"}
+            </p>
+          </HelpTip>
         </div>
       </div>
 
@@ -118,10 +121,12 @@ export function JournalView({
       {/* Entries Section — fills the remaining height; the entries scroll inside it */}
       <div className="flex flex-1 min-h-0 flex-col">
         <div className="flex items-center justify-between mb-4 shrink-0">
-          <h3 className="text-lg font-semibold flex items-center gap-2">
-            <BookOpen className="h-5 w-5" />
-            Journal Entries
-          </h3>
+          <HelpTip label="Entries below reflect the active type/task filters and search query">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
+              <BookOpen className="h-5 w-5" />
+              Journal Entries
+            </h3>
+          </HelpTip>
         </div>
 
         {/* Filter */}

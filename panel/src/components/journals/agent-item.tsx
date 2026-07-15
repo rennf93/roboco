@@ -78,9 +78,11 @@ export function AgentItem({
         >
           {name}
         </p>
-        <p className="truncate text-xs capitalize text-muted-foreground">
-          {agent.role.replace(/_/g, " ")}
-        </p>
+        <HelpTip label="Role gates which task types this agent can claim in the lifecycle">
+          <p className="truncate text-xs capitalize text-muted-foreground">
+            {agent.role.replace(/_/g, " ")}
+          </p>
+        </HelpTip>
       </div>
     </button>
   );

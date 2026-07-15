@@ -310,15 +310,17 @@ function A2APageContent() {
         <>
           {/* Mobile-only back affordance — drills back up to the list. */}
           {onDetailLevel && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mb-2 w-fit shrink-0 lg:hidden"
-              onClick={handleBack}
-            >
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Back
-            </Button>
+            <HelpTip label="Returns to the switchboard/list">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mb-2 w-fit shrink-0 lg:hidden"
+                onClick={handleBack}
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back
+              </Button>
+            </HelpTip>
           )}
 
           <div className="grid flex-1 min-h-0 grid-cols-12 gap-4 lg:gap-6">
@@ -423,21 +425,25 @@ function A2APageContent() {
                           {" ↔ "}
                           {getAgentDisplayName(selected.agent_b)}
                         </span>
-                        <Badge
-                          variant={
-                            selected.status === "active"
-                              ? "default"
-                              : "secondary"
-                          }
-                          className="text-xs"
-                        >
-                          {selected.status}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground ml-auto">
-                          {selected.message_count} msgs · updated{" "}
-                          {formatDistanceToNow(new Date(selected.updated_at))}{" "}
-                          ago
-                        </span>
+                        <HelpTip label={selected.status === "active" ? "Actively exchanging messages" : "No longer active"}>
+                          <Badge
+                            variant={
+                              selected.status === "active"
+                                ? "default"
+                                : "secondary"
+                            }
+                            className="text-xs w-fit"
+                          >
+                            {selected.status}
+                          </Badge>
+                        </HelpTip>
+                        <HelpTip label={new Date(selected.updated_at).toLocaleString()}>
+                          <span className="text-xs text-muted-foreground ml-auto w-fit">
+                            {selected.message_count} msgs · updated{" "}
+                            {formatDistanceToNow(new Date(selected.updated_at))}{" "}
+                            ago
+                          </span>
+                        </HelpTip>
                       </div>
                     )}
                     {/* Scoped to the stream pane, not a full-page takeover —

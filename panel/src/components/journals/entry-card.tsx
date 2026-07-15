@@ -40,18 +40,24 @@ export function EntryCard({ entry }: EntryCardProps) {
           <div className="flex items-start justify-between gap-2 mb-2">
             <div className="flex items-center gap-2 flex-wrap">
               <EntryTypeBadge type={entry.type} />
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {formatTime(entry.timestamp)}
-              </span>
+              <HelpTip label={new Date(entry.timestamp).toLocaleString()}>
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {formatTime(entry.timestamp)}
+                </span>
+              </HelpTip>
             </div>
             <div className="flex items-center gap-2">
               {entry.sentiment && (
-                <Badge variant="outline" className="text-xs">
-                  {entry.sentiment}
-                </Badge>
+                <HelpTip label="Agent's self-reported sentiment when writing this entry">
+                  <Badge variant="outline" className="text-xs">
+                    {entry.sentiment}
+                  </Badge>
+                </HelpTip>
               )}
-              <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              <HelpTip label="Opens this entry's full detail page">
+                <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              </HelpTip>
             </div>
           </div>
 
@@ -76,9 +82,15 @@ export function EntryCard({ entry }: EntryCardProps) {
                 </Badge>
               ))}
               {entry.tags.length > 3 && (
-                <span className="text-xs text-muted-foreground">
-                  +{entry.tags.length - 3}
-                </span>
+                <HelpTip
+                  label={`${entry.tags.length - 3} more tag${
+                    entry.tags.length - 3 === 1 ? "" : "s"
+                  } not shown`}
+                >
+                  <span className="text-xs text-muted-foreground">
+                    +{entry.tags.length - 3}
+                  </span>
+                </HelpTip>
               )}
             </div>
           )}

@@ -12,6 +12,7 @@ import { FlaggedItemsPanel } from "./flagged-items-panel";
 import { ReportsPanel } from "./reports-panel";
 import { FindingsQueuePanel } from "./findings-queue-panel";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { FileText } from "lucide-react";
 import { toast } from "sonner";
 import { usePageRefresh } from "@/hooks";
@@ -56,21 +57,27 @@ export function AuditorDashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Auditor Dashboard
-          </h1>
+          <HelpTip label="The Auditor is a silent observer — it doesn't act on tasks, only flags and reports to the CEO">
+            <h1 className="text-3xl font-bold tracking-tight">
+              Auditor Dashboard
+            </h1>
+          </HelpTip>
           <p className="text-muted-foreground">
             Quality oversight, flagging, and reporting
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            onClick={handleGenerateReport}
-            disabled={createReport.isPending}
-          >
-            <FileText className="h-4 w-4 mr-2" />
-            Generate Report
-          </Button>
+          <HelpTip label="Creates a draft audit-summary report you can edit and send from Reports below">
+            <span>
+              <Button
+                onClick={handleGenerateReport}
+                disabled={createReport.isPending}
+              >
+                <FileText className="h-4 w-4 mr-2" />
+                Generate Report
+              </Button>
+            </span>
+          </HelpTip>
         </div>
       </div>
 

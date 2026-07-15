@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   ArrowLeft,
   Play,
@@ -118,10 +119,12 @@ export default function AgentDetailPage() {
   if (isInvalidAgent) {
     return (
       <div className="space-y-6">
-        <Button variant="ghost" onClick={() => router.back()}>
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Back
-        </Button>
+        <HelpTip label="Returns to the previous page">
+          <Button variant="ghost" onClick={() => router.back()}>
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Back
+          </Button>
+        </HelpTip>
         <Card className="w-full max-w-lg mx-auto">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-red-500">
@@ -131,16 +134,20 @@ export default function AgentDetailPage() {
             <p className="text-muted-foreground mt-2">
               The agent may not be running or the ID is invalid.
             </p>
-            <SpawnAgentDialog
-              agentId={agentId}
-              agentName={displayName}
-              trigger={
-                <Button className="mt-4">
-                  <Play className="h-4 w-4 mr-2" />
-                  Spawn Agent
-                </Button>
-              }
-            />
+            <HelpTip label="Starts a fresh container for this agent so it can pick up work">
+              <span>
+                <SpawnAgentDialog
+                  agentId={agentId}
+                  agentName={displayName}
+                  trigger={
+                    <Button className="mt-4">
+                      <Play className="h-4 w-4 mr-2" />
+                      Spawn Agent
+                    </Button>
+                  }
+                />
+              </span>
+            </HelpTip>
           </CardContent>
         </Card>
       </div>
@@ -172,47 +179,61 @@ export default function AgentDetailPage() {
                 {displayName}
               </h1>
               {roleLabel && (
-                <Badge variant="secondary" className="gap-1">
-                  <User className="h-3 w-3" />
-                  {roleLabel}
-                </Badge>
+                <HelpTip label="Fixed org role — set at agent creation, cannot change at runtime">
+                  <Badge variant="secondary" className="gap-1">
+                    <User className="h-3 w-3" />
+                    {roleLabel}
+                  </Badge>
+                </HelpTip>
               )}
               {teamLabel && (
-                <Badge variant="outline" className="gap-1">
-                  <Users className="h-3 w-3" />
-                  {teamLabel}
-                </Badge>
+                <HelpTip label="Cell/team this agent belongs to in the org hierarchy">
+                  <Badge variant="outline" className="gap-1">
+                    <Users className="h-3 w-3" />
+                    {teamLabel}
+                  </Badge>
+                </HelpTip>
               )}
             </div>
-            <p className="text-muted-foreground">
-              {agentId !== displayName ? `@${agentId}` : "Agent Details"}
-            </p>
+            <HelpTip label={agentId !== displayName ? "This agent's slug — used in URLs, branch names, and commits" : ""}>
+              <p className="text-muted-foreground w-fit">
+                {agentId !== displayName ? `@${agentId}` : "Agent Details"}
+              </p>
+            </HelpTip>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {isWaiting && <ResolveWaitDialog agentId={agentId} />}
           {isActive ? (
             <>
-              <Button variant="outline" onClick={() => handleStop(true)}>
-                <Square className="h-4 w-4 mr-2" />
-                Stop
-              </Button>
-              <Button variant="destructive" onClick={() => handleStop(false)}>
-                <Square className="h-4 w-4 mr-2" />
-                Force Stop
-              </Button>
+              <HelpTip label="Lets the agent finish its current step before stopping">
+                <Button variant="outline" onClick={() => handleStop(true)}>
+                  <Square className="h-4 w-4 mr-2" />
+                  Stop
+                </Button>
+              </HelpTip>
+              <HelpTip label="Kills the container immediately, even mid-task">
+                <Button variant="destructive" onClick={() => handleStop(false)}>
+                  <Square className="h-4 w-4 mr-2" />
+                  Force Stop
+                </Button>
+              </HelpTip>
             </>
           ) : (
-            <SpawnAgentDialog
-              agentId={agentId}
-              agentName={displayName}
-              trigger={
-                <Button>
-                  <Play className="h-4 w-4 mr-2" />
-                  Spawn
-                </Button>
-              }
-            />
+            <HelpTip label="Starts a fresh container for this agent so it can pick up work">
+              <span>
+                <SpawnAgentDialog
+                  agentId={agentId}
+                  agentName={displayName}
+                  trigger={
+                    <Button>
+                      <Play className="h-4 w-4 mr-2" />
+                      Spawn
+                    </Button>
+                  }
+                />
+              </span>
+            </HelpTip>
           )}
         </div>
       </div>
@@ -245,16 +266,20 @@ export default function AgentDetailPage() {
               Live status is unavailable — this agent isn&apos;t currently
               active. Spawn it to see live state.
             </p>
-            <SpawnAgentDialog
-              agentId={agentId}
-              agentName={displayName}
-              trigger={
-                <Button className="mt-4">
-                  <Play className="h-4 w-4 mr-2" />
-                  Spawn Agent
-                </Button>
-              }
-            />
+            <HelpTip label="Starts a fresh container for this agent so it can pick up work">
+              <span>
+                <SpawnAgentDialog
+                  agentId={agentId}
+                  agentName={displayName}
+                  trigger={
+                    <Button className="mt-4">
+                      <Play className="h-4 w-4 mr-2" />
+                      Spawn Agent
+                    </Button>
+                  }
+                />
+              </span>
+            </HelpTip>
           </CardContent>
         </Card>
       ) : agent ? (
@@ -287,9 +312,11 @@ export default function AgentDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-lg font-semibold text-red-600">
-                  {agent.error_count} error(s)
-                </p>
+                <HelpTip label="Errors this agent has hit since its current session started">
+                  <p className="text-lg font-semibold text-red-600 w-fit">
+                    {agent.error_count} error(s)
+                  </p>
+                </HelpTip>
               </CardContent>
             </Card>
           )}

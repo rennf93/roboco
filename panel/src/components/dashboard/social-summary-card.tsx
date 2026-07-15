@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Share2 } from "lucide-react";
 
 // Compact stand-in for the full X/video queues on the command center — the
@@ -41,7 +42,11 @@ export function SocialSummaryCard({ className }: { className?: string }) {
         <CardTitle className="flex items-center gap-2">
           <Share2 className="h-5 w-5" />
           Social
-          {total > 0 && <Badge variant="secondary">{total}</Badge>}
+          {total > 0 && (
+            <HelpTip label="X + video drafts combined">
+              <Badge variant="secondary">{total}</Badge>
+            </HelpTip>
+          )}
         </CardTitle>
         <CardDescription>
           Held X and video drafts awaiting your approval.
@@ -49,17 +54,23 @@ export function SocialSummaryCard({ className }: { className?: string }) {
       </CardHeader>
       <CardContent className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex gap-4 text-sm text-muted-foreground">
-          <span>
-            {xCount} X draft{xCount === 1 ? "" : "s"}
-          </span>
-          <span>
-            {videoCount} video draft{videoCount === 1 ? "" : "s"}
-          </span>
+          <HelpTip label="Drafted release posts, feature spotlights, and mention replies awaiting review">
+            <span>
+              {xCount} X draft{xCount === 1 ? "" : "s"}
+            </span>
+          </HelpTip>
+          <HelpTip label="Rendered video clips awaiting review">
+            <span>
+              {videoCount} video draft{videoCount === 1 ? "" : "s"}
+            </span>
+          </HelpTip>
         </div>
         <Link href="/social" prefetch={false}>
-          <Button variant="outline" size="sm">
-            Open Social
-          </Button>
+          <HelpTip label="Opens the full X and video queues plus posting history">
+            <Button variant="outline" size="sm">
+              Open Social
+            </Button>
+          </HelpTip>
         </Link>
       </CardContent>
     </Card>
