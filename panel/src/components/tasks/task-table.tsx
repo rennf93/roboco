@@ -30,6 +30,7 @@ import {
   ResponsiveTableCardEmpty,
 } from "@/components/ui/responsive-table";
 import { TaskStatusBadge } from "./task-status-badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { TaskActions } from "./task-actions";
 import { GitStatusBadge } from "./git-status-badge";
 import Link from "next/link";
@@ -614,12 +615,14 @@ export function TaskTable({
                                   {task.title}
                                 </span>
                                 {task.batch_id && !task.parent_task_id && (
-                                  <Badge
-                                    variant="outline"
-                                    className="text-xs shrink-0 border-primary/50 text-primary"
-                                  >
-                                    MegaTask
-                                  </Badge>
+                                  <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
+                                    <Badge
+                                      variant="outline"
+                                      className="text-xs shrink-0 border-primary/50 text-primary"
+                                    >
+                                      MegaTask
+                                    </Badge>
+                                  </HelpTip>
                                 )}
                                 {childCount > 0 && (
                                   <Badge
@@ -744,12 +747,14 @@ export function TaskTable({
                           childCount > 0 ? (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {task.batch_id && !task.parent_task_id && (
-                                <Badge
-                                  variant="outline"
-                                  className="border-primary/50 text-xs text-primary"
-                                >
-                                  MegaTask
-                                </Badge>
+                                <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
+                                  <Badge
+                                    variant="outline"
+                                    className="border-primary/50 text-xs text-primary"
+                                  >
+                                    MegaTask
+                                  </Badge>
+                                </HelpTip>
                               )}
                               {childCount > 0 && (
                                 <Badge variant="secondary" className="text-xs">

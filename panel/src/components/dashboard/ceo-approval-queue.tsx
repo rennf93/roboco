@@ -34,6 +34,7 @@ import {
 import Link from "next/link";
 import { TaskStatus, Team, type Task } from "@/types";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface CeoApprovalQueueProps {
   className?: string;
@@ -171,18 +172,24 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       {
         label: string;
         variant: "default" | "secondary" | "destructive" | "outline";
+        desc: string;
       }
     > = {
-      0: { label: "P0", variant: "destructive" },
-      1: { label: "P1", variant: "destructive" },
-      2: { label: "P2", variant: "secondary" },
-      3: { label: "P3", variant: "outline" },
+      0: { label: "P0", variant: "destructive", desc: "Critical priority — blocks all other work" },
+      1: { label: "P1", variant: "destructive", desc: "High priority — should be done soon" },
+      2: { label: "P2", variant: "secondary", desc: "Medium priority — normal scheduling" },
+      3: { label: "P3", variant: "outline", desc: "Low priority — can wait" },
     };
-    const { label, variant } = variants[priority] || {
+    const { label, variant, desc } = variants[priority] || {
       label: `P${priority}`,
       variant: "outline" as const,
+      desc: `Priority level ${priority}`,
     };
-    return <Badge variant={variant}>{label}</Badge>;
+    return (
+      <HelpTip label={desc}>
+        <Badge variant={variant}>{label}</Badge>
+      </HelpTip>
+    );
   };
 
   if (isLoading) {
@@ -237,9 +244,11 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
           clipping against it (mirrors the dialog footer's flex-col sm:flex-row). */}
       <div className="flex flex-wrap items-center gap-2 sm:ml-4 sm:shrink-0">
         <Link href={`/tasks/${task.id}`} prefetch={false}>
-          <Button variant="ghost" size="sm">
-            <FileText className="h-4 w-4" />
-          </Button>
+          <HelpTip label="View task details">
+            <Button variant="ghost" size="sm">
+              <FileText className="h-4 w-4" />
+            </Button>
+          </HelpTip>
         </Link>
         <Button
           variant="outline"

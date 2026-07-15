@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -194,20 +195,22 @@ export function SelfHostedSection({
               }
               className="pr-10"
             />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setShowToken((v) => !v)}
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              aria-label={showToken ? "Hide token" : "Show token"}
-            >
-              {showToken ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </Button>
+            <HelpTip label={showToken ? "Hide token" : "Show token"}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setShowToken((v) => !v)}
+                className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label={showToken ? "Hide token" : "Show token"}
+              >
+                {showToken ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </Button>
+            </HelpTip>
           </div>
           <Button onClick={handleSave} disabled={saveConfig.isPending}>
             {saveConfig.isPending ? "Saving…" : "Save"}

@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import { OfflineState } from "@/components/ui/offline-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { getErrorMessage } from "@/lib/api/client";
@@ -593,29 +594,33 @@ function KnowledgeBaseBrowserContent() {
                                   </Badge>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      handleRefreshIndex(indexType)
-                                    }
-                                    disabled={refreshIndex.isPending}
-                                  >
-                                    {refreshIndex.isPending ? (
-                                      <RefreshCw className="h-3 w-3 animate-spin" />
-                                    ) : (
-                                      <RefreshCw className="h-3 w-3" />
-                                    )}
-                                  </Button>
+                                  <HelpTip label="Refresh this index">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        handleRefreshIndex(indexType)
+                                      }
+                                      disabled={refreshIndex.isPending}
+                                    >
+                                      {refreshIndex.isPending ? (
+                                        <RefreshCw className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <RefreshCw className="h-3 w-3" />
+                                      )}
+                                    </Button>
+                                  </HelpTip>
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="text-red-600"
-                                      >
-                                        <Trash2 className="h-3 w-3" />
-                                      </Button>
+                                      <HelpTip label="Delete this index and all its documents">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="text-red-600"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </HelpTip>
                                     </AlertDialogTrigger>
                                     <AlertDialogContent>
                                       <AlertDialogHeader>

@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import type { A2AChatMessage } from "@/lib/api/a2a";
 import { formatDistanceToNow } from "date-fns";
 import { AlertTriangle, MessagesSquare } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface A2ATranscriptProps {
   messages: A2AChatMessage[];
@@ -227,9 +228,11 @@ export function A2ATranscript({
                       {getAgentDisplayName(message.from_agent)}
                     </span>
                     {message.message_kind && (
-                      <Badge variant="outline" className="text-[10px]">
-                        {message.message_kind}
-                      </Badge>
+                      <HelpTip label="Type of agent-to-agent message">
+                        <Badge variant="outline" className="text-[10px]">
+                          {message.message_kind}
+                        </Badge>
+                      </HelpTip>
                     )}
                     <span className="text-xs text-muted-foreground ml-auto">
                       {formatDistanceToNow(new Date(message.created_at))} ago

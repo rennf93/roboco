@@ -26,6 +26,7 @@ import { Label } from "@/components/ui/label";
 import { CheckCircle2, XCircle, Rocket, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { usePageRefresh } from "@/hooks";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const _MIN_REJECT_CHARS = 10;
 
@@ -166,10 +167,14 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             <Rocket className="h-5 w-5" />
             Release Proposal
             <Badge variant="outline">v{report.proposed_version}</Badge>
-            <Badge variant="secondary">{report.bump_kind}</Badge>
-            <Badge variant={gateBadgeVariant(report.gate_state)}>
-              gate: {report.gate_state}
-            </Badge>
+            <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
+              <Badge variant="secondary">{report.bump_kind}</Badge>
+            </HelpTip>
+            <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
+              <Badge variant={gateBadgeVariant(report.gate_state)}>
+                gate: {report.gate_state}
+              </Badge>
+            </HelpTip>
           </CardTitle>
           <CardDescription>
             {report.change_summary.length} change(s) since the last tag · review

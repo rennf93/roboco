@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -395,11 +396,19 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
               </code>{" "}
               <span className="text-muted-foreground">{finding.message}</span>
             </div>
-            <Badge
-              variant={finding.level === "block" ? "destructive" : "secondary"}
+            <HelpTip
+              label={
+                finding.level === "block"
+                  ? "Block-level: refuses the gate"
+                  : "Warning: advisory only"
+              }
             >
-              {finding.rule}
-            </Badge>
+              <Badge
+                variant={finding.level === "block" ? "destructive" : "secondary"}
+              >
+                {finding.rule}
+              </Badge>
+            </HelpTip>
           </div>
         ))}
       </CardContent>
