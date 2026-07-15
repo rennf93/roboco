@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/ui/markdown";
 import { EntryTypeBadge } from "@/components/journals/entry-type-badge";
+import { CopyButton } from "@/components/ui/copy-button";
 import {
   ArrowLeft,
   AlertTriangle,
@@ -148,7 +149,13 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
               <User className="h-4 w-4" />
               <span>Journal</span>
             </div>
-            <p className="font-medium">{entry.journal_id.slice(0, 8)}...</p>
+            <p
+              className="font-medium font-mono flex items-center gap-1"
+              title={entry.journal_id}
+            >
+              {entry.journal_id.slice(0, 8)}
+              <CopyButton value={entry.journal_id} className="px-1 py-0.5" />
+            </p>
           </CardContent>
         </Card>
 
@@ -159,14 +166,18 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                 <Link2 className="h-4 w-4" />
                 <span>Related Task</span>
               </div>
-              <Link href={`/tasks/${entry.task_id}`} prefetch={false}>
-                <Badge
-                  variant="outline"
-                  className="hover:bg-muted cursor-pointer"
-                >
-                  Task #{entry.task_id.slice(0, 8)}
-                </Badge>
-              </Link>
+              <div className="flex items-center gap-1">
+                <Link href={`/tasks/${entry.task_id}`} prefetch={false}>
+                  <Badge
+                    variant="outline"
+                    className="hover:bg-muted cursor-pointer"
+                    title={entry.task_id}
+                  >
+                    Task #{entry.task_id.slice(0, 8)}
+                  </Badge>
+                </Link>
+                <CopyButton value={entry.task_id} className="px-1 py-0.5" />
+              </div>
             </CardContent>
           </Card>
         )}

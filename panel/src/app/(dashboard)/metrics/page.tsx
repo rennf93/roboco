@@ -39,6 +39,7 @@ import {
   AgentUsageChart,
   TeamUsageChart,
   TaskStatusChart,
+  TaskStatusTiles,
   SessionsTable,
 } from "@/components/metrics";
 import {
@@ -330,34 +331,36 @@ function PerformanceTabContent() {
       {/* Task Status */}
       <div>
         <h2 className="text-lg font-semibold mb-3">Task Status</h2>
-        <div className="grid gap-4 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3">
-          <div className="lg:col-span-2 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
-            <MetricCard
-              title="Pending"
-              value={pending}
-              icon={<Clock className="h-4 w-4 text-gray-500" />}
-            />
-            <MetricCard
-              title="In Progress"
-              value={inProgress}
-              icon={<Activity className="h-4 w-4 text-blue-500" />}
-            />
-            <MetricCard
-              title="Blocked"
-              value={blocked}
-              icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
-            />
-            <MetricCard
-              title="Awaiting QA"
-              value={awaitingQa}
-              icon={<Timer className="h-4 w-4 text-yellow-500" />}
-            />
-            <MetricCard
-              title="Completed"
-              value={completed}
-              icon={<CheckCircle className="h-4 w-4 text-green-500" />}
-            />
-          </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <TaskStatusTiles
+            tiles={[
+              {
+                label: "Pending",
+                value: pending,
+                icon: <Clock className="h-3.5 w-3.5 text-gray-500" />,
+              },
+              {
+                label: "In Progress",
+                value: inProgress,
+                icon: <Activity className="h-3.5 w-3.5 text-blue-500" />,
+              },
+              {
+                label: "Blocked",
+                value: blocked,
+                icon: <AlertTriangle className="h-3.5 w-3.5 text-red-500" />,
+              },
+              {
+                label: "Awaiting QA",
+                value: awaitingQa,
+                icon: <Timer className="h-3.5 w-3.5 text-yellow-500" />,
+              },
+              {
+                label: "Completed",
+                value: completed,
+                icon: <CheckCircle className="h-3.5 w-3.5 text-green-500" />,
+              },
+            ]}
+          />
           <TaskStatusChart
             slices={[
               { name: "Pending", value: pending },
