@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -57,7 +58,17 @@ export function EnvironmentLadderEditor({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <Label>Environment ladder</Label>
+        <HelpTip
+          label={
+            "Maps this project's branches to a promotion flow. Typical two-branch setup: " +
+            "rung 1 name 'dev' branch 'slave' (all PRs land there), rung 2 name 'prod' " +
+            "branch 'master' (releases are cut and tagged there). Add middle rungs (qa, " +
+            "staging) only if those branches really exist. No ladder = the default " +
+            "branch plays both roles."
+          }
+        >
+          <Label>Environment ladder</Label>
+        </HelpTip>
         <span className="text-xs text-muted-foreground">
           {items.length} rung{items.length !== 1 ? "s" : ""}
         </span>
