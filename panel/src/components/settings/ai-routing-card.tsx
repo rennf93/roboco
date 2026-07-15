@@ -51,35 +51,63 @@ import { Checkbox } from "@/components/ui/checkbox";
 
 // Matches the roboco agents_config AGENT_ROLE_MAP / AGENT_TEAM_MAP.
 // Hard-coded so Mix mode shows a stable 18-row picker without an extra
-// server round-trip. Order mirrors the org chart in CLAUDE.md.
+// server round-trip. Grouped + ordered to mirror the org chart in CLAUDE.md.
 //
 // NOTE: CEO is explicitly excluded — it's the human-in-the-loop seat
 // (Renzo), not an LLM-backed agent. Routing it anywhere would be a
 // no-op in spawn_agent but confusing in the UI.
-const AGENTS: { slug: string; label: string }[] = [
-  { slug: "product-owner", label: "Product Owner" },
-  { slug: "head-marketing", label: "Head of Marketing" },
-  { slug: "auditor", label: "Auditor" },
-  { slug: "main-pm", label: "Main PM" },
-  { slug: "be-pm", label: "Backend PM" },
-  { slug: "be-dev-1", label: "Backend Dev 1" },
-  { slug: "be-dev-2", label: "Backend Dev 2" },
-  { slug: "be-qa", label: "Backend QA" },
-  { slug: "be-doc", label: "Backend Documenter" },
-  { slug: "fe-pm", label: "Frontend PM" },
-  { slug: "fe-dev-1", label: "Frontend Dev 1" },
-  { slug: "fe-dev-2", label: "Frontend Dev 2" },
-  { slug: "fe-qa", label: "Frontend QA" },
-  { slug: "fe-doc", label: "Frontend Documenter" },
-  { slug: "ux-pm", label: "UX/UI PM" },
-  { slug: "ux-dev-1", label: "UX/UI Dev" },
-  { slug: "ux-qa", label: "UX/UI QA" },
-  { slug: "ux-doc", label: "UX/UI Documenter" },
-  // Interactive (held-open chat) roles. Claude (SDK driver) and Grok (grok CLI)
-  // are the supported runtimes; assigning a Grok model routes them to
-  // the grok-prompter / grok-secretary image.
-  { slug: "intake-1", label: "Intake (Prompter)" },
-  { slug: "secretary-1", label: "Secretary" },
+const AGENT_GROUPS: { title: string; agents: { slug: string; label: string }[] }[] = [
+  {
+    title: "Board",
+    agents: [
+      { slug: "product-owner", label: "Product Owner" },
+      { slug: "head-marketing", label: "Head of Marketing" },
+      { slug: "auditor", label: "Auditor" },
+    ],
+  },
+  {
+    title: "Main PM",
+    agents: [{ slug: "main-pm", label: "Main PM" }],
+  },
+  {
+    title: "Backend Cell",
+    agents: [
+      { slug: "be-pm", label: "Backend PM" },
+      { slug: "be-dev-1", label: "Backend Dev 1" },
+      { slug: "be-dev-2", label: "Backend Dev 2" },
+      { slug: "be-qa", label: "Backend QA" },
+      { slug: "be-doc", label: "Backend Documenter" },
+    ],
+  },
+  {
+    title: "Frontend Cell",
+    agents: [
+      { slug: "fe-pm", label: "Frontend PM" },
+      { slug: "fe-dev-1", label: "Frontend Dev 1" },
+      { slug: "fe-dev-2", label: "Frontend Dev 2" },
+      { slug: "fe-qa", label: "Frontend QA" },
+      { slug: "fe-doc", label: "Frontend Documenter" },
+    ],
+  },
+  {
+    title: "UX/UI Cell",
+    agents: [
+      { slug: "ux-pm", label: "UX/UI PM" },
+      { slug: "ux-dev-1", label: "UX/UI Dev" },
+      { slug: "ux-qa", label: "UX/UI QA" },
+      { slug: "ux-doc", label: "UX/UI Documenter" },
+    ],
+  },
+  {
+    title: "Intake / Secretary",
+    agents: [
+      // Interactive (held-open chat) roles. Claude (SDK driver) and Grok
+      // (grok CLI) are the supported runtimes; assigning a Grok model routes
+      // them to the grok-prompter / grok-secretary image.
+      { slug: "intake-1", label: "Intake (Prompter)" },
+      { slug: "secretary-1", label: "Secretary" },
+    ],
+  },
 ];
 
 export function AIRoutingCard() {
@@ -319,113 +347,121 @@ export function AIRoutingCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* -------- Grok (xAI) key -------- */}
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm font-medium">Grok (xAI) API key</Label>
-            {hasGrokKey ? (
-              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                <KeyRound className="h-3 w-3" /> key set
-              </Badge>
-            ) : (
-              <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                <Key className="h-3 w-3" /> not set
-              </Badge>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={grokKey}
-              onChange={(e) => setGrokKey(e.target.value)}
-              placeholder={
-                hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
-              }
-              disabled={clearGrokKey}
-            />
-            <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
-              {setGrokKeyMut.isPending ? "Saving…" : "Save"}
-            </Button>
-          </div>
-          {hasGrokKey ? (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <Checkbox
-                checked={clearGrokKey}
-                onCheckedChange={(checked: boolean) => {
-                  const next = checked === true;
-                  setClearGrokKey(next);
-                  if (next) setGrokKey("");
-                }}
-              />
-              Clear the stored key
-            </label>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
-              server-side; never returned by the API.
-            </p>
-          )}
-        </section>
+        {/* -------- Key cards band: Grok+Ollama (left) / Self-Hosted (right) -------- */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <div className="space-y-6">
+            {/* -------- Grok (xAI) key -------- */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">
+                  Grok (xAI) API key
+                </Label>
+                {hasGrokKey ? (
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
+                ) : (
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  value={grokKey}
+                  onChange={(e) => setGrokKey(e.target.value)}
+                  placeholder={
+                    hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
+                  }
+                  disabled={clearGrokKey}
+                />
+                <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+                  {setGrokKeyMut.isPending ? "Saving…" : "Save"}
+                </Button>
+              </div>
+              {hasGrokKey ? (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <Checkbox
+                    checked={clearGrokKey}
+                    onCheckedChange={(checked: boolean) => {
+                      const next = checked === true;
+                      setClearGrokKey(next);
+                      if (next) setGrokKey("");
+                    }}
+                  />
+                  Clear the stored key
+                </label>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Used for grok-build-0.1 at api.x.ai/v1. Stored
+                  Fernet-encrypted server-side; never returned by the API.
+                </p>
+              )}
+            </section>
 
-        <Separator />
+            <Separator />
 
-        {/* -------- Ollama key -------- */}
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm font-medium">Ollama Cloud API key</Label>
-            {hasOllamaKey ? (
-              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                <KeyRound className="h-3 w-3" /> key set
-              </Badge>
-            ) : (
-              <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                <Key className="h-3 w-3" /> not set
-              </Badge>
-            )}
+            {/* -------- Ollama key -------- */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">
+                  Ollama Cloud API key
+                </Label>
+                {hasOllamaKey ? (
+                  <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                    <KeyRound className="h-3 w-3" /> key set
+                  </Badge>
+                ) : (
+                  <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                    <Key className="h-3 w-3" /> not set
+                  </Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={
+                    hasOllamaKey
+                      ? "•••••••••••• (leave blank to keep)"
+                      : "ollama_xxx…"
+                  }
+                  disabled={clearKey}
+                />
+                <Button onClick={saveKey} disabled={setKey.isPending}>
+                  {setKey.isPending ? "Saving…" : "Save"}
+                </Button>
+              </div>
+              {hasOllamaKey ? (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <Checkbox
+                    checked={clearKey}
+                    onCheckedChange={(checked: boolean) => {
+                      const next = checked === true;
+                      setClearKey(next);
+                      if (next) setApiKey("");
+                    }}
+                  />
+                  Clear the stored key
+                </label>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Stored Fernet-encrypted server-side; never returned by the
+                  API.
+                </p>
+              )}
+            </section>
           </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={
-                hasOllamaKey
-                  ? "•••••••••••• (leave blank to keep)"
-                  : "ollama_xxx…"
-              }
-              disabled={clearKey}
-            />
-            <Button onClick={saveKey} disabled={setKey.isPending}>
-              {setKey.isPending ? "Saving…" : "Save"}
-            </Button>
-          </div>
-          {hasOllamaKey ? (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <Checkbox
-                checked={clearKey}
-                onCheckedChange={(checked: boolean) => {
-                  const next = checked === true;
-                  setClearKey(next);
-                  if (next) setApiKey("");
-                }}
-              />
-              Clear the stored key
-            </label>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Stored Fernet-encrypted server-side; never returned by the API.
-            </p>
-          )}
-        </section>
 
-        <Separator />
-
-        {/* -------- Self-Hosted LLM -------- */}
-        <SelfHostedSection
-          testResult={selfHostedTestResult}
-          onTestResult={handleSelfHostedTestResult}
-          onTestSuccess={() => undefined}
-        />
+          {/* -------- Self-Hosted LLM -------- */}
+          <SelfHostedSection
+            testResult={selfHostedTestResult}
+            onTestResult={handleSelfHostedTestResult}
+            onTestSuccess={() => undefined}
+          />
+        </div>
 
         <Separator />
 
@@ -560,109 +596,151 @@ export function AIRoutingCard() {
             all per-agent overrides with what&apos;s picked here.
           </p>
           <div className="divide-y rounded-md border">
-            {AGENTS.map((a) => (
-              <div
-                key={a.slug}
-                className="grid grid-cols-[1fr_280px] items-center gap-2 px-3 py-2"
-              >
-                <div>
-                  <div className="font-mono text-sm">{a.slug}</div>
-                  <div className="text-xs text-muted-foreground">{a.label}</div>
+            {AGENT_GROUPS.map((group) => (
+              <div key={group.title} className="p-3">
+                <h4 className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                  {group.title}
+                </h4>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {group.agents.map((a) => (
+                    <div
+                      key={a.slug}
+                      className="grid grid-cols-[1fr_170px] items-center gap-2 rounded-md border px-2 py-1.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate font-mono text-xs">
+                          {a.slug}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {a.label}
+                        </div>
+                      </div>
+                      <Select
+                        value={mixMap[a.slug] ?? ""}
+                        onValueChange={(v: string) =>
+                          setMixMap((prev) => ({
+                            ...prev,
+                            [a.slug]: v === "__clear__" ? "" : v,
+                          }))
+                        }
+                      >
+                        <SelectTrigger size="sm" className="w-full text-xs">
+                          <SelectValue placeholder="(inherit)" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__clear__">
+                            (inherit global)
+                          </SelectItem>
+
+                          {/* Anthropic models */}
+                          {catalogAnthropicOnly.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel>
+                                <ProviderBadge variant="anthropic" />
+                                Anthropic
+                              </SelectLabel>
+                              {catalogAnthropicOnly.map(
+                                (c: {
+                                  model_name: string;
+                                  display_name: string;
+                                }) => (
+                                  <SelectItem
+                                    key={c.model_name}
+                                    value={c.model_name}
+                                  >
+                                    {c.display_name}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectGroup>
+                          )}
+
+                          {/* Grok (xAI) models */}
+                          {catalogGrokOnly.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel>
+                                <ProviderBadge variant="grok" />
+                                Grok (xAI)
+                              </SelectLabel>
+                              {catalogGrokOnly.map(
+                                (c: {
+                                  model_name: string;
+                                  display_name: string;
+                                }) => (
+                                  <SelectItem
+                                    key={c.model_name}
+                                    value={c.model_name}
+                                  >
+                                    {c.display_name}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectGroup>
+                          )}
+
+                          {/* Ollama Cloud models */}
+                          {catalogOllamaOnly.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel>
+                                <ProviderBadge variant="ollama" />
+                                Ollama Cloud
+                              </SelectLabel>
+                              {catalogOllamaOnly.map(
+                                (c: {
+                                  model_name: string;
+                                  display_name: string;
+                                }) => (
+                                  <SelectItem
+                                    key={c.model_name}
+                                    value={c.model_name}
+                                  >
+                                    {c.display_name}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectGroup>
+                          )}
+
+                          {/* Self-Hosted models */}
+                          {selfHostedModels.length > 0 && (
+                            <SelectGroup>
+                              <SelectLabel>
+                                <ProviderBadge variant="self-hosted" />
+                                Self-Hosted
+                              </SelectLabel>
+                              {selfHostedModels.map((m: SelfHostedModel) => (
+                                <SelectItem
+                                  key={m.model_name}
+                                  value={m.model_name}
+                                >
+                                  {m.display_name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          )}
+
+                          {/* Fallback: un-grouped catalog when no grouping is possible */}
+                          {catalogAnthropicOnly.length === 0 &&
+                            catalogOllamaOnly.length === 0 &&
+                            selfHostedModels.length === 0 &&
+                            catalogForMix.map(
+                              (c: {
+                                model_name: string;
+                                display_name: string;
+                              }) => (
+                                <SelectItem
+                                  key={c.model_name}
+                                  value={c.model_name}
+                                >
+                                  {c.display_name} — {c.model_name}
+                                </SelectItem>
+                              ),
+                            )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
                 </div>
-                <Select
-                  value={mixMap[a.slug] ?? ""}
-                  onValueChange={(v: string) =>
-                    setMixMap((prev) => ({
-                      ...prev,
-                      [a.slug]: v === "__clear__" ? "" : v,
-                    }))
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="(inherit)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__clear__">(inherit global)</SelectItem>
-
-                    {/* Anthropic models */}
-                    {catalogAnthropicOnly.length > 0 && (
-                      <SelectGroup>
-                        <SelectLabel>
-                          <ProviderBadge variant="anthropic" />
-                          Anthropic
-                        </SelectLabel>
-                        {catalogAnthropicOnly.map(
-                          (c: { model_name: string; display_name: string }) => (
-                            <SelectItem key={c.model_name} value={c.model_name}>
-                              {c.display_name}
-                            </SelectItem>
-                          ),
-                        )}
-                      </SelectGroup>
-                    )}
-
-                    {/* Grok (xAI) models */}
-                    {catalogGrokOnly.length > 0 && (
-                      <SelectGroup>
-                        <SelectLabel>
-                          <ProviderBadge variant="grok" />
-                          Grok (xAI)
-                        </SelectLabel>
-                        {catalogGrokOnly.map(
-                          (c: { model_name: string; display_name: string }) => (
-                            <SelectItem key={c.model_name} value={c.model_name}>
-                              {c.display_name}
-                            </SelectItem>
-                          ),
-                        )}
-                      </SelectGroup>
-                    )}
-
-                    {/* Ollama Cloud models */}
-                    {catalogOllamaOnly.length > 0 && (
-                      <SelectGroup>
-                        <SelectLabel>
-                          <ProviderBadge variant="ollama" />
-                          Ollama Cloud
-                        </SelectLabel>
-                        {catalogOllamaOnly.map(
-                          (c: { model_name: string; display_name: string }) => (
-                            <SelectItem key={c.model_name} value={c.model_name}>
-                              {c.display_name}
-                            </SelectItem>
-                          ),
-                        )}
-                      </SelectGroup>
-                    )}
-
-                    {/* Self-Hosted models */}
-                    {selfHostedModels.length > 0 && (
-                      <SelectGroup>
-                        <SelectLabel>
-                          <ProviderBadge variant="self-hosted" />
-                          Self-Hosted
-                        </SelectLabel>
-                        {selfHostedModels.map((m: SelfHostedModel) => (
-                          <SelectItem key={m.model_name} value={m.model_name}>
-                            {m.display_name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    )}
-
-                    {/* Fallback: un-grouped catalog when no grouping is possible */}
-                    {catalogAnthropicOnly.length === 0 &&
-                      catalogOllamaOnly.length === 0 &&
-                      selfHostedModels.length === 0 &&
-                      catalogForMix.map(
-                        (c: { model_name: string; display_name: string }) => (
-                          <SelectItem key={c.model_name} value={c.model_name}>
-                            {c.display_name} — {c.model_name}
-                          </SelectItem>
-                        ),
-                      )}
-                  </SelectContent>
-                </Select>
               </div>
             ))}
           </div>
