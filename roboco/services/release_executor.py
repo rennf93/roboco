@@ -261,7 +261,7 @@ class _ReleaseContext:
     """Writable-clone coordinates for the production release ops."""
 
     slug: str
-    default_branch: str
+    prod_branch: str
     root: Path
     git_url: str
     # Per-call ``-c http.extraheader=Authorization: Basic …`` prefix so the PAT
@@ -281,7 +281,7 @@ class _GitReleaseOps:
     def __init__(self, session: AsyncSession, ctx: _ReleaseContext) -> None:
         self._session = session
         self._slug = ctx.slug
-        self._default_branch = ctx.default_branch
+        self._default_branch = ctx.prod_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
         self._git_prefix = ctx.git_prefix
@@ -556,7 +556,7 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     root = await _prepare_release_clone(slug, git_url, git_prefix, default_branch)
     ctx = _ReleaseContext(
         slug=slug,
-        default_branch=default_branch,
+        prod_branch=default_branch,
         root=root,
         git_url=git_url,
         git_prefix=git_prefix,

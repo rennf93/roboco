@@ -97,7 +97,7 @@ async def test_h24_wait_for_ci_polls_through_non_success(
 
     ctx = _ReleaseContext(
         slug="roboco",
-        default_branch="master",
+        prod_branch="master",
         root=Path("/tmp/release-e2e"),
         git_url="",
         git_prefix=[],

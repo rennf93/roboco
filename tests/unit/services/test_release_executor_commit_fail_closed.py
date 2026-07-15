@@ -16,7 +16,7 @@ from roboco.services.release_executor import _GitReleaseOps, _ReleaseContext
 def _ctx() -> _ReleaseContext:
     return _ReleaseContext(
         slug="roboco",
-        default_branch="master",
+        prod_branch="master",
         root=Path("/tmp/roboco-release-f012"),
         git_url="https://github.com/o/roboco",
         git_prefix=[],
@@ -32,7 +32,7 @@ class _FakeGitOps(_GitReleaseOps):
         # Bypass the real __init__ (no session needed) — we only exercise
         # commit_and_push, which calls self._git.
         self._slug = ctx.slug
-        self._default_branch = ctx.default_branch
+        self._default_branch = ctx.prod_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
         self._git_prefix = ctx.git_prefix

@@ -311,7 +311,7 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
@@ -362,7 +362,7 @@ async def test_wait_for_ci_polls_through_rerun(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
@@ -409,7 +409,7 @@ async def test_wait_for_ci_exhausts_window_on_persistent_failure(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
@@ -538,7 +538,7 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url=git_url,
         git_prefix=git_prefix,

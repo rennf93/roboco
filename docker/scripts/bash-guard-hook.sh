@@ -393,7 +393,7 @@ fi
 # agent's command string, not subprocesses) and WorkspaceService's uv sync
 # (subprocess, not the agent Bash tool) are untouched. On grok a deny cancels
 # the whole run, so ROBOCO_GUARD_SKIP_PM=1 nudges (exit 0) instead.
-if test -f Makefile && echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+(run|pip[[:space:]]+(install|uninstall)|lock|add|remove)|pip3?[[:space:]]+(install|uninstall)|conda[[:space:]]+(install|create|run)|poetry[[:space:]]+(run|install|add))([[:space:]]|$)'; then
+if test -f Makefile && echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+(run|sync|pip[[:space:]]+(install|uninstall)|lock|add|remove)|pip3?[[:space:]]+(install|uninstall)|conda[[:space:]]+(install|create|run)|poetry[[:space:]]+(run|install|add))([[:space:]]|$)'; then
     if [ -n "${ROBOCO_GUARD_SKIP_PM:-}" ]; then
         echo "Nudge: raw package-manager commands are blocked — use \`make quality\` / \`make gate\` / \`make lint\` / \`make test\`. The Makefile sets UV_NO_SYNC=1 + a private cache; bare \`uv run\` bypasses that." >&2
         exit 0

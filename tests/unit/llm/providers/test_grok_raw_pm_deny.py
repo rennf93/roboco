@@ -16,6 +16,7 @@ from roboco.llm.providers.grok_cli_config import _RAW_PM_DENY, _deny_rules
 def test_raw_pm_deny_rules_present() -> None:
     rules = _deny_rules("developer")
     assert "Bash(uv run*)" in rules
+    assert "Bash(uv sync*)" in rules
     assert "Bash(uv pip install*)" in rules
     assert "Bash(pip install*)" in rules
     assert "Bash(conda install*)" in rules

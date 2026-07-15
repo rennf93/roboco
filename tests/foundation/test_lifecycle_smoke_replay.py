@@ -350,8 +350,8 @@ def _assert_spec_introspection(record: dict[str, Any]) -> None:
                 f"the spec. Fix commit: {record['fix_commit']}"
             )
         all_assigned_verbs: set[str] = set()
-        for r in spec.Role:
-            all_assigned_verbs.update(spec.intents_for_role(r))
+        for any_role in spec.Role:
+            all_assigned_verbs.update(spec.intents_for_role(any_role))
         for verb_name in spec._INTENT_VERBS:
             assert verb_name in all_assigned_verbs, (
                 f"bug {bug_id} regressed: verb {verb_name!r} is declared in "

@@ -529,6 +529,10 @@ services:
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-true}
+      # Telegram notifications bridge: best-effort DMs to the CEO on escalation
+      # + completion. Config default is OFF; not yet armed here (needs stored
+      # bot-token + chat-id credentials regardless of this flag).
+      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
       ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
       ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
       ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}

@@ -133,6 +133,7 @@ _DESTRUCTIVE_DENY = ("Bash(rm -rf*)",)
 # ROBOCO_GUARD_SKIP_PM=1 instead of canceling the run.
 _RAW_PM_DENY = (
     "Bash(uv run*)",
+    "Bash(uv sync*)",
     "Bash(uv pip install*)",
     "Bash(uv pip uninstall*)",
     "Bash(uv lock*)",

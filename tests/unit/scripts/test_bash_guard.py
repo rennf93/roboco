@@ -23,13 +23,14 @@ _DENIED = 2
 _ALLOWED = 0
 
 
-def _run(cmd: str) -> int:
+def _run(cmd: str, cwd: Path | None = None) -> int:
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
     result = subprocess.run(
         [str(GUARD)],
         input=payload,
         capture_output=True,
         text=True,
+        cwd=str(cwd) if cwd else None,
         check=False,
     )
     return result.returncode
@@ -432,12 +433,20 @@ def test_blocks_app_mutation_even_in_grok_mode() -> None:
     assert result.returncode == _DENIED
 
 
-def test_allows_uv_sync_in_workspace() -> None:
-    """Legit dependency sync in the agent's own workspace clone must pass."""
+def test_denies_uv_sync_in_workspace_when_makefile_present() -> None:
+    """W1: bare ``uv sync`` uses the shared ~/.cache/uv instead of the Makefile's
+    private UV_CACHE_DIR — the cache-poisoning race the guard exists to
+    prevent. Makefile-gated like ``uv run``: use ``uv sync --extra dev`` via
+    ``make`` targets, not directly."""
     assert (
         _run("cd /data/workspaces/roboco/backend/be-dev-1 && uv sync --extra dev")
-        == _ALLOWED
+        == _DENIED
     )
+
+
+def test_allows_uv_sync_in_workspace_without_makefile(tmp_path: Path) -> None:
+    """Makefile-less projects skip the deny — bare ``uv sync`` still passes."""
+    assert _run("uv sync --extra dev", cwd=tmp_path) == _ALLOWED
 
 
 def test_denies_pip_install_when_makefile_present() -> None:
@@ -454,10 +463,15 @@ def test_allows_reading_files_under_app() -> None:
     assert _run("ls -la /app/.venv/bin") == _ALLOWED
 
 
-def test_allows_uv_sync_for_app_named_workspace_project() -> None:
+def test_allows_uv_sync_for_app_named_workspace_project(tmp_path: Path) -> None:
     """A workspace path that merely contains 'app' (e.g. .../myapp/...) must not
-    trip the rule — the boundary requires /app to be its own path segment."""
-    assert _run("cd /data/workspaces/myapp/backend/be-dev-1 && uv sync") == _ALLOWED
+    trip the /app-boundary rule — the boundary requires /app to be its own path
+    segment. Run outside a Makefile-having cwd so the W1 raw-uv-sync gate
+    (a separate rule, covered above) doesn't also fire here."""
+    assert (
+        _run("cd /data/workspaces/myapp/backend/be-dev-1 && uv sync", cwd=tmp_path)
+        == _ALLOWED
+    )
 
 
 # ---------------------------------------------------------------------------
