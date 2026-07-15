@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast as typing_cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -10,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from roboco.api.deps import CurrentAgentContext, DbSession, require_pm_or_above
 from roboco.api.schemas.product import (
     ProductCreateRequest,
+    ProductProgressSummary,
     ProductResponse,
     ProductSummaryResponse,
     ProductUpdateRequest,
@@ -36,7 +38,22 @@ async def list_products(
 ) -> list[ProductSummaryResponse]:
     service = get_product_service(db)
     products = await service.list_all(limit=limit, offset=offset)
-    return [product_to_summary(p) for p in products]
+    progress = await service.progress_for_products(products)
+    out: list[ProductSummaryResponse] = []
+    for p in products:
+        pid = typing_cast("UUID", p.id)
+        counts = progress.get(pid, {"done": 0, "active": 0, "blocked": 0})
+        out.append(
+            product_to_summary(
+                p,
+                progress=ProductProgressSummary(
+                    done=counts["done"],
+                    active=counts["active"],
+                    blocked=counts["blocked"],
+                ),
+            )
+        )
+    return out
 
 
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
