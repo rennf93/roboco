@@ -141,6 +141,7 @@ async def create_project(
         git_url=data.git_url,
         default_branch=data.default_branch,
         protected_branches=protected_branches,
+        environments=data.environments,
         assigned_cell=data.assigned_cell,
         git_token=data.git_token,
         test_command=data.test_command,

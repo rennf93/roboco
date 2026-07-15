@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, field_validator
 
 from roboco.models.base import RobocoBase, Team, TimestampMixin
+from roboco.models.env_branches import normalize_environments
 from roboco.models.sandbox import (
     SANDBOX_ENGINE_FEATURES,
     SANDBOX_ENGINES,
@@ -119,6 +120,26 @@ class Project(TimestampMixin):
         default_factory=lambda: ["main", "master"],
         description="Branches that cannot be pushed to directly",
     )
+    # Ordered environment ladder: index 0 = head (PR target / dev trunk),
+    # index -1 = prod (release target), middle = intermediates (qa/stag).
+    # null/empty → synthesized from default_branch as a degenerate single-
+    # branch ladder (head == prod == default_branch), so behavior is unchanged
+    # until the operator declares a real split in the panel.
+    environments: list[dict[str, str]] | None = Field(
+        default=None,
+        description=(
+            "Ordered environment ladder [{name, branch}]; first = head (PR "
+            "target), last = prod (release target). null → inherits "
+            "default_branch (head == prod). Validated by _check_environments."
+        ),
+    )
+
+    @field_validator("environments")
+    @classmethod
+    def _check_environments(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        return normalize_environments(v)
 
     # CI/CD Commands (optional - project may not have all)
     test_command: str | None = Field(
@@ -239,6 +260,7 @@ class ProjectCreate(RobocoBase):
     git_url: str
     default_branch: str = "master"
     protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
+    environments: list[dict[str, str]] | None = None
     assigned_cell: Team
 
     # Git authentication (will be encrypted and stored securely)
@@ -263,6 +285,7 @@ class ProjectUpdate(RobocoBase):
     git_url: str | None = None
     default_branch: str | None = None
     protected_branches: list[str] | None = None
+    environments: list[dict[str, str]] | None = None
 
     # Git authentication (empty string clears token, None leaves unchanged)
     git_token: str | None = Field(
@@ -298,3 +321,10 @@ class ProjectUpdate(RobocoBase):
         cls, v: dict[str, list[str]] | None
     ) -> dict[str, list[str]] | None:
         return _normalize_sandbox_extensions(v)
+
+    @field_validator("environments")
+    @classmethod
+    def _check_environments(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        return normalize_environments(v)

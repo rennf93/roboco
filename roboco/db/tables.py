@@ -498,6 +498,14 @@ class ProjectTable(Base):
     protected_branches: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=lambda: ["main", "master"]
     )
+    # Ordered environment ladder [{name, branch}]: index 0 = head (PR target),
+    # index -1 = prod (release target), middle = intermediates. Null →
+    # roboco.services.env_branches synthesizes a degenerate single-branch
+    # ladder from default_branch (head == prod == default_branch), so behavior
+    # is unchanged until the operator declares a real split.
+    environments: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     git_token_encrypted: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # Fernet-encrypted GitHub PAT
