@@ -56,7 +56,7 @@ def effective_environments(project: object) -> list[EnvRung]:
     ``default_branch`` when ``environments`` is null/empty, so behavior is
     unchanged until the operator declares a real ladder.
     """
-    rungs = _coerce_rungs(getattr(project, "environments", None))  # type: ignore[arg-type]
+    rungs = _coerce_rungs(getattr(project, "environments", None))
     if rungs:
         return rungs
     fallback = str(getattr(project, "default_branch", None) or "master")
@@ -105,9 +105,7 @@ def normalize_environments(
         name = rung.name.strip()
         branch = rung.branch.strip()
         if not name or not branch:
-            raise ValueError(
-                "each environment rung needs a non-empty name and branch"
-            )
+            raise ValueError("each environment rung needs a non-empty name and branch")
         if branch in seen:
             raise ValueError(
                 f"duplicate environment branch {branch!r}; "
@@ -116,4 +114,3 @@ def normalize_environments(
         seen.add(branch)
         out.append({"name": name, "branch": branch})
     return out
-

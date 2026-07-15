@@ -2118,24 +2118,22 @@ class AgentOrchestrator:
 
         from roboco.db.base import get_db_context
         from roboco.db.tables import ProjectTable
+        from roboco.models.env_branches import head_branch
 
         try:
             async with get_db_context() as db:
                 result = await db.execute(
-                    select(ProjectTable.slug, ProjectTable.default_branch)
+                    select(ProjectTable)
                     .where(ProjectTable.is_active.is_(True))
                     .order_by(ProjectTable.created_at.asc())
                     .limit(1)
                 )
-                row = result.first()
-                if row is None:
-                    return None
-                slug, default_branch = row
-                if not slug:
+                project = result.scalar_one_or_none()
+                if project is None or not project.slug:
                     return None
                 return SpawnGitContext(
-                    project_slug=slug,
-                    branch_name=default_branch,
+                    project_slug=project.slug,
+                    branch_name=head_branch(project),
                 )
         except Exception as e:
             logger.warning(

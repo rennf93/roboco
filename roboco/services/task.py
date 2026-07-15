@@ -60,6 +60,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.models.env_branches import head_branch
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
@@ -2313,8 +2314,8 @@ class TaskService(BaseService):
         Used by the gateway merge-target resolver
         (:func:`roboco.services.gateway.merge_chain.resolve_parent_branch`) when
         a child task's parent is branchless (a coordination/fan-out parent that
-        owns no repo): the real merge target is the child's own project default
-        branch — the branch the child was actually cut from — not a derived ref
+        owns no repo): the real merge target is the child's own project head
+        rung — the branch the child was actually cut from — not a derived ref
         the parent never created. Returns None for a task with no
         project_id (e.g. a coordination task itself).
         """
@@ -2322,12 +2323,10 @@ class TaskService(BaseService):
         if project_id is None:
             return None
         result = await self.session.execute(
-            select(ProjectTable.default_branch).where(
-                ProjectTable.id == UUID(str(project_id))
-            )
+            select(ProjectTable).where(ProjectTable.id == UUID(str(project_id)))
         )
-        default_branch = result.scalar_one_or_none()
-        return str(default_branch) if default_branch else None
+        project = result.scalar_one_or_none()
+        return head_branch(project) if project else None
 
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
         """Pick parent branch for a new task branch, fall back to project default."""
@@ -2336,9 +2335,7 @@ class TaskService(BaseService):
             parent_branch = await self._find_ancestor_branch(task)
 
         if not parent_branch:
-            default_branch = (
-                str(project.default_branch) if project.default_branch else "master"
-            )
+            default_branch = head_branch(project)
             self.log.info(
                 "No ancestor branch found, using project default",
                 task_id=str(task.id),
@@ -3466,9 +3463,8 @@ class TaskService(BaseService):
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
-        # - For parent tasks: merge into default branch (master)
-        default_branch = project.default_branch
-        target_branch: str = str(default_branch) if default_branch else "master"
+        # - For parent tasks: merge into the project's head rung (dev trunk)
+        target_branch = head_branch(project)
         if task.parent_task_id:
             # Get parent task's branch
             parent_id = cast("UUID", task.parent_task_id)

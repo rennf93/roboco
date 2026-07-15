@@ -15,6 +15,8 @@ import re
 from typing import Any
 from uuid import UUID
 
+from roboco.models.env_branches import head_branch
+
 _TYPES = ("feature", "bug", "chore", "docs", "hotfix")
 _TYPE_PATTERN = "|".join(_TYPES)
 _BRANCH_RE = re.compile(
@@ -93,11 +95,12 @@ async def resolve_parent_branch(task: Any, task_service: Any) -> str:
 
 
 async def _project_default_branch(task: Any, task_service: Any) -> str | None:
-    """Resolve a task's project default branch, or None if unavailable.
+    """Resolve a task's project head rung, or None if unavailable.
 
     Prefers a dedicated TaskService resolver when present; otherwise reads the
-    eager-loaded ``task.project.default_branch`` relationship. Returns None when
-    no project can be resolved so the caller can fall back to string derivation.
+    eager-loaded ``task.project`` row through ``head_branch`` (the env-ladder
+    head rung). Returns None when no project can be resolved so the caller can
+    fall back to string derivation.
     """
     resolver = getattr(task_service, "project_default_branch_for_task", None)
     if resolver is not None:
@@ -106,5 +109,4 @@ async def _project_default_branch(task: Any, task_service: Any) -> str | None:
             return str(branch)
         return None
     project = getattr(task, "project", None)
-    default_branch = getattr(project, "default_branch", None) if project else None
-    return str(default_branch) if default_branch else None
+    return head_branch(project) if project else None

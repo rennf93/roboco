@@ -40,6 +40,7 @@ from roboco.config import settings
 from roboco.db.tables import AgentTable
 from roboco.logging import get_logger
 from roboco.models.base import Team
+from roboco.models.env_branches import head_branch
 from roboco.services.toolchain import resolve_target_python
 
 logger = get_logger(__name__)
@@ -1121,7 +1122,7 @@ class WorkspaceService:
 
             if not git_url:
                 git_url = project.git_url
-                default_branch = project.default_branch or default_branch
+                default_branch = head_branch(project)
 
             git_token = await self._resolve_git_token(
                 project_service, project_slug, git_url
@@ -1172,19 +1173,19 @@ class WorkspaceService:
     async def ensure_read_clone(
         self, project_slug: str, *, force: bool = False
     ) -> Path:
-        """Ensure a project-level read clone pinned to the default branch's HEAD.
+        """Ensure a project-level read clone pinned to the head branch's HEAD.
 
         The architectural-conventions standard is read from the committed
         ``.roboco/conventions.yml`` plus a scan of the repo tree. Per-agent
         working clones are the wrong source — one may sit on a feature branch or
         be stale — so metadata reads use this dedicated clone instead. It is
         never mounted into an agent container and is always hard-reset to
-        ``origin/<default_branch>``, which makes destructive refresh safe. This
+        ``origin/<head_branch>``, which makes destructive refresh safe. This
         is what lets the standard work for a project created before the standard
         existed: no manually-configured ``workspace_path`` is required.
 
         ``force`` bypasses the 30s refresh TTL (conventions reads must reflect
-        the current default-branch HEAD, not a stale one).
+        the current head-branch HEAD, not a stale one).
         """
         from roboco.services.project import get_project_service
 
@@ -1192,7 +1193,7 @@ class WorkspaceService:
         project = await project_service.get_by_slug(project_slug)
         if not project:
             raise WorkspaceError(f"Project not found: {project_slug}")
-        default_branch = project.default_branch or "master"
+        default_branch = head_branch(project)
         git_url = project.git_url
         workspace = self.root / project_slug / "_meta" / "conventions"
 

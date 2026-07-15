@@ -52,6 +52,7 @@ from roboco.exceptions import (
 )
 from roboco.foundation.policy import lifecycle
 from roboco.models.base import AgentRole, TaskStatus
+from roboco.models.env_branches import head_branch
 from roboco.services.base import (
     BaseService,
     NotFoundError,
@@ -574,7 +575,7 @@ class GitService(BaseService):
                     project_slug=project_slug,
                     agent_id=agent_id,
                     git_url=project.git_url,
-                    default_branch=project.default_branch or "master",
+                    default_branch=head_branch(project),
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -1121,17 +1122,20 @@ class GitService(BaseService):
             parent = await task_service.get(UUID(str(task.parent_task_id)))
             if parent and parent.branch_name:
                 return str(parent.branch_name)
-        return await self._project_default_branch(project_slug)
+        return await self._project_head_branch(project_slug)
 
-    async def _project_default_branch(self, project_slug: str) -> str:
-        """Return the project's configured default branch, or 'master'."""
+    async def _project_head_branch(self, project_slug: str) -> str:
+        """Return the project's head environment branch (ladder index 0).
+
+        This is where dev/cell/leaf PRs target — the dev trunk. Falls back to
+        default_branch (and then 'master') via the env-ladder shim when the
+        project has no declared environment ladder.
+        """
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
-        return (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "master"
-        )
+        if project is None:
+            return "master"
+        return head_branch(project)
 
     async def _checkout_base_with_fallback(
         self,
@@ -1192,7 +1196,7 @@ class GitService(BaseService):
         base_branch = await self._resolve_base_branch(
             task_id, request.parent_branch, request.project_slug, task_service
         )
-        default_branch = await self._project_default_branch(request.project_slug)
+        default_branch = await self._project_head_branch(request.project_slug)
 
         # Token for any remote-touching git command below (fetch, ls-remote,
         # pull, push). Injected into a single `http.extraheader` config for
@@ -1505,8 +1509,8 @@ class GitService(BaseService):
         task_service = get_task_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         allowed: set[str] = set()
-        if project and project.default_branch:
-            allowed.add(project.default_branch)
+        if project:
+            allowed.add(head_branch(project))
 
         # Include tasks where agent is either assignee OR claimer
         result = await self.session.execute(
@@ -2220,7 +2224,7 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        branch = project.default_branch or "master"
+        branch = head_branch(project)
         query = _CiRunQuery(
             project_slug=project_slug,
             owner_repo=(owner, repo),
@@ -2418,7 +2422,7 @@ class GitService(BaseService):
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
         source_branch = await self._pr_head_branch(workspace, request)
-        default_branch = await self._project_default_branch(request.project_slug)
+        default_branch = await self._project_head_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
         target_branch, pr_title, pr_body = await self._resolve_new_pr_context(
             workspace, request, source_branch, default_branch, git_token
@@ -3510,7 +3514,7 @@ class GitService(BaseService):
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
-        target_branch = await self._project_default_branch(project_slug)
+        target_branch = await self._project_head_branch(project_slug)
         # Default branch always exists on origin, so the plain sync is correct
         # here. The best-effort variant guards the agent-facing pr_merge path,
         # whose target can be an integration branch deleted from origin.
@@ -3926,7 +3930,7 @@ class GitService(BaseService):
         layering is preserved. Fall back to the default branch only if the
         create push itself fails.
         """
-        default_branch = await self._project_default_branch(project_slug)
+        default_branch = await self._project_head_branch(project_slug)
         if base_branch == default_branch:
             return base_branch
         ls = await self._run_git(
@@ -4292,7 +4296,7 @@ class GitService(BaseService):
         # repo's default branch — a root→master PR is merged solely by the CEO
         # via approve-&-merge (merge_pr_for_task, CEO-gated from
         # awaiting_ceo_approval). Agents open the master PR and escalate.
-        default_branch = await self._project_default_branch(project.slug)
+        default_branch = await self._project_head_branch(project.slug)
         if target == default_branch:
             raise UnauthorizedError(
                 action="pr_merge",
@@ -5340,7 +5344,7 @@ class GitService(BaseService):
                 ws = None
         if ws is None or not ws.exists():
             return None
-        base = project.default_branch or "master"
+        base = head_branch(project)
         spec = _ConventionsPr(
             content=content,
             branch=CONVENTIONS_SCAFFOLD_BRANCH,

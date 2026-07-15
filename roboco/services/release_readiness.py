@@ -199,6 +199,13 @@ class ReleaseRepoSnapshot:
     new_migrations: list[str]
     migration_head_count: int
     master_ci_conclusion: str | None
+    # Env-branches diff baseline: the prod rung's tip SHA. When set, ``commits``
+    # and ``new_migrations`` are enumerated as ``prod..head`` (the unreleased
+    # work) instead of ``last_tag..HEAD``. ``last_tag_sha`` is the tag's commit
+    # SHA for the tag_drift cross-check (last tag != prod tip ⇒ a hotfix landed
+    # on prod after the tag). Both None for a degenerate / unsplit project.
+    prod_tip: str | None = None
+    last_tag_sha: str | None = None
     declared_agent_count: int | None = None
     actual_agent_count: int | None = None
     verb_tables_stale: bool = False
@@ -288,6 +295,26 @@ def _docs_drift_gaps(snapshot: ReleaseRepoSnapshot) -> list[Gap]:
     return gaps
 
 
+def _tag_drift_gaps(snapshot: ReleaseRepoSnapshot) -> list[Gap]:
+    # The prod..head baseline and the last tag should agree: if the last tag's
+    # commit != prod tip, a hotfix landed directly on prod after the tag (bypassing
+    # the ladder) — flag it so the CEO knows the tag no longer reflects prod.
+    if (
+        snapshot.prod_tip
+        and snapshot.last_tag_sha
+        and snapshot.prod_tip != snapshot.last_tag_sha
+    ):
+        return [
+            Gap(
+                "tag_drift",
+                f"last tag {snapshot.last_tag!r} points at "
+                f"{snapshot.last_tag_sha[:8]} but prod tip is "
+                f"{snapshot.prod_tip[:8]} — a hotfix landed on prod after the tag",
+            )
+        ]
+    return []
+
+
 def _migration_gaps_and_notes(
     snapshot: ReleaseRepoSnapshot,
 ) -> tuple[list[Gap], list[str]]:
@@ -327,6 +354,7 @@ def assess(snapshot: ReleaseRepoSnapshot, *, today: str) -> ReleaseReadinessRepo
     gaps.extend(_changelog_gaps(changes, snapshot.changelog_text))
     gaps.extend(_version_ref_gaps(snapshot))
     gaps.extend(_docs_drift_gaps(snapshot))
+    gaps.extend(_tag_drift_gaps(snapshot))
     migration_gaps, migration_notes = _migration_gaps_and_notes(snapshot)
     gaps.extend(migration_gaps)
     gaps.extend(
@@ -387,6 +415,12 @@ def _pyproject_version(root: Path) -> str:
 def _last_tag(root: Path) -> str | None:
     tag = _run_git(root, ["describe", "--tags", "--abbrev=0"]).strip()
     return tag or None
+
+
+def _rev_parse(root: Path, ref: str) -> str | None:
+    """Resolve a ref to a SHA (or None if it doesn't resolve). Read-only."""
+    sha = _run_git(root, ["rev-parse", "--verify", ref]).strip()
+    return sha or None
 
 
 def _commits_since(root: Path, tag: str | None) -> list[CommitInfo]:
@@ -520,7 +554,10 @@ def _actual_agent_count() -> int | None:
 
 
 def gather_snapshot(
-    root: Path, *, master_ci_conclusion: str | None
+    root: Path,
+    *,
+    master_ci_conclusion: str | None,
+    prod_branch: str | None = None,
 ) -> ReleaseRepoSnapshot:
     """Build a ReleaseRepoSnapshot from a real checkout (read-only).
 
@@ -529,19 +566,32 @@ def gather_snapshot(
     reliably detecting it requires running the regen script (which writes files),
     and the read-only sweep must not mutate the tree — the fail-closed executor's
     gate catches a stale generated artifact instead.
+
+    ``prod_branch`` is the env-ladder prod rung: when set (and fetched in the
+    read clone by the engine) the diff baseline becomes ``prod..head`` (the
+    unreleased work) instead of ``last_tag..HEAD``. The last tag is kept as a
+    cross-check: a tag SHA != prod tip ⇒ a hotfix landed on prod after the tag
+    (the ``tag_drift`` gap). None ⇒ degenerate/unsplit project, baseline stays
+    ``last_tag`` (unchanged behavior).
     """
     version = _pyproject_version(root)
     tag = _last_tag(root)
+    prod_tip = _rev_parse(root, f"origin/{prod_branch}") if prod_branch else None
+    last_tag_sha = _rev_parse(root, f"{tag}^{{commit}}") if tag else None
+    # prod..head when prod resolves; else last_tag..HEAD (back-compat).
+    baseline = prod_tip or tag
     return ReleaseRepoSnapshot(
         current_version=version,
         last_tag=tag,
-        commits=_commits_since(root, tag),
+        commits=_commits_since(root, baseline),
         tracked_files_with_version=_tracked_files_with_version(root, version),
         canonical_bump_files=_canonical_bump_files(root, version),
         changelog_text=_read_changelog(root),
-        new_migrations=_new_migrations(root, tag),
+        new_migrations=_new_migrations(root, baseline),
         migration_head_count=_migration_head_count(root),
         master_ci_conclusion=master_ci_conclusion,
+        prod_tip=prod_tip,
+        last_tag_sha=last_tag_sha,
         declared_agent_count=_declared_agent_count(root),
         actual_agent_count=_actual_agent_count(),
         verb_tables_stale=False,

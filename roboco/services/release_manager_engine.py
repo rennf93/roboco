@@ -211,6 +211,7 @@ class ReleaseManagerEngine(BaseService):
         returns None (propose nothing) rather than raising. The CI conclusion is
         injected into the snapshot (None → unknown gate → no proposal).
         """
+        from roboco.models.env_branches import head_branch, prod_branch
         from roboco.services.git import get_git_service
         from roboco.services.release_readiness import _run_git
         from roboco.services.workspace import get_workspace_service
@@ -243,12 +244,30 @@ class ReleaseManagerEngine(BaseService):
             head_sha=head_sha,
         )
         conclusion = None if head_sha is None else (ci or {}).get("conclusion")
+        # Env-branches diff baseline: the read clone is pinned to head, so fetch
+        # the prod rung so origin/<prod> resolves for the prod..head diff. Only
+        # the env-split case (prod != head) needs it; degenerate (prod==head) is
+        # already present. Best-effort: a fetch failure degrades to last_tag..HEAD
+        # (gather_snapshot falls back when prod_tip is None) — never aborts.
+        prod_name = prod_branch(project)
+        have_prod = prod_name != head_branch(project)
+        if have_prod:
+            try:
+                await asyncio.to_thread(
+                    _run_git, Path(root), ["fetch", "origin", prod_name]
+                )
+            except Exception as exc:
+                self.log.warning("release-manager: prod fetch failed", error=str(exc))
+                have_prod = False
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         # gather_snapshot runs multiple sync `subprocess.run` git calls + a
         # filesystem walk; offload so the shared API event loop isn't blocked
         # while the release-manager background loop assesses.
         snapshot = await asyncio.to_thread(
-            gather_snapshot, Path(root), master_ci_conclusion=conclusion
+            gather_snapshot,
+            Path(root),
+            master_ci_conclusion=conclusion,
+            prod_branch=prod_name if have_prod else None,
         )
         return assess(snapshot, today=today)
 

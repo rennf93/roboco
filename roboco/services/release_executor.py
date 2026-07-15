@@ -59,6 +59,8 @@ class ReleaseOps(Protocol):
 
     async def write_changelog_entry(self, entry: str) -> None: ...
 
+    async def promote_env_chain(self) -> None: ...
+
     async def run_gate(self) -> bool: ...
 
     async def commit_and_push(self, version: str) -> str: ...
@@ -105,41 +107,10 @@ class ReleaseExecutor:
             commit_sha = existing_sha
             files: list[str] = []
         else:
-            files = await self._ops.apply_version_bumps(
-                report.version_bump_plan, version
-            )
-            await self._ops.write_changelog_entry(report.drafted_changelog)
-
-            if not await self._ops.run_gate():
-                return ReleaseResult(
-                    status="gate_failed",
-                    version=version,
-                    files_changed=files,
-                    commit_sha=None,
-                    release_url=None,
-                    detail="make quality failed — aborted before commit (fail-closed).",
-                )
-
-            try:
-                commit_sha = await self._ops.commit_and_push(version)
-            except RuntimeError as exc:
-                # The ops layer raises RuntimeError on a failed add/commit/push
-                # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push).
-                # That is the correct fail-closed abort at the ops layer; the
-                # EXECUTOR turns it into a structured outcome so the CEO sees
-                # the cause instead of a 500 bubbling out of ``approve``.
-                logger.error("release commit/push failed", error=str(exc)[:300])
-                detail = (
-                    f"release commit/push failed — not published (fail-closed): {exc}"
-                )[:280]
-                return ReleaseResult(
-                    status="commit_failed",
-                    version=version,
-                    files_changed=files,
-                    commit_sha=None,
-                    release_url=None,
-                    detail=detail,
-                )
+            fresh = await self._run_fresh_release(version, report)
+            if isinstance(fresh, ReleaseResult):
+                return fresh  # promotion / gate / commit failed (fail-closed)
+            commit_sha, files = fresh
 
         if not await self._ops.wait_for_ci(commit_sha):
             return ReleaseResult(
@@ -183,6 +154,63 @@ class ReleaseExecutor:
             release_url=release_url,
             detail=f"Published v{version}.",
         )
+
+    async def _run_fresh_release(
+        self, version: str, report: ReleaseReadinessReport
+    ) -> ReleaseResult | tuple[str, list[str]]:
+        """Fresh-release pipeline: promote → bump → changelog → gate → commit.
+
+        Returns ``(commit_sha, files)`` on success, or a ``ReleaseResult`` on a
+        fail-closed abort (promotion conflict / red gate / commit-push failure)
+        so ``execute`` surfaces it to the CEO as a structured outcome, not a 500.
+        """
+        # Full-chain promotion: merge the env ladder head→…→prod into the prod
+        # checkout before bumping, so the release commits the promoted state.
+        try:
+            await self._ops.promote_env_chain()
+        except RuntimeError as exc:
+            logger.error("env-chain promotion failed", error=str(exc)[:300])
+            return ReleaseResult(
+                status="promotion_failed",
+                version=version,
+                files_changed=[],
+                commit_sha=None,
+                release_url=None,
+                detail=(
+                    f"env-chain promotion failed — not published (fail-closed): {exc}"
+                )[:280],
+            )
+        files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
+        await self._ops.write_changelog_entry(report.drafted_changelog)
+
+        if not await self._ops.run_gate():
+            return ReleaseResult(
+                status="gate_failed",
+                version=version,
+                files_changed=files,
+                commit_sha=None,
+                release_url=None,
+                detail="make quality failed — aborted before commit (fail-closed).",
+            )
+
+        try:
+            commit_sha = await self._ops.commit_and_push(version)
+        except RuntimeError as exc:
+            # The ops layer raises RuntimeError on a failed add/commit/push
+            # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push).
+            logger.error("release commit/push failed", error=str(exc)[:300])
+            detail = (
+                f"release commit/push failed — not published (fail-closed): {exc}"
+            )[:280]
+            return ReleaseResult(
+                status="commit_failed",
+                version=version,
+                files_changed=files,
+                commit_sha=None,
+                release_url=None,
+                detail=detail,
+            )
+        return commit_sha, files
 
 
 # --------------------------------------------------------------------------- #
@@ -241,6 +269,10 @@ class _ReleaseContext:
     # a URL-embedded token). Empty for SSH / tokenless repos.
     git_prefix: list[str]
     ci_workflow: str | None
+    # Env-ladder rung branches to merge into the prod checkout head→…→just-
+    # below-prod before the bump (full-chain promotion). Empty for a
+    # degenerate (head==prod) ladder → promote_env_chain is a no-op.
+    env_chain: list[str]
 
 
 class _GitReleaseOps:
@@ -254,6 +286,7 @@ class _GitReleaseOps:
         self._git_url = ctx.git_url
         self._git_prefix = ctx.git_prefix
         self._ci_workflow = ctx.ci_workflow
+        self._env_chain = ctx.env_chain
 
     async def _git(self, *args: str) -> tuple[int, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -327,6 +360,30 @@ class _GitReleaseOps:
         path = self._root / _CHANGELOG_NAME
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         path.write_text(_insert_changelog_entry(existing, entry), encoding="utf-8")
+
+    async def promote_env_chain(self) -> None:
+        """Merge the env ladder head→…→just-below-prod into the prod checkout.
+
+        Brings the dev trunk's unreleased work down to prod before the version
+        bump, so the release commits + tags the promoted state (generalizes the
+        slave→master promotion to the full declared chain). ``--no-edit``,
+        fail-closed on a fetch or merge conflict — a divergent rung aborts the
+        release before any bump rather than landing a half-promoted prod. No-op
+        for a degenerate (head==prod) ladder (empty chain).
+        """
+        if not self._env_chain:
+            return
+        # Fresh ``--branch <prod>`` clone only has prod's history — fetch every
+        # rung branch so ``origin/<branch>`` resolves for the merges.
+        rc, out = await self._git(*self._git_prefix, "fetch", "origin")
+        if rc != 0:
+            raise RuntimeError(f"env-chain fetch failed: {out.strip()[:200]}")
+        for branch in self._env_chain:
+            rc, out = await self._git("merge", "--no-edit", f"origin/{branch}")
+            if rc != 0:
+                raise RuntimeError(
+                    f"env-chain merge {branch}→prod failed: {out.strip()[:200]}"
+                )
 
     async def run_gate(self) -> bool:
         proc = await asyncio.create_subprocess_exec(
@@ -470,6 +527,7 @@ def _resolve_release_ci_workflow() -> str:
 async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     """Build a ReleaseExecutor with a production ops over a fresh writable clone."""
     from roboco.config import settings
+    from roboco.models.env_branches import effective_environments, prod_branch
     from roboco.services.project import get_project_service
 
     slug = (settings.self_heal_project_slug or "roboco-api").strip()
@@ -479,7 +537,14 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
         raise RuntimeError(f"release executor: project {slug!r} not found")
     token = await project_svc.get_decrypted_token_by_slug(slug)
     git_url = str(project.git_url)
-    default_branch = str(project.default_branch or "master")
+    # Release target = prod rung (W-H decouple): releases land on prod regardless
+    # of the dev retarget. default_branch stays as the legacy/shim source.
+    default_branch = prod_branch(project)
+    # Full-chain promotion: rung branches head→…→just-below-prod to merge into
+    # the prod checkout before bumping. Skips the prod rung itself and any rung
+    # sharing the prod branch (degenerate head==prod → empty → no-op).
+    rungs = effective_environments(project)
+    env_chain = [r.branch for r in rungs[:-1] if r.branch != default_branch]
     # PAT rides a per-call ``-c http.extraheader=Authorization: Basic …`` config
     # (mirrors workspace.py :642 / :1285) so it never lands in the clone/push
     # argv — ``/proc/<pid>/cmdline`` would otherwise expose a URL-embedded token.
@@ -498,6 +563,7 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
         git_url=git_url,
         git_prefix=git_prefix,
         ci_workflow=_resolve_release_ci_workflow(),
+        env_chain=env_chain,
     )
     return ReleaseExecutor(_GitReleaseOps(session, ctx))
 
