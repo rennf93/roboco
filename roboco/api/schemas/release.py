@@ -32,6 +32,9 @@ class ReleaseProposalResponse(BaseModel):
     title: str
     status: str
     required_changes: str | None = None
+    execute_status: str | None = None
+    execute_detail: str | None = None
+    execute_in_flight: bool = False
     report: ReleaseReportModel
 
 

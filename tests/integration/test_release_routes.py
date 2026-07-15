@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -9,23 +11,24 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+import roboco.services.release_proposal as rp
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes import release as release_route
 from roboco.api.routes.release import router as release_router
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.foundation.policy.content import markers
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.models.permissions import AgentContext
 from roboco.services.release_executor import ReleaseResult
 from roboco.services.release_proposal import ReleaseProposalService
 from roboco.services.release_readiness import ReleaseReadinessReport, report_to_dict
-from roboco.services.task import RELEASE_MANAGER_SOURCE
+from roboco.services.task import RELEASE_MANAGER_SOURCE, TaskService
 from sqlalchemy import delete
 
 if TYPE_CHECKING:
-    import asyncio
     from collections.abc import AsyncIterator
     from typing import Any
 
@@ -269,12 +272,101 @@ async def test_approve_gate_failure_keeps_proposal_open_async(
         await captured["task"]
     await db_session.refresh(task)
     assert task.status == TaskStatus.PENDING  # still held for retry
+    # The failure reason is persisted as a marker + surfaced via GET /proposal
+    # so a failed ~40min execute isn't a silent PENDING.
+    outcome = markers.get_release_execute_outcome(task)
+    assert outcome is not None
+    assert outcome[0] == "gate_failed"
+    assert "make quality failed" in outcome[1]
+    poll = await ceo_client.get("/api/release/proposal")
+    assert poll.status_code == HTTPStatus.OK
+    body = poll.json()
+    assert body["execute_status"] == "gate_failed"
+    assert "make quality failed" in (body["execute_detail"] or "")
 
 
 @pytest.mark.asyncio
-async def test_reject_records_changes_and_keeps_open(
+async def test_approve_exception_records_error_marker(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
+    """An unexpected crash in the background execute (not a structured
+    ReleaseResult failure) is recorded as an ``error`` marker so the CEO sees a
+    reason instead of a silent PENDING."""
+    task = await _seed_proposal(db_session)
+    fake_executor = AsyncMock()
+    fake_executor.execute = AsyncMock(side_effect=RuntimeError("boom"))
+    captured: dict[str, asyncio.Task[None]] = {}
+    real_dispatch = release_route.dispatch_approve
+
+    def _capturing_dispatch(task_id: UUID, factory: Any) -> asyncio.Task[None]:
+        bg = real_dispatch(task_id, factory)
+        captured["task"] = bg
+        return bg
+
+    with (
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=fake_executor),
+        ),
+        patch(
+            "roboco.api.routes.release.dispatch_approve",
+            side_effect=_capturing_dispatch,
+        ),
+        patch.object(
+            ReleaseProposalService, "_acquire_release_lock", AsyncMock(return_value="t")
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_release_release_lock",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_heartbeat_release_lock",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        await ceo_client.post("/api/release/proposal/approve")
+        await captured["task"]
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.PENDING  # still held for retry
+    outcome = markers.get_release_execute_outcome(task)
+    assert outcome is not None
+    assert outcome[0] == "error"
+    assert "boom" in outcome[1]
+
+
+@pytest.mark.asyncio
+async def test_get_proposal_surfaces_in_flight(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """execute_in_flight is derived from the in-memory _INFLIGHT_APPROVES
+    registry — True while a background execute is registered."""
+    await _seed_proposal(db_session)
+    resp = await ceo_client.get("/api/release/proposal")
+    tid = UUID(resp.json()["task_id"])
+    # Register a real pending task under the proposal id, as dispatch_approve does.
+    sentinel = asyncio.create_task(asyncio.sleep(3600))
+    rp._INFLIGHT_APPROVES[tid] = sentinel
+    try:
+        in_flight_resp = await ceo_client.get("/api/release/proposal")
+        assert in_flight_resp.json()["execute_in_flight"] is True
+    finally:
+        rp._INFLIGHT_APPROVES.pop(tid, None)
+        sentinel.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sentinel
+    idle_resp = await ceo_client.get("/api/release/proposal")
+    assert idle_resp.json()["execute_in_flight"] is False
+
+
+@pytest.mark.asyncio
+async def test_reject_records_changes_and_cancels_frees_dedup(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """Reject cancels the proposal (not holds it) so the one-open-proposal dedup
+    frees and the release manager can re-assess next cycle. The required-changes
+    marker stays on the cancelled row for history."""
     task = await _seed_proposal(db_session)
     resp = await ceo_client.post(
         "/api/release/proposal/reject",
@@ -284,7 +376,10 @@ async def test_reject_records_changes_and_keeps_open(
     assert "Tighten the CHANGELOG" in (resp.json()["required_changes"] or "")
     refreshed = await db_session.get(TaskTable, task.id)
     assert refreshed is not None
-    assert refreshed.status == TaskStatus.PENDING  # stays held for revision
+    assert refreshed.status == TaskStatus.CANCELLED  # cancelled, not held
+    # The dedup no longer counts it as open — a fresh proposal can originate.
+    open_proposals = await TaskService(db_session).list_open_release_proposals()
+    assert task.id not in {t.id for t in open_proposals}
 
 
 @pytest.mark.asyncio
