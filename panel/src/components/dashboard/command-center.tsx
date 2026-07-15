@@ -95,13 +95,9 @@ export function CommandCenter() {
   const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
 
   return (
-    // flex-col + explicit `order` (reset via md:order-none): below md the CEO
-    // decision queues and activity move above the fold; at md+ every item
-    // shares order:0 and falls back to plain source order (unchanged desktop
-    // layout).
     <div className="flex flex-col gap-6">
       {/* Header */}
-      <div className="order-1 flex items-center justify-between md:order-none">
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
             RoboCo Command Center
@@ -133,72 +129,19 @@ export function CommandCenter() {
 
       {/* Error indicator */}
       {hasError && (
-        <div className="order-2 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive md:order-none">
+        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           <AlertCircle className="h-4 w-4 shrink-0" />
           Some data failed to load. Use the header refresh button to try again.
         </div>
       )}
 
-      {/* CEO Approval Queue + Strategy Signals - side-by-side on lg+. Ordered
-          first on mobile — the CEO's decisions shouldn't be below the fold. */}
-      <div className="order-3 grid grid-cols-1 gap-6 md:order-none lg:grid-cols-2">
-        <CeoApprovalQueue />
-        <StrategySignalsPanel />
-      </div>
-
-      {/* External-PR review decision queue (hidden when empty) */}
-      <div className="order-4 md:order-none">
-        <PrReviewQueue />
-      </div>
-
-      {/* Gated release proposal (hidden when none open) */}
-      <div className="order-4 md:order-none">
-        <ReleaseProposalCard />
-      </div>
-
-      {/* Playbook review queue (hidden when no drafts) */}
-      <div className="order-4 md:order-none">
-        <PlaybookReviewQueue />
-      </div>
-
-      {/* Social (X + video) summary — the full queues + unified history live
-          on /social, avoiding a duplicated surface here. */}
-      <div className="order-4 md:order-none">
-        <SocialSummaryCard />
-      </div>
-
-      {/* Board roadmap queue (hidden when no cycle authored) */}
-      <div className="order-4 md:order-none">
-        <RoadmapReviewQueue />
-      </div>
-
-      {/* Blockers and Activity Row — activity brought up near the top on
-          mobile too, ahead of the Team Health / Quick Actions filler. */}
-      <div className="order-5 grid grid-cols-1 gap-6 md:order-none lg:grid-cols-2">
-        <ActiveBlockersPanel tasks={tasks} isLoading={loadingTasks} />
-        <RecentActivityFeed
-          activities={activity as Activity[] | undefined}
-          isLoading={loadingActivity}
-        />
-      </div>
-
-      {/* Team Health */}
-      <section className="order-6 md:order-none">
-        <h2 className="text-lg font-semibold mb-4">Team Health</h2>
-        <TeamHealthCards
-          teams={overview?.health_status}
-          isLoading={loadingOverview}
-        />
-      </section>
-
-      {/* Quick Actions */}
-      <section className="order-7 md:order-none">
+      {/* Section 1: Quick Actions + the four key cards */}
+      <section>
         <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
         <QuickActionsBar />
       </section>
 
-      {/* Metrics, Alerts, Usage, and Performance Row */}
-      <div className="order-8 grid grid-cols-1 gap-6 md:order-none lg:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-4">
         <KeyMetricsPanel
           metrics={overview?.key_metrics}
           isLoading={loadingOverview}
@@ -206,6 +149,49 @@ export function CommandCenter() {
         <AuditorAlertsPanel alerts={flags} isLoading={loadingFlags} />
         <UsageOverviewPanel />
         <ScorecardOverviewPanel />
+      </div>
+
+      {/* Section 2: Team Health (team cards + Task Intake + Secretary) */}
+      <section>
+        <h2 className="text-lg font-semibold mb-4">Team Health</h2>
+        <TeamHealthCards
+          teams={overview?.health_status}
+          isLoading={loadingOverview}
+        />
+      </section>
+
+      {/* Section 3: everything else */}
+
+      {/* CEO Approval Queue + Strategy Signals - side-by-side on lg+ */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <CeoApprovalQueue />
+        <StrategySignalsPanel />
+      </div>
+
+      {/* External-PR review decision queue + Social summary - side-by-side
+          on lg+ (both hidden-when-empty / compact, so pairing them avoids
+          two near-empty full-width rows) */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <PrReviewQueue />
+        <SocialSummaryCard />
+      </div>
+
+      {/* Gated release proposal (hidden when none open) */}
+      <ReleaseProposalCard />
+
+      {/* Playbook review queue (hidden when no drafts) */}
+      <PlaybookReviewQueue />
+
+      {/* Board roadmap queue (hidden when no cycle authored) */}
+      <RoadmapReviewQueue />
+
+      {/* Blockers and Activity Row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ActiveBlockersPanel tasks={tasks} isLoading={loadingTasks} />
+        <RecentActivityFeed
+          activities={activity as Activity[] | undefined}
+          isLoading={loadingActivity}
+        />
       </div>
     </div>
   );

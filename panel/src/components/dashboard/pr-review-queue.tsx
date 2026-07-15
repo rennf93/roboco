@@ -151,13 +151,9 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
         </CardHeader>
         <CardContent>
           {items.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
-              <GitPullRequest className="mb-3 h-8 w-8 opacity-50" />
+            <div className="text-center py-8 text-muted-foreground">
+              <GitPullRequest className="h-8 w-8 mx-auto mb-2 opacity-50" />
               <p className="text-sm">No external PRs under review right now.</p>
-              <p className="mt-1 text-xs">
-                Inbound external/fork PRs the reviewer has looked at show up
-                here for your supersede / dismiss call.
-              </p>
             </div>
           )}
           <div className="space-y-3">

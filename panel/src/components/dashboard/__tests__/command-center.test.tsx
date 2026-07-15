@@ -97,4 +97,64 @@ describe("CommandCenter", () => {
     expect(screen.queryByText("XPostQueueStub")).not.toBeInTheDocument();
     expect(screen.queryByText("VideoPostQueueStub")).not.toBeInTheDocument();
   });
+
+  it("renders every section", () => {
+    render(<CommandCenter />);
+    for (const stub of [
+      "QuickActionsBarStub",
+      "KeyMetricsPanelStub",
+      "AuditorAlertsPanelStub",
+      "UsageOverviewPanelStub",
+      "ScorecardOverviewPanelStub",
+      "TeamHealthCardsStub",
+      "CeoApprovalQueueStub",
+      "StrategySignalsPanelStub",
+      "PrReviewQueueStub",
+      "SocialSummaryCardStub",
+      "ReleaseProposalCardStub",
+      "PlaybookReviewQueueStub",
+      "RoadmapReviewQueueStub",
+      "ActiveBlockersPanelStub",
+      "RecentActivityFeedStub",
+    ]) {
+      expect(screen.getByText(stub)).toBeInTheDocument();
+    }
+  });
+
+  it("orders sections top to bottom: quick actions/key cards, team health, then the rest", () => {
+    render(<CommandCenter />);
+    const order = [
+      "QuickActionsBarStub",
+      "KeyMetricsPanelStub",
+      "TeamHealthCardsStub",
+      "CeoApprovalQueueStub",
+      "PrReviewQueueStub",
+      "ReleaseProposalCardStub",
+      "PlaybookReviewQueueStub",
+      "RoadmapReviewQueueStub",
+      "ActiveBlockersPanelStub",
+    ];
+    for (let i = 1; i < order.length; i++) {
+      const earlier = screen.getByText(order[i - 1]);
+      const later = screen.getByText(order[i]);
+      // earlier precedes later in the DOM.
+      expect(
+        earlier.compareDocumentPosition(later) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+  });
+
+  it("pairs PR Reviews and Social side by side ahead of the release/playbook/roadmap cards", () => {
+    render(<CommandCenter />);
+    const prReview = screen.getByText("PrReviewQueueStub");
+    const social = screen.getByText("SocialSummaryCardStub");
+    const release = screen.getByText("ReleaseProposalCardStub");
+    // Same grid row: shared immediate parent.
+    expect(prReview.parentElement).toBe(social.parentElement);
+    expect(
+      prReview.compareDocumentPosition(release) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
 });
