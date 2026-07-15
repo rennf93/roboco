@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TabDependenciesProps {
   task: Task;
@@ -155,27 +156,31 @@ function DependencyList({
                   className={`flex items-center gap-2 p-3 rounded-lg ${itemBorderClass} ${itemBgClass} transition-colors`}
                 >
                   <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <Link
-                    href={`/tasks/${depId}`}
-                    className="flex-1"
-                    prefetch={false}
-                  >
-                    <span className="font-mono text-sm hover:underline">
-                      {depId.slice(0, 8)}...
-                    </span>
-                  </Link>
+                  <HelpTip label="Task ID (first 8 characters) — click to open">
+                    <Link
+                      href={`/tasks/${depId}`}
+                      className="flex-1"
+                      prefetch={false}
+                    >
+                      <span className="font-mono text-sm hover:underline">
+                        {depId.slice(0, 8)}...
+                      </span>
+                    </Link>
+                  </HelpTip>
                   <Badge variant="outline" className={badgeClass}>
                     {badgeLabel}
                   </Badge>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleRemove(depId)}
-                    className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
-                    disabled={updateTask.isPending}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  <HelpTip label="Remove this dependency">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleRemove(depId)}
+                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
+                      disabled={updateTask.isPending}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </HelpTip>
                 </div>
               </li>
             ))}

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TabCommitsProps {
   task: Task;
@@ -122,24 +123,28 @@ export function TabCommits({ task }: TabCommitsProps) {
           </CardTitle>
           <div className="flex items-center justify-center gap-2">
             {task.branch_name && (
-              <Badge
-                variant="outline"
-                className="gap-1.5 py-1 px-2.5 font-mono text-sm"
-              >
-                <GitBranch className="h-4 w-4" />
-                {task.branch_name}
-              </Badge>
+              <HelpTip label="Git branch this task is being worked on">
+                <Badge
+                  variant="outline"
+                  className="gap-1.5 py-1 px-2.5 font-mono text-sm"
+                >
+                  <GitBranch className="h-4 w-4" />
+                  {task.branch_name}
+                </Badge>
+              </HelpTip>
             )}
             {task.pr_url && (
-              <a href={task.pr_url} target="_blank" rel="noopener noreferrer">
-                <Badge
-                  variant="secondary"
-                  className="gap-1.5 py-1 px-2.5 hover:bg-secondary/80"
-                >
-                  PR #{task.pr_number}
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Badge>
-              </a>
+              <HelpTip label="Pull Request — click to open on GitHub">
+                <a href={task.pr_url} target="_blank" rel="noopener noreferrer">
+                  <Badge
+                    variant="secondary"
+                    className="gap-1.5 py-1 px-2.5 hover:bg-secondary/80"
+                  >
+                    PR #{task.pr_number}
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Badge>
+                </a>
+              </HelpTip>
             )}
           </div>
           <div className="flex justify-end">
@@ -243,12 +248,14 @@ export function TabCommits({ task }: TabCommitsProps) {
                         {/* Meta info */}
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
                           {/* Hash */}
-                          <Badge
-                            variant="outline"
-                            className="font-mono text-xs"
-                          >
-                            {commit.hash.slice(0, 7)}
-                          </Badge>
+                          <HelpTip label="Short git commit hash (first 7 characters)">
+                            <Badge
+                              variant="outline"
+                              className="font-mono text-xs"
+                            >
+                              {commit.hash.slice(0, 7)}
+                            </Badge>
+                          </HelpTip>
 
                           {/* Author */}
                           {commit.author_agent_id && (
@@ -266,14 +273,16 @@ export function TabCommits({ task }: TabCommitsProps) {
                         </div>
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleDelete(commit.hash)}
-                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    <HelpTip label="Unlink this commit from the task">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDelete(commit.hash)}
+                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </HelpTip>
                   </div>
                 </CardContent>
               </Card>

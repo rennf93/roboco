@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, Clock, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ActiveBlockersPanelProps {
   tasks: Task[] | undefined;
@@ -71,9 +72,11 @@ export function ActiveBlockersPanel({
                   <span className="text-lg">\uD83D\uDD34</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-sm truncate">
-                        Task #{task.id.slice(0, 8)}
-                      </span>
+                      <HelpTip label="Short task ID — first 8 characters of the full task identifier">
+                        <span className="font-medium text-sm truncate">
+                          Task #{task.id.slice(0, 8)}
+                        </span>
+                      </HelpTip>
                       <Badge variant="outline" className="text-xs capitalize">
                         {task.team.replace(/_/g, " ")}
                       </Badge>

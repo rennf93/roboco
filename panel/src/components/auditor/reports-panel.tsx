@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { FileText, Send, Eye, Clock, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -122,9 +123,11 @@ export function ReportsPanel({
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <Button variant="ghost" size="sm">
-                        <Eye className="h-4 w-4" />
-                      </Button>
+                      <HelpTip label="View report">
+                        <Button variant="ghost" size="sm">
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </HelpTip>
                       {isDraft && (
                         <Button
                           variant="outline"

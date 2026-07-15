@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Check, Loader2, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
@@ -271,15 +272,17 @@ export function SecretaryTab() {
               }}
             />
             {sessionId ? (
-              <Button
-                onClick={() => void handleSend()}
-                disabled={!input.trim() || streaming}
-                size="icon"
-                className="h-11 w-11 shrink-0"
-                aria-label="Send message"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
+              <HelpTip label="Send message">
+                <Button
+                  onClick={() => void handleSend()}
+                  disabled={!input.trim() || streaming}
+                  size="icon"
+                  className="h-11 w-11 shrink-0"
+                  aria-label="Send message"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </HelpTip>
             ) : (
               <Button
                 onClick={() => void handleStart()}

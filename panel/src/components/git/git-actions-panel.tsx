@@ -37,6 +37,7 @@ import {
   RefreshCcw,
   GitGraph,
 } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitActionsPanelProps {
   status: GitStatusResponse | undefined;
@@ -228,10 +229,12 @@ export function GitActionsPanel({
           )}
           Push to Remote
           {status?.ahead !== undefined && status.ahead > 0 && (
-            <Badge variant="secondary" className="ml-auto">
-              <ArrowUp className="h-3 w-3 mr-1" />
-              {status.ahead}
-            </Badge>
+            <HelpTip label="Commits not yet pushed to the remote repository">
+              <Badge variant="secondary" className="ml-auto">
+                <ArrowUp className="h-3 w-3 mr-1" />
+                {status.ahead}
+              </Badge>
+            </HelpTip>
           )}
         </Button>
 

@@ -3,6 +3,7 @@
 import { AuditorFlag, FlagSeverity } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Eye, CheckCircle, Send, Clock } from "lucide-react";
 import Link from "next/link";
 
@@ -89,9 +90,11 @@ export function FlaggedItem({
           <div className="flex items-center gap-2 shrink-0">
             {flag.related_task_id && (
               <Link href={"/tasks/" + flag.related_task_id} prefetch={false}>
-                <Button variant="ghost" size="sm">
-                  <Eye className="h-4 w-4" />
-                </Button>
+                <HelpTip label="View related task">
+                  <Button variant="ghost" size="sm">
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                </HelpTip>
               </Link>
             )}
             <Button
