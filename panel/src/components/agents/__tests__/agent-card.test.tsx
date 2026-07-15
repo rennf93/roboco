@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { AgentDefinition } from "@/lib/agent-definitions";
 import type { AgentStatusResponse } from "@/types";
 
@@ -128,6 +129,28 @@ describe("AgentCard", () => {
     expect(
       screen.getByRole("button", { name: "Agent actions" }),
     ).toBeInTheDocument();
+  });
+
+  it("sets a matching title on the actions menu trigger for the tooltip text", () => {
+    // The DropdownMenu mock above (an inline div, not real Radix) swallows the
+    // Tooltip's injected pointer handlers, so a hover-driven assertion isn't
+    // reachable here — the real Radix composition mirrors task-actions.tsx's
+    // proven working Tooltip-around-DropdownMenuTrigger pattern.
+    render(<AgentCard agent={AGENT} agentStatus={statusOf()} />);
+    expect(
+      screen.getByRole("button", { name: "Agent actions" }),
+    ).toHaveAttribute("title", "Agent actions");
+  });
+
+  it("explains the status dot/label via a hover tooltip reusing the state description map", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentCard agent={AGENT} agentStatus={statusOf({ state: "active" })} />,
+    );
+    await user.hover(screen.getByText("active"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /actively working/i,
+    );
   });
 
   it("shows a compact one-line token/cost readout when usage data is present", () => {

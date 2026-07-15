@@ -78,9 +78,11 @@ export function FlaggedItem({
               </span>
               {flag.related_task_id && (
                 <Link href={"/tasks/" + flag.related_task_id} prefetch={false}>
-                  <span className="text-primary hover:underline">
-                    Task #{flag.related_task_id.slice(0, 8)}
-                  </span>
+                  <HelpTip label="Short task ID — first 8 characters of the full task identifier">
+                    <span className="text-primary hover:underline">
+                      Task #{flag.related_task_id.slice(0, 8)}
+                    </span>
+                  </HelpTip>
                 </Link>
               )}
             </div>

@@ -2,6 +2,7 @@
 
 import { Agent } from "@/types";
 import { cn } from "@/lib/utils";
+import { HelpTip } from "@/components/ui/help-tip";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 
 interface AgentItemProps {
@@ -52,16 +53,20 @@ export function AgentItem({
       )}
     >
       <div className="relative shrink-0">
-        <div
-          className={cn(
-            "flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold transition-colors",
-            isSelected ? "bg-primary/15 text-primary" : avatarTint,
-          )}
-        >
-          {initialsFor(name)}
-        </div>
+        <HelpTip label={name}>
+          <div
+            className={cn(
+              "flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold transition-colors",
+              isSelected ? "bg-primary/15 text-primary" : avatarTint,
+            )}
+          >
+            {initialsFor(name)}
+          </div>
+        </HelpTip>
         {hasEntries && (
-          <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+          <HelpTip label="Has journal entries">
+            <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+          </HelpTip>
         )}
       </div>
       <div className="min-w-0 flex-1">

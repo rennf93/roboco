@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const { mockOrg } = vi.hoisted(() => ({ mockOrg: vi.fn() }));
 
@@ -42,6 +43,13 @@ describe("ScorecardOverviewPanel", () => {
     render(<ScorecardOverviewPanel />);
     const link = screen.getByRole("link", { name: /scorecards/i });
     expect(link).toHaveAttribute("href", "/metrics?tab=scorecards");
+  });
+
+  it("explains a metric row's derivation via a hover tooltip", async () => {
+    const user = userEvent.setup();
+    render(<ScorecardOverviewPanel />);
+    await user.hover(screen.getByText("First-pass yield"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/bounce/i);
   });
 
   it("shows a skeleton while loading", () => {

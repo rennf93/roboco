@@ -85,7 +85,13 @@ export function AgentStreamViewer({
             {streamChunks.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" onClick={clearMessages}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={clearMessages}
+                    aria-label="Clear stream output"
+                    title="Clear stream output"
+                  >
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>

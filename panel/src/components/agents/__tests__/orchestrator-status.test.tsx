@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { OrchestratorStatusCards } from "../orchestrator-status";
 
 // CEO feedback: "Total Agents shows 0 even though the full 25-agent roster
@@ -89,5 +90,23 @@ describe("OrchestratorStatusCards", () => {
     expect(screen.queryByTestId("stat-total-agents")).not.toBeInTheDocument();
     // Active isn't gated by rosterLoading — it already resolved.
     expect(screen.getByTestId("stat-active")).toHaveTextContent("1");
+  });
+
+  it("explains what each stat cell counts via a hover tooltip", async () => {
+    const user = userEvent.setup();
+    render(
+      <OrchestratorStatusCards
+        status={{
+          total_agents: 5,
+          by_state: { active: 3 },
+          waiting_count: 1,
+          agents: [],
+        }}
+        isLoading={false}
+        rosterCount={25}
+      />,
+    );
+    await user.hover(screen.getByTestId("stat-total-agents"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/roster/i);
   });
 });

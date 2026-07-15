@@ -79,16 +79,19 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
             {agent.name || "Unknown Agent"}
           </CardTitle>
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0"
-                aria-label="Agent actions"
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
+            <HelpTip label="Agent actions">
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0"
+                  aria-label="Agent actions"
+                  title="Agent actions"
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+            </HelpTip>
             <DropdownMenuContent align="end">
               {!isActive && (
                 <SpawnAgentDialog agentId={agent.id} agentName={agent.name} />

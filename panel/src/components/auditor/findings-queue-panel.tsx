@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ListChecks } from "lucide-react";
 import Link from "next/link";
 
@@ -83,12 +84,16 @@ export function FindingsQueuePanel({
                     >
                       {finding.severity}
                     </Badge>
-                    <Badge variant="outline" className="text-xs">
-                      {finding.origin}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      round {finding.round}
-                    </span>
+                    <HelpTip label="Where this finding was raised — QA review, PR gate, PM review, or CEO approval">
+                      <Badge variant="outline" className="text-xs">
+                        {finding.origin}
+                      </Badge>
+                    </HelpTip>
+                    <HelpTip label="Revision round this finding was raised in — round 1 is the first pass">
+                      <span className="text-xs text-muted-foreground">
+                        round {finding.round}
+                      </span>
+                    </HelpTip>
                   </div>
                   <p className="text-sm text-muted-foreground mb-2">
                     {finding.actual ?? finding.expected ?? finding.criterion ?? "—"}
@@ -104,9 +109,11 @@ export function FindingsQueuePanel({
                       href={"/tasks/" + finding.task_id}
                       prefetch={false}
                     >
-                      <span className="text-primary hover:underline">
-                        Task #{finding.task_id.slice(0, 8)}
-                      </span>
+                      <HelpTip label="Short task ID — first 8 characters of the full task identifier">
+                        <span className="text-primary hover:underline">
+                          Task #{finding.task_id.slice(0, 8)}
+                        </span>
+                      </HelpTip>
                     </Link>
                   </div>
                 </div>

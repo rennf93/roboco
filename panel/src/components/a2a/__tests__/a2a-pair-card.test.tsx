@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { AdminPairSummary } from "@/lib/api/a2a";
 import { A2APairCard, PairAvatar } from "../a2a-pair-card";
 
@@ -53,8 +54,17 @@ describe("A2APairCard", () => {
 
   it("colors each avatar by team, not a per-agent hue", () => {
     render(<PairAvatar slug="fe-dev-1" />);
-    expect(screen.getByTitle("Frontend Dev 1")).toHaveClass(
+    expect(screen.getByText("FD1").parentElement).toHaveClass(
       "border-violet-500/40",
+    );
+  });
+
+  it("shows the full agent display name in a hover tooltip (tooltip-aria-label-spec §1b)", async () => {
+    const user = userEvent.setup();
+    render(<PairAvatar slug="fe-dev-1" />);
+    await user.hover(screen.getByText("FD1"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Frontend Dev 1",
     );
   });
 

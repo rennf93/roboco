@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { EntryCard } from "../entry-card";
 import { JournalEntryType, type JournalEntry } from "@/types";
 
@@ -52,6 +53,15 @@ describe("EntryCard — task id display", () => {
     expect(entryLink).toHaveAttribute(
       "href",
       "/journals/entry-11112222-3333-4444-5555-666677778888",
+    );
+  });
+
+  it("shows the full task id in a hover tooltip on the truncated badge", async () => {
+    const user = userEvent.setup();
+    render(<EntryCard entry={baseEntry} />);
+    await user.hover(screen.getByText("Task #e27ef84d"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "e27ef84d-1111-2222-3333-444455556666",
     );
   });
 

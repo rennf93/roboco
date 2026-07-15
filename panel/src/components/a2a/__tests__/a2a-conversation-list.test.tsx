@@ -1,7 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { AdminConversationSummary } from "@/lib/api/a2a";
 import { A2AConversationList } from "../a2a-conversation-list";
+
+// jsdom has no ResizeObserver; Radix ScrollArea only reaches for one once a
+// Tooltip portal mounts inside it and triggers a size recalculation — the
+// other renders below never hit that path. Stub it for the hover test.
+if (typeof window !== "undefined" && !window.ResizeObserver) {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
 
 function buildConversation(
   overrides: Partial<AdminConversationSummary> = {},
@@ -37,9 +49,10 @@ describe("A2AConversationList", () => {
     // Participants via getAgentDisplayName ("{a} <-> {b}").
     expect(screen.getByText(/Backend Dev 1/)).toBeInTheDocument();
     expect(screen.getByText(/Backend QA/)).toBeInTheDocument();
-    // Both participants get an avatar, matching A2APairCard's PairAvatar.
-    expect(screen.getByTitle("Backend Dev 1")).toBeInTheDocument();
-    expect(screen.getByTitle("Backend QA")).toBeInTheDocument();
+    // Both participants get an avatar, matching A2APairCard's PairAvatar
+    // (initials + a hover tooltip with the full name — see next test).
+    expect(screen.getByText("BD1")).toBeInTheDocument();
+    expect(screen.getByText("BQA")).toBeInTheDocument();
     // Topic, preview, message count, relative timestamp.
     expect(screen.getByText("QA handoff")).toBeInTheDocument();
     expect(
@@ -54,6 +67,23 @@ describe("A2AConversationList", () => {
     expect(chip).toHaveAttribute(
       "href",
       "/tasks/11111111-2222-3333-4444-555555555555",
+    );
+  });
+
+  it("shows the full name in a hover tooltip on the abbreviated avatar", async () => {
+    const user = userEvent.setup();
+    render(
+      <A2AConversationList
+        conversations={[buildConversation()]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        pulses={{}}
+      />,
+    );
+    await user.hover(screen.getByText("BD1"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Backend Dev 1",
     );
   });
 

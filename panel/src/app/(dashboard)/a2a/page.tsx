@@ -42,6 +42,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useUIStore } from "@/store";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { lastSenderOf } from "@/components/a2a/a2a-utils";
@@ -275,20 +276,27 @@ function A2APageContent() {
           {/* Context pane never appears below xl — its toggle is hidden
               there too, matching the switchboard/list toggle's placement
               idiom (design doc §1). */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="hidden h-7 px-2 xl:inline-flex"
-            onClick={toggleContext}
-            title={contextOpen ? "Hide context panel" : "Show context panel"}
+          <HelpTip
+            label={contextOpen ? "Hide context panel" : "Show context panel"}
           >
-            {contextOpen ? (
-              <PanelRightClose className="h-3.5 w-3.5" />
-            ) : (
-              <PanelRightOpen className="h-3.5 w-3.5" />
-            )}
-          </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="hidden h-7 px-2 xl:inline-flex"
+              onClick={toggleContext}
+              aria-label={
+                contextOpen ? "Hide context panel" : "Show context panel"
+              }
+              title={contextOpen ? "Hide context panel" : "Show context panel"}
+            >
+              {contextOpen ? (
+                <PanelRightClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelRightOpen className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          </HelpTip>
         </div>
       </div>
 
@@ -328,30 +336,34 @@ function A2APageContent() {
                   <span className="text-sm font-medium">
                     {view === "switchboard" ? "Switchboard" : "Conversations"}
                   </span>
-                  <div className="ml-auto flex items-center gap-1">
-                    <Button
-                      type="button"
-                      variant={view === "switchboard" ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-7 px-2"
-                      aria-pressed={view === "switchboard"}
-                      onClick={() => setView("switchboard")}
-                      title="Switchboard: org-chart pair cards"
-                    >
-                      <LayoutGrid className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={view === "list" ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-7 px-2"
-                      aria-pressed={view === "list"}
-                      onClick={() => setView("list")}
-                      title="Classic conversation list"
-                    >
-                      <ListIcon className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                  <HelpTip label="Switch between the org-chart switchboard and the classic conversation list">
+                    <div className="ml-auto flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant={view === "switchboard" ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 px-2"
+                        aria-pressed={view === "switchboard"}
+                        aria-label="Switchboard: org-chart pair cards"
+                        onClick={() => setView("switchboard")}
+                        title="Switchboard: org-chart pair cards"
+                      >
+                        <LayoutGrid className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={view === "list" ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 px-2"
+                        aria-pressed={view === "list"}
+                        aria-label="Classic conversation list"
+                        onClick={() => setView("list")}
+                        title="Classic conversation list"
+                      >
+                        <ListIcon className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </HelpTip>
                 </div>
                 <A2AFilterBar
                   filters={filters}

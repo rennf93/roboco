@@ -3,6 +3,7 @@
 import { Loader2, WifiOff, X } from "lucide-react";
 import type { ConnectionState } from "@/lib/websocket/connection";
 import { cn } from "@/lib/utils";
+import { HelpTip } from "@/components/ui/help-tip";
 import { connectionDotClasses, connectionStateLabel } from "./a2a-utils";
 
 /** Pane-header connection indicator: dot + label, plus a spinner/offline icon
@@ -54,14 +55,17 @@ export function A2AConnectionBanner({
           ? "Disconnected — reconnecting automatically"
           : "Reconnecting — messages may be out of date"}
       </span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label="Dismiss"
-        className="shrink-0 opacity-70 hover:opacity-100"
-      >
-        <X className="h-3 w-3" />
-      </button>
+      <HelpTip label="Dismiss">
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          title="Dismiss"
+          className="shrink-0 opacity-70 hover:opacity-100"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </HelpTip>
     </div>
   );
 }

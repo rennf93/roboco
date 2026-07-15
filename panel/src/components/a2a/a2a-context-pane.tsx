@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   getAgentDisplayName,
   getAgentInitials,
@@ -23,17 +24,18 @@ function IdentityCard({ slug }: { slug: string }) {
       href={`/agents/${slug}`}
       className="flex items-center gap-2 rounded-lg border p-2 hover:bg-muted/50 transition-colors"
     >
-      <div
-        className={cn(
-          "h-9 w-9 rounded-full border flex items-center justify-center shrink-0",
-          TEAM_COLOR_CLASSES[teamColor],
-        )}
-        title={getAgentDisplayName(slug)}
-      >
-        <span className="text-[10px] font-bold tracking-tight">
-          {getAgentInitials(slug)}
-        </span>
-      </div>
+      <HelpTip label={getAgentDisplayName(slug)}>
+        <div
+          className={cn(
+            "h-9 w-9 rounded-full border flex items-center justify-center shrink-0",
+            TEAM_COLOR_CLASSES[teamColor],
+          )}
+        >
+          <span className="text-[10px] font-bold tracking-tight">
+            {getAgentInitials(slug)}
+          </span>
+        </div>
+      </HelpTip>
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium truncate">
           {getAgentDisplayName(slug)}

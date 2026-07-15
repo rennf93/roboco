@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/ui/markdown";
 import { CopyButton } from "@/components/ui/copy-button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { EntryTypeBadge } from "./entry-type-badge";
 import { Clock, Tag, Link2, ChevronRight } from "lucide-react";
 import Link from "next/link";
@@ -86,14 +87,15 @@ export function EntryCard({ entry }: EntryCardProps) {
           {entry.task_id && (
             <div className="flex items-center gap-1">
               <Link href={`/tasks/${entry.task_id}`} prefetch={false}>
-                <Badge
-                  variant="outline"
-                  className="text-xs cursor-pointer hover:bg-muted"
-                  title={entry.task_id}
-                >
-                  <Link2 className="h-3 w-3 mr-1" />
-                  Task #{entry.task_id.slice(0, 8)}
-                </Badge>
+                <HelpTip label={entry.task_id}>
+                  <Badge
+                    variant="outline"
+                    className="text-xs cursor-pointer hover:bg-muted"
+                  >
+                    <Link2 className="h-3 w-3 mr-1" />
+                    Task #{entry.task_id.slice(0, 8)}
+                  </Badge>
+                </HelpTip>
               </Link>
               <CopyButton value={entry.task_id} className="px-1 py-0.5" />
             </div>

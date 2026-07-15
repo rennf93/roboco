@@ -12,6 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   ResponsiveTable,
   ResponsiveTableCardList,
@@ -121,25 +122,31 @@ function BottlenecksCard() {
         ) : (
           <>
             <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Worst stage:</span>
+              <HelpTip label="The status stage that has accumulated the most total time across all tasks in the window">
+                <span className="text-muted-foreground">Worst stage:</span>
+              </HelpTip>
               {data?.worst_stage ? (
                 <Badge variant="destructive">{label(data.worst_stage)}</Badge>
               ) : (
                 <span className="text-muted-foreground">—</span>
               )}
-              <span className="ml-auto text-muted-foreground">
-                {data?.active_blockers ?? 0} active blockers
-              </span>
+              <HelpTip label="Tasks currently in the blocked status right now, across all teams">
+                <span className="ml-auto text-muted-foreground">
+                  {data?.active_blockers ?? 0} active blockers
+                </span>
+              </HelpTip>
             </div>
             <div className="space-y-2">
               {(data?.by_stage ?? []).slice(0, 6).map((s) => (
                 <div key={s.status} className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span>{label(s.status)}</span>
-                    <span className="text-muted-foreground">
-                      {fmtDuration(s.cumulative_seconds)} · {s.parked_now}{" "}
-                      parked
-                    </span>
+                    <HelpTip label="Cumulative time spent in this stage across all tasks · how many tasks are sitting in it right now">
+                      <span className="text-muted-foreground">
+                        {fmtDuration(s.cumulative_seconds)} · {s.parked_now}{" "}
+                        parked
+                      </span>
+                    </HelpTip>
                   </div>
                   <div className="h-2 w-full rounded bg-muted">
                     <div
@@ -169,7 +176,9 @@ function ReworkCard() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Rework (30d)</CardTitle>
+        <HelpTip label="A completed task 'bounces' when it's sent to needs_revision at least once — by QA, the PR gate, the PM, or the CEO">
+          <CardTitle className="text-base">Rework (30d)</CardTitle>
+        </HelpTip>
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
@@ -197,7 +206,11 @@ function ReworkCard() {
                     <thead className="text-muted-foreground">
                       <tr className="text-left">
                         <th className="py-1 font-medium">Agent</th>
-                        <th className="py-1 font-medium text-right">Rate</th>
+                        <th className="py-1 font-medium text-right">
+                          <HelpTip label="Share of this agent's completed tasks that bounced back for revision at least once">
+                            <span>Rate</span>
+                          </HelpTip>
+                        </th>
                         <th className="py-1 font-medium text-right">
                           QA fails
                         </th>
@@ -287,11 +300,13 @@ function CellScorecard({ team }: { team: string }) {
 }
 
 function ScorecardBody({ card }: { card: Scorecard | undefined }) {
-  const stat = (k: string, v: string) => (
-    <div className="flex justify-between text-sm">
-      <span className="text-muted-foreground">{k}</span>
-      <span className="font-medium">{v}</span>
-    </div>
+  const stat = (k: string, v: string, tip?: string) => (
+    <HelpTip label={tip}>
+      <div className="flex justify-between text-sm">
+        <span className="text-muted-foreground">{k}</span>
+        <span className="font-medium">{v}</span>
+      </div>
+    </HelpTip>
   );
   return (
     <div className="space-y-1">
@@ -301,8 +316,13 @@ function ScorecardBody({ card }: { card: Scorecard | undefined }) {
         card?.avg_cycle_hours != null
           ? card.avg_cycle_hours.toFixed(1) + "h"
           : "—",
+        "Average wall-clock time from claim to completion",
       )}
-      {stat("Rework", pct(card?.rework_rate ?? 0))}
+      {stat(
+        "Rework",
+        pct(card?.rework_rate ?? 0),
+        "Share of completed tasks that bounced back for revision at least once",
+      )}
       {stat("Cost", "$" + (card?.cost_usd ?? 0).toFixed(2))}
     </div>
   );

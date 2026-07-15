@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ConnectionState } from "@/lib/websocket/connection";
 import {
   A2AConnectionBadge,
@@ -41,5 +42,12 @@ describe("A2AConnectionBanner", () => {
     render(<A2AConnectionBanner state="disconnected" onDismiss={onDismiss} />);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a matching visible tooltip on the dismiss button", async () => {
+    const user = userEvent.setup();
+    render(<A2AConnectionBanner state="disconnected" onDismiss={vi.fn()} />);
+    await user.hover(screen.getByRole("button", { name: "Dismiss" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Dismiss");
   });
 });

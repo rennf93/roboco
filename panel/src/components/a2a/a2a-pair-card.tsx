@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   getAgentDisplayName,
   getAgentInitials,
@@ -27,17 +28,18 @@ interface A2APairCardProps {
  * identically across the switchboard and the classic list. */
 export function PairAvatar({ slug }: { slug: string }) {
   return (
-    <div
-      className={cn(
-        "h-7 w-7 rounded-full border flex items-center justify-center shrink-0",
-        TEAM_COLOR_CLASSES[getAgentTeamColor(slug)],
-      )}
-      title={getAgentDisplayName(slug)}
-    >
-      <span className="text-[9px] font-bold tracking-tight">
-        {getAgentInitials(slug)}
-      </span>
-    </div>
+    <HelpTip label={getAgentDisplayName(slug)}>
+      <div
+        className={cn(
+          "h-7 w-7 rounded-full border flex items-center justify-center shrink-0",
+          TEAM_COLOR_CLASSES[getAgentTeamColor(slug)],
+        )}
+      >
+        <span className="text-[9px] font-bold tracking-tight">
+          {getAgentInitials(slug)}
+        </span>
+      </div>
+    </HelpTip>
   );
 }
 
@@ -94,9 +96,11 @@ export function A2APairCard({
           </div>
         </div>
         {hasHistory && (
-          <Badge variant="secondary" className="text-[10px] shrink-0">
-            {pair.message_count}
-          </Badge>
+          <HelpTip label="Total messages exchanged in this conversation">
+            <Badge variant="secondary" className="text-[10px] shrink-0">
+              {pair.message_count}
+            </Badge>
+          </HelpTip>
         )}
       </div>
     </button>

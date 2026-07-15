@@ -3,12 +3,19 @@
 import { TeamHealth } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { HealthIndicator } from "./health-indicator";
 import { Users, AlertTriangle, TrendingUp } from "lucide-react";
 
 interface TeamHealthCardProps {
   health: TeamHealth;
 }
+
+const HEALTH_STATUS_TIP: Record<TeamHealth["status"], string> = {
+  ok: "Healthy — blocked ratio is low and work is flowing",
+  slow: "Slow — a meaningful share of this team's tasks are blocked",
+  critical: "Critical — most of this team's tasks are blocked; needs attention",
+};
 
 export function TeamHealthCard({ health }: TeamHealthCardProps) {
   const teamName = health.team.replace(/_/g, " ");
@@ -18,7 +25,11 @@ export function TeamHealthCard({ health }: TeamHealthCardProps) {
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg capitalize">{teamName}</CardTitle>
-          <HealthIndicator status={health.status} size="sm" />
+          <HelpTip label={HEALTH_STATUS_TIP[health.status]}>
+            <span>
+              <HealthIndicator status={health.status} size="sm" />
+            </span>
+          </HelpTip>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -56,17 +67,19 @@ export function TeamHealthCard({ health }: TeamHealthCardProps) {
         {/* Blocked Ratio */}
         {health.blocked_ratio > 0 && (
           <div className="pt-2 border-t">
-            <Badge
-              variant={
-                health.blocked_ratio > 0.3
-                  ? "destructive"
-                  : health.blocked_ratio > 0.1
-                    ? "secondary"
-                    : "outline"
-              }
-            >
-              {Math.round(health.blocked_ratio * 100)}% blocked
-            </Badge>
+            <HelpTip label="Share of this team's active tasks currently blocked">
+              <Badge
+                variant={
+                  health.blocked_ratio > 0.3
+                    ? "destructive"
+                    : health.blocked_ratio > 0.1
+                      ? "secondary"
+                      : "outline"
+                }
+              >
+                {Math.round(health.blocked_ratio * 100)}% blocked
+              </Badge>
+            </HelpTip>
           </div>
         )}
       </CardContent>

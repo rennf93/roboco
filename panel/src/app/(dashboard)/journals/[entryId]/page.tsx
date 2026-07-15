@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -112,7 +113,12 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
           <Tooltip>
             <TooltipTrigger asChild>
               <Link href="/journals" prefetch={false}>
-                <Button variant="ghost" size="icon">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Back to journals"
+                  title="Back to journals"
+                >
                   <ArrowLeft className="h-5 w-5" />
                 </Button>
               </Link>
@@ -149,11 +155,10 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
               <User className="h-4 w-4" />
               <span>Journal</span>
             </div>
-            <p
-              className="font-medium font-mono flex items-center gap-1"
-              title={entry.journal_id}
-            >
-              {entry.journal_id.slice(0, 8)}
+            <p className="font-medium font-mono flex items-center gap-1">
+              <HelpTip label={entry.journal_id}>
+                <span>{entry.journal_id.slice(0, 8)}</span>
+              </HelpTip>
               <CopyButton value={entry.journal_id} className="px-1 py-0.5" />
             </p>
           </CardContent>
@@ -168,13 +173,14 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
               </div>
               <div className="flex items-center gap-1">
                 <Link href={`/tasks/${entry.task_id}`} prefetch={false}>
-                  <Badge
-                    variant="outline"
-                    className="hover:bg-muted cursor-pointer"
-                    title={entry.task_id}
-                  >
-                    Task #{entry.task_id.slice(0, 8)}
-                  </Badge>
+                  <HelpTip label={entry.task_id}>
+                    <Badge
+                      variant="outline"
+                      className="hover:bg-muted cursor-pointer"
+                    >
+                      Task #{entry.task_id.slice(0, 8)}
+                    </Badge>
+                  </HelpTip>
                 </Link>
                 <CopyButton value={entry.task_id} className="px-1 py-0.5" />
               </div>

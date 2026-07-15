@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Table,
   TableBody,
@@ -85,21 +86,35 @@ function OrgSummary() {
       </div>
     );
   if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
-  const cells: [string, string][] = [
+  const cells: [string, string, string?][] = [
     ["Members", String(data.member_count)],
     ["Completed", String(data.tasks_completed)],
-    ["First-pass yield", pctOrNa(data.first_pass_yield)],
-    ["Throughput/hr", numOrNa(data.effort_throughput_per_hour, 2)],
-    ["Active effort", data.active_runtime_hours.toFixed(1) + "h"],
+    [
+      "First-pass yield",
+      pctOrNa(data.first_pass_yield),
+      "Share of completed tasks that shipped without a QA/PR-gate/PM/CEO bounce",
+    ],
+    [
+      "Throughput/hr",
+      numOrNa(data.effort_throughput_per_hour, 2),
+      "Tasks completed per hour of active (non-idle) agent runtime",
+    ],
+    [
+      "Active effort",
+      data.active_runtime_hours.toFixed(1) + "h",
+      "Total hours agents spent actively working — idle time excluded",
+    ],
     ["Cost", "$" + data.cost_usd.toFixed(2)],
   ];
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-      {cells.map(([k, v]) => (
-        <div key={k}>
-          <div className="text-2xl font-semibold">{v}</div>
-          <div className="text-muted-foreground text-sm">{k}</div>
-        </div>
+      {cells.map(([k, v, tip]) => (
+        <HelpTip key={k} label={tip}>
+          <div>
+            <div className="text-2xl font-semibold">{v}</div>
+            <div className="text-muted-foreground text-sm">{k}</div>
+          </div>
+        </HelpTip>
       ))}
     </div>
   );
@@ -114,21 +129,39 @@ function CeoCard() {
       </div>
     );
   if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
-  const cells: [string, string][] = [
+  const cells: [string, string, string?][] = [
     ["Approvals", String(data.approval_count)],
-    ["Approval p50", hoursOrDash(data.approval_p50_seconds)],
-    ["Approval p90", hoursOrDash(data.approval_p90_seconds)],
+    [
+      "Approval p50",
+      hoursOrDash(data.approval_p50_seconds),
+      "Median time from a task reaching your queue to your approval",
+    ],
+    [
+      "Approval p90",
+      hoursOrDash(data.approval_p90_seconds),
+      "90th percentile — the slowest 10% of approvals took at least this long",
+    ],
     ["Unblocks", String(data.unblock_count)],
-    ["Unblock p50", hoursOrDash(data.unblock_p50_seconds)],
-    ["God-mode actions", String(data.godmode_actions)],
+    [
+      "Unblock p50",
+      hoursOrDash(data.unblock_p50_seconds),
+      "Median time from a task blocking to you unblocking it",
+    ],
+    [
+      "God-mode actions",
+      String(data.godmode_actions),
+      "Direct admin overrides you made outside the normal approval flow",
+    ],
   ];
   return (
     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-      {cells.map(([k, v]) => (
-        <div key={k}>
-          <div className="text-2xl font-semibold">{v}</div>
-          <div className="text-muted-foreground text-sm">{k}</div>
-        </div>
+      {cells.map(([k, v, tip]) => (
+        <HelpTip key={k} label={tip}>
+          <div>
+            <div className="text-2xl font-semibold">{v}</div>
+            <div className="text-muted-foreground text-sm">{k}</div>
+          </div>
+        </HelpTip>
       ))}
     </div>
   );
@@ -168,14 +201,46 @@ export function ScorecardsTabContent() {
             <TableHeader>
               <TableRow>
                 <TableHead>Member</TableHead>
-                <TableHead>Done</TableHead>
-                <TableHead>FPY</TableHead>
-                <TableHead>Effort</TableHead>
-                <TableHead>Turns/task</TableHead>
-                <TableHead>QA pass</TableHead>
-                <TableHead>Escal.</TableHead>
-                <TableHead>Blocked others</TableHead>
-                <TableHead>Util.</TableHead>
+                <TableHead>
+                  <HelpTip label="Tasks completed">
+                    <span>Done</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="First-pass yield — share of completed tasks shipped without a QA/PR-gate/PM/CEO bounce">
+                    <span>FPY</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Total hours actively working — idle/waiting time excluded">
+                    <span>Effort</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Average number of agent turns spent per completed task">
+                    <span>Turns/task</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Share of this agent's QA reviews that passed on the first attempt">
+                    <span>QA pass</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Escalations — times this agent's work was escalated up the chain">
+                    <span>Escal.</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Times this agent's work blocked another agent's progress">
+                    <span>Blocked others</span>
+                  </HelpTip>
+                </TableHead>
+                <TableHead>
+                  <HelpTip label="Utilization — share of this agent's spawned time spent actively working, not idle">
+                    <span>Util.</span>
+                  </HelpTip>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

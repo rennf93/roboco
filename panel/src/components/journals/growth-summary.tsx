@@ -4,6 +4,7 @@ import { Journal, GrowthMetrics } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   BookOpen,
   Lightbulb,
@@ -104,30 +105,34 @@ export function GrowthSummary({
 
         {/* Struggle Resolution Rate */}
         {growth && growth.struggle_resolution_rate > 0 && (
-          <div className="pt-3 border-t">
-            <div className="flex items-center justify-between text-sm mb-2">
-              <span className="text-muted-foreground">Struggle Resolution</span>
-              <span className="font-medium">
-                {Math.round(growth.struggle_resolution_rate * 100)}%
-              </span>
+          <HelpTip label="Share of logged struggles that a later entry marked resolved">
+            <div className="pt-3 border-t">
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span className="text-muted-foreground">Struggle Resolution</span>
+                <span className="font-medium">
+                  {Math.round(growth.struggle_resolution_rate * 100)}%
+                </span>
+              </div>
+              <Progress
+                value={growth.struggle_resolution_rate * 100}
+                className="h-2"
+              />
             </div>
-            <Progress
-              value={growth.struggle_resolution_rate * 100}
-              className="h-2"
-            />
-          </div>
+          </HelpTip>
         )}
 
         {/* Sentiment Trend */}
         {growth?.sentiment_trend && (
-          <div className="pt-3 border-t">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Sentiment Trend</span>
-              <span className="font-medium capitalize">
-                {growth.sentiment_trend}
-              </span>
+          <HelpTip label="Direction of the agent's self-reported sentiment across recent entries">
+            <div className="pt-3 border-t">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Sentiment Trend</span>
+                <span className="font-medium capitalize">
+                  {growth.sentiment_trend}
+                </span>
+              </div>
             </div>
-          </div>
+          </HelpTip>
         )}
       </CardContent>
     </Card>

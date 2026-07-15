@@ -13,6 +13,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { TeamUsageRow } from "@/types";
 
@@ -67,7 +68,11 @@ export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
                 <tr>
                   <th className="text-left font-medium py-1">Team</th>
                   <th className="text-right font-medium py-1">Tokens</th>
-                  <th className="text-right font-medium py-1">%</th>
+                  <th className="text-right font-medium py-1">
+                    <HelpTip label="Share of total tokens across all teams in this window">
+                      <span>%</span>
+                    </HelpTip>
+                  </th>
                 </tr>
               </thead>
               <tbody>

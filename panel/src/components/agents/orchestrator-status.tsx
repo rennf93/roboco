@@ -2,6 +2,7 @@ import { OrchestratorStatus as OrchestratorStatusType } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { Server, Users, Clock, Activity } from "lucide-react";
 
 interface OrchestratorStatusCardsProps {
@@ -39,64 +40,72 @@ export function OrchestratorStatusCards({
   return (
     <Card className="py-0">
       <CardContent className="grid grid-cols-1 divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0">
-        <div className="flex items-center justify-between gap-2 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Server className="h-4 w-4" />
-            Orchestrator
+        <HelpTip label="Whether the orchestrator process itself is reachable — independent of how many agents are currently spawned">
+          <div className="flex items-center justify-between gap-2 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Server className="h-4 w-4" />
+              Orchestrator
+            </div>
+            {isLoading ? (
+              <Skeleton className="h-6 w-16" />
+            ) : (
+              <Badge
+                data-testid="stat-orchestrator"
+                className={isRunning ? "bg-green-500" : "bg-red-500"}
+              >
+                {isRunning ? "Running" : "Stopped"}
+              </Badge>
+            )}
           </div>
-          {isLoading ? (
-            <Skeleton className="h-6 w-16" />
-          ) : (
-            <Badge
-              data-testid="stat-orchestrator"
-              className={isRunning ? "bg-green-500" : "bg-red-500"}
-            >
-              {isRunning ? "Running" : "Stopped"}
-            </Badge>
-          )}
-        </div>
+        </HelpTip>
 
-        <div className="flex items-center justify-between gap-2 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Users className="h-4 w-4" />
-            Total Agents
+        <HelpTip label="Full agent roster size — everyone the org could spawn, not just who's running now">
+          <div className="flex items-center justify-between gap-2 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Users className="h-4 w-4" />
+              Total Agents
+            </div>
+            {rosterLoading ? (
+              <Skeleton className="h-6 w-8" />
+            ) : (
+              <span data-testid="stat-total-agents" className="text-xl font-bold">
+                {rosterCount}
+              </span>
+            )}
           </div>
-          {rosterLoading ? (
-            <Skeleton className="h-6 w-8" />
-          ) : (
-            <span data-testid="stat-total-agents" className="text-xl font-bold">
-              {rosterCount}
-            </span>
-          )}
-        </div>
+        </HelpTip>
 
-        <div className="flex items-center justify-between gap-2 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Activity className="h-4 w-4" />
-            Active
+        <HelpTip label="Agents currently spawned and actively working a task right now">
+          <div className="flex items-center justify-between gap-2 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Activity className="h-4 w-4" />
+              Active
+            </div>
+            {isLoading ? (
+              <Skeleton className="h-6 w-8" />
+            ) : (
+              <span data-testid="stat-active" className="text-xl font-bold">
+                {activeCount}
+              </span>
+            )}
           </div>
-          {isLoading ? (
-            <Skeleton className="h-6 w-8" />
-          ) : (
-            <span data-testid="stat-active" className="text-xl font-bold">
-              {activeCount}
-            </span>
-          )}
-        </div>
+        </HelpTip>
 
-        <div className="flex items-center justify-between gap-2 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Clock className="h-4 w-4" />
-            Waiting
+        <HelpTip label="Agents blocked and waiting on human input or an external resolution">
+          <div className="flex items-center justify-between gap-2 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Clock className="h-4 w-4" />
+              Waiting
+            </div>
+            {isLoading ? (
+              <Skeleton className="h-6 w-8" />
+            ) : (
+              <span data-testid="stat-waiting" className="text-xl font-bold">
+                {waitingCount}
+              </span>
+            )}
           </div>
-          {isLoading ? (
-            <Skeleton className="h-6 w-8" />
-          ) : (
-            <span data-testid="stat-waiting" className="text-xl font-bold">
-              {waitingCount}
-            </span>
-          )}
-        </div>
+        </HelpTip>
       </CardContent>
     </Card>
   );

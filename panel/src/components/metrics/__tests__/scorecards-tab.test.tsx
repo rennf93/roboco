@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AgentRole, AgentState, type Agent } from "@/types";
 import type { MemberScorecard } from "@/types";
 
@@ -137,6 +138,15 @@ describe("ScorecardsTabContent", () => {
     // CEO and system are excluded from the member table.
     expect(screen.queryByText("Renzo")).not.toBeInTheDocument();
     expect(screen.queryByText("system")).not.toBeInTheDocument();
+  });
+
+  it("explains an abbreviated member-table column via a hover tooltip", async () => {
+    const user = userEvent.setup();
+    render(<ScorecardsTabContent />);
+    await user.hover(screen.getByText("FPY"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /first-pass yield/i,
+    );
   });
 
   it("surfaces load errors instead of an endless skeleton", () => {

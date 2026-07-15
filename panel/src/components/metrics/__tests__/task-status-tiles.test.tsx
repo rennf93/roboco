@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { TaskStatusTiles } from "../task-status-tiles";
 
 describe("TaskStatusTiles", () => {
@@ -33,5 +34,25 @@ describe("TaskStatusTiles", () => {
     ["A", "B", "C", "D", "E"].forEach((label) => {
       expect(screen.getByText(label)).toBeInTheDocument();
     });
+  });
+
+  it("explains a tile's meaning via a hover tooltip when one is provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <TaskStatusTiles
+        tiles={[
+          {
+            label: "Blocked",
+            value: 2,
+            icon: <span>icon</span>,
+            tip: "Tasks stuck on an external dependency",
+          },
+        ]}
+      />,
+    );
+    await user.hover(screen.getByText("Blocked"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "external dependency",
+    );
   });
 });

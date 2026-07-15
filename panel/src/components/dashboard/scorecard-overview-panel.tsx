@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { useOrgScorecard } from "@/hooks/use-observability";
 import {
   Trophy,
@@ -25,17 +26,20 @@ interface MetricRowProps {
   icon: React.ReactNode;
   label: string;
   value: string;
+  tip: string;
 }
 
-function MetricRow({ icon, label, value }: MetricRowProps) {
+function MetricRow({ icon, label, value, tip }: MetricRowProps) {
   return (
-    <div className="flex items-center justify-between py-1">
-      <div className="text-muted-foreground flex items-center gap-2 text-sm">
-        {icon}
-        {label}
+    <HelpTip label={tip}>
+      <div className="flex items-center justify-between py-1">
+        <div className="text-muted-foreground flex items-center gap-2 text-sm">
+          {icon}
+          {label}
+        </div>
+        <span className="text-sm font-semibold">{value}</span>
       </div>
-      <span className="text-sm font-semibold">{value}</span>
-    </div>
+    </HelpTip>
   );
 }
 
@@ -81,26 +85,31 @@ export function ScorecardOverviewPanel() {
               icon={<CheckCircle2 className="h-4 w-4" />}
               label="Tasks completed (30d)"
               value={String(data.tasks_completed)}
+              tip="Tasks that reached completed org-wide in the last 30 days"
             />
             <MetricRow
               icon={<Gauge className="h-4 w-4" />}
               label="First-pass yield"
               value={pctOrNa(data.first_pass_yield)}
+              tip="Share of completed tasks that shipped without a QA fail, PR-gate fail, PM reject, or CEO reject bounce"
             />
             <MetricRow
               icon={<Gauge className="h-4 w-4 text-blue-500" />}
               label="Throughput / hr"
               value={numOrNa(data.effort_throughput_per_hour)}
+              tip="Tasks completed per hour of active (non-idle) agent runtime"
             />
             <MetricRow
               icon={<Clock className="h-4 w-4" />}
               label="Active effort"
               value={data.active_runtime_hours.toFixed(1) + "h"}
+              tip="Total hours agents spent actively working — idle/waiting time excluded"
             />
             <MetricRow
               icon={<Coins className="h-4 w-4" />}
               label="Cost"
               value={"$" + data.cost_usd.toFixed(2)}
+              tip="Total provider-priced token cost across all sessions in the period"
             />
           </div>
         )}
