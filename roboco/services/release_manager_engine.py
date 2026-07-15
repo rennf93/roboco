@@ -37,6 +37,7 @@ from roboco.services.notification import NotificationService
 from roboco.services.project import get_project_service
 from roboco.services.release_readiness import (
     ReleaseReadinessReport,
+    _run_git,
     assess,
     gather_snapshot,
     report_to_dict,
@@ -213,7 +214,6 @@ class ReleaseManagerEngine(BaseService):
         """
         from roboco.models.env_branches import head_branch, prod_branch
         from roboco.services.git import get_git_service
-        from roboco.services.release_readiness import _run_git
         from roboco.services.workspace import get_workspace_service
 
         slug = _roboco_slug()
@@ -250,15 +250,9 @@ class ReleaseManagerEngine(BaseService):
         # already present. Best-effort: a fetch failure degrades to last_tag..HEAD
         # (gather_snapshot falls back when prod_tip is None) — never aborts.
         prod_name = prod_branch(project)
-        have_prod = prod_name != head_branch(project)
-        if have_prod:
-            try:
-                await asyncio.to_thread(
-                    _run_git, Path(root), ["fetch", "origin", prod_name]
-                )
-            except Exception as exc:
-                self.log.warning("release-manager: prod fetch failed", error=str(exc))
-                have_prod = False
+        prod_for_snapshot = await self._ensure_prod_fetched(
+            root, prod_name, prod_name != head_branch(project)
+        )
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         # gather_snapshot runs multiple sync `subprocess.run` git calls + a
         # filesystem walk; offload so the shared API event loop isn't blocked
@@ -267,9 +261,29 @@ class ReleaseManagerEngine(BaseService):
             gather_snapshot,
             Path(root),
             master_ci_conclusion=conclusion,
-            prod_branch=prod_name if have_prod else None,
+            prod_branch=prod_for_snapshot,
         )
         return assess(snapshot, today=today)
+
+    async def _ensure_prod_fetched(
+        self, root: Path, prod_name: str, needs_fetch: bool
+    ) -> str | None:
+        """Ensure ``origin/<prod>`` is fetched for the prod..head readiness diff.
+
+        Degenerate (prod==head) needs no fetch — the read clone is pinned to
+        head==prod. Best-effort: a fetch failure returns None so gather_snapshot
+        falls back to last_tag..HEAD rather than aborting the assessment.
+        """
+        if not needs_fetch:
+            return prod_name
+        try:
+            await asyncio.to_thread(
+                _run_git, Path(root), ["fetch", "origin", prod_name]
+            )
+        except Exception as exc:
+            self.log.warning("release-manager: prod fetch failed", error=str(exc))
+            return None
+        return prod_name
 
 
 def get_release_manager_engine(
