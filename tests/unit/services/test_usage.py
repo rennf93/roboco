@@ -336,6 +336,40 @@ class TestGetTimeSeries:
         ):
             assert field in point, f"Missing field: {field}"
 
+    @pytest.mark.asyncio
+    async def test_agent_slug_filter_scopes_query(self) -> None:
+        """agent_slug adds an agent_slug WHERE clause to the time-series query."""
+        row = _make_row(
+            bucket=datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC),
+            tokens_input=100,
+            tokens_output=100,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        await svc.get_time_series("7d", agent_slug="be-dev-1")
+        stmt = svc.session.execute.call_args_list[0][0][0]
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "be-dev-1" in sql
+
+    @pytest.mark.asyncio
+    async def test_no_agent_slug_filter_when_none(self) -> None:
+        """Without agent_slug the query is not scoped to one agent."""
+        row = _make_row(
+            bucket=datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC),
+            tokens_input=100,
+            tokens_output=100,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        await svc.get_time_series("7d")
+        stmt = svc.session.execute.call_args_list[0][0][0]
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "agent_slug" not in sql
+
 
 # ---------------------------------------------------------------------------
 # get_by_agent — pct_of_total sums to 100%

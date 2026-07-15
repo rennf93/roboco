@@ -54,6 +54,10 @@ async def get_usage_summary(
 async def get_usage_time_series(
     db: DbSession,
     period: _PeriodQuery = "24h",
+    agent_slug: Annotated[
+        str | None,
+        Query(description="Restrict to one agent's spawn sessions"),
+    ] = None,
 ) -> list[dict[str, Any]]:
     """Return bucketed time-series data points.
 
@@ -61,10 +65,12 @@ async def get_usage_time_series(
     - 7d / 30d / 90d → daily buckets
 
     Each point has: bucket (ISO timestamp), tokens_input, tokens_output,
-    total_tokens, cost_usd.
+    total_tokens, cost_usd. When ``agent_slug`` is set the series is scoped to
+    that agent's spawn sessions (the per-agent sparkline on the agent detail
+    page); otherwise the whole fleet is summed.
     """
     svc = get_usage_service(db)
-    return await svc.get_time_series(period)
+    return await svc.get_time_series(period, agent_slug=agent_slug)
 
 
 # =============================================================================

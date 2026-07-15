@@ -24,8 +24,8 @@ export const usageKeys = {
   all: ["usage"] as const,
   summary: (period: UsagePeriod) =>
     [...usageKeys.all, "summary", period] as const,
-  timeSeries: (period: UsagePeriod) =>
-    [...usageKeys.all, "time-series", period] as const,
+  timeSeries: (period: UsagePeriod, agentSlug?: string) =>
+    [...usageKeys.all, "time-series", period, agentSlug ?? null] as const,
   agentUsage: (period: UsagePeriod) =>
     [...usageKeys.all, "by-agent", period] as const,
   teamUsage: (period: UsagePeriod) =>
@@ -56,10 +56,13 @@ export function useUsageSummary(period: UsagePeriod = "24h") {
 }
 
 /** Bucketed time-series data for the stacked area chart */
-export function useUsageTimeSeries(period: UsagePeriod = "24h") {
+export function useUsageTimeSeries(
+  period: UsagePeriod = "24h",
+  agentSlug?: string,
+) {
   return useQuery<UsageTimePoint[]>({
-    queryKey: usageKeys.timeSeries(period),
-    queryFn: () => usageApi.getUsageTimeSeries(period),
+    queryKey: usageKeys.timeSeries(period, agentSlug),
+    queryFn: () => usageApi.getUsageTimeSeries(period, agentSlug),
     refetchInterval: 120_000,
   });
 }

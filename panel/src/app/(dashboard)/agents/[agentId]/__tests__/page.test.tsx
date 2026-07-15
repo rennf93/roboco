@@ -32,6 +32,7 @@ vi.mock("@/components/agents", () => ({
   AgentStatusCards: () => null,
   ResolveWaitDialog: () => null,
   AgentStreamViewer: () => null,
+  AgentActivityPanel: () => null,
   SpawnAgentDialog: ({
     agentId,
     agentName,

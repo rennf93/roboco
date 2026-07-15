@@ -34,6 +34,7 @@ import {
   ResolveWaitDialog,
   AgentStreamViewer,
   SpawnAgentDialog,
+  AgentActivityPanel,
 } from "@/components/agents";
 
 // Role display labels
@@ -195,6 +196,10 @@ export default function AgentDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Per-agent activity: token sparkline + work-session/journal timeline.
+          History exists independent of live status, so render for any slug. */}
+      <AgentActivityPanel agentSlug={agentId} agentUuid={definition?.uuid} />
 
       {isLoading ? (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
