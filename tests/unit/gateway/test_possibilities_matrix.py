@@ -256,6 +256,7 @@ class _FastPathMocks:
     conventions: AsyncMock
     open_findings: AsyncMock
     record_milestone: AsyncMock
+    toolchain: AsyncMock
 
 
 def _stub_fast_path(
@@ -266,6 +267,7 @@ def _stub_fast_path(
     ok = AsyncMock(return_value="OK")
     reject = AsyncMock(return_value="REJECT")
     record_milestone = AsyncMock(return_value=None)
+    toolchain = AsyncMock(return_value=None)
     monkeypatch.setattr(c, "_apply_resolved_findings", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_check_submit_qa_field_gates", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_behind_base_gate", AsyncMock(return_value=None))
@@ -277,6 +279,7 @@ def _stub_fast_path(
         "_fast_path_quality_verdict",
         AsyncMock(return_value=(quality_rejection, False)),
     )
+    monkeypatch.setattr(c, "_toolchain_broken_guard", toolchain)
     monkeypatch.setattr(c, "_notify_qa", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_touch", AsyncMock(return_value=None))
     monkeypatch.setattr(c, "_record_milestone_progress", record_milestone)
@@ -288,6 +291,7 @@ def _stub_fast_path(
         conventions=conventions,
         open_findings=open_findings,
         record_milestone=record_milestone,
+        toolchain=toolchain,
     )
 
 
@@ -365,3 +369,113 @@ async def test_fast_path_ci_failure_rejects_before_transition(
     await c._i_am_done_fast_path(_ctx())
     stubs.reject.assert_awaited_once()
     c.task.submit_qa.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _i_am_done_fast_path: notes is the sole compensating control for the
+# skipped journal gates — empty AND soup are rejected (unlike the standard
+# path's soup-only check, which skips an empty value).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fast_path_empty_notes_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    ctx = _ctx()
+    ctx.notes = ""
+    await c._i_am_done_fast_path(ctx)
+    stubs.reject.assert_awaited_once()
+    c.task.submit_verification.assert_not_awaited()
+    c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_trivial_notes_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    ctx = _ctx()
+    ctx.notes = "wip"
+    await c._i_am_done_fast_path(ctx)
+    stubs.reject.assert_awaited_once()
+    c.task.submit_verification.assert_not_awaited()
+    c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_real_notes_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    ctx = _ctx()
+    ctx.notes = "already implemented in a prior session"
+    await c._i_am_done_fast_path(ctx)
+    stubs.ok.assert_awaited_once()
+    c.task.submit_qa.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _i_am_done_fast_path: guard order — push before behind-base, mirroring the
+# standard gate (_behind_base_gate reads origin, which must already reflect
+# the pushed head).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fast_path_pushes_branch_before_behind_base_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    _stub_fast_path(c, monkeypatch)
+    order: list[str] = []
+
+    async def _push(_ctx: Any) -> None:
+        order.append("push")
+
+    async def _behind(_ctx: Any) -> None:
+        order.append("behind")
+
+    monkeypatch.setattr(c, "_ensure_branch_pushed", _push)
+    monkeypatch.setattr(c, "_behind_base_gate", _behind)
+    await c._i_am_done_fast_path(_ctx())
+    assert order == ["push", "behind"]
+
+
+# ---------------------------------------------------------------------------
+# _i_am_done_fast_path: toolchain backstop pairs with the local quality gate
+# fallback (no CI signal) — never with the CI-green branch.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fast_path_toolchain_broken_blocks_on_local_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    monkeypatch.setattr(
+        c,
+        "_fast_path_quality_verdict",
+        AsyncMock(return_value=(None, True)),  # local gate ran (no CI signal), passed
+    )
+    stubs.toolchain.return_value = Envelope.invalid_state(
+        message="toolchain broken", remediate="fix"
+    )
+    await c._i_am_done_fast_path(_ctx())
+    stubs.reject.assert_awaited_once()
+    c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_toolchain_guard_skipped_on_ci_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    monkeypatch.setattr(
+        c, "_fast_path_quality_verdict", AsyncMock(return_value=(None, False))
+    )
+    await c._i_am_done_fast_path(_ctx())
+    stubs.ok.assert_awaited_once()
+    stubs.toolchain.assert_not_awaited()

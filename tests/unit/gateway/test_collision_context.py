@@ -4,13 +4,22 @@ Pins the truth table — no parent → None, no surfaced siblings → None,
 file-overlap sibling shown, both-migration shown without file overlap,
 shared-only-without-overlap NOT shown, declared-vs-actual drift computed,
 and the caps respected. Pure (no DB, no IO): duck-typed task/sibling rows.
+
+Also covers the two choreographer-level wrappers around it
+(``_gate_collision_evidence`` / ``_collision_context_for``): a raise from the
+builder itself — not just the sibling fetch — must still degrade to
+``None``/omitted, never break the caller (``claim_gate_review`` evidence /
+the planning briefing).
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer.collision import (
     COLLISION_GLOB_CAP,
     COLLISION_SIBLING_CAP,
@@ -189,6 +198,80 @@ def test_sort_key_orders_by_priority_then_sequence() -> None:
     ctx = build_collision_context(task=task, siblings=[low_prio, high_prio, mid])
     assert ctx is not None
     assert [e["sequence"] for e in ctx] == [5, 1, 0]
+
+
+def _make_choreographer(*, task_service: AsyncMock) -> Choreographer:
+    return Choreographer(
+        ChoreographerDeps(
+            task=task_service,
+            work_session=AsyncMock(),
+            git=AsyncMock(),
+            a2a=AsyncMock(),
+            journal=AsyncMock(),
+            audit=AsyncMock(),
+            evidence_repo=AsyncMock(),
+        )
+    )
+
+
+class TestGateCollisionEvidenceDegradesOnBuilderFailure:
+    """``_gate_collision_evidence`` (claim_gate_review evidence)."""
+
+    @pytest.mark.asyncio
+    async def test_builder_raise_omits_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        t = _task()
+        task_service = AsyncMock()
+        task_service.get_subtasks.return_value = [_sib()]
+        c = _make_choreographer(task_service=task_service)
+        monkeypatch.setattr(
+            "roboco.services.gateway.choreographer.pr_gate.build_collision_context",
+            lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        result = await c._gate_collision_evidence(t, [])
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_raise_still_omits_block(self) -> None:
+        t = _task()
+        task_service = AsyncMock()
+        task_service.get_subtasks.side_effect = RuntimeError("db down")
+        c = _make_choreographer(task_service=task_service)
+
+        result = await c._gate_collision_evidence(t, [])
+
+        assert result is None
+
+
+class TestCollisionContextForDegradesOnBuilderFailure:
+    """``_collision_context_for`` (the planning/claim briefing helper)."""
+
+    @pytest.mark.asyncio
+    async def test_builder_raise_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        t = _task()
+        task_service = AsyncMock()
+        task_service.get_subtasks.return_value = [_sib()]
+        c = _make_choreographer(task_service=task_service)
+        monkeypatch.setattr(
+            "roboco.services.gateway.choreographer._impl.build_collision_context",
+            lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        assert await c._collision_context_for(t) is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_raise_returns_none(self) -> None:
+        t = _task()
+        task_service = AsyncMock()
+        task_service.get_subtasks.side_effect = RuntimeError("db down")
+        c = _make_choreographer(task_service=task_service)
+
+        assert await c._collision_context_for(t) is None
 
 
 if __name__ == "__main__":

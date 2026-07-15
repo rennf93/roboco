@@ -1213,6 +1213,9 @@ class PRGateMixin(_Base):
             return None
         try:
             siblings = await self.task.get_subtasks(t.parent_task_id)
+            return build_collision_context(
+                task=t, siblings=siblings, actual_files=files_changed or None
+            )
         except Exception as exc:
             logger.warning(
                 "gate_review_collision_context_skip",
@@ -1220,9 +1223,6 @@ class PRGateMixin(_Base):
                 error=str(exc),
             )
             return None
-        return build_collision_context(
-            task=t, siblings=siblings, actual_files=files_changed or None
-        )
 
     async def _build_gate_review_evidence(self, t: Any) -> dict[str, Any]:
         """Inline evidence for claim_gate_review: the assembled diff +

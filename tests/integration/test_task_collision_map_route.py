@@ -154,6 +154,42 @@ async def test_collision_map_shows_overlapping_sibling(collision_client: dict) -
 
 
 @pytest.mark.asyncio
+async def test_collision_map_degrades_on_builder_failure(
+    collision_client: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # build_collision_context is called outside the get_subtasks try/except at
+    # this site's call site; a raise there must still yield a 200 with no
+    # siblings, never a 500 — mirrors qa.py's claim_review evidence pattern.
+    client = collision_client["client"]
+    parent = _task(collision_client, title="parent", status=TaskStatus.PENDING)
+    await collision_client["db"].flush()
+    under = _task(
+        collision_client,
+        parent_task_id=parent.id,
+        title="under review",
+        intends_to_touch=["roboco/services/git.py"],
+    )
+    _task(
+        collision_client,
+        parent_task_id=parent.id,
+        title="colliding sibling",
+        intends_to_touch=["roboco/services/git.py"],
+    )
+    await collision_client["db"].flush()
+
+    def _boom(**_kw: Any) -> None:
+        raise RuntimeError("collision builder exploded")
+
+    monkeypatch.setattr("roboco.api.routes.tasks.build_collision_context", _boom)
+
+    response = await client.get(f"/api/tasks/{under.id}/collision-map", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["siblings"] == []
+    assert body["intends_to_touch"] == ["roboco/services/git.py"]
+
+
+@pytest.mark.asyncio
 async def test_collision_map_omits_non_overlapping_sibling(
     collision_client: dict,
 ) -> None:

@@ -14275,7 +14275,7 @@ If the fast path refuses (a gate it checks is not actually met), the
         # just collapses the 3-5-turn re-derivation to a single i_am_done call.
         if (
             settings.possibilities_matrix_enabled
-            and status in ("claimed", "in_progress", "verifying")
+            and status in ("claimed", "in_progress")
             and task.get("pr_created")
             and task.get("commits")
         ):

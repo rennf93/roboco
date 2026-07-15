@@ -1010,11 +1010,11 @@ class Choreographer:
             return None
         try:
             siblings = await self.task.get_subtasks(parent_id)
-        except Exception:  # best-effort: omit on any fetch failure
+            return build_collision_context(
+                task=t, siblings=siblings, actual_files=actual_files
+            )
+        except Exception:  # best-effort: omit on any fetch/build failure
             return None
-        return build_collision_context(
-            task=t, siblings=siblings, actual_files=actual_files
-        )
 
     async def _with_collision_briefing(
         self, briefing: dict[str, Any], full: bool, task: Any
@@ -2853,6 +2853,49 @@ class Choreographer:
             return None
         return await self._i_am_done_fast_path(ctx)
 
+    async def _fast_path_rejection(self, ctx: _IAmDoneContext) -> Any:
+        """The fast path's ordered rejection cascade; None means proceed.
+
+        Order matters: notes first (cheap, no writes), then finding
+        resolution + guards, then the open-findings re-check, then the
+        quality verdict with its toolchain backstop.
+        """
+        if soup := self._soup_reason(ctx.notes, "notes", 4):
+            return soup
+        await self._apply_resolved_findings(ctx)
+        guards = (
+            lambda: self._check_submit_qa_field_gates(
+                ctx.agent_id, ctx.task_id, ctx.task
+            ),
+            # Push-first, mirroring the standard gate: _behind_base_gate reads
+            # origin, which must already reflect the pushed head.
+            lambda: self._ensure_branch_pushed(ctx),
+            lambda: self._behind_base_gate(ctx),
+            lambda: self._conventions_gate(ctx),
+        )
+        for guard in guards:
+            if rejection := await guard():
+                return rejection
+        # FINDINGS_ADDRESSED re-checked post-resolution: a resolved_findings entry
+        # in THIS call may have closed the open set; anything still open blocks.
+        if await self._open_finding_ids(ctx.task_id):
+            return Envelope.invalid_state(
+                message="fast path blocked — open findings remain on the ledger",
+                remediate=(
+                    "name every open finding in resolved_findings "
+                    "({finding_id, note}), or leave possibilities_matrix off "
+                    "and run the standard i_am_done path"
+                ),
+                context_briefing=ctx.briefing,
+            )
+        rejection, ran_local = await self._fast_path_quality_verdict(ctx)
+        # The local gate ran (no CI signal) without a toolchain that can
+        # execute it is a hollow pass — pair the two like the standard gate
+        # does. Skipped when CI-green already decided (no local run at all).
+        if rejection is None and ran_local:
+            rejection = await self._toolchain_broken_guard(ctx.agent_id, ctx.task)
+        return rejection
+
     async def _i_am_done_fast_path(self, ctx: _IAmDoneContext) -> Envelope:
         """Work-already-done fast path: slimmed gates + direct transition chain.
 
@@ -2865,37 +2908,13 @@ class Choreographer:
         non-negotiable gates the predicate already asserts, plus conventions
         (leaf dev tasks skip ``awaiting_pr_review`` so the conventions check
         must not also be skipped here — it is tree-sitter, sub-second, 0 turns
-        when green).
+        when green). Since ``notes`` is the sole compensating control for the
+        skipped journal gates, it is enforced here directly (empty AND soup —
+        unlike the standard path's soup-only check, which skips an empty value
+        because presence there is gated by the journal requirements this path
+        doesn't run).
         """
-        await self._apply_resolved_findings(ctx)
-        guards = (
-            lambda: self._check_submit_qa_field_gates(
-                ctx.agent_id, ctx.task_id, ctx.task
-            ),
-            lambda: self._behind_base_gate(ctx),
-            lambda: self._ensure_branch_pushed(ctx),
-            lambda: self._conventions_gate(ctx),
-        )
-        for guard in guards:
-            if rejection := await guard():
-                return await self._reject_i_am_done(ctx, rejection)
-        # FINDINGS_ADDRESSED re-checked post-resolution: a resolved_findings entry
-        # in THIS call may have closed the open set; anything still open blocks.
-        if await self._open_finding_ids(ctx.task_id):
-            return await self._reject_i_am_done(
-                ctx,
-                Envelope.invalid_state(
-                    message="fast path blocked — open findings remain on the ledger",
-                    remediate=(
-                        "name every open finding in resolved_findings "
-                        "({finding_id, note}), or leave possibilities_matrix off "
-                        "and run the standard i_am_done path"
-                    ),
-                    context_briefing=ctx.briefing,
-                ),
-            )
-        rejection, _ran_local = await self._fast_path_quality_verdict(ctx)
-        if rejection is not None:
+        if rejection := await self._fast_path_rejection(ctx):
             return await self._reject_i_am_done(ctx, rejection)
         try:
             if str(ctx.task.status) == "claimed":

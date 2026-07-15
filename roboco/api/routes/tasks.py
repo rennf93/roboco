@@ -1371,14 +1371,22 @@ async def get_task_collision_map(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
-    siblings = (
-        await service.get_subtasks(UUID(str(task.parent_task_id)))
-        if task.parent_task_id
-        else []
-    )
     # No actual files here — the panel shows the declared surface + sibling
     # overlap only; drift stays in the in-context evidence envelope.
-    ctx = build_collision_context(task=task, siblings=siblings)
+    # Best-effort: a fetch/build failure degrades to no siblings rather than
+    # a 500 — the route still returns the task's own declared surface.
+    ctx: list[dict[str, Any]] | None = None
+    try:
+        siblings = (
+            await service.get_subtasks(UUID(str(task.parent_task_id)))
+            if task.parent_task_id
+            else []
+        )
+        ctx = build_collision_context(task=task, siblings=siblings)
+    except Exception as exc:
+        _logger.warning(
+            "collision_map_route_skip", task_id=str(task.id), error=str(exc)
+        )
     return CollisionMapResponse(
         task_id=str(task.id),
         parent_task_id=str(task.parent_task_id) if task.parent_task_id else None,

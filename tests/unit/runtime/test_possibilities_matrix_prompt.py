@@ -80,12 +80,16 @@ async def test_armed_claimed_with_pr_and_commits_is_work_already_done(
 
 
 @pytest.mark.asyncio
-async def test_armed_verifying_with_pr_and_commits_is_work_already_done(
+async def test_armed_verifying_with_pr_and_commits_is_not_work_already_done(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # verifying is excluded from the proxy's trigger set: _i_am_done_pre_gate_dispatch
+    # routes an owned `verifying` task to the resume path before the fast path is
+    # ever reachable, so steering the prompt there would be a dead-end promise.
     monkeypatch.setattr(settings, "possibilities_matrix_enabled", True)
     prompt = await _orch()._build_dev_prompt(_task(status="verifying"))
-    assert "WORK ALREADY DONE" in prompt
+    assert "WORK ALREADY DONE" not in prompt
+    assert "WORKFLOW STATE: VERIFYING" in prompt
 
 
 @pytest.mark.asyncio
