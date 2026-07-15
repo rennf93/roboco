@@ -24,6 +24,8 @@ import {
 import { Plus, Key } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectCreate } from "@/types";
+import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
+import { validateLadder } from "@/components/projects/ladder-validation";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -48,6 +50,7 @@ export function CreateProjectDialog() {
     git_token: "",
     assigned_cell: Team.BACKEND,
     default_branch: "main",
+    environments: null,
   });
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -74,6 +77,12 @@ export function CreateProjectDialog() {
       return;
     }
 
+    const envError = validateLadder(formData.environments ?? null);
+    if (envError) {
+      toast.error(envError);
+      return;
+    }
+
     try {
       await createProject.mutateAsync({
         name: formData.name,
@@ -82,6 +91,7 @@ export function CreateProjectDialog() {
         assigned_cell: formData.assigned_cell,
         git_token: formData.git_token || undefined,
         default_branch: formData.default_branch || "main",
+        environments: formData.environments ?? undefined,
         test_command: formData.test_command || undefined,
         lint_command: formData.lint_command || undefined,
         format_command: formData.format_command || undefined,
@@ -98,6 +108,7 @@ export function CreateProjectDialog() {
         git_token: "",
         assigned_cell: Team.BACKEND,
         default_branch: "main",
+        environments: null,
       });
       setShowAdvanced(false);
     } catch (error) {
@@ -222,7 +233,16 @@ export function CreateProjectDialog() {
                 }
                 placeholder="main"
               />
+              <p className="text-xs text-muted-foreground">
+                Fallback head+prod branch when no environment ladder is set below.
+              </p>
             </div>
+
+            {/* Environment ladder */}
+            <EnvironmentLadderEditor
+              rungs={formData.environments ?? null}
+              onChange={(rungs) => setFormData({ ...formData, environments: rungs })}
+            />
 
             {/* Advanced Options Toggle */}
             <Button
