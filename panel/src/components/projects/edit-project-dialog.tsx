@@ -27,6 +27,8 @@ import { ConventionsTab } from "@/components/conventions/conventions-tab";
 import { Key, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
+import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
+import { validateLadder } from "@/components/projects/ladder-validation";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -82,6 +84,7 @@ function EditProjectForm({
   const [gitUrl, setGitUrl] = useState(project.git_url);
   const [assignedCell, setAssignedCell] = useState(project.assigned_cell);
   const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
+  const [environments, setEnvironments] = useState(project.environments ?? null);
   const [isActive, setIsActive] = useState(project.is_active);
   const [testCommand, setTestCommand] = useState(project.test_command || "");
   const [lintCommand, setLintCommand] = useState(project.lint_command || "");
@@ -152,12 +155,19 @@ function EditProjectForm({
       return;
     }
 
+    const envError = validateLadder(environments);
+    if (envError) {
+      toast.error(envError);
+      return;
+    }
+
     // Build update payload
     const updates: ProjectUpdate = {
       name,
       git_url: gitUrl,
       assigned_cell: assignedCell,
       default_branch: defaultBranch || "main",
+      environments,
       is_active: isActive,
       test_command: testCommand || undefined,
       lint_command: lintCommand || undefined,
@@ -336,7 +346,16 @@ function EditProjectForm({
             onChange={(e) => setDefaultBranch(e.target.value)}
             placeholder="main"
           />
+          <p className="text-xs text-muted-foreground">
+            Fallback head+prod branch when no environment ladder is set below.
+          </p>
         </div>
+
+        {/* Environment ladder */}
+        <EnvironmentLadderEditor
+          rungs={environments}
+          onChange={setEnvironments}
+        />
 
         {/* Active Status */}
         <div className="flex items-center justify-between">

@@ -527,7 +527,7 @@ def _resolve_release_ci_workflow() -> str:
 async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     """Build a ReleaseExecutor with a production ops over a fresh writable clone."""
     from roboco.config import settings
-    from roboco.models.env_branches import effective_environments, prod_branch
+    from roboco.models.env_branches import prod_branch, promotion_chain
     from roboco.services.project import get_project_service
 
     slug = (settings.self_heal_project_slug or "roboco-api").strip()
@@ -541,10 +541,8 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     # of the dev retarget. default_branch stays as the legacy/shim source.
     default_branch = prod_branch(project)
     # Full-chain promotion: rung branches head→…→just-below-prod to merge into
-    # the prod checkout before bumping. Skips the prod rung itself and any rung
-    # sharing the prod branch (degenerate head==prod → empty → no-op).
-    rungs = effective_environments(project)
-    env_chain = [r.branch for r in rungs[:-1] if r.branch != default_branch]
+    # the prod checkout before bumping. Degenerate (head==prod) → [] → no-op.
+    env_chain = promotion_chain(project)
     # PAT rides a per-call ``-c http.extraheader=Authorization: Basic …`` config
     # (mirrors workspace.py :642 / :1285) so it never lands in the clone/push
     # argv — ``/proc/<pid>/cmdline`` would otherwise expose a URL-embedded token.

@@ -603,6 +603,12 @@ DEP_UPDATE_SOURCE = "dep_update"
 # auto-merges; requires the roboco-website project to be registered.
 DOCS_SYNC_SOURCE = "docs_sync"
 
+# Source tag for an env-sync conflict task: opened by the EnvSyncEngine when the
+# prod→…→head cascade hits a non-fast-forward on a rung and opens a sync PR. Rides
+# the normal delivery lifecycle (+ PR-review gate) and is never auto-merged; the
+# task tracks the PR so the dedup cap + panel visibility work.
+ENV_SYNC_SOURCE = "env_sync"
+
 # Source tag for a gated release proposal: opened by the release-manager engine
 # when accumulated unreleased changes pass the threshold + the gate is green.
 # Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
@@ -1572,6 +1578,26 @@ class TaskService(BaseService):
                 )
             if dep_update_command is not None:
                 stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_env_sync_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal env_sync conflict tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` (matched on the normalized
+        repo key). A conflict stops the cascade at that rung, so at most one
+        open env_sync task exists per repo: while it is open the repo's cascade
+        is paused and the engine skips it until the PR resolves.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == ENV_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            stmt = stmt.where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

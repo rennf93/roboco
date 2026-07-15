@@ -63,6 +63,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Watch every opted-in project's CI and open a fix task when its default branch goes red (per-project opt-in; never auto-merges).",
   dep_update_enabled:
     "Periodically probe opted-in projects for dependency updates and open an update task when a lockfile would change (per-project opt-in; never auto-merges).",
+  env_sync_enabled:
+    "Cascade each project's declared environment ladder prod→dev via GitHub's merges API so dev never falls behind prod; a conflicted rung opens a sync PR for you to merge (per-project opt-in; never pushes prod).",
   release_manager_enabled:
     "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
   org_memory_enabled:

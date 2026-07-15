@@ -125,6 +125,7 @@ export const projectsApi = {
         slug: project.slug,
         git_url: project.git_url,
         default_branch: project.default_branch ?? "main",
+        environments: project.environments ?? null,
         protected_branches: project.protected_branches ?? ["main", "master"],
         assigned_cell: project.assigned_cell,
         has_git_token: !!project.git_token, // Mock token status

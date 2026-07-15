@@ -295,4 +295,3 @@ def project_to_summary(
         ci_watch_enabled=bool(project.ci_watch_enabled),
         task_counts=task_counts,
     )
-
