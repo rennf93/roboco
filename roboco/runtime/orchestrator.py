@@ -12636,6 +12636,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """Validate and spawn a dev agent for a pending, pre-assigned task."""
         if self._is_agent_active(agent_slug):
             return
+        # Sequence is the bar: skip the spawn when the assignee-blind sequence
+        # guard would refuse the claim (a non-terminal lower-sequence same-parent
+        # sibling). Mirrors _route_unassigned_pm_task's prefilter so a
+        # sequence-held dev leaf isn't booted into a claim the chokepoint will
+        # refuse — pure spawn churn until the predecessor goes terminal.
+        if await self._pending_claim_blocked(task.get("id")):
+            return
         # Per-dev queue order: hold a dev's higher-sequence code leaf while it
         # still has an earlier non-terminal code sibling under the same parent,
         # so the dev works its queue one task at a time, in order. Loop-free —
