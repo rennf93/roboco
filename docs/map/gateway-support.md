@@ -109,7 +109,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | branch_depth | function | roboco/services/gateway/merge_chain.py:27 | Number of --separated hierarchy segments; master=0; raises on invalid branch. |
 | parent_branch_for | function | roboco/services/gateway/merge_chain.py:37 | Merge target by string surgery (same-team only); root->master. |
 | resolve_parent_branch | coroutine | roboco/services/gateway/merge_chain.py:62 | Cross-team-safe base/target: parent task's real branch_name; branchless parent falls back to project default branch. |
-| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:95 | Resolve task's project default branch via TaskService resolver or task.project.default_branch. |
+| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:97 | Resolve task's project head rung via a TaskService resolver when present, else `roboco.models.env_branches.head_branch(task.project)` (the env-ladder head rung, shimmed from `default_branch` when no ladder is declared); None when unresolvable so the caller falls back to string derivation. |
 | GateResult | dataclass | roboco/services/gateway/quality_gate.py:27 | passed/skipped/failures/output + summary + output_excerpt properties. |
 | run_quality_commands | coroutine | roboco/services/gateway/quality_gate.py:50 | Run each (name,command) in workspace, aggregate; runs all (no short-circuit). |
 | _run_one | coroutine | roboco/services/gateway/quality_gate.py:75 | Run one command via shell; timeout kills+reaps zombie, returns 124; None returncode fails closed (1). |

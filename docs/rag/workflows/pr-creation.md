@@ -66,7 +66,7 @@ There is no `roboco_git_merge_pr` MCP tool.
 
 - **Git token:** the project must have an encrypted GitHub PAT set on `projects.git_token_encrypted`. Without it, the workspace clone — and therefore everything downstream — fails with `WorkspaceError`.
 - **Token scope:** `repo` (for branch push, PR create, PR merge).
-- **Default branch:** `projects.default_branch` is the merge target for the master PR (typically `master`).
+- **Merge target:** the root→master PR targets the project's env-ladder **head** rung (`roboco.models.env_branches.head_branch`, typically `master`) — a project with no declared environment ladder resolves this straight from `projects.default_branch` via the read-time shim, so this is unchanged for every project that hasn't opted into a multi-rung ladder.
 
 ## Troubleshooting
 
