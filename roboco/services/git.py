@@ -298,6 +298,10 @@ _REV_LIST_PARTS = 2
 
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
+# merges-API success codes: 201 = merge commit created + pushed; 204 = nothing
+# to merge (head already an ancestor of base).
+_HTTP_CREATED = 201
+_HTTP_NO_CONTENT = 204
 # 404 means the PR (or repo) does not exist; surfaced as a typed GitError
 # by `update_pr_for_task` so the gateway can convert it into a specific
 # invalid_state envelope rather than the generic refusal message.
@@ -2462,6 +2466,154 @@ class GitService(BaseService):
             source_branch,
             target_branch,
         )
+
+    async def sync_env_branch(
+        self, project_slug: str, target_branch: str, source_branch: str
+    ) -> dict[str, Any]:
+        """Merge ``source_branch`` (an upper env rung) into ``target_branch`` (the
+        lower rung) server-side via GitHub's merges API — one step of the
+        prod→head cascade. The merge commit lands on ``target_branch`` (the
+        clean-cascade auto-push). The cascade's target is never prod by
+        construction (``ladder_pairs``), so prod is never pushed here.
+
+        Returns ``{"status": ...}``:
+
+        * ``already_ancestor`` — target already contains source (HTTP 204).
+        * ``merged`` — merge commit created + pushed to target (HTTP 201; ``sha``).
+        * ``conflict`` — non-fast-forward / merge conflict (HTTP 409); no commit.
+        * ``missing_ref`` — no token / unparseable remote / a branch absent (422).
+
+        Never raises into the engine loop. Does NOT open a PR on conflict —
+        the caller decides that.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return {"status": "missing_ref"}
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return {"status": "missing_ref"}
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return {"status": "missing_ref"}
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/merges",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={
+                        "base": target_branch,
+                        "head": source_branch,
+                        "commit_message": f"sync: {source_branch} → {target_branch}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            self.log.warning(
+                "env-sync merges API error", project=project_slug, error=str(exc)
+            )
+            return {"status": "missing_ref"}
+        return self._env_merge_status(resp, project_slug)
+
+    def _env_merge_status(
+        self, resp: httpx.Response, project_slug: str
+    ) -> dict[str, Any]:
+        """Map a GitHub merges-API response to an env-sync status dict.
+
+        ``merged`` carries the new merge ``sha``; ``conflict`` (409) leaves the
+        target untouched; any other code (incl. 422 missing-ref / no-merge) is
+        ``missing_ref`` so the engine skips without opening a PR.
+        """
+        if resp.status_code == _HTTP_CREATED:
+            return {"status": "merged", "sha": resp.json().get("sha")}
+        if resp.status_code == _HTTP_NO_CONTENT:
+            return {"status": "already_ancestor"}
+        if resp.status_code == _HTTP_CONFLICT:
+            return {"status": "conflict"}
+        self.log.warning(
+            "env-sync merges API unexpected status",
+            project=project_slug,
+            status=resp.status_code,
+            body=resp.text[:200],
+        )
+        return {"status": "missing_ref"}
+
+    async def open_sync_pr(
+        self, project_slug: str, source_branch: str, target_branch: str, body: str
+    ) -> dict[str, Any] | None:
+        """Open (or reuse) a sync PR ``source_branch → target_branch``.
+
+        Idempotent: reuses an already-open PR for the same head→base. Returns
+        ``{"number", "url"}`` or None on a missing token / unparseable remote /
+        GitHub error — never raises into the engine loop.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        try:
+            owner_repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        return await self._post_sync_pr(
+            owner_repo, git_token, (source_branch, target_branch), body, project_slug
+        )
+
+    async def _post_sync_pr(
+        self,
+        owner_repo: tuple[str, str],
+        git_token: str,
+        branches: tuple[str, str],
+        body: str,
+        project_slug: str,
+    ) -> dict[str, Any] | None:
+        """Reuse an open sync PR or create a new one for ``source→target``.
+
+        Never raises into the engine loop: a missing existing PR, a rejected
+        create, or a transport error all return None.
+        """
+        owner, repo = owner_repo
+        source_branch, target_branch = branches
+        existing = await self._find_existing_pr(
+            owner, repo, source_branch, target_branch, git_token
+        )
+        if existing is not None:
+            return {
+                "number": int(existing["number"]),
+                "url": str(existing.get("html_url", "")),
+            }
+        try:
+            resp = await self._post_pr(
+                owner,
+                repo,
+                git_token,
+                {
+                    "title": f"sync: {source_branch} → {target_branch}",
+                    "body": body,
+                    "head": source_branch,
+                    "base": target_branch,
+                },
+            )
+        except GitError as exc:
+            self.log.warning(
+                "env-sync PR create failed", project=project_slug, error=str(exc)
+            )
+            return None
+        if not resp.is_success:
+            self.log.warning(
+                "env-sync PR create rejected",
+                project=project_slug,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
+            return None
+        data = resp.json()
+        return {"number": int(data["number"]), "url": str(data.get("html_url", ""))}
 
     async def _resolve_new_pr_context(
         self,

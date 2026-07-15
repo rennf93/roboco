@@ -58,6 +58,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("gateway_health_enabled", "Gateway-health recovery"),
     ("ci_watch_enabled", "Multi-repo CI-watch"),
     ("dep_update_enabled", "Dependency-update bot"),
+    ("env_sync_enabled", "Environment-branch sync (cascade prod→dev)"),
     ("docs_sync_enabled", "Docs-divergence sync (release -> docs-update task)"),
     ("release_manager_enabled", "Gated release manager"),
     ("org_memory_enabled", "Organizational memory loop"),

@@ -808,6 +808,37 @@ class Settings(BaseSettings):
         description="Max dep_update tasks the loop may originate in one cycle.",
     )
 
+    # Env-sync engine — cascades each opted-in project's env ladder prod→…→head
+    # (a clean merge auto-pushes to the lower rung; a conflict opens ONE sync PR)
+    # so dev never falls behind prod. Default-off; never pushes to prod (the
+    # cascade's lower/target rung is never prod by construction).
+    env_sync_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the env-sync cascade loop. OFF by default; when "
+            "off the loop does not run. Only projects with a declared env "
+            "ladder (environments set) AND a git token participate."
+        ),
+    )
+    env_sync_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between env-sync cascade passes.",
+    )
+    env_sync_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open env_sync conflict tasks across "
+            "all repos; the loop originates nothing more while this many are open."
+        ),
+    )
+    env_sync_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max projects the env-sync loop may cascade in one cycle.",
+    )
+
     # Gated release manager — at a logical point (accumulated unreleased changes
     # past a threshold + green gate) the Secretary runs a deterministic readiness
     # sweep and PROPOSES a release for the CEO to approve/reject. Default-off;
