@@ -118,6 +118,24 @@ class GitDiffResponse(BaseModel):
     files_changed: int = 0
 
 
+class GitFileContentResponse(BaseModel):
+    """File content at a branch tip, optionally sliced to a line range.
+
+    `content` holds the requested slice; `start_line` is the 1-based number of
+    its first line. `total_lines` is the file's full line count and
+    `truncated` is True when the slice is shorter than the file (so the viewer
+    can show "…"). Raised by `GET /git/file` for the task-detail findings
+    snippet viewer.
+    """
+
+    branch: str
+    path: str
+    content: str
+    start_line: int = 1
+    total_lines: int = 0
+    truncated: bool = False
+
+
 # =============================================================================
 # COMMIT
 # =============================================================================

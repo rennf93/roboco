@@ -11,6 +11,7 @@ import type {
   GitLogResponse,
   GitBranchListResponse,
   GitDiffResponse,
+  GitFileContentResponse,
   GitCommitRequest,
   GitCommitResponse,
   GitPushRequest,
@@ -45,6 +46,8 @@ export const gitKeys = {
     [...gitKeys.all, "branches", projectSlug, { includeRemote }] as const,
   diff: (projectSlug: string, staged?: boolean, filePath?: string) =>
     [...gitKeys.all, "diff", projectSlug, { staged, filePath }] as const,
+  file: (branch: string, path: string, line?: number, context?: number) =>
+    [...gitKeys.all, "file", branch, path, { line, context }] as const,
 };
 
 // =============================================================================
@@ -115,6 +118,25 @@ export function useGitDiff(
     queryFn: () => gitApi.getDiff(projectSlug, staged, filePath),
     enabled: enabled && !!projectSlug,
     staleTime: 10000, // 10 seconds - diff can change frequently
+  });
+}
+
+/**
+ * Read a file at a branch tip, sliced around an optional line.
+ */
+export function useGitFile(
+  branch: string | null | undefined,
+  path: string | null | undefined,
+  line: number | null | undefined,
+  context: number = 10,
+  enabled: boolean = true,
+) {
+  return useQuery<GitFileContentResponse>({
+    queryKey: gitKeys.file(branch ?? "", path ?? "", line ?? undefined, context),
+    queryFn: () => gitApi.getFile(branch!, path!, line ?? undefined, context),
+    enabled: enabled && !!branch && !!path,
+    staleTime: 60000, // 1 minute — branch content is stable
+    retry: false, // a 404 (file gone) shouldn't retry forever
   });
 }
 

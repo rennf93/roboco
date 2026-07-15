@@ -54,6 +54,15 @@ export interface GitDiffResponse {
   files_changed: number;
 }
 
+export interface GitFileContentResponse {
+  branch: string;
+  path: string;
+  content: string;
+  start_line: number;
+  total_lines: number;
+  truncated: boolean;
+}
+
 export interface GitCommitResponse {
   commit_hash: string;
   message: string;

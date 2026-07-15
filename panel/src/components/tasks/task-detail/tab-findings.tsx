@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListChecks } from "lucide-react";
+import { CodeSnippet } from "@/components/git/code-snippet";
 
 interface TabFindingsProps {
   task: Task;
@@ -37,7 +38,13 @@ const ORIGIN_LABEL: Record<string, string> = {
   ceo: "CEO",
 };
 
-function FindingCard({ finding }: { finding: TaskFinding }) {
+function FindingCard({
+  finding,
+  branch,
+}: {
+  finding: TaskFinding;
+  branch: string | null;
+}) {
   return (
     <Card>
       <CardContent className="pt-4 space-y-2">
@@ -65,6 +72,13 @@ function FindingCard({ finding }: { finding: TaskFinding }) {
             </code>
           )}
         </div>
+        {finding.file && (
+          <CodeSnippet
+            branch={branch}
+            file={finding.file}
+            activeLine={finding.line}
+          />
+        )}
         <div className="space-y-1 text-sm">
           <p>
             <span className="text-muted-foreground">Expected:</span>{" "}
@@ -154,7 +168,7 @@ export function TabFindings({ task }: TabFindingsProps) {
           </div>
           <div className="space-y-3">
             {group.items.map((f) => (
-              <FindingCard key={f.id} finding={f} />
+              <FindingCard key={f.id} finding={f} branch={task.branch_name} />
             ))}
           </div>
         </div>
