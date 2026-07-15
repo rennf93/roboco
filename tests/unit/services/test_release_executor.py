@@ -562,3 +562,26 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
         == f"http.extraheader=Authorization: Basic {expected_basic}"
     )
     assert "push" in push_argv[c_idx + 2 :]
+
+
+def test_insert_changelog_entry_empties_unreleased_body() -> None:
+    existing = (
+        "# Changelog\n\nintro\n\n## [Unreleased]\n\n### Added\n\n"
+        "- **Curated bullet.**\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
+    )
+    entry = "## [0.25.0] - 2026-07-15\n\n### Added\n\n- **Curated bullet.**\n"
+    result = re._insert_changelog_entry(existing, entry)
+    unreleased = result.split("## [Unreleased]")[1].split("## [0.25.0]")[0]
+    assert "Curated bullet" not in unreleased
+    assert result.count("Curated bullet") == 1
+    assert result.index("## [Unreleased]") < result.index("## [0.25.0]")
+    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
+    assert "- old" in result
+
+
+def test_insert_changelog_entry_without_unreleased_is_unchanged_behavior() -> None:
+    existing = "# Changelog\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
+    entry = "## [0.25.0] - 2026-07-15\n\n- new\n"
+    result = re._insert_changelog_entry(existing, entry)
+    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
+    assert "- old" in result and "- new" in result

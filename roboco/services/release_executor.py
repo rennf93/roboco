@@ -499,14 +499,26 @@ def _bump_uv_lock(text: str, old: str, new: str) -> str:
 
 
 def _insert_changelog_entry(existing: str, entry: str) -> str:
-    """Insert ``entry`` above the first released version heading (Keep a Changelog)."""
+    """Insert ``entry`` above the first released version heading (Keep a
+    Changelog), emptying ``[Unreleased]``'s body — the readiness drafter uses
+    that body as the entry when it's curated, so leaving it in place would
+    ship the same content twice."""
     block = entry.rstrip() + "\n"
     if not existing.strip():
         return block
     lines = existing.splitlines(keepends=True)
+    unreleased_idx = None
     for idx, line in enumerate(lines):
-        if line.startswith("## [") and "Unreleased" not in line:
-            return "".join(lines[:idx]) + block + "\n" + "".join(lines[idx:])
+        if line.startswith("## [") and "Unreleased" in line:
+            unreleased_idx = idx
+        elif line.startswith("## ["):
+            if unreleased_idx is None:
+                return "".join(lines[:idx]) + block + "\n" + "".join(lines[idx:])
+            prefix = "".join(lines[: unreleased_idx + 1]).rstrip("\n") + "\n\n"
+            return prefix + block + "\n" + "".join(lines[idx:])
+    if unreleased_idx is not None:
+        prefix = "".join(lines[: unreleased_idx + 1]).rstrip("\n") + "\n\n"
+        return prefix + block
     return existing.rstrip() + "\n\n" + block
 
 

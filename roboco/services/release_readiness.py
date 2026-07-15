@@ -232,7 +232,38 @@ def _is_documented(change: ClassifiedChange, changelog_text: str) -> bool:
     return bool(change.summary) and change.summary in changelog_text
 
 
-def _draft_changelog(version: str, changes: list[ClassifiedChange], today: str) -> str:
+def _unreleased_body(changelog_text: str) -> str:
+    """The curated content under ``## [Unreleased]``, empty when the section
+    is absent or blank."""
+    lines = changelog_text.splitlines()
+    start = None
+    for idx, line in enumerate(lines):
+        if line.startswith("## [") and "Unreleased" in line:
+            start = idx + 1
+            break
+    if start is None:
+        return ""
+    body: list[str] = []
+    for line in lines[start:]:
+        if line.startswith("## ["):
+            break
+        body.append(line)
+    return "\n".join(body).strip()
+
+
+def _draft_changelog(
+    version: str,
+    changes: list[ClassifiedChange],
+    today: str,
+    changelog_text: str = "",
+) -> str:
+    # Curated notes win: when [Unreleased] carries content, the release entry
+    # IS that content — the per-commit transcription below is the fallback for
+    # a repo whose changelog wasn't maintained. Completeness is still policed
+    # separately by _changelog_gaps, so curation gaps stay visible to the CEO.
+    curated = _unreleased_body(changelog_text)
+    if curated:
+        return f"## [{version}] - {today}\n\n{curated}\n"
     sections: dict[str, list[str]] = {}
     for change in changes:
         section = _KIND_SECTION.get(change.kind, "Changed")
@@ -373,7 +404,9 @@ def assess(snapshot: ReleaseRepoSnapshot, *, today: str) -> ReleaseReadinessRepo
         proposed_version=proposed,
         bump_kind=bump,
         change_summary=[f"{c.kind}: {c.summary}" for c in changes],
-        drafted_changelog=_draft_changelog(proposed, changes, today),
+        drafted_changelog=_draft_changelog(
+            proposed, changes, today, snapshot.changelog_text
+        ),
         version_bump_plan=list(snapshot.canonical_bump_files),
         gaps=gaps,
         migration_notes=migration_notes,

@@ -13,6 +13,7 @@ import pytest
 from roboco.services.release_readiness import (
     CommitInfo,
     _commits_since,
+    _draft_changelog,
     _run_git,
     classify_changes,
     derive_bump,
@@ -137,3 +138,29 @@ def test_commits_since_preserves_field_sep_in_body(
     assert commit.subject == subject
     assert commit.body == body  # the embedded \x1f is preserved
     assert commit.pr_number == 1
+
+
+def test_draft_changelog_uses_curated_unreleased_body() -> None:
+    changes = classify_changes(
+        [CommitInfo(sha="a" * 8, subject="feat: shiny thing", body="")]
+    )
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n"
+        "- **Shiny thing.** Curated prose about it.\n\n"
+        "## [0.24.0] - 2026-07-14\n\n- old\n"
+    )
+    draft = _draft_changelog("0.25.0", changes, "2026-07-15", changelog)
+    assert draft.startswith("## [0.25.0] - 2026-07-15")
+    assert "Curated prose about it." in draft
+    assert "feat: shiny thing" not in draft
+    assert "[Unreleased]" not in draft
+
+
+def test_draft_changelog_falls_back_to_transcription_without_curation() -> None:
+    changes = classify_changes(
+        [CommitInfo(sha="a" * 8, subject="feat: shiny thing", body="")]
+    )
+    empty = "# Changelog\n\n## [Unreleased]\n\n## [0.24.0] - 2026-07-14\n"
+    draft = _draft_changelog("0.25.0", changes, "2026-07-15", empty)
+    assert "### Added" in draft
+    assert "- shiny thing" in draft
