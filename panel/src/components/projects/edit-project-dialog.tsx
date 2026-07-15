@@ -271,7 +271,9 @@ function EditProjectForm({
       <div className="grid gap-4 py-4">
         {/* Slug (read-only) */}
         <div className="grid gap-2">
-          <Label htmlFor="slug">Slug</Label>
+          <HelpTip label="Immutable — composes each agent's workspace clone path and appears in every branch name for this project. Set at creation, fixed here.">
+            <Label htmlFor="slug">Slug</Label>
+          </HelpTip>
           <Input
             id="slug"
             value={project.slug}
@@ -282,7 +284,9 @@ function EditProjectForm({
 
         {/* Name */}
         <div className="grid gap-2">
-          <Label htmlFor="name">Project Name *</Label>
+          <HelpTip label="Display name shown across the panel and CEO approval queues; renaming it never touches the slug or workspace path.">
+            <Label htmlFor="name">Project Name *</Label>
+          </HelpTip>
           <Input
             id="name"
             value={name}
@@ -293,7 +297,9 @@ function EditProjectForm({
 
         {/* Git URL */}
         <div className="grid gap-2">
-          <Label htmlFor="git_url">Git URL *</Label>
+          <HelpTip label="Cloned into each assigned agent's workspace; use HTTPS so the token below can authenticate clone, push, and PR operations.">
+            <Label htmlFor="git_url">Git URL *</Label>
+          </HelpTip>
           <Input
             id="git_url"
             value={gitUrl}
@@ -348,9 +354,17 @@ function EditProjectForm({
 
           {!clearToken && (
             <div className="grid gap-2">
-              <Label htmlFor="git_token" className="text-sm">
-                {project.has_git_token ? "Replace token" : "Set token"}
-              </Label>
+              <HelpTip
+                label={
+                  project.has_git_token
+                    ? "Overwrites the current token immediately on save; the previous token is discarded and cannot be recovered."
+                    : "Required for HTTPS clone/push/PR operations if the repo is private; stored Fernet-encrypted and never re-displayed once saved."
+                }
+              >
+                <Label htmlFor="git_token" className="text-sm">
+                  {project.has_git_token ? "Replace token" : "Set token"}
+                </Label>
+              </HelpTip>
               <Input
                 id="git_token"
                 type="password"
@@ -368,7 +382,9 @@ function EditProjectForm({
 
         {/* Assigned Cell */}
         <div className="grid gap-2">
-          <Label htmlFor="assigned_cell">Assigned Cell *</Label>
+          <HelpTip label="Which cell owns this project — only that cell's agents can claim its tasks (enforced server-side, not just a UI filter).">
+            <Label htmlFor="assigned_cell">Assigned Cell *</Label>
+          </HelpTip>
           <Select
             value={assignedCell}
             onValueChange={(value: Team) => setAssignedCell(value)}
@@ -388,7 +404,9 @@ function EditProjectForm({
 
         {/* Default Branch */}
         <div className="grid gap-2">
-          <Label htmlFor="default_branch">Default Branch</Label>
+          <HelpTip label="Used as both head and prod when no environment ladder is set below (a degenerate single-rung ladder) — the PR review gate diffs against it and releases cut from it.">
+            <Label htmlFor="default_branch">Default Branch</Label>
+          </HelpTip>
           <Input
             id="default_branch"
             value={defaultBranch}
@@ -419,19 +437,23 @@ function EditProjectForm({
         </div>
 
         {/* Advanced Options Toggle */}
-        <Button
-          type="button"
-          variant="ghost"
-          className="justify-start px-0 text-muted-foreground"
-          onClick={() => setShowAdvanced(!showAdvanced)}
-        >
-          {showAdvanced ? "Hide" : "Show"} CI/CD Commands
-        </Button>
+        <HelpTip label="Test/Format/Build are reference-only today; Lint + Typecheck (or Quality Gate below, which replaces both) run automatically at the dev's pre-submit gate.">
+          <Button
+            type="button"
+            variant="ghost"
+            className="justify-start px-0 text-muted-foreground"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            {showAdvanced ? "Hide" : "Show"} CI/CD Commands
+          </Button>
+        </HelpTip>
 
         {showAdvanced && (
           <>
             <div className="grid gap-2">
-              <Label htmlFor="test_command">Test Command</Label>
+              <HelpTip label="Reference only — not yet wired into any automated gate or CI run by RoboCo itself.">
+                <Label htmlFor="test_command">Test Command</Label>
+              </HelpTip>
               <Input
                 id="test_command"
                 value={testCommand}
@@ -441,7 +463,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="lint_command">Lint Command</Label>
+              <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Typecheck — unless Quality Gate Command below is set, which replaces both.">
+                <Label htmlFor="lint_command">Lint Command</Label>
+              </HelpTip>
               <Input
                 id="lint_command"
                 value={lintCommand}
@@ -451,7 +475,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="format_command">Format Command</Label>
+              <HelpTip label="Reference only — deliberately excluded from the automated gate since formatting mutates files.">
+                <Label htmlFor="format_command">Format Command</Label>
+              </HelpTip>
               <Input
                 id="format_command"
                 value={formatCommand}
@@ -461,7 +487,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="typecheck_command">Typecheck Command</Label>
+              <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Lint — unless Quality Gate Command below is set, which replaces both.">
+                <Label htmlFor="typecheck_command">Typecheck Command</Label>
+              </HelpTip>
               <Input
                 id="typecheck_command"
                 value={typecheckCommand}
@@ -471,7 +499,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="build_command">Build Command</Label>
+              <HelpTip label="Reference only — not run automatically; the slow build/test suite is left to CI.">
+                <Label htmlFor="build_command">Build Command</Label>
+              </HelpTip>
               <Input
                 id="build_command"
                 value={buildCommand}
@@ -481,7 +511,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="quality_command">Quality Gate Command</Label>
+              <HelpTip label="When set, replaces the Lint + Typecheck pair as the dev's complete pre-submit gate command.">
+                <Label htmlFor="quality_command">Quality Gate Command</Label>
+              </HelpTip>
               <Input
                 id="quality_command"
                 value={qualityCommand}
@@ -497,14 +529,16 @@ function EditProjectForm({
         )}
 
         {/* Autonomous Maintenance Toggle */}
-        <Button
-          type="button"
-          variant="ghost"
-          className="justify-start px-0 text-muted-foreground"
-          onClick={() => setShowAutonomy(!showAutonomy)}
-        >
-          {showAutonomy ? "Hide" : "Show"} Autonomous Maintenance
-        </Button>
+        <HelpTip label="CI-watch, video engine, dependency-update bot, and sandbox DB/Redis/Mongo opt-ins — each also needs its own fleet-wide flag armed to actually run.">
+          <Button
+            type="button"
+            variant="ghost"
+            className="justify-start px-0 text-muted-foreground"
+            onClick={() => setShowAutonomy(!showAutonomy)}
+          >
+            {showAutonomy ? "Hide" : "Show"} Autonomous Maintenance
+          </Button>
+        </HelpTip>
 
         {showAutonomy && (
           <>
@@ -522,7 +556,9 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="ci_watch_workflow">CI-watch Workflow</Label>
+              <HelpTip label="Scopes CI-watch to one workflow's runs so a green run elsewhere can't mask a red one here; leave blank to fall back to the fleet default (ci.yml).">
+                <Label htmlFor="ci_watch_workflow">CI-watch Workflow</Label>
+              </HelpTip>
               <Input
                 id="ci_watch_workflow"
                 value={ciWatchWorkflow}
@@ -549,9 +585,11 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="dep_update_command">
-                Dependency-Update Command
-              </Label>
+              <HelpTip label="Dry-run only — the weekly bot runs this in a throwaway clone to detect a lockfile diff; nothing is committed until it opens a task that rides the normal PR-review flow.">
+                <Label htmlFor="dep_update_command">
+                  Dependency-Update Command
+                </Label>
+              </HelpTip>
               <Input
                 id="dep_update_command"
                 value={depUpdateCommand}
@@ -565,9 +603,11 @@ function EditProjectForm({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="dep_update_paths">
-                Dependency-Update Lockfile Paths
-              </Label>
+              <HelpTip label="Which lockfile paths the dry-run diffs to detect a change; leave blank to auto-infer uv.lock / pnpm-lock.yaml.">
+                <Label htmlFor="dep_update_paths">
+                  Dependency-Update Lockfile Paths
+                </Label>
+              </HelpTip>
               <Input
                 id="dep_update_paths"
                 value={depUpdatePaths}

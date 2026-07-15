@@ -289,7 +289,13 @@ export function FeatureFlagsCard() {
                         size="sm"
                         className="w-full justify-between px-2 text-muted-foreground"
                       >
-                        <span className="text-sm">X (Twitter) credentials</span>
+                        {/* Tip goes on the inner span, not the
+                            CollapsibleTrigger asChild Button — wrapping the
+                            trigger itself would clobber its open/closed
+                            data-state (same trap as Switch/TabsTrigger). */}
+                        <HelpTip label="Only takes effect once x_engine_enabled above is on.">
+                          <span className="text-sm">X (Twitter) credentials</span>
+                        </HelpTip>
                         {xCredsOpen ? (
                           <ChevronDown className="h-4 w-4" />
                         ) : (
@@ -314,7 +320,9 @@ export function FeatureFlagsCard() {
                         size="sm"
                         className="w-full justify-between px-2 text-muted-foreground"
                       >
-                        <span className="text-sm">TikTok credentials</span>
+                        <HelpTip label="Only used for the TikTok distribution leg — needs video_engine_enabled above on, and video only posts once you approve a rendered draft.">
+                          <span className="text-sm">TikTok credentials</span>
+                        </HelpTip>
                         {tiktokCredsOpen ? (
                           <ChevronDown className="h-4 w-4" />
                         ) : (
@@ -339,7 +347,9 @@ export function FeatureFlagsCard() {
                         size="sm"
                         className="w-full justify-between px-2 text-muted-foreground"
                       >
-                        <span className="text-sm">Telegram credentials</span>
+                        <HelpTip label="Only takes effect once telegram_enabled above is on — in-app notifications keep working either way.">
+                          <span className="text-sm">Telegram credentials</span>
+                        </HelpTip>
                         {telegramCredsOpen ? (
                           <ChevronDown className="h-4 w-4" />
                         ) : (

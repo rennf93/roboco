@@ -13,6 +13,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Search, Filter, X } from "lucide-react";
 import { Team } from "@/types";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ProjectFiltersProps {
   searchQuery: string;
@@ -57,7 +58,9 @@ export function ProjectFilters({
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
       {/* Search */}
       <div className="relative flex-1 max-w-sm">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <HelpTip label="Filters the list below by project name (client-side, case-insensitive substring match).">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        </HelpTip>
         <Input
           placeholder="Search projects..."
           value={searchQuery}
@@ -68,17 +71,19 @@ export function ProjectFilters({
 
       {/* Cell Filter */}
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" className="gap-2">
-            <Filter className="h-4 w-4" />
-            Cell
-            {cellFilter.length > 0 && (
-              <Badge variant="secondary" className="ml-1">
-                {cellFilter.length}
-              </Badge>
-            )}
-          </Button>
-        </DropdownMenuTrigger>
+        <HelpTip label="Show only projects assigned to the checked cells (any match).">
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="gap-2">
+              <Filter className="h-4 w-4" />
+              Cell
+              {cellFilter.length > 0 && (
+                <Badge variant="secondary" className="ml-1">
+                  {cellFilter.length}
+                </Badge>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+        </HelpTip>
         <DropdownMenuContent align="start" className="w-48">
           <DropdownMenuLabel>Filter by Cell</DropdownMenuLabel>
           <DropdownMenuSeparator />
@@ -95,20 +100,24 @@ export function ProjectFilters({
       </DropdownMenu>
 
       {/* Show Inactive Toggle */}
-      <Button
-        variant={showInactive ? "default" : "outline"}
-        onClick={() => onShowInactiveChange(!showInactive)}
-        className="gap-2"
-      >
-        {showInactive ? "Showing Inactive" : "Show Inactive"}
-      </Button>
+      <HelpTip label="Include inactive projects — hidden from the default list and skipped as the fallback for idle-agent spawns.">
+        <Button
+          variant={showInactive ? "default" : "outline"}
+          onClick={() => onShowInactiveChange(!showInactive)}
+          className="gap-2"
+        >
+          {showInactive ? "Showing Inactive" : "Show Inactive"}
+        </Button>
+      </HelpTip>
 
       {/* Clear Filters */}
       {hasActiveFilters && (
-        <Button variant="ghost" onClick={clearFilters} className="gap-2">
-          <X className="h-4 w-4" />
-          Clear
-        </Button>
+        <HelpTip label="Resets search, cell filter, and Show Inactive back to defaults.">
+          <Button variant="ghost" onClick={clearFilters} className="gap-2">
+            <X className="h-4 w-4" />
+            Clear
+          </Button>
+        </HelpTip>
       )}
     </div>
   );

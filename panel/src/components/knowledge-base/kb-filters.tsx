@@ -85,14 +85,16 @@ export function KBFilters({ selectedTypes, onTypesChange }: KBFiltersProps) {
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Filter by type</span>
         {selectedTypes.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onTypesChange([])}
-            className="h-auto py-0 px-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            Clear
-          </Button>
+          <HelpTip label="Reset — search every index type again instead of just these">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onTypesChange([])}
+              className="h-auto py-0 px-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </Button>
+          </HelpTip>
         )}
       </div>
       <div className="space-y-2">

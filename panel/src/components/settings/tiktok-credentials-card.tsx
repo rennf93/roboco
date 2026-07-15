@@ -88,19 +88,22 @@ export function TikTokCredentialsForm() {
 
       <div className="flex items-center gap-2 rounded-md border p-3">
         {status?.has_credentials ? (
-          <>
+          <HelpTip label="All 4 OAuth2 secrets are stored — approved video drafts can post to TikTok's inbox-upload.">
             <Key className="h-4 w-4 text-green-500" />
-            <span className="text-sm text-green-600 dark:text-green-400">
-              Credentials are set
-            </span>
-          </>
+          </HelpTip>
         ) : (
-          <>
+          <HelpTip label="Missing at least one secret — video drafts still render and queue but can't post to TikTok until all 4 are set.">
             <KeyRound className="h-4 w-4 text-amber-500" />
-            <span className="text-sm text-amber-600 dark:text-amber-400">
-              {isLoading ? "Checking..." : "No credentials configured"}
-            </span>
-          </>
+          </HelpTip>
+        )}
+        {status?.has_credentials ? (
+          <span className="text-sm text-green-600 dark:text-green-400">
+            Credentials are set
+          </span>
+        ) : (
+          <span className="text-sm text-amber-600 dark:text-amber-400">
+            {isLoading ? "Checking..." : "No credentials configured"}
+          </span>
         )}
       </div>
 

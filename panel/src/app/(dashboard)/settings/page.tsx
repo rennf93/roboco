@@ -121,7 +121,9 @@ export default function SettingsPage() {
             <Separator />
             <div className="flex items-center justify-between">
               <div>
-                <Label>Collapsed Sidebar</Label>
+                <HelpTip label="Saved to this browser only — doesn't sync across devices.">
+                  <Label>Collapsed Sidebar</Label>
+                </HelpTip>
                 <p className="text-sm text-muted-foreground">
                   Show icons only in the sidebar
                 </p>

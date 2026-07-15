@@ -121,12 +121,14 @@ export function CreateProjectDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />
-          New Project
-        </Button>
-      </DialogTrigger>
+      <HelpTip label="Registers a git repository — sets cell ownership, branch/environment ladder, and CI/CD gate commands for agents to work on it.">
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="h-4 w-4 mr-2" />
+            New Project
+          </Button>
+        </DialogTrigger>
+      </HelpTip>
       <DialogContent className="sm:max-w-[525px]">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
@@ -138,7 +140,9 @@ export function CreateProjectDialog() {
           <div className="grid gap-4 py-4">
             {/* Name */}
             <div className="grid gap-2">
-              <Label htmlFor="name">Project Name *</Label>
+              <HelpTip label="Display name shown across the panel and CEO approval queues; changing it later never touches the slug or workspace path already derived from it.">
+                <Label htmlFor="name">Project Name *</Label>
+              </HelpTip>
               <Input
                 id="name"
                 value={formData.name}
@@ -149,7 +153,9 @@ export function CreateProjectDialog() {
 
             {/* Slug */}
             <div className="grid gap-2">
-              <Label htmlFor="slug">Slug *</Label>
+              <HelpTip label="Immutable after creation — composes each agent's workspace clone path (/data/workspaces/<slug>/<cell>/<agent>) and appears in every branch name for this project.">
+                <Label htmlFor="slug">Slug *</Label>
+              </HelpTip>
               <Input
                 id="slug"
                 value={formData.slug}
@@ -166,7 +172,9 @@ export function CreateProjectDialog() {
 
             {/* Git URL */}
             <div className="grid gap-2">
-              <Label htmlFor="git_url">Git URL *</Label>
+              <HelpTip label="Cloned into each assigned agent's workspace on first access; use HTTPS so the encrypted token below can authenticate clone, push, and PR operations.">
+                <Label htmlFor="git_url">Git URL *</Label>
+              </HelpTip>
               <Input
                 id="git_url"
                 value={formData.git_url}
@@ -205,7 +213,9 @@ export function CreateProjectDialog() {
 
             {/* Assigned Cell */}
             <div className="grid gap-2">
-              <Label htmlFor="assigned_cell">Assigned Cell *</Label>
+              <HelpTip label="Which cell owns this project — only that cell's agents can claim its tasks (enforced server-side, not just a UI filter).">
+                <Label htmlFor="assigned_cell">Assigned Cell *</Label>
+              </HelpTip>
               <Select
                 value={formData.assigned_cell}
                 onValueChange={(value: Team) =>
@@ -227,7 +237,9 @@ export function CreateProjectDialog() {
 
             {/* Default Branch */}
             <div className="grid gap-2">
-              <Label htmlFor="default_branch">Default Branch</Label>
+              <HelpTip label="Used as both head and prod when no environment ladder is set below (a degenerate single-rung ladder) — the PR review gate diffs against it and releases cut from it.">
+                <Label htmlFor="default_branch">Default Branch</Label>
+              </HelpTip>
               <Input
                 id="default_branch"
                 value={formData.default_branch}
@@ -248,20 +260,24 @@ export function CreateProjectDialog() {
             />
 
             {/* Advanced Options Toggle */}
-            <Button
-              type="button"
-              variant="ghost"
-              className="justify-start px-0 text-muted-foreground"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-            >
-              {showAdvanced ? "Hide" : "Show"} CI/CD Commands
-            </Button>
+            <HelpTip label="Test/Format/Build are reference-only today; Lint + Typecheck (or Quality Gate below, which replaces both) run automatically at the dev's pre-submit gate.">
+              <Button
+                type="button"
+                variant="ghost"
+                className="justify-start px-0 text-muted-foreground"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+              >
+                {showAdvanced ? "Hide" : "Show"} CI/CD Commands
+              </Button>
+            </HelpTip>
 
             {showAdvanced && (
               <>
                 {/* CI/CD Commands */}
                 <div className="grid gap-2">
-                  <Label htmlFor="test_command">Test Command</Label>
+                  <HelpTip label="Reference only — not yet wired into any automated gate or CI run by RoboCo itself.">
+                    <Label htmlFor="test_command">Test Command</Label>
+                  </HelpTip>
                   <Input
                     id="test_command"
                     value={formData.test_command || ""}
@@ -273,7 +289,9 @@ export function CreateProjectDialog() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="lint_command">Lint Command</Label>
+                  <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Typecheck — unless Quality Gate Command below is set, which replaces both.">
+                    <Label htmlFor="lint_command">Lint Command</Label>
+                  </HelpTip>
                   <Input
                     id="lint_command"
                     value={formData.lint_command || ""}
@@ -285,7 +303,9 @@ export function CreateProjectDialog() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="format_command">Format Command</Label>
+                  <HelpTip label="Reference only — deliberately excluded from the automated gate since formatting mutates files.">
+                    <Label htmlFor="format_command">Format Command</Label>
+                  </HelpTip>
                   <Input
                     id="format_command"
                     value={formData.format_command || ""}
@@ -300,7 +320,9 @@ export function CreateProjectDialog() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="typecheck_command">Typecheck Command</Label>
+                  <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Lint — unless Quality Gate Command below is set, which replaces both.">
+                    <Label htmlFor="typecheck_command">Typecheck Command</Label>
+                  </HelpTip>
                   <Input
                     id="typecheck_command"
                     value={formData.typecheck_command || ""}
@@ -315,7 +337,9 @@ export function CreateProjectDialog() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="build_command">Build Command</Label>
+                  <HelpTip label="Reference only — not run automatically; the slow build/test suite is left to CI.">
+                    <Label htmlFor="build_command">Build Command</Label>
+                  </HelpTip>
                   <Input
                     id="build_command"
                     value={formData.build_command || ""}
@@ -330,7 +354,9 @@ export function CreateProjectDialog() {
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="quality_command">Quality Gate Command</Label>
+                  <HelpTip label="When set, replaces the Lint + Typecheck pair as the dev's complete pre-submit gate command.">
+                    <Label htmlFor="quality_command">Quality Gate Command</Label>
+                  </HelpTip>
                   <Input
                     id="quality_command"
                     value={formData.quality_command || ""}

@@ -126,9 +126,21 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Product</TableHead>
-                  <TableHead>Cells</TableHead>
-                  <TableHead>Progress</TableHead>
+                  <TableHead>
+                    <HelpTip label="Name and slug; click either to open the edit dialog.">
+                      <span>Product</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="Which project each cell (Backend/Frontend/UX-UI) works on for this product.">
+                      <span>Cells</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="Done / active / blocked counts across all mapped projects' tasks.">
+                      <span>Progress</span>
+                    </HelpTip>
+                  </TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -144,9 +156,11 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                         >
                           {product.name}
                         </Button>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {product.slug}
-                        </p>
+                        <HelpTip label="Identifier for this cell-to-project grouping, used to reference it across the panel and API.">
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {product.slug}
+                          </p>
+                        </HelpTip>
                       </div>
                     </TableCell>
                     <TableCell>
@@ -188,9 +202,11 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                     >
                       {product.name}
                     </Button>
-                    <p className="text-xs text-muted-foreground font-mono">
-                      {product.slug}
-                    </p>
+                    <HelpTip label="Identifier for this cell-to-project grouping, used to reference it across the panel and API.">
+                      <p className="text-xs text-muted-foreground font-mono">
+                        {product.slug}
+                      </p>
+                    </HelpTip>
                   </div>
                   <HelpTip label="Edit product name, description, and cell-project mapping">
                     <Button

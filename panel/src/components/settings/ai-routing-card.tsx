@@ -527,6 +527,7 @@ export function AIRoutingCard() {
               active={currentMode === "self_hosted"}
               onClick={flipToSelfHosted}
               disabled={applyMode.isPending || !isSelfHostedConnected}
+              labelHint="Unlike Ollama/Grok, self-hosted has no built-in fallback model — pick one in the picker below or the switch fails server-side."
             />
             <ModeButton
               icon={<Cpu className="h-4 w-4" />}
@@ -561,9 +562,11 @@ export function AIRoutingCard() {
           <>
             <Separator />
             <section className="space-y-2">
-              <Label className="text-sm font-medium">
-                Self-Hosted default model
-              </Label>
+              <HelpTip label="Self-hosted has no automatic fallback — clearing this back to '(use server default)' will fail the next time Self-Hosted mode is applied.">
+                <Label className="text-sm font-medium">
+                  Self-Hosted default model
+                </Label>
+              </HelpTip>
               <p className="text-xs text-muted-foreground">
                 Choose which discovered model all agents should use in
                 self-hosted mode.
@@ -782,6 +785,7 @@ function ModeButton({
   disabled,
   onClick,
   highlight,
+  labelHint,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -790,6 +794,8 @@ function ModeButton({
   disabled: boolean;
   onClick: () => void | Promise<void>;
   highlight?: boolean;
+  /** Extra hover context on the label, e.g. a gotcha the always-visible description doesn't cover. */
+  labelHint?: string;
 }) {
   return (
     <Button
@@ -804,11 +810,15 @@ function ModeButton({
     >
       <div className="flex w-full items-center gap-2 text-sm font-medium">
         {icon}
-        <span>{label}</span>
+        <HelpTip label={labelHint}>
+          <span>{label}</span>
+        </HelpTip>
         {active ? (
-          <Badge className="ml-auto bg-primary/15 text-primary border-0 text-xs">
-            active
-          </Badge>
+          <HelpTip label="Currently applied fleet-wide — every agent spawns on this provider until the mode changes again.">
+            <Badge className="ml-auto bg-primary/15 text-primary border-0 text-xs">
+              active
+            </Badge>
+          </HelpTip>
         ) : null}
       </div>
       <p className="mt-1 text-xs text-muted-foreground font-normal">

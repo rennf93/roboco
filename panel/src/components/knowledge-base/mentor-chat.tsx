@@ -10,6 +10,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Markdown } from "@/components/ui/markdown";
 import {
@@ -177,15 +178,19 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
           <Brain className="h-5 w-5 text-primary" />
           <span className="font-medium">Mentor Chat</span>
           {conversationId && (
-            <Badge variant="outline" className="text-xs">
-              Conversation active
-            </Badge>
+            <HelpTip label="Follow-up questions reuse this conversation's history for context">
+              <Badge variant="outline" className="text-xs w-fit">
+                Conversation active
+              </Badge>
+            </HelpTip>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={handleNewChat}>
-          <RotateCcw className="h-4 w-4 mr-1" />
-          New Chat
-        </Button>
+        <HelpTip label="Clears this thread — the mentor loses this conversation's context">
+          <Button variant="ghost" size="sm" onClick={handleNewChat}>
+            <RotateCcw className="h-4 w-4 mr-1" />
+            New Chat
+          </Button>
+        </HelpTip>
       </div>
 
       {/* Messages */}
@@ -241,19 +246,21 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                   {/* Sources toggle */}
                   {msg.sources && msg.sources.length > 0 && (
                     <div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-xs"
-                        onClick={() =>
-                          setExpandedSources(
-                            expandedSources === idx ? null : idx,
-                          )
-                        }
-                      >
-                        {expandedSources === idx ? "Hide" : "Show"}{" "}
-                        {msg.sources.length} sources
-                      </Button>
+                      <HelpTip label="The knowledge-base chunks retrieved and handed to the model as context for this answer">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs"
+                          onClick={() =>
+                            setExpandedSources(
+                              expandedSources === idx ? null : idx,
+                            )
+                          }
+                        >
+                          {expandedSources === idx ? "Hide" : "Show"}{" "}
+                          {msg.sources.length} sources
+                        </Button>
+                      </HelpTip>
                       {expandedSources === idx && (
                         <div className="mt-2 space-y-2">
                           {msg.sources.map((source, sidx) => (
@@ -278,16 +285,20 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                   {msg.followups && msg.followups.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {msg.followups.map((followup, fidx) => (
-                        <Button
+                        <HelpTip
                           key={fidx}
-                          variant="outline"
-                          size="sm"
-                          className="text-xs h-auto py-1.5"
-                          onClick={() => handleFollowUp(followup)}
-                          disabled={isLoading}
+                          label="Ask this next, in the same conversation"
                         >
-                          {followup}
-                        </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs h-auto py-1.5"
+                            onClick={() => handleFollowUp(followup)}
+                            disabled={isLoading}
+                          >
+                            {followup}
+                          </Button>
+                        </HelpTip>
                       ))}
                     </div>
                   )}

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { FolderGit2, X } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface ProjectSelectorProps {
   value: string | null;
@@ -110,10 +111,12 @@ export function ProjectSelector({
               <FolderGit2 className="h-4 w-4" />
               <span>{selectedProject.name}</span>
               {selectedProject.assigned_cell && (
-                <Badge variant="outline" className="text-xs">
-                  {TEAM_LABELS[selectedProject.assigned_cell] ||
-                    selectedProject.assigned_cell}
-                </Badge>
+                <HelpTip label="The cell that owns this project — only its agents can claim tasks against it.">
+                  <Badge variant="outline" className="text-xs">
+                    {TEAM_LABELS[selectedProject.assigned_cell] ||
+                      selectedProject.assigned_cell}
+                  </Badge>
+                </HelpTip>
               )}
             </div>
           ) : (

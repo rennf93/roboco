@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { HelpTip } from "@/components/ui/help-tip";
 import { cn } from "@/lib/utils";
 
 const categoryConfig: Record<
@@ -135,9 +136,11 @@ export function KBCategoryNav({
             <div className="flex-1 min-w-0 text-left">
               <div className="flex items-center justify-between">
                 <span className="font-medium text-sm">{config.label}</span>
-                <span className="text-xs text-muted-foreground">
-                  {count.toLocaleString()} docs
-                </span>
+                <HelpTip label="Document count — one document can split into several chunks at embedding time, so the chunk total (Index Stats) usually runs higher.">
+                  <span className="text-xs text-muted-foreground w-fit">
+                    {count.toLocaleString()} docs
+                  </span>
+                </HelpTip>
               </div>
               <p className="text-xs text-muted-foreground truncate">
                 {config.description}

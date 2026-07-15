@@ -96,7 +96,9 @@ interface DeliverySectionProps {
 function DeliverySection({ delivery }: DeliverySectionProps) {
   return (
     <div className="space-y-2">
-      <SectionLabel>Delivery</SectionLabel>
+      <HelpTip label="Live task counts across the pipeline — only 'Done (30 d)' looks backward">
+        <SectionLabel>Delivery</SectionLabel>
+      </HelpTip>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <DeliveryMetric
           label="In flight"
@@ -147,14 +149,18 @@ function SpendSection({ spend }: SpendSectionProps) {
       <SectionLabel>Spend</SectionLabel>
       <div className="rounded-lg border p-3 space-y-1.5">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">30-day spend</span>
+          <HelpTip label="Total agent-session cost over the trailing 30 days (Anthropic priced; local/Ollama models cost $0)">
+            <span className="text-muted-foreground">30-day spend</span>
+          </HelpTip>
           <span className="font-medium tabular-nums">
             ${spend_30d_usd.toFixed(2)}
           </span>
         </div>
         {projected_monthly_usd !== null && (
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Projected monthly</span>
+            <HelpTip label="The 30-day spend extrapolated to a full month">
+              <span className="text-muted-foreground">Projected monthly</span>
+            </HelpTip>
             <span className="font-medium tabular-nums">
               ${projected_monthly_usd.toFixed(2)}
             </span>

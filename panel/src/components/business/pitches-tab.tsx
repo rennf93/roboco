@@ -89,9 +89,12 @@ function PitchCard({ pitch, onApprove, onReject, busy }: PitchCardProps) {
           {pitch.target_cells.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
               {pitch.target_cells.map((c) => (
-                <Badge key={c} variant="outline">
-                  {c}
-                </Badge>
+                <HelpTip
+                  key={c}
+                  label="A cell this pitch would route delivery work to if approved"
+                >
+                  <Badge variant="outline">{c}</Badge>
+                </HelpTip>
               ))}
             </div>
           )}
@@ -111,21 +114,29 @@ function PitchCard({ pitch, onApprove, onReject, busy }: PitchCardProps) {
           </div>
           {proposed ? (
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                disabled={busy}
-                onClick={() => setApproveOpen(true)}
-              >
-                <Check className="mr-1 h-4 w-4" /> Approve &amp; provision
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => setRejectOpen(true)}
-              >
-                <X className="mr-1 h-4 w-4" /> Reject
-              </Button>
+              <HelpTip label="Auto-provisions a new product + workspace for the target cells listed above">
+                <span className="inline-block">
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => setApproveOpen(true)}
+                  >
+                    <Check className="mr-1 h-4 w-4" /> Approve &amp; provision
+                  </Button>
+                </span>
+              </HelpTip>
+              <HelpTip label="Rejects without creating anything — recorded in the decision log below">
+                <span className="inline-block">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setRejectOpen(true)}
+                  >
+                    <X className="mr-1 h-4 w-4" /> Reject
+                  </Button>
+                </span>
+              </HelpTip>
             </div>
           ) : (
             pitch.decision_notes && (

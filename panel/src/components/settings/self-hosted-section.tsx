@@ -145,16 +145,22 @@ export function SelfHostedSection({
       {/* Header */}
       <div className="flex items-center gap-2">
         <Server className="h-4 w-4 text-muted-foreground" />
-        <Label className="text-sm font-medium">Self-Hosted LLM</Label>
+        <HelpTip label="Routes agents to any locally-run OpenAI-compatible endpoint (Ollama, vLLM, LM Studio) instead of a cloud provider.">
+          <Label className="text-sm font-medium">Self-Hosted LLM</Label>
+        </HelpTip>
         {testResult?.ok === true && (
-          <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-            <CheckCircle2 className="h-3 w-3" /> connected
-          </Badge>
+          <HelpTip label="The last Test Connection call succeeded — the model list below reflects this endpoint.">
+            <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+              <CheckCircle2 className="h-3 w-3" /> connected
+            </Badge>
+          </HelpTip>
         )}
         {testResult?.ok === false && (
-          <Badge className="bg-red-500/10 text-red-600 border-0">
-            <XCircle className="h-3 w-3" /> error
-          </Badge>
+          <HelpTip label="The last Test Connection call failed — see the error detail below.">
+            <Badge className="bg-red-500/10 text-red-600 border-0">
+              <XCircle className="h-3 w-3" /> error
+            </Badge>
+          </HelpTip>
         )}
       </div>
 
@@ -216,9 +222,11 @@ export function SelfHostedSection({
               </Button>
             </HelpTip>
           </div>
-          <Button onClick={handleSave} disabled={saveConfig.isPending}>
-            {saveConfig.isPending ? "Saving…" : "Save"}
-          </Button>
+          <HelpTip label="Saves the Base URL above together with any token typed here, in one combined config — not just this token.">
+            <Button onClick={handleSave} disabled={saveConfig.isPending}>
+              {saveConfig.isPending ? "Saving…" : "Save"}
+            </Button>
+          </HelpTip>
         </div>
         {config?.has_token && (
           <p className="text-xs text-muted-foreground">
@@ -336,24 +344,26 @@ export function SelfHostedSection({
                 </span>
               </HelpTip>
             </p>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRefresh}
-              disabled={refreshModels.isPending}
-            >
-              {refreshModels.isPending ? (
-                <>
-                  <RefreshCw className="mr-1.5 h-3 w-3 animate-spin" />
-                  Refreshing…
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="mr-1.5 h-3 w-3" />
-                  Refresh Models
-                </>
-              )}
-            </Button>
+            <HelpTip label="Re-queries the endpoint's model list only — doesn't re-run the connection test above.">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRefresh}
+                disabled={refreshModels.isPending}
+              >
+                {refreshModels.isPending ? (
+                  <>
+                    <RefreshCw className="mr-1.5 h-3 w-3 animate-spin" />
+                    Refreshing…
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="mr-1.5 h-3 w-3" />
+                    Refresh Models
+                  </>
+                )}
+              </Button>
+            </HelpTip>
           </div>
           <div className="divide-y rounded-md border">
             {models.map((m) => (

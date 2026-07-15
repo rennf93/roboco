@@ -17,6 +17,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
 import { HelpTip } from "@/components/ui/help-tip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePageRefresh } from "@/hooks";
 import {
   Bell,
@@ -114,20 +119,26 @@ function NotificationCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium">{notification.subject}</span>
-              <Badge
-                className={priorityColors[notification.priority] + " text-xs"}
-              >
-                {notification.priority}
-              </Badge>
-              {!notification.is_read && (
-                <Badge variant="secondary" className="text-xs">
-                  New
+              <HelpTip label="How urgently the sender flagged this — doesn't change what you need to do, just how prominently it's shown.">
+                <Badge
+                  className={priorityColors[notification.priority] + " text-xs"}
+                >
+                  {notification.priority}
                 </Badge>
+              </HelpTip>
+              {!notification.is_read && (
+                <HelpTip label="Hasn't been marked read yet.">
+                  <Badge variant="secondary" className="text-xs">
+                    New
+                  </Badge>
+                </HelpTip>
               )}
               {notification.requires_ack && !notification.is_acknowledged && (
-                <Badge variant="destructive" className="text-xs">
-                  Needs Ack
-                </Badge>
+                <HelpTip label="A formal signal from a PM/Board role — needs an explicit acknowledgement, tracked separately from read status.">
+                  <Badge variant="destructive" className="text-xs">
+                    Needs Ack
+                  </Badge>
+                </HelpTip>
               )}
               {notification.related_task_id && (
                 <Link
@@ -329,16 +340,51 @@ function NotificationsPageContent() {
       ) : (
         <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList>
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="unread">
-              Unread {data && data.unread_count > 0 && `(${data.unread_count})`}
-            </TabsTrigger>
-            <TabsTrigger value="pending">
-              Pending{" "}
-              {data &&
-                data.pending_ack_count > 0 &&
-                `(${data.pending_ack_count})`}
-            </TabsTrigger>
+            {/* TooltipTrigger's asChild Slot merge injects its own data-state
+                onto the trigger, colliding with Radix Tabs' own literal
+                data-state (same trap as task-tabs.tsx) — reassert the real
+                selection state explicitly so the active-tab highlight
+                survives the merge. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TabsTrigger
+                  value="all"
+                  data-state={activeTab === "all" ? "active" : "inactive"}
+                >
+                  All
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>
+                Every notification you&apos;ve received, read or not
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TabsTrigger
+                  value="unread"
+                  data-state={activeTab === "unread" ? "active" : "inactive"}
+                >
+                  Unread {data && data.unread_count > 0 && `(${data.unread_count})`}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>Notifications you haven&apos;t opened yet</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <TabsTrigger
+                  value="pending"
+                  data-state={activeTab === "pending" ? "active" : "inactive"}
+                >
+                  Pending{" "}
+                  {data &&
+                    data.pending_ack_count > 0 &&
+                    `(${data.pending_ack_count})`}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>
+                Notifications still waiting on your acknowledgement
+              </TooltipContent>
+            </Tooltip>
           </TabsList>
 
           <TabsContent value={activeTab} className="mt-4 space-y-3">

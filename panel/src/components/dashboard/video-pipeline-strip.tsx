@@ -76,9 +76,11 @@ function PipelineRow({ item }: { item: VideoPipelineItem }) {
           prefetch={false}
           className="ml-auto"
         >
-          <Button variant="outline" size="sm">
-            Review
-          </Button>
+          <HelpTip label="Open the task to approve or reject the rendered video">
+            <Button variant="outline" size="sm">
+              Review
+            </Button>
+          </HelpTip>
         </Link>
       )}
       {canRerender && (
@@ -110,7 +112,9 @@ export function VideoPipelineStrip({ className }: { className?: string }) {
         <CardTitle className="flex items-center gap-2">
           <Film className="h-5 w-5" />
           Video Pipeline
-          <Badge variant="secondary">{items.length}</Badge>
+          <HelpTip label="Videos currently authoring, in review, or rendering — not yet in the queue below">
+            <Badge variant="secondary">{items.length}</Badge>
+          </HelpTip>
         </CardTitle>
         <CardDescription>
           Every video in flight — authoring, review, or rendering — before it

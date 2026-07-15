@@ -26,6 +26,7 @@ import {
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProductCellMapping } from "@/types";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -104,12 +105,14 @@ export function CreateProductDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />
-          New Product
-        </Button>
-      </DialogTrigger>
+      <HelpTip label="Groups per-cell projects (e.g. a SaaS app + its OSS core) into one deliverable for MegaTask and board routing.">
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="h-4 w-4 mr-2" />
+            New Product
+          </Button>
+        </DialogTrigger>
+      </HelpTip>
       <DialogContent className="sm:max-w-[525px] max-h-[90vh] overflow-y-auto">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
@@ -121,7 +124,9 @@ export function CreateProductDialog() {
           <div className="grid gap-4 py-4">
             {/* Name */}
             <div className="grid gap-2">
-              <Label htmlFor="name">Product Name *</Label>
+              <HelpTip label="Display name shown across the panel; renaming it never touches the slug already generated.">
+                <Label htmlFor="name">Product Name *</Label>
+              </HelpTip>
               <Input
                 id="name"
                 value={name}
@@ -132,7 +137,9 @@ export function CreateProductDialog() {
 
             {/* Slug */}
             <div className="grid gap-2">
-              <Label htmlFor="slug">Slug *</Label>
+              <HelpTip label="Identifier for this cell-to-project grouping, used to reference it across the panel and API.">
+                <Label htmlFor="slug">Slug *</Label>
+              </HelpTip>
               <Input
                 id="slug"
                 value={slug}
@@ -147,7 +154,9 @@ export function CreateProductDialog() {
 
             {/* Description */}
             <div className="grid gap-2">
-              <Label htmlFor="description">Description</Label>
+              <HelpTip label="Optional context shown in the panel only — not surfaced to agents or used in task routing.">
+                <Label htmlFor="description">Description</Label>
+              </HelpTip>
               <Textarea
                 id="description"
                 value={description}
@@ -158,15 +167,19 @@ export function CreateProductDialog() {
 
             {/* Cell -> Project mapping */}
             <div className="grid gap-3">
-              <Label>Cell Project Mapping</Label>
+              <HelpTip label="Routes each cell's work for this product to its own repo; a cell left unmapped does no work for this product.">
+                <Label>Cell Project Mapping</Label>
+              </HelpTip>
               {cells.map((cell) => (
                 <div key={cell.value} className="grid gap-2">
-                  <Label
-                    htmlFor={`cell-${cell.value}`}
-                    className="text-sm text-muted-foreground"
-                  >
-                    {cell.label}
-                  </Label>
+                  <HelpTip label={`Which project the ${cell.label} cell works on for this product.`}>
+                    <Label
+                      htmlFor={`cell-${cell.value}`}
+                      className="text-sm text-muted-foreground"
+                    >
+                      {cell.label}
+                    </Label>
+                  </HelpTip>
                   <Select
                     value={cellMapping[cell.value] ?? ""}
                     onValueChange={(value) =>

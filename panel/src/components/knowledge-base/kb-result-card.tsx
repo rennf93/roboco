@@ -75,19 +75,25 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
             {result.metadata && Object.keys(result.metadata).length > 0 && (
               <div className="flex items-center gap-2 mt-2 flex-wrap">
                 {typeof result.metadata.language === "string" && (
-                  <span className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                    {result.metadata.language}
-                  </span>
+                  <HelpTip label="Programming language this chunk was tagged with when indexed">
+                    <span className="text-xs bg-muted px-1.5 py-0.5 rounded w-fit">
+                      {result.metadata.language}
+                    </span>
+                  </HelpTip>
                 )}
                 {typeof result.metadata.agent === "string" && (
-                  <span className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                    @{result.metadata.agent}
-                  </span>
+                  <HelpTip label="Agent who authored this content">
+                    <span className="text-xs bg-muted px-1.5 py-0.5 rounded w-fit">
+                      @{result.metadata.agent}
+                    </span>
+                  </HelpTip>
                 )}
                 {typeof result.metadata.section === "string" && (
-                  <span className="text-xs bg-muted px-1.5 py-0.5 rounded">
-                    {result.metadata.section}
-                  </span>
+                  <HelpTip label="Section of the source document this chunk was extracted from">
+                    <span className="text-xs bg-muted px-1.5 py-0.5 rounded w-fit">
+                      {result.metadata.section}
+                    </span>
+                  </HelpTip>
                 )}
               </div>
             )}

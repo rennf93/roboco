@@ -149,28 +149,32 @@ export function MentorAnswerDisplay({
           <Brain className="h-5 w-5 text-primary shrink-0" />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             {response.agent_role && (
-              <span className="flex items-center gap-1.5">
-                <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-muted-foreground">Role:</span>
-                <Badge variant="secondary" className="font-medium">
-                  {response.agent_role}
-                </Badge>
-                {response.agent_team && (
-                  <span className="text-muted-foreground">
-                    ({response.agent_team})
-                  </span>
-                )}
-              </span>
+              <HelpTip label="Detected from your agent identity — shapes which standards, journals, and playbooks the mentor draws on">
+                <span className="flex items-center gap-1.5 w-fit">
+                  <User className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-muted-foreground">Role:</span>
+                  <Badge variant="secondary" className="font-medium">
+                    {response.agent_role}
+                  </Badge>
+                  {response.agent_team && (
+                    <span className="text-muted-foreground">
+                      ({response.agent_team})
+                    </span>
+                  )}
+                </span>
+              </HelpTip>
             )}
             {response.journal_entries_used !== undefined &&
               response.journal_entries_used > 0 && (
-                <span className="flex items-center gap-1.5">
-                  <BookMarked className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-muted-foreground">
-                    {response.journal_entries_used} personal journal
-                    {response.journal_entries_used !== 1 ? "s" : ""} used
+                <HelpTip label="Entries from your own journal only — never another agent's">
+                  <span className="flex items-center gap-1.5 w-fit">
+                    <BookMarked className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-muted-foreground">
+                      {response.journal_entries_used} personal journal
+                      {response.journal_entries_used !== 1 ? "s" : ""} used
+                    </span>
                   </span>
-                </span>
+                </HelpTip>
               )}
           </div>
         </div>
@@ -182,9 +186,11 @@ export function MentorAnswerDisplay({
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Brain className="h-4 w-4 text-primary" />
             Mentor Response
-            <span className="text-xs text-muted-foreground font-normal ml-auto">
-              {response.sources.length} sources used
-            </span>
+            <HelpTip label="Knowledge-base chunks retrieved and handed to the model as context for this answer">
+              <span className="text-xs text-muted-foreground font-normal ml-auto w-fit">
+                {response.sources.length} sources used
+              </span>
+            </HelpTip>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -204,16 +210,17 @@ export function MentorAnswerDisplay({
             </div>
             <div className="flex flex-wrap gap-2">
               {response.suggested_followups.map((followup, index) => (
-                <Button
-                  key={index}
-                  variant="outline"
-                  size="sm"
-                  className="text-xs h-auto py-1.5 px-3"
-                  onClick={() => onFollowUp?.(followup)}
-                >
-                  <MessageCircleQuestion className="h-3 w-3 mr-1.5" />
-                  {followup}
-                </Button>
+                <HelpTip key={index} label="Ask this next, in the same conversation">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs h-auto py-1.5 px-3"
+                    onClick={() => onFollowUp?.(followup)}
+                  >
+                    <MessageCircleQuestion className="h-3 w-3 mr-1.5" />
+                    {followup}
+                  </Button>
+                </HelpTip>
               ))}
             </div>
           </div>

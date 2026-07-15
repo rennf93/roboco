@@ -142,9 +142,11 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
           </div>
         </div>
         {latestUpdated && (
-          <p className="text-xs text-muted-foreground pt-1">
-            Updated {formatDistanceToNow(new Date(latestUpdated))} ago
-          </p>
+          <HelpTip label={new Date(latestUpdated).toLocaleString()}>
+            <p className="text-xs text-muted-foreground pt-1 w-fit">
+              Updated {formatDistanceToNow(new Date(latestUpdated))} ago
+            </p>
+          </HelpTip>
         )}
       </CardContent>
     </Card>

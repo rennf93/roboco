@@ -101,16 +101,20 @@ function ObjectivesEditor({
               <span className="text-xs font-medium text-muted-foreground">
                 Objective #{rowIdx + 1}
               </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={disabled}
-                onClick={() => removeRow(rowIdx)}
-                className="h-6 px-2 text-xs text-destructive hover:text-destructive"
-              >
-                Remove
-              </Button>
+              <HelpTip label="Deletes this row locally — nothing changes until you click Save charter">
+                <span className="inline-block">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={disabled}
+                    onClick={() => removeRow(rowIdx)}
+                    className="h-6 px-2 text-xs text-destructive hover:text-destructive"
+                  >
+                    Remove
+                  </Button>
+                </span>
+              </HelpTip>
             </div>
             {keys.map((key) => (
               <div key={key} className="space-y-1">
@@ -132,15 +136,19 @@ function ObjectivesEditor({
           </div>
         ))}
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={disabled}
-        onClick={addRow}
-      >
-        + Add objective
-      </Button>
+      <HelpTip label="Adds a blank row using the same field keys as the first objective">
+        <span className="inline-block">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={addRow}
+          >
+            + Add objective
+          </Button>
+        </span>
+      </HelpTip>
     </div>
   );
 }
@@ -297,7 +305,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
       <CardContent className="space-y-5">
         {/* North star */}
         <div className="space-y-2">
-          <Label htmlFor="north-star">North star</Label>
+          <HelpTip label="The long-term vision every agent's briefing includes — keep it to a sentence or two">
+            <Label htmlFor="north-star">North star</Label>
+          </HelpTip>
           <Textarea
             id="north-star"
             rows={3}
@@ -325,7 +335,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
         {/* Constraints */}
         <div className="space-y-2">
-          <Label htmlFor="constraints">Constraints (one per line)</Label>
+          <HelpTip label="Hard rules injected into every agent's briefing (e.g. licensing, no external data egress)">
+            <Label htmlFor="constraints">Constraints (one per line)</Label>
+          </HelpTip>
           <Textarea
             id="constraints"
             rows={3}
@@ -361,10 +373,14 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
         </div>
 
         {/* Save */}
-        <Button onClick={handleSave} disabled={saving}>
-          <Save className="h-4 w-4 mr-2" />
-          {saving ? "Saving…" : "Save charter"}
-        </Button>
+        <HelpTip label="Saves north star, brand voice, objectives, constraints, and operating policy in one update">
+          <span className="inline-block">
+            <Button onClick={handleSave} disabled={saving}>
+              <Save className="h-4 w-4 mr-2" />
+              {saving ? "Saving…" : "Save charter"}
+            </Button>
+          </span>
+        </HelpTip>
 
         {/* Metadata */}
         <div className="border-t pt-4 space-y-1 text-xs text-muted-foreground">
@@ -377,9 +393,11 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
           {goals.updated_by && (
             <p>
               Updated by:{" "}
-              <span className="font-medium text-foreground font-mono">
-                {goals.updated_by}
-              </span>
+              <HelpTip label="The agent or CEO identity that last saved this charter">
+                <span className="font-medium text-foreground font-mono">
+                  {goals.updated_by}
+                </span>
+              </HelpTip>
             </p>
           )}
         </div>

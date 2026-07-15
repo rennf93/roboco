@@ -483,7 +483,9 @@ function RequestVideoDialog({
           <>
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>Project</Label>
+                <HelpTip label="Only projects with the video engine enabled (Projects → Edit) can be picked">
+                  <Label>Project</Label>
+                </HelpTip>
                 <ProjectSelector
                   value={effectiveProjectId}
                   onChange={setProjectId}
@@ -493,7 +495,9 @@ function RequestVideoDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="video-request-occasion">Occasion</Label>
+                <HelpTip label="Short label for the trigger event — shown as a badge throughout the pipeline, queue, and history">
+                  <Label htmlFor="video-request-occasion">Occasion</Label>
+                </HelpTip>
                 <Input
                   id="video-request-occasion"
                   placeholder="e.g. v0.19.0 launch, Founder's Day..."
@@ -502,7 +506,9 @@ function RequestVideoDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="video-request-brief">Brief</Label>
+                <HelpTip label="What the video should communicate — read by the assigned UX/UI dev when building the composition">
+                  <Label htmlFor="video-request-brief">Brief</Label>
+                </HelpTip>
                 <Textarea
                   id="video-request-brief"
                   placeholder="What should this video cover?"
@@ -512,7 +518,9 @@ function RequestVideoDialog({
                 />
               </div>
               <div className="space-y-2">
-                <Label>Platforms</Label>
+                <HelpTip label="Where the rendered clip can post once you approve it — editable again before approving">
+                  <Label>Platforms</Label>
+                </HelpTip>
                 <div className="flex gap-4">
                   {REQUEST_PLATFORMS.map((platform) => (
                     <div key={platform} className="flex items-center gap-2">
@@ -521,12 +529,20 @@ function RequestVideoDialog({
                         checked={platforms.includes(platform)}
                         onCheckedChange={() => togglePlatform(platform)}
                       />
-                      <Label
-                        htmlFor={`video-request-${platform}`}
-                        className="text-sm font-normal"
+                      <HelpTip
+                        label={
+                          platform === "x"
+                            ? "Posts via X's OAuth 1.0a API, 280-char caption"
+                            : "Posts via TikTok's inbox-upload OAuth2 API, 2200-char caption"
+                        }
                       >
-                        {PLATFORM_LABELS[platform]}
-                      </Label>
+                        <Label
+                          htmlFor={`video-request-${platform}`}
+                          className="text-sm font-normal"
+                        >
+                          {PLATFORM_LABELS[platform]}
+                        </Label>
+                      </HelpTip>
                     </div>
                   ))}
                 </div>
@@ -654,10 +670,12 @@ export function VideoPostQueue({ className }: { className?: string }) {
   if (isLoading) return null;
 
   const requestButton = (
-    <Button variant="outline" size="sm" onClick={() => setRequestOpen(true)}>
-      <Sparkles className="mr-1 h-4 w-4" />
-      Request a video
-    </Button>
+    <HelpTip label="Opens a dialog to brief a UX/UI dev on an on-demand video, independent of a release or spotlight">
+      <Button variant="outline" size="sm" onClick={() => setRequestOpen(true)}>
+        <Sparkles className="mr-1 h-4 w-4" />
+        Request a video
+      </Button>
+    </HelpTip>
   );
 
   if (!posts || posts.length === 0) {
@@ -696,7 +714,9 @@ export function VideoPostQueue({ className }: { className?: string }) {
           <CardTitle className="flex items-center gap-2">
             <Film className="h-5 w-5" />
             Video Post Queue
-            <Badge variant="secondary">{posts.length}</Badge>
+            <HelpTip label="Rendered clips waiting for your preview, caption edits, approve, or reject">
+              <Badge variant="secondary">{posts.length}</Badge>
+            </HelpTip>
           </CardTitle>
           <CardAction>{requestButton}</CardAction>
           <CardDescription>
@@ -727,7 +747,9 @@ export function VideoPostQueue({ className }: { className?: string }) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="video-reject-reason">Reason</Label>
+            <HelpTip label="Stored on the draft and shown in History next to this rejection">
+              <Label htmlFor="video-reject-reason">Reason</Label>
+            </HelpTip>
             <Textarea
               id="video-reject-reason"
               placeholder="e.g. off-brand tone, wrong occasion..."

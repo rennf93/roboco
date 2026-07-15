@@ -180,11 +180,31 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Project</TableHead>
-                  <TableHead>Cell</TableHead>
-                  <TableHead>Tasks</TableHead>
-                  <TableHead>Token</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    <HelpTip label="Name and slug; click either to open the edit dialog.">
+                      <span>Project</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="The team that owns this project — only that cell's agents can claim its tasks.">
+                      <span>Cell</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="Done / active / blocked counts across all of this project's tasks.">
+                      <span>Tasks</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="Whether a GitHub PAT is configured for clone/push/PR operations.">
+                      <span>Token</span>
+                    </HelpTip>
+                  </TableHead>
+                  <TableHead>
+                    <HelpTip label="Inactive projects are hidden from the default list and skipped as the fallback for idle-agent spawns.">
+                      <span>Status</span>
+                    </HelpTip>
+                  </TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -200,9 +220,11 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                         >
                           {project.name}
                         </Button>
-                        <p className="text-xs text-muted-foreground font-mono">
-                          {project.slug}
-                        </p>
+                        <HelpTip label="Composes each agent's workspace clone path and every branch name for this project.">
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {project.slug}
+                          </p>
+                        </HelpTip>
                         {project.ci_watch_enabled && (
                           <div className="mt-1">
                             <CiWatchBadge enabled />
@@ -211,9 +233,11 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge className={teamColors[project.assigned_cell]}>
-                        {teamLabels[project.assigned_cell]}
-                      </Badge>
+                      <HelpTip label="Only this cell's agents can claim tasks on this project.">
+                        <Badge className={teamColors[project.assigned_cell]}>
+                          {teamLabels[project.assigned_cell]}
+                        </Badge>
+                      </HelpTip>
                     </TableCell>
                     <TableCell>
                       <TasksCell counts={project.task_counts} />
@@ -271,9 +295,11 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     >
                       {project.name}
                     </Button>
-                    <p className="text-xs text-muted-foreground font-mono">
-                      {project.slug}
-                    </p>
+                    <HelpTip label="Composes each agent's workspace clone path and every branch name for this project.">
+                      <p className="text-xs text-muted-foreground font-mono">
+                        {project.slug}
+                      </p>
+                    </HelpTip>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     <HelpTip label="Edit project settings and CI/CD commands">
@@ -306,9 +332,11 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                 </div>
                 <div className="mt-3 divide-y">
                   <ResponsiveTableCardRow label="Cell">
-                    <Badge className={teamColors[project.assigned_cell]}>
-                      {teamLabels[project.assigned_cell]}
-                    </Badge>
+                    <HelpTip label="Only this cell's agents can claim tasks on this project.">
+                      <Badge className={teamColors[project.assigned_cell]}>
+                        {teamLabels[project.assigned_cell]}
+                      </Badge>
+                    </HelpTip>
                   </ResponsiveTableCardRow>
                   <ResponsiveTableCardRow label="Tasks">
                     <TasksCell counts={project.task_counts} />

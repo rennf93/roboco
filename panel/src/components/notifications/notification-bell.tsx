@@ -178,20 +178,26 @@ function BellRow({ notification, onMarkRead, onAcknowledge }: BellRowProps) {
         <span className="font-medium text-sm line-clamp-1 flex-1 min-w-0">
           {notification.subject}
         </span>
-        <Badge variant="outline" className="text-[10px] shrink-0">
-          {notification.priority}
-        </Badge>
+        <HelpTip label="How urgently the sender flagged this — doesn't change what you need to do, just how prominently it's shown.">
+          <Badge variant="outline" className="text-[10px] shrink-0">
+            {notification.priority}
+          </Badge>
+        </HelpTip>
       </div>
       <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
         {!notification.is_read && (
-          <Badge variant="secondary" className="text-[10px]">
-            New
-          </Badge>
+          <HelpTip label="Hasn't been marked read yet.">
+            <Badge variant="secondary" className="text-[10px]">
+              New
+            </Badge>
+          </HelpTip>
         )}
         {needsAck && (
-          <Badge variant="destructive" className="text-[10px]">
-            Needs Ack
-          </Badge>
+          <HelpTip label="A formal signal from a PM/Board role — needs an explicit acknowledgement, tracked separately from read status.">
+            <Badge variant="destructive" className="text-[10px]">
+              Needs Ack
+            </Badge>
+          </HelpTip>
         )}
         <div className="ml-auto flex items-center gap-1">
           {!notification.is_read && (

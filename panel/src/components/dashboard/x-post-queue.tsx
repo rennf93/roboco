@@ -109,17 +109,23 @@ function XPostRow({
           </span>
         </HelpTip>
         {post.release_version && (
-          <Badge variant="outline">v{post.release_version}</Badge>
+          <HelpTip label="The release this post announces">
+            <Badge variant="outline">v{post.release_version}</Badge>
+          </HelpTip>
         )}
         {post.mention && (
-          <Badge variant="secondary" className="max-w-56 truncate">
-            re: {post.mention.text}
-          </Badge>
+          <HelpTip label="The X mention this draft replies to">
+            <Badge variant="secondary" className="max-w-56 truncate">
+              re: {post.mention.text}
+            </Badge>
+          </HelpTip>
         )}
         {post.feature && (
-          <Badge variant="outline" className="max-w-56 truncate">
-            feature: {post.feature.title}
-          </Badge>
+          <HelpTip label="The shipped feature this spotlight covers">
+            <Badge variant="outline" className="max-w-56 truncate">
+              feature: {post.feature.title}
+            </Badge>
+          </HelpTip>
         )}
       </div>
 
@@ -266,7 +272,9 @@ export function XPostQueue({ className }: { className?: string }) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Rocket className="h-5 w-5" />X Post Queue
-            <Badge variant="secondary">{posts.length}</Badge>
+            <HelpTip label="Drafts waiting for your edit, approve, or reject">
+              <Badge variant="secondary">{posts.length}</Badge>
+            </HelpTip>
           </CardTitle>
           <CardDescription>
             Drafted release announcements, feature spotlights, and mention
@@ -297,7 +305,9 @@ export function XPostQueue({ className }: { className?: string }) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="x-reject-reason">Reason</Label>
+            <HelpTip label="Stored on the draft and shown in History next to this rejection">
+              <Label htmlFor="x-reject-reason">Reason</Label>
+            </HelpTip>
             <Textarea
               id="x-reject-reason"
               placeholder="e.g. tone doesn't match our voice; not worth a public reply..."

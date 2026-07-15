@@ -86,14 +86,16 @@ function KBCategoryViewInner({ category }: { category: KBIndexType }) {
                         {doc.source}
                       </p>
                     </HelpTip>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                      <Clock className="h-3 w-3" />
-                      <span>
-                        {formatDistanceToNow(new Date(doc.indexed_at), {
-                          addSuffix: true,
-                        })}
-                      </span>
-                    </div>
+                    <HelpTip label={new Date(doc.indexed_at).toLocaleString()}>
+                      <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground w-fit">
+                        <Clock className="h-3 w-3" />
+                        <span>
+                          {formatDistanceToNow(new Date(doc.indexed_at), {
+                            addSuffix: true,
+                          })}
+                        </span>
+                      </div>
+                    </HelpTip>
                   </div>
                 </div>
               </CardContent>

@@ -10,6 +10,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Send,
   Loader2,
@@ -60,18 +61,33 @@ export function MentorQueryInput({
             </div>
           </div>
           <div className="flex gap-1.5">
-            <Badge variant="outline" className="text-xs gap-1 bg-background">
-              <User className="h-3 w-3" />
-              Role-aware
-            </Badge>
-            <Badge variant="outline" className="text-xs gap-1 bg-background">
-              <BookMarked className="h-3 w-3" />
-              Journals
-            </Badge>
-            <Badge variant="outline" className="text-xs gap-1 bg-background">
-              <MessageCircle className="h-3 w-3" />
-              Follow-ups
-            </Badge>
+            <HelpTip label="Answers factor in your agent role and team">
+              <Badge
+                variant="outline"
+                className="text-xs gap-1 bg-background w-fit"
+              >
+                <User className="h-3 w-3" />
+                Role-aware
+              </Badge>
+            </HelpTip>
+            <HelpTip label="Searches your own journal entries — not other agents'">
+              <Badge
+                variant="outline"
+                className="text-xs gap-1 bg-background w-fit"
+              >
+                <BookMarked className="h-3 w-3" />
+                Journals
+              </Badge>
+            </HelpTip>
+            <HelpTip label="Multi-turn — reuses this conversation's context for related questions">
+              <Badge
+                variant="outline"
+                className="text-xs gap-1 bg-background w-fit"
+              >
+                <MessageCircle className="h-3 w-3" />
+                Follow-ups
+              </Badge>
+            </HelpTip>
           </div>
         </div>
 

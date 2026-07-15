@@ -5,6 +5,7 @@ import { RAGQueryResponse } from "@/types";
 import { RAGCitationCard } from "./rag-citation-card";
 import { Markdown } from "@/components/ui/markdown";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Bot,
   BookOpen,
@@ -120,9 +121,11 @@ export function RAGAnswerDisplay({
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Bot className="h-4 w-4 text-primary" />
             AI Answer
-            <span className="text-xs text-muted-foreground font-normal ml-auto">
-              {response.context_used} sources used
-            </span>
+            <HelpTip label="Knowledge-base chunks retrieved by hybrid search and handed to the model as context for this answer">
+              <span className="text-xs text-muted-foreground font-normal ml-auto w-fit">
+                {response.context_used} sources used
+              </span>
+            </HelpTip>
           </CardTitle>
         </CardHeader>
         <CardContent>

@@ -30,6 +30,7 @@ import {
   type ProductCellMapping,
   type ProductUpdate,
 } from "@/types";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -120,7 +121,9 @@ function EditProductForm({
       <div className="grid gap-4 py-4">
         {/* Slug (read-only) */}
         <div className="grid gap-2">
-          <Label htmlFor="slug">Slug</Label>
+          <HelpTip label="Identifier for this cell-to-project grouping, used to reference it across the panel and API. Set at creation, fixed here.">
+            <Label htmlFor="slug">Slug</Label>
+          </HelpTip>
           <Input
             id="slug"
             value={product.slug}
@@ -131,7 +134,9 @@ function EditProductForm({
 
         {/* Name */}
         <div className="grid gap-2">
-          <Label htmlFor="name">Product Name *</Label>
+          <HelpTip label="Display name shown across the panel; renaming it never touches the slug.">
+            <Label htmlFor="name">Product Name *</Label>
+          </HelpTip>
           <Input
             id="name"
             value={name}
@@ -142,7 +147,9 @@ function EditProductForm({
 
         {/* Description */}
         <div className="grid gap-2">
-          <Label htmlFor="description">Description</Label>
+          <HelpTip label="Optional context shown in the panel only — not surfaced to agents or used in task routing.">
+            <Label htmlFor="description">Description</Label>
+          </HelpTip>
           <Textarea
             id="description"
             value={description}
@@ -153,15 +160,19 @@ function EditProductForm({
 
         {/* Cell -> Project mapping */}
         <div className="grid gap-3">
-          <Label>Cell Project Mapping</Label>
+          <HelpTip label="Routes each cell's work for this product to its own repo; a cell left unmapped does no work for this product.">
+            <Label>Cell Project Mapping</Label>
+          </HelpTip>
           {cells.map((cell) => (
             <div key={cell.value} className="grid gap-2">
-              <Label
-                htmlFor={`cell-${cell.value}`}
-                className="text-sm text-muted-foreground"
-              >
-                {cell.label}
-              </Label>
+              <HelpTip label={`Which project the ${cell.label} cell works on for this product.`}>
+                <Label
+                  htmlFor={`cell-${cell.value}`}
+                  className="text-sm text-muted-foreground"
+                >
+                  {cell.label}
+                </Label>
+              </HelpTip>
               <Select
                 value={cellMapping[cell.value] ?? ""}
                 onValueChange={(value) =>

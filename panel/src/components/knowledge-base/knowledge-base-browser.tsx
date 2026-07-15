@@ -17,6 +17,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -326,26 +331,60 @@ function KnowledgeBaseBrowserContent() {
         onValueChange={(v) => handleTabChange(v as TabValue)}
       >
         <TabsList>
-          <TabsTrigger value="search" className="gap-2">
-            <Search className="h-4 w-4" />
-            Search
-          </TabsTrigger>
-          <TabsTrigger value="ask" className="gap-2">
-            <Sparkles className="h-4 w-4" />
-            Ask AI
-          </TabsTrigger>
-          <TabsTrigger value="mentor" className="gap-2">
-            <Brain className="h-4 w-4" />
-            Mentor
-          </TabsTrigger>
-          <TabsTrigger value="browse" className="gap-2">
-            <FolderTree className="h-4 w-4" />
-            Browse
-          </TabsTrigger>
-          <TabsTrigger value="admin" className="gap-2">
-            <Settings className="h-4 w-4" />
-            Admin
-          </TabsTrigger>
+          {(
+            [
+              {
+                value: "search",
+                icon: Search,
+                label: "Search",
+                hint: "Semantic search across indexed content, filterable by category",
+              },
+              {
+                value: "ask",
+                icon: Sparkles,
+                label: "Ask AI",
+                hint: "One-shot Q&A: retrieves matching chunks (RAG) and generates a cited answer",
+              },
+              {
+                value: "mentor",
+                icon: Brain,
+                label: "Mentor",
+                hint: "Multi-turn chat that also factors in your role and your own journal entries",
+              },
+              {
+                value: "browse",
+                icon: FolderTree,
+                label: "Browse",
+                hint: "Page through every indexed document by category, no query needed",
+              },
+              {
+                value: "admin",
+                icon: Settings,
+                label: "Admin",
+                hint: "Index health, storage stats, and manual reindex/refresh/delete controls",
+              },
+            ] as const
+          ).map((tab) => (
+            <Tooltip key={tab.value}>
+              <TooltipTrigger asChild>
+                {/* TooltipTrigger's asChild Slot merge injects its own
+                    data-state onto this trigger, and Radix Tabs' internal
+                    render spreads incoming props after its own literal
+                    data-state — so the tooltip's value silently wins and the
+                    data-[state=active] highlight never fires. Re-assert the
+                    real selection state explicitly so it survives the merge. */}
+                <TabsTrigger
+                  value={tab.value}
+                  data-state={tab.value === activeTab ? "active" : "inactive"}
+                  className="gap-2"
+                >
+                  <tab.icon className="h-4 w-4" />
+                  {tab.label}
+                </TabsTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{tab.hint}</TooltipContent>
+            </Tooltip>
+          ))}
         </TabsList>
 
         {/* Search Tab */}
@@ -460,17 +499,27 @@ function KnowledgeBaseBrowserContent() {
                           <XCircle className="h-8 w-8 text-red-600" />
                         )}
                         <div>
-                          <p className="font-medium">
-                            {health.healthy ? "Healthy" : "Unhealthy"}
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            Embedding: {health.embedding_status}
-                          </p>
+                          <HelpTip label="Healthy requires all three subsystems below — embedding, LLM, and vector store — to each respond OK">
+                            <p className="font-medium w-fit">
+                              {health.healthy ? "Healthy" : "Unhealthy"}
+                            </p>
+                          </HelpTip>
+                          <HelpTip label="Ollama-served embedding model (qwen3-embedding:0.6b) that turns text into vectors for search">
+                            <p className="text-sm text-muted-foreground w-fit">
+                              Embedding: {health.embedding_status}
+                            </p>
+                          </HelpTip>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                        <div>LLM: {health.llm_status}</div>
-                        <div>Vector: {health.vector_store_status}</div>
+                        <HelpTip label="Local model that generates RAG and Mentor answers from retrieved context">
+                          <div className="w-fit">LLM: {health.llm_status}</div>
+                        </HelpTip>
+                        <HelpTip label="PostgreSQL + pgvector store holding every embedded chunk for similarity search">
+                          <div className="w-fit">
+                            Vector: {health.vector_store_status}
+                          </div>
+                        </HelpTip>
                       </div>
                       {(
                         [
@@ -507,10 +556,12 @@ function KnowledgeBaseBrowserContent() {
                     <span>Summary</span>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="destructive">
-                          <RefreshCw className="h-3 w-3 mr-1" />
-                          Reindex All
-                        </Button>
+                        <HelpTip label="Rebuilds the Documentation index from the repo's docs/ tree — the other categories (journals, conversations, etc.) are populated live by agent activity, not by this button">
+                          <Button size="sm" variant="destructive">
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                            Reindex All
+                          </Button>
+                        </HelpTip>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
@@ -538,10 +589,14 @@ function KnowledgeBaseBrowserContent() {
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-2xl font-bold">{totalDocs}</p>
-                      <p className="text-xs text-muted-foreground">Documents</p>
-                    </div>
+                    <HelpTip label="Sum of documents indexed across every category below">
+                      <div className="w-fit">
+                        <p className="text-2xl font-bold">{totalDocs}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Documents
+                        </p>
+                      </div>
+                    </HelpTip>
                     <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
                       <div className="w-fit">
                         <p className="text-2xl font-bold">{totalChunks}</p>
@@ -667,14 +722,16 @@ function KnowledgeBaseBrowserContent() {
                               </div>
 
                               <div className="grid grid-cols-3 gap-4 text-sm mb-2">
-                                <div>
-                                  <span className="text-muted-foreground">
-                                    Documents:
-                                  </span>{" "}
-                                  <span className="font-medium">
-                                    {index.document_count}
-                                  </span>
-                                </div>
+                                <HelpTip label="Document count for this category — see Chunks for the post-embedding split count">
+                                  <div className="w-fit">
+                                    <span className="text-muted-foreground">
+                                      Documents:
+                                    </span>{" "}
+                                    <span className="font-medium">
+                                      {index.document_count}
+                                    </span>
+                                  </div>
+                                </HelpTip>
                                 <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
                                   <div className="w-fit">
                                     <span className="text-muted-foreground">
@@ -685,25 +742,37 @@ function KnowledgeBaseBrowserContent() {
                                     </span>
                                   </div>
                                 </HelpTip>
-                                <div>
-                                  <span className="text-muted-foreground">
-                                    Updated:
-                                  </span>{" "}
-                                  <span className="font-medium">
-                                    {index.last_updated
-                                      ? formatDistanceToNow(
-                                          new Date(index.last_updated),
-                                        ) + " ago"
-                                      : "Never"}
-                                  </span>
-                                </div>
+                                <HelpTip
+                                  label={
+                                    index.last_updated
+                                      ? new Date(
+                                          index.last_updated,
+                                        ).toLocaleString()
+                                      : "This index has never been populated"
+                                  }
+                                >
+                                  <div className="w-fit">
+                                    <span className="text-muted-foreground">
+                                      Updated:
+                                    </span>{" "}
+                                    <span className="font-medium">
+                                      {index.last_updated
+                                        ? formatDistanceToNow(
+                                            new Date(index.last_updated),
+                                          ) + " ago"
+                                        : "Never"}
+                                    </span>
+                                  </div>
+                                </HelpTip>
                               </div>
 
                               <div className="space-y-1">
-                                <div className="flex justify-between text-xs text-muted-foreground">
-                                  <span>Storage usage</span>
-                                  <span>{percentage}%</span>
-                                </div>
+                                <HelpTip label="Share of the fleet's total chunk count this category holds — not literal disk bytes">
+                                  <div className="flex justify-between text-xs text-muted-foreground">
+                                    <span>Storage usage</span>
+                                    <span>{percentage}%</span>
+                                  </div>
+                                </HelpTip>
                                 <Progress value={percentage} className="h-1" />
                               </div>
                             </div>

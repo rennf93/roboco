@@ -67,21 +67,29 @@ function DirectiveCard({
 
         {/* Actions */}
         <div className="flex gap-2 pt-1">
-          <Button
-            size="sm"
-            disabled={busy}
-            onClick={() => onConfirm(directive.id)}
-          >
-            <Check className="mr-1 h-4 w-4" /> Confirm
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => setRejectOpen(true)}
-          >
-            <X className="mr-1 h-4 w-4" /> Reject
-          </Button>
+          <HelpTip label="Executes this directive as drafted (relay a message, update the charter, approve a pitch, or control a task)">
+            <span className="inline-block">
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={() => onConfirm(directive.id)}
+              >
+                <Check className="mr-1 h-4 w-4" /> Confirm
+              </Button>
+            </span>
+          </HelpTip>
+          <HelpTip label="Discards the directive — the Secretary must re-propose it to try again">
+            <span className="inline-block">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setRejectOpen(true)}
+              >
+                <X className="mr-1 h-4 w-4" /> Reject
+              </Button>
+            </span>
+          </HelpTip>
         </div>
       </div>
 
@@ -244,9 +252,11 @@ export function SecretaryTab() {
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle>Chat</CardTitle>
           {sessionId && (
-            <Button variant="outline" size="sm" onClick={() => void stop()}>
-              End session
-            </Button>
+            <HelpTip label="Closes this chat — your next message starts a fresh Secretary session">
+              <Button variant="outline" size="sm" onClick={() => void stop()}>
+                End session
+              </Button>
+            </HelpTip>
           )}
         </CardHeader>
         <CardContent className="flex flex-1 flex-col gap-4">
@@ -284,18 +294,22 @@ export function SecretaryTab() {
                 </Button>
               </HelpTip>
             ) : (
-              <Button
-                onClick={() => void handleStart()}
-                disabled={starting}
-                className="h-11 shrink-0 px-6"
-                aria-label={starting ? "Starting…" : undefined}
-              >
-                {starting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  "Start"
-                )}
-              </Button>
+              <HelpTip label="Opens a new Secretary chat session — reads live company state, not a scripted bot">
+                <span className="inline-block">
+                  <Button
+                    onClick={() => void handleStart()}
+                    disabled={starting}
+                    className="h-11 shrink-0 px-6"
+                    aria-label={starting ? "Starting…" : undefined}
+                  >
+                    {starting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      "Start"
+                    )}
+                  </Button>
+                </span>
+              </HelpTip>
             )}
           </div>
         </CardContent>

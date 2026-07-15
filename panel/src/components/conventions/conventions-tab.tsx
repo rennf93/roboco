@@ -34,6 +34,15 @@ const FORBIDDABLE_KINDS: DefinitionKind[] = [
   "component",
 ];
 
+const KIND_HINTS: Record<DefinitionKind, string> = {
+  model: "Pydantic / ORM data models",
+  route: "FastAPI route handlers",
+  helper: "Standalone top-level functions — placement here only warns, never blocks",
+  business_logic: "Service-layer logic (the classes services/ owns)",
+  component: "Frontend components (.tsx)",
+  other: "Anything the classifier can't place in the kinds above",
+};
+
 function actionToast(verb: string, result: ConventionsActionResult): void {
   if (result.created && result.pr_number != null) {
     toast.success(
@@ -189,50 +198,59 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
               className="space-y-2 rounded-md border border-border p-3"
             >
               <div className="flex items-center gap-2">
+                <HelpTip label="Repo-relative directory this rule applies to (e.g. roboco/services)">
+                  <Input
+                    value={module.path}
+                    placeholder="path/to/module"
+                    onChange={(e) =>
+                      updateModule(index, { path: e.target.value })
+                    }
+                  />
+                </HelpTip>
+                <HelpTip label="Deletes this module row locally — nothing changes until Save to repo">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeModule(index)}
+                  >
+                    Remove
+                  </Button>
+                </HelpTip>
+              </div>
+              <HelpTip label="One-line description shown in the ambient 'Architectural Standard' prompt block every agent sees">
                 <Input
-                  value={module.path}
-                  placeholder="path/to/module"
+                  value={module.purpose}
+                  placeholder="what this module is for"
                   onChange={(e) =>
-                    updateModule(index, { path: e.target.value })
+                    updateModule(index, { purpose: e.target.value })
                   }
                 />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => removeModule(index)}
-                >
-                  Remove
-                </Button>
-              </div>
-              <Input
-                value={module.purpose}
-                placeholder="what this module is for"
-                onChange={(e) =>
-                  updateModule(index, { purpose: e.target.value })
-                }
-              />
+              </HelpTip>
               <div className="flex flex-wrap gap-1">
                 {FORBIDDABLE_KINDS.map((kind) => (
-                  <Badge
-                    key={kind}
-                    variant={
-                      module.forbidden.includes(kind)
-                        ? "destructive"
-                        : "outline"
-                    }
-                    className="cursor-pointer"
-                    onClick={() => toggleForbidden(index, kind)}
-                  >
-                    no {kind}
-                  </Badge>
+                  <HelpTip key={kind} label={KIND_HINTS[kind]}>
+                    <Badge
+                      variant={
+                        module.forbidden.includes(kind)
+                          ? "destructive"
+                          : "outline"
+                      }
+                      className="cursor-pointer"
+                      onClick={() => toggleForbidden(index, kind)}
+                    >
+                      no {kind}
+                    </Badge>
+                  </HelpTip>
                 ))}
               </div>
             </div>
           ))}
         </div>
-        <Button variant="outline" size="sm" onClick={addModule}>
-          Add module
-        </Button>
+        <HelpTip label="Adds a blank module row to constrain another directory">
+          <Button variant="outline" size="sm" onClick={addModule}>
+            Add module
+          </Button>
+        </HelpTip>
       </CardContent>
     </Card>
   );
@@ -253,9 +271,17 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
           >
             <span className="text-sm">{rule.name.replace(/_/g, " ")}</span>
             <div className="flex items-center gap-2">
-              <span className="w-10 text-right text-xs text-muted-foreground">
-                {rule.level}
-              </span>
+              <HelpTip
+                label={
+                  rule.level === "block"
+                    ? "Block: refuses i_am_done / pr_pass with the offending file:line"
+                    : "Warn: informational only, never blocks the gate"
+                }
+              >
+                <span className="w-10 text-right text-xs text-muted-foreground">
+                  {rule.level}
+                </span>
+              </HelpTip>
               <Switch
                 checked={rule.level === "block"}
                 onCheckedChange={(checked) =>
@@ -285,34 +311,50 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
             className="space-y-2 rounded-md border border-border p-3"
           >
             <div className="flex items-center gap-2">
-              <Input
-                value={waiver.path}
-                placeholder="path/to/file.py"
-                onChange={(e) => updateWaiver(index, { path: e.target.value })}
-              />
-              <Input
-                value={waiver.rule}
-                placeholder="rule name"
-                onChange={(e) => updateWaiver(index, { rule: e.target.value })}
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => removeWaiver(index)}
-              >
-                Remove
-              </Button>
+              <HelpTip label="Repo-relative path or glob this waiver exempts from the rule on the right">
+                <Input
+                  value={waiver.path}
+                  placeholder="path/to/file.py"
+                  onChange={(e) =>
+                    updateWaiver(index, { path: e.target.value })
+                  }
+                />
+              </HelpTip>
+              <HelpTip label="Must match a rule name above exactly for the waiver to apply">
+                <Input
+                  value={waiver.rule}
+                  placeholder="rule name"
+                  onChange={(e) =>
+                    updateWaiver(index, { rule: e.target.value })
+                  }
+                />
+              </HelpTip>
+              <HelpTip label="Deletes this waiver row locally — nothing changes until Save to repo">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeWaiver(index)}
+                >
+                  Remove
+                </Button>
+              </HelpTip>
             </div>
-            <Input
-              value={waiver.reason}
-              placeholder="why this is waived"
-              onChange={(e) => updateWaiver(index, { reason: e.target.value })}
-            />
+            <HelpTip label="Accountability note — committed with the waiver and reviewed in the PR, never a silent suppression">
+              <Input
+                value={waiver.reason}
+                placeholder="why this is waived"
+                onChange={(e) =>
+                  updateWaiver(index, { reason: e.target.value })
+                }
+              />
+            </HelpTip>
           </div>
         ))}
-        <Button variant="outline" size="sm" onClick={addWaiver}>
-          Add waiver
-        </Button>
+        <HelpTip label="Adds a blank waiver row">
+          <Button variant="outline" size="sm" onClick={addWaiver}>
+            Add waiver
+          </Button>
+        </HelpTip>
       </CardContent>
     </Card>
   );
@@ -332,11 +374,13 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
             className="space-y-2 rounded-md border border-border p-3"
           >
             <div className="flex items-center gap-2">
-              <Input
-                value={rule.id}
-                placeholder="rule-id"
-                onChange={(e) => updateCustom(index, { id: e.target.value })}
-              />
+              <HelpTip label="A short, unique identifier for this rule (shown as its badge in Recent violations)">
+                <Input
+                  value={rule.id}
+                  placeholder="rule-id"
+                  onChange={(e) => updateCustom(index, { id: e.target.value })}
+                />
+              </HelpTip>
               <HelpTip
                 label={
                   rule.level === "block"
@@ -354,29 +398,41 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
                   updateCustom(index, { level: checked ? "block" : "warn" })
                 }
               />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => removeCustom(index)}
-              >
-                Remove
-              </Button>
+              <HelpTip label="Deletes this custom rule row locally — nothing changes until Save to repo">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeCustom(index)}
+                >
+                  Remove
+                </Button>
+              </HelpTip>
             </div>
-            <Input
-              value={rule.pattern}
-              placeholder="regex pattern"
-              onChange={(e) => updateCustom(index, { pattern: e.target.value })}
-            />
-            <Input
-              value={rule.message}
-              placeholder="message shown when it matches"
-              onChange={(e) => updateCustom(index, { message: e.target.value })}
-            />
+            <HelpTip label="Regex tested against each changed file's source text — a bad pattern is skipped, never fails the gate">
+              <Input
+                value={rule.pattern}
+                placeholder="regex pattern"
+                onChange={(e) =>
+                  updateCustom(index, { pattern: e.target.value })
+                }
+              />
+            </HelpTip>
+            <HelpTip label="Shown next to a match in Recent violations below">
+              <Input
+                value={rule.message}
+                placeholder="message shown when it matches"
+                onChange={(e) =>
+                  updateCustom(index, { message: e.target.value })
+                }
+              />
+            </HelpTip>
           </div>
         ))}
-        <Button variant="outline" size="sm" onClick={addCustom}>
-          Add custom rule
-        </Button>
+        <HelpTip label="Adds a blank custom regex rule">
+          <Button variant="outline" size="sm" onClick={addCustom}>
+            Add custom rule
+          </Button>
+        </HelpTip>
       </CardContent>
     </Card>
   );

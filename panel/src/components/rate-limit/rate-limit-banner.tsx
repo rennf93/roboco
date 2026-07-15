@@ -6,6 +6,7 @@ import { useRateLimitStore } from "@/store/rate-limit-store";
 import { useRateLimitSync } from "@/hooks/use-rate-limit-sync";
 import { useRateLimitWebSocket } from "@/hooks/use-rate-limit-websocket";
 import type { RateLimitEntry } from "@/types/rate-limits";
+import { HelpTip } from "@/components/ui/help-tip";
 
 // =============================================================================
 // Countdown row for a single rate-limited provider
@@ -37,18 +38,26 @@ function RateLimitRow({ entry }: { entry: RateLimitEntry }) {
   return (
     <div className="flex items-center gap-3 px-4 py-2 bg-amber-50 border-b border-amber-300 last:border-b-0">
       <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
-      <span className="text-sm font-medium text-amber-900">
-        {entry.provider}
-      </span>
-      {agentCount > 0 && (
-        <span className="text-sm text-amber-700">
-          {agentCount} agent{agentCount !== 1 ? "s" : ""} affected
+      <HelpTip label="This AI provider hit a rate limit or a persistent overload; every other provider keeps working normally.">
+        <span className="text-sm font-medium text-amber-900">
+          {entry.provider}
         </span>
+      </HelpTip>
+      {agentCount > 0 && (
+        <HelpTip label="Agents that were mid-task on this provider when the limit hit; each resumes automatically once it lifts — no work is lost.">
+          <span className="text-sm text-amber-700">
+            {agentCount} agent{agentCount !== 1 ? "s" : ""} affected
+          </span>
+        </HelpTip>
       )}
-      <span className="text-sm text-amber-700">{secondsLeft}s</span>
-      <span className="text-sm text-amber-800 font-medium ml-auto">
-        operations paused — resuming automatically
-      </span>
+      <HelpTip label="Estimated time until RoboCo retries this provider, based on the retry-after it reported.">
+        <span className="text-sm text-amber-700">{secondsLeft}s</span>
+      </HelpTip>
+      <HelpTip label="New spawns for this provider are queued, not dropped — a background probe-and-resume loop revives parked agents as soon as it's confirmed clear.">
+        <span className="text-sm text-amber-800 font-medium ml-auto">
+          operations paused — resuming automatically
+        </span>
+      </HelpTip>
     </div>
   );
 }

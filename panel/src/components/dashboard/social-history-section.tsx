@@ -144,9 +144,14 @@ function UnifiedHistoryRow({ row }: { row: UnifiedRow }) {
                 {PLATFORM_LABELS[platform] ?? platform}: {id}
               </a>
             ) : (
-              <span key={platform} className="text-muted-foreground">
-                {PLATFORM_LABELS[platform] ?? platform}: {id}
-              </span>
+              <HelpTip
+                key={platform}
+                label="TikTok's inbox-upload API returns no public URL — this is the platform-side post id"
+              >
+                <span className="text-muted-foreground">
+                  {PLATFORM_LABELS[platform] ?? platform}: {id}
+                </span>
+              </HelpTip>
             ),
           )}
         </div>
@@ -211,7 +216,9 @@ export function SocialHistorySection({ className }: { className?: string }) {
               size="sm"
               className="w-full justify-between"
             >
-              <span>{open ? "Hide" : "Show"} history</span>
+              <HelpTip label="Fetches both sources once, on first expand — up to 50 rows each">
+                <span>{open ? "Hide" : "Show"} history</span>
+              </HelpTip>
               <ChevronDown
                 className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
               />
