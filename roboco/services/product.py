@@ -23,6 +23,22 @@ _INACTIVE_STATUSES = (
 )
 
 
+def _project_to_products_map(
+    products: list[ProductTable],
+) -> dict[UUID, list[UUID]]:
+    """Distinct (project_id, product_id) pairs — dedup the monorepo case."""
+    proj_to_products: dict[UUID, list[UUID]] = {}
+    for product in products:
+        seen: set[UUID] = set()
+        for cell in product.cells:
+            pid = typing_cast("UUID", cell.project_id)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            proj_to_products.setdefault(pid, []).append(typing_cast("UUID", product.id))
+    return proj_to_products
+
+
 class ProductService(BaseService):
     service_name: ClassVar[str] = "product"
 
@@ -114,17 +130,7 @@ class ProductService(BaseService):
         per product. Returns {product_id: {done, active, blocked}}.
         """
         # distinct (product_id, project_id) pairs — dedup the monorepo case.
-        proj_to_products: dict[UUID, list[UUID]] = {}
-        for product in products:
-            seen: set[UUID] = set()
-            for cell in product.cells:
-                pid = typing_cast("UUID", cell.project_id)
-                if pid in seen:
-                    continue
-                seen.add(pid)
-                proj_to_products.setdefault(pid, []).append(
-                    typing_cast("UUID", product.id)
-                )
+        proj_to_products = _project_to_products_map(products)
         if not proj_to_products:
             return {}
 

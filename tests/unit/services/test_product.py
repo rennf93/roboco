@@ -7,11 +7,15 @@ dedup of the same project across a product's cells).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
 from roboco.services.product import ProductService
+
+if TYPE_CHECKING:
+    from roboco.db.tables import ProductTable
 
 _PRODUCT_A = UUID("11111111-1111-1111-1111-111111111111")
 _PRODUCT_B = UUID("22222222-2222-2222-2222-222222222222")
@@ -25,11 +29,11 @@ def _cell(project_id: UUID) -> MagicMock:
     return cell
 
 
-def _product(pid: UUID, project_ids: list[UUID]) -> MagicMock:
+def _product(pid: UUID, project_ids: list[UUID]) -> ProductTable:
     p = MagicMock()
     p.id = pid
     p.cells = [_cell(pid_proj) for pid_proj in project_ids]
-    return p
+    return cast("ProductTable", p)
 
 
 def _result_fetchall(rows: list[MagicMock]) -> MagicMock:
