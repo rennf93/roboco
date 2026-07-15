@@ -1,15 +1,59 @@
 import api from "./client";
+import { Team } from "@/types";
 import type {
   Project,
   ProjectCreate,
   ProjectUpdate,
   ProjectSummary,
-  Team,
 } from "@/types";
 import { isMockMode } from "@/lib/mock-data";
 
 // Mock data for offline mode
-const mockProjects: Project[] = [];
+const mockProjects: Project[] = [
+  {
+    id: "proj-mock-1",
+    name: "roboco",
+    slug: "roboco",
+    git_url: "https://github.com/rennf93/roboco.git",
+    default_branch: "master",
+    protected_branches: ["master", "slave"],
+    assigned_cell: Team.BACKEND,
+    is_active: true,
+    has_git_token: false,
+    ci_watch_enabled: true,
+    ci_watch_workflow: "CI",
+    video_engine_enabled: false,
+    workspace_path: "/data/workspaces/roboco",
+    created_by: "ceo",
+    created_at: "2026-06-01T00:00:00Z",
+    updated_at: null,
+  } as Project,
+  {
+    id: "proj-mock-2",
+    name: "roboco-website",
+    slug: "roboco-website",
+    git_url: "https://github.com/rennf93/roboco-website.git",
+    default_branch: "master",
+    protected_branches: ["master"],
+    assigned_cell: Team.FRONTEND,
+    is_active: true,
+    has_git_token: false,
+    ci_watch_enabled: false,
+    ci_watch_workflow: null,
+    video_engine_enabled: false,
+    workspace_path: null,
+    created_by: "ceo",
+    created_at: "2026-06-15T00:00:00Z",
+    updated_at: null,
+  } as Project,
+];
+
+// Mock task counts per project (mock-mode only — real data comes from the
+// backend's grouped query). Keyed by project id.
+const mockTaskCounts: Record<string, { done: number; active: number; blocked: number }> = {
+  "proj-mock-1": { done: 120, active: 8, blocked: 1 },
+  "proj-mock-2": { done: 34, active: 2, blocked: 0 },
+};
 
 export interface ProjectFilters {
   assigned_cell?: Team;
@@ -41,6 +85,8 @@ export const projectsApi = {
         has_workspace: !!p.workspace_path,
         has_git_token: false, // Mock mode has no tokens
         video_engine_enabled: p.video_engine_enabled,
+        ci_watch_enabled: !!p.ci_watch_enabled,
+        task_counts: mockTaskCounts[p.id] ?? null,
       }));
     }
 

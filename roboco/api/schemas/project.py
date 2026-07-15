@@ -68,12 +68,23 @@ class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProjectTaskCounts(BaseModel):
+    """Per-project task progress (done/active/blocked) for list views."""
+
+    done: int = 0
+    active: int = 0
+    blocked: int = 0
+
+
 class ProjectSummaryResponse(BaseModel):
     """Compact project response for list views.
 
     Returned by GET /api/projects; includes essential project metadata
     for list-view cards. The `video_engine_enabled` field indicates
     whether this project is opted in to the video engine subsystem.
+    `task_counts` is a done/active/blocked breakdown from one grouped
+    query over tasks; `ci_watch_enabled` signals CI-watch is armed (no
+    live-conclusion fan-out — that's a deferred cached endpoint).
     """
 
     id: UUID
@@ -86,6 +97,8 @@ class ProjectSummaryResponse(BaseModel):
     has_workspace: bool = False
     has_git_token: bool = False
     video_engine_enabled: bool = False
+    ci_watch_enabled: bool = False
+    task_counts: ProjectTaskCounts | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -262,7 +275,10 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
     )
 
 
-def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
+def project_to_summary(
+    project: "ProjectTable",
+    task_counts: "ProjectTaskCounts | None" = None,
+) -> ProjectSummaryResponse:
     """Convert a ProjectTable to ProjectSummaryResponse."""
     default_branch = project.default_branch
     return ProjectSummaryResponse(
@@ -276,5 +292,7 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         has_workspace=bool(project.workspace_path),
         has_git_token=bool(project.git_token_encrypted),
         video_engine_enabled=bool(project.video_engine_enabled),
+        ci_watch_enabled=bool(project.ci_watch_enabled),
+        task_counts=task_counts,
     )
 

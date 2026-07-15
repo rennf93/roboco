@@ -47,6 +47,8 @@ function project(overrides: Partial<ProjectSummary>): ProjectSummary {
     has_workspace: true,
     has_git_token: true,
     video_engine_enabled: false,
+    ci_watch_enabled: false,
+    task_counts: null,
     ...overrides,
   };
 }
