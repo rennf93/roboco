@@ -87,6 +87,19 @@ def ladder_pairs(project: object) -> list[tuple[EnvRung, EnvRung]]:
     return [(rungs[i], rungs[i - 1]) for i in range(len(rungs) - 1, 0, -1)]
 
 
+def promotion_chain(project: object) -> list[str]:
+    """Branches to merge into the prod checkout head->...->just-below-prod on a
+    CEO-gated release (the full-chain promotion).
+
+    Every rung except the last (prod), excluding any rung sharing the prod
+    branch — so a degenerate (head==prod) ladder yields ``[]`` (no-op). Order
+    is head-first: ``[dev, qa, stag]`` for ``[dev, qa, stag, master]``.
+    """
+    rungs = effective_environments(project)
+    prod = prod_branch(project)
+    return [r.branch for r in rungs[:-1] if r.branch != prod]
+
+
 def normalize_environments(
     value: list[dict[str, str]] | list[EnvRung] | None,
 ) -> list[dict[str, str]] | None:

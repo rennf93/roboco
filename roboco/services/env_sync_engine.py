@@ -88,7 +88,9 @@ class EnvSyncEngine(BaseService):
         """
         if project is None or getattr(project, "id", None) is None:
             return False
-        if not getattr(project, "has_git_token", False):
+        # ProjectTable exposes ``git_token_encrypted`` (the column), not the
+        # ``has_git_token`` API-response boolean — the merges API needs a PAT.
+        if not getattr(project, "git_token_encrypted", None):
             return False
         if not ladder_pairs(project):
             return False

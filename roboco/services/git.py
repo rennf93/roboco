@@ -1126,9 +1126,9 @@ class GitService(BaseService):
             parent = await task_service.get(UUID(str(task.parent_task_id)))
             if parent and parent.branch_name:
                 return str(parent.branch_name)
-        return await self._project_head_branch(project_slug)
+        return await self._project_default_branch(project_slug)
 
-    async def _project_head_branch(self, project_slug: str) -> str:
+    async def _project_default_branch(self, project_slug: str) -> str:
         """Return the project's head environment branch (ladder index 0).
 
         This is where dev/cell/leaf PRs target — the dev trunk. Falls back to
@@ -1200,7 +1200,7 @@ class GitService(BaseService):
         base_branch = await self._resolve_base_branch(
             task_id, request.parent_branch, request.project_slug, task_service
         )
-        default_branch = await self._project_head_branch(request.project_slug)
+        default_branch = await self._project_default_branch(request.project_slug)
 
         # Token for any remote-touching git command below (fetch, ls-remote,
         # pull, push). Injected into a single `http.extraheader` config for
@@ -2426,7 +2426,7 @@ class GitService(BaseService):
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
         source_branch = await self._pr_head_branch(workspace, request)
-        default_branch = await self._project_head_branch(request.project_slug)
+        default_branch = await self._project_default_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
         target_branch, pr_title, pr_body = await self._resolve_new_pr_context(
             workspace, request, source_branch, default_branch, git_token
@@ -3666,7 +3666,7 @@ class GitService(BaseService):
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
-        target_branch = await self._project_head_branch(project_slug)
+        target_branch = await self._project_default_branch(project_slug)
         # Default branch always exists on origin, so the plain sync is correct
         # here. The best-effort variant guards the agent-facing pr_merge path,
         # whose target can be an integration branch deleted from origin.
@@ -4082,7 +4082,7 @@ class GitService(BaseService):
         layering is preserved. Fall back to the default branch only if the
         create push itself fails.
         """
-        default_branch = await self._project_head_branch(project_slug)
+        default_branch = await self._project_default_branch(project_slug)
         if base_branch == default_branch:
             return base_branch
         ls = await self._run_git(
@@ -4448,7 +4448,7 @@ class GitService(BaseService):
         # repo's default branch — a root→master PR is merged solely by the CEO
         # via approve-&-merge (merge_pr_for_task, CEO-gated from
         # awaiting_ceo_approval). Agents open the master PR and escalate.
-        default_branch = await self._project_head_branch(project.slug)
+        default_branch = await self._project_default_branch(project.slug)
         if target == default_branch:
             raise UnauthorizedError(
                 action="pr_merge",

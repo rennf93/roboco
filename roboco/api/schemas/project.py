@@ -277,4 +277,3 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         has_git_token=bool(project.git_token_encrypted),
         video_engine_enabled=bool(project.video_engine_enabled),
     )
-
