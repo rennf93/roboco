@@ -141,6 +141,9 @@ class ChoreographerHelpers:
     ) -> Envelope:
         raise NotImplementedError
 
+    async def _resolve_ci_status(self, task_id: UUID, t: Any) -> dict[str, Any] | None:
+        raise NotImplementedError
+
 
 def actor_context_fields(agent: Any) -> tuple[str | None, str | None]:
     """``(actor_slug, agent_team)`` for a spec ``Context``, None-agent safe.

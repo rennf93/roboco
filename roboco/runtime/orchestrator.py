@@ -14170,6 +14170,18 @@ Run the project's quality checks against acceptance criteria:
    — chains submit_verification + push + create_pr + submit_qa.
 4. If issues found: commit() the fixes and retry.
 """,
+            "WORK_ALREADY_DONE": f"""## WORK ALREADY DONE
+
+Your task already has commits and an open PR — the work appears complete. The
+server's fast path runs the slimmed gate set (ownership / commits / PR / open
+findings / acceptance criteria / branch-pushed / not-behind-base / conventions /
+CI-green) for you, so skip re-verification and submit directly:
+
+  i_am_done(task_id="{task_id}", notes="<one-line summary of what was done>")
+
+If the fast path refuses (a gate it checks is not actually met), the
+`remediate` field names exactly what's missing — fix it and retry i_am_done.
+""",
         }
         return instructions.get(
             state, f'Call evidence(task_id="{task_id}") to check status.'
@@ -14185,6 +14197,20 @@ Run the project's quality checks against acceptance criteria:
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
         workflow_state = self._get_workflow_state(status, has_plan)
+        # Possibilities-matrix prompt proxy: when the flag is armed and the
+        # task already has commits + an open PR, steer the dev to submit in one
+        # turn instead of re-deriving (re-running gates, re-reading the diff).
+        # This is a cheap sync proxy — the async DB gates (AC coverage, open
+        # findings) are NOT re-checked here; the server fast path
+        # (_i_am_done_fast_path) is the authority and runs them. The prompt
+        # just collapses the 3-5-turn re-derivation to a single i_am_done call.
+        if (
+            settings.possibilities_matrix_enabled
+            and status in ("claimed", "in_progress", "verifying")
+            and task.get("pr_created")
+            and task.get("commits")
+        ):
+            workflow_state = "WORK_ALREADY_DONE"
         open_findings_block = ""
         if workflow_state == "REVISION_REQUIRED":
             open_findings_block = await self._open_findings_prompt_block(str(task_id))
