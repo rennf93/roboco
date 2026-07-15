@@ -68,8 +68,22 @@ export function EnvironmentLadderEditor({
           {items.map((rung, index) => {
             const isFirst = index === 0;
             const isLast = index === items.length - 1;
+            const role = isFirst
+              ? isLast
+                ? "PRs + release"
+                : "PRs land"
+              : isLast
+                ? "release"
+                : "";
             return (
-              <div key={index} className="flex items-center gap-2">
+              <div key={index}>
+                {!isFirst && (
+                  <div className="flex items-center gap-1 py-0.5 pl-16 text-[10px] text-muted-foreground">
+                    <ArrowDown className="h-3 w-3" />
+                    promotes to
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
                 <div className="flex flex-col">
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -80,12 +94,12 @@ export function EnvironmentLadderEditor({
                         className="h-6 w-6"
                         disabled={isFirst}
                         onClick={() => handleMove(index, -1)}
-                        aria-label="Move rung up, toward head"
+                        aria-label="Move earlier in the flow"
                       >
                         <ArrowUp className="h-3.5 w-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Move up (toward head)</TooltipContent>
+                    <TooltipContent>Move earlier in the flow</TooltipContent>
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -96,16 +110,16 @@ export function EnvironmentLadderEditor({
                         className="h-6 w-6"
                         disabled={isLast}
                         onClick={() => handleMove(index, 1)}
-                        aria-label="Move rung down, toward prod"
+                        aria-label="Move later in the flow"
                       >
                         <ArrowDown className="h-3.5 w-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Move down (toward prod)</TooltipContent>
+                    <TooltipContent>Move later in the flow</TooltipContent>
                   </Tooltip>
                 </div>
-                <span className="text-[10px] uppercase text-muted-foreground w-10 text-center">
-                  {isFirst ? "head" : isLast ? "prod" : `rung ${index + 1}`}
+                <span className="w-20 text-center text-[10px] font-medium uppercase text-muted-foreground">
+                  {role}
                 </span>
                 <Input
                   value={rung.name}
@@ -134,6 +148,7 @@ export function EnvironmentLadderEditor({
                   </TooltipTrigger>
                   <TooltipContent>Remove this rung</TooltipContent>
                 </Tooltip>
+                </div>
               </div>
             );
           })}
@@ -146,12 +161,12 @@ export function EnvironmentLadderEditor({
       </Button>
 
       <p className="text-xs text-muted-foreground">
-        Ordered top→bottom: the first rung is <strong>head</strong> (where dev PRs
-        land) and the last is <strong>prod</strong> (the release target). Leave
-        empty to inherit <em>default branch</em> for both — e.g.{" "}
-        <code>dev → qa → stag → prod</code>, or just <code>prod</code> for a
-        single-branch project. When set, this overrides <em>default branch</em>{" "}
-        for the PR target and the release target.
+        Top to bottom is the promotion flow: <strong>PRs land</strong> on the
+        first branch, each rung promotes to the next, and{" "}
+        <strong>releases are cut</strong> from the last — e.g.{" "}
+        <code>dev → qa → staging → prod</code>. Leave empty to use{" "}
+        <em>default branch</em> for everything; when set, this overrides it for
+        both the PR target and the release target.
       </p>
     </div>
   );

@@ -237,7 +237,7 @@ export function CreateProjectDialog() {
                 placeholder="main"
               />
               <p className="text-xs text-muted-foreground">
-                Fallback head+prod branch when no environment ladder is set below.
+                Where PRs land and releases are cut when no environment ladder is set below.
               </p>
             </div>
 
