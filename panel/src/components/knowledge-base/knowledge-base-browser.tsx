@@ -49,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { getErrorMessage } from "@/lib/api/client";
+import { pickTab } from "@/lib/tabs";
 import { usePageRefresh } from "@/hooks";
 
 // Components
@@ -62,7 +63,8 @@ import { MentorChat } from "./mentor-chat";
 import { KBCategoryNav } from "./kb-category-nav";
 import { KBCategoryView } from "./kb-category-view";
 
-type TabValue = "search" | "ask" | "mentor" | "browse" | "admin";
+const TAB_VALUES = ["search", "ask", "mentor", "browse", "admin"] as const;
+type TabValue = (typeof TAB_VALUES)[number];
 
 const INDEX_LABELS: Record<KBIndexType, string> = {
   [KBIndexType.DOCUMENTATION]: "Documentation",
@@ -95,8 +97,8 @@ function KnowledgeBaseBrowserContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Read state from URL params
-  const activeTab = (searchParams.get("tab") as TabValue) || "search";
+  // Read state from URL params; fall back to "search" on null/empty/invalid.
+  const activeTab: TabValue = pickTab(searchParams.get("tab"), TAB_VALUES, "search");
   const searchQuery = searchParams.get("q") || "";
   const filtersParam = searchParams.get("filters");
   const searchFilters: KBIndexType[] = filtersParam
