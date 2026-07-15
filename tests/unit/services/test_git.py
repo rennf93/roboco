@@ -715,6 +715,43 @@ async def test_ensure_base_falls_back_to_default_when_create_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _apply_pr_labels / _ensure_label_exists: never raise, even on a non-httpx
+# error — labeling must not surface as a spurious tool failure after the PR
+# itself was already created.
+# ---------------------------------------------------------------------------
+
+
+def _non_httpx_raising_client() -> MagicMock:
+    """An AsyncClient whose POST raises a plain (non-httpx) exception."""
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.post = AsyncMock(side_effect=RuntimeError("boom"))
+    return fake_client
+
+
+@pytest.mark.asyncio
+async def test_ensure_label_exists_swallows_non_httpx_error() -> None:
+    svc = _service()
+    with patch(
+        "roboco.services.git.httpx.AsyncClient",
+        return_value=_non_httpx_raising_client(),
+    ):
+        await svc._ensure_label_exists("acme", "repo", "tok", "cell/backend")
+
+
+@pytest.mark.asyncio
+async def test_apply_pr_labels_swallows_non_httpx_error() -> None:
+    svc = _service()
+    _bind(svc, "_ensure_label_exists", AsyncMock())
+    with patch(
+        "roboco.services.git.httpx.AsyncClient",
+        return_value=_non_httpx_raising_client(),
+    ):
+        await svc._apply_pr_labels("acme", "repo", "tok", 11, ["cell/backend"])
+
+
+# ---------------------------------------------------------------------------
 # pr_merge: returns merge commit dict
 # ---------------------------------------------------------------------------
 

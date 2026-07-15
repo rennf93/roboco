@@ -11,6 +11,7 @@ Also implements the ACK system for tracking acknowledgments.
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -64,7 +65,7 @@ def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> s
 
 
 # =============================================================================
-# Deferred bus publish — transactional outbox (F107)
+# Deferred after-commit work — transactional outbox (F107)
 # =============================================================================
 # `deliver`/`_persist_and_deliver` run inside the caller's open transaction:
 # the notification row is flushed but not committed. Publishing the
@@ -73,74 +74,73 @@ def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> s
 # error) rolled the row back while connected WebSocket clients had already
 # received a push for an id that no longer existed. The fix defers the bus
 # publish to the session's `after_commit` so a rollback drops the pending
-# event: the row is durable by the time the event fires.
+# event: the row is durable by the time the event fires. The same queue also
+# carries the outbound Telegram send (see `_notify_telegram`) — any
+# network-adjacent side effect that must not hold the transaction open rides
+# this mechanism.
 #
-# The pending events and the scheduled drain tasks live on `session.info` so
+# The pending work and the scheduled drain tasks live on `session.info` so
 # they are scoped to the session's lifetime (no module-global state, no
 # cross-request leak). A sync `after_commit` listener schedules the async
 # drain via `asyncio.create_task` (the listener runs synchronously inside
 # `await AsyncSession.commit()` on the loop thread, so the running loop is
 # available); `after_rollback` clears the pending queue so a rolled-back
-# transaction emits nothing.
+# transaction runs none of it.
 
-_PENDING_PUBLISHES_KEY = "_roboco_pending_bus_publishes"
+_PENDING_WORK_KEY = "_roboco_pending_bus_publishes"
 _DRAIN_TASKS_KEY = "_roboco_drain_tasks"
 _DRAIN_REGISTERED_KEY = "_roboco_drain_registered"
 
 
-async def _drain_pending_publishes(pending: list[Event]) -> None:
-    """Publish every deferred event best-effort once the txn has committed.
-
-    The bus is read fresh at drain time (it may have reconnected between
-    deferral and commit); a disconnected bus is a silent no-op, matching the
-    prior inline behavior. Each publish is independent — one failure does
-    not drop the rest.
+async def _drain_pending_work(pending: list[Callable[[], Awaitable[None]]]) -> None:
+    """Run every deferred after-commit action best-effort once the txn has
+    committed. Each callable is independent — one failure does not stop the
+    rest — and is expected to be fully exception-safe on its own; the
+    try/except here is a defensive backstop, not the primary guard.
     """
-    if not pending:
-        return
-    bus = get_event_bus()
-    if not bus.is_connected():
-        return
-    for ev in pending:
+    for work in pending:
         try:
-            await bus.publish(ev)
+            await work()
         except Exception as e:  # best-effort: never break the drain
-            _log.warning("Deferred bus publish failed", error=str(e))
+            _log.warning("Deferred after-commit work failed", error=str(e))
 
 
-def _schedule_pending_publishes(session: AsyncSession) -> None:
-    """`after_commit` handler: hand the pending events to the running loop.
+def _schedule_pending_work(session: AsyncSession) -> None:
+    """`after_commit` handler: hand the pending work to the running loop.
 
     Sync listener — runs inside `await AsyncSession.commit()`, so the event
     loop is active. The created task is stashed on the session so callers /
     tests can await it deterministically; in production it is fire-and-forget
     (best-effort, matching the prior try/except semantics).
     """
-    pending = session.info.pop(_PENDING_PUBLISHES_KEY, None)
+    pending = session.info.pop(_PENDING_WORK_KEY, None)
     if not pending:
         return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:  # no running loop — nothing we can do, drop silently
         return
-    task = loop.create_task(_drain_pending_publishes(pending))
+    task = loop.create_task(_drain_pending_work(pending))
     session.info.setdefault(_DRAIN_TASKS_KEY, []).append(task)
 
 
-def _discard_pending_publishes(session: AsyncSession) -> None:
-    """`after_rollback` handler: a rolled-back txn emits nothing (no phantom)."""
-    session.info.pop(_PENDING_PUBLISHES_KEY, None)
+def _discard_pending_work(session: AsyncSession) -> None:
+    """`after_rollback` handler: a rolled-back txn runs none of it (no phantom)."""
+    session.info.pop(_PENDING_WORK_KEY, None)
 
 
-def defer_bus_publish(session: AsyncSession, ev: Event) -> None:
-    """Enqueue a bus event to fire only after the session's transaction commits.
+def defer_after_commit(
+    session: AsyncSession, work: Callable[[], Awaitable[None]]
+) -> None:
+    """Enqueue a zero-arg async callable to run only after the session's
+    transaction commits; dropped (never run) on rollback.
 
     Registers one-shot `after_commit` / `after_rollback` listeners on the
     session the first time it is called for that session; subsequent calls
     just append. The listeners are bound to the session instance and are
     collected with it (no global listener accumulation).
     """
-    session.info.setdefault(_PENDING_PUBLISHES_KEY, []).append(ev)
+    session.info.setdefault(_PENDING_WORK_KEY, []).append(work)
     if session.info.get(_DRAIN_REGISTERED_KEY):
         return
     session.info[_DRAIN_REGISTERED_KEY] = True
@@ -149,11 +149,27 @@ def defer_bus_publish(session: AsyncSession, ev: Event) -> None:
 
     @event.listens_for(sync_session, "after_commit")
     def _on_commit(_sync_session: object) -> None:
-        _schedule_pending_publishes(session)
+        _schedule_pending_work(session)
 
     @event.listens_for(sync_session, "after_rollback")
     def _on_rollback(_sync_session: object) -> None:
-        _discard_pending_publishes(session)
+        _discard_pending_work(session)
+
+
+def defer_bus_publish(session: AsyncSession, ev: Event) -> None:
+    """Enqueue a bus event to fire only after the session's transaction commits.
+
+    Thin wrapper over `defer_after_commit`: the bus is read fresh at drain
+    time (it may have reconnected between deferral and commit); a
+    disconnected bus is a silent no-op, matching the prior inline behavior.
+    """
+
+    async def _publish() -> None:
+        bus = get_event_bus()
+        if bus.is_connected():
+            await bus.publish(ev)
+
+    defer_after_commit(session, _publish)
 
 
 class EscalationError(ValueError):
@@ -879,8 +895,12 @@ class NotificationDeliveryService(BaseService):
         """Best-effort Telegram DM to the CEO alongside an in-app notification.
 
         Degrades to a no-op unless ``telegram_enabled`` is armed and credentials
-        are stored. Never raises into the caller — a network/credentials failure
-        only logs. The message carries a panel deep-link when ``panel_base_url``
+        are stored. Credentials are fetched now (a fast DB read on the open
+        session); the actual network send is deferred via
+        ``defer_after_commit`` so a slow Telegram Bot API call can't hold the
+        caller's open transaction for up to ``telegram_timeout_seconds``.
+        Never raises into the caller — a credentials/network failure only
+        logs. The message carries a panel deep-link when ``panel_base_url``
         is set.
         """
         from roboco.config import settings
@@ -894,23 +914,31 @@ class NotificationDeliveryService(BaseService):
 
         try:
             creds = await get_telegram_credentials_service(self.session).get_decrypted()
-            client = build_telegram_client(
-                creds, timeout=settings.telegram_timeout_seconds
-            )
-            text = subject
-            if settings.panel_base_url:
-                link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
-                text = f"{subject}\n{link}"
-            result = await client.send_message(text)
-            if not result.sent:
-                _log.warning("telegram_notify_skip", detail=result.detail)
         except Exception as exc:  # best-effort — never block the producer
             _log.warning("telegram_notify_failed", error=str(exc))
-        finally:
-            close = getattr(locals().get("client"), "close", None)
-            if close is not None:
-                with contextlib.suppress(Exception):
-                    await close()
+            return
+
+        text = subject
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
+            text = f"{subject}\n{link}"
+        timeout = settings.telegram_timeout_seconds
+
+        async def _send() -> None:
+            client = None
+            try:
+                client = build_telegram_client(creds, timeout=timeout)
+                result = await client.send_message(text)
+                if not result.sent:
+                    _log.warning("telegram_notify_skip", detail=result.detail)
+            except Exception as exc:  # best-effort — never break the drain
+                _log.warning("telegram_notify_failed", error=str(exc))
+            finally:
+                if client is not None:
+                    with contextlib.suppress(Exception):
+                        await client.close()
+
+        defer_after_commit(self.session, _send)
 
     async def notify_ceo_of_escalation(
         self,

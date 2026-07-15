@@ -59,6 +59,13 @@ logger = structlog.get_logger()
 # qwen3-embedding:0.6b retrieves higher quality chunks, so more context helps
 MAX_CONTENT_CHARS = 800
 
+# Directories under docs/ that are auto-indexed at startup AND watched by the
+# periodic update loop. docs/rag is the agent-facing RAG corpus; docs/map is
+# the agent-facing exhaustive codebase map. Both dirs' files route through
+# index_documentation, except any file under a "standards" subdir, which
+# routes to the standards indexer instead (see _index_doc_file).
+AUTO_INDEX_DIRS = ("rag", "map")
+
 
 @dataclass
 class IndexingReport:
@@ -361,12 +368,7 @@ class OptimalService:
             )
             return None
 
-        # Directories to auto-index (RAG-optimized docs only). docs/rag is the
-        # agent-facing RAG corpus; docs/map is the agent-facing exhaustive
-        # codebase map — indexing it makes the map roboco_kb_search-able.
-        auto_index_dirs = ["rag", "map"]
-
-        for subdir in auto_index_dirs:
+        for subdir in AUTO_INDEX_DIRS:
             target_dir = docs_root / subdir
             if not target_dir.exists():
                 continue
@@ -405,14 +407,8 @@ class OptimalService:
         # Index each file with individual error tracking
         for md_file in md_files:
             try:
-                # Use standards indexer for files in standards subdirectory
-                is_standards = name == "standards" or "standards" in md_file.parts
-                if is_standards:
-                    await self.index_standards_file(str(md_file))
-                    report.successful += 1
-                else:
-                    await self.index_documentation([str(md_file)])
-                    report.successful += 1
+                await self._index_doc_file(md_file, name)
+                report.successful += 1
 
                 # Track mtime for periodic update detection
                 import contextlib
@@ -438,6 +434,19 @@ class OptimalService:
             total=report.total_attempted,
         )
         return report
+
+    async def _index_doc_file(self, md_file: Path, name: str) -> None:
+        """Route a single doc file to the standards or general docs indexer.
+
+        Shared by the one-shot auto-index (_index_docs_directory) and the
+        periodic re-index path so both resolve the same index type for the
+        same file.
+        """
+        is_standards = name == "standards" or "standards" in md_file.parts
+        if is_standards:
+            await self.index_standards_file(str(md_file))
+        else:
+            await self.index_documentation([str(md_file)])
 
     # =========================================================================
     # PERIODIC UPDATE (File Change Detection)
@@ -490,8 +499,8 @@ class OptimalService:
                 return path
         return None
 
-    def _scan_for_file_changes(self, rag_dir: Path) -> tuple[list[Path], list[Path]]:
-        """Scan ``rag_dir`` for new or modified .md files.
+    def _scan_for_file_changes(self, directory: Path) -> tuple[list[Path], list[Path]]:
+        """Scan ``directory`` for new or modified .md files.
 
         Updates ``self._file_mtimes`` in place as a side effect.
         Returns (new_files, modified_files).
@@ -499,7 +508,7 @@ class OptimalService:
         new_files: list[Path] = []
         modified_files: list[Path] = []
 
-        for md_file in rag_dir.rglob("*.md"):
+        for md_file in directory.rglob("*.md"):
             file_path = str(md_file)
             try:
                 current_mtime = md_file.stat().st_mtime
@@ -515,12 +524,13 @@ class OptimalService:
 
         return new_files, modified_files
 
-    async def _reindex_files(self, files_to_index: list[Path]) -> int:
-        """Re-index the given files and return the count that succeeded."""
+    async def _reindex_files(self, files_to_index: list[Path], name: str) -> int:
+        """Re-index the given files (from auto-index dir ``name``) and return
+        the count that succeeded."""
         indexed = 0
         for md_file in files_to_index:
             try:
-                await self.index_documentation([str(md_file)])
+                await self._index_doc_file(md_file, name)
                 indexed += 1
                 logger.debug("Re-indexed file", file=str(md_file))
             except Exception as e:
@@ -532,32 +542,38 @@ class OptimalService:
         return indexed
 
     async def _check_for_updates(self) -> None:
-        """Scan for new or modified files and index them."""
+        """Scan every AUTO_INDEX_DIRS dir for new or modified files and index them."""
         docs_root = self._resolve_docs_root()
         if docs_root is None:
             return
 
-        rag_dir = docs_root / "rag"
-        if not rag_dir.exists():
-            return
+        total_indexed = 0
+        total_files = 0
+        for subdir in AUTO_INDEX_DIRS:
+            target_dir = docs_root / subdir
+            if not target_dir.exists():
+                continue
 
-        new_files, modified_files = self._scan_for_file_changes(rag_dir)
-        files_to_index = new_files + modified_files
-        if not files_to_index:
-            return
+            new_files, modified_files = self._scan_for_file_changes(target_dir)
+            files_to_index = new_files + modified_files
+            if not files_to_index:
+                continue
 
-        logger.info(
-            "Detected file changes, re-indexing",
-            new_count=len(new_files),
-            modified_count=len(modified_files),
-        )
+            logger.info(
+                "Detected file changes, re-indexing",
+                dir=subdir,
+                new_count=len(new_files),
+                modified_count=len(modified_files),
+            )
 
-        indexed = await self._reindex_files(files_to_index)
-        if indexed > 0:
+            total_indexed += await self._reindex_files(files_to_index, subdir)
+            total_files += len(files_to_index)
+
+        if total_indexed > 0:
             logger.info(
                 "Periodic update complete",
-                indexed=indexed,
-                total_files=len(files_to_index),
+                indexed=total_indexed,
+                total_files=total_files,
             )
 
     async def close(self) -> None:

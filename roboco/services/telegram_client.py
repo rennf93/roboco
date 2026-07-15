@@ -41,9 +41,16 @@ class TelegramClient(ABC):
     @abstractmethod
     async def send_message(self, text: str) -> TelegramSendResult: ...
 
+    @abstractmethod
+    async def close(self) -> None:
+        """Release transport resources; no-op when no transport exists."""
+
 
 class NullTelegramClient(TelegramClient):
     """No credentials configured — every call is a no-op, never raises."""
+
+    async def close(self) -> None:
+        return None
 
     @property
     def configured(self) -> bool:

@@ -2383,7 +2383,7 @@ class GitService(BaseService):
                     },
                     json={"name": name, "color": self._PR_LABEL_COLOR},
                 )
-        except httpx.HTTPError as e:
+        except Exception as e:
             self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
             return
         # 422 (already_exists) / 409 (conflict) = the label is already present.
@@ -2423,7 +2423,7 @@ class GitService(BaseService):
                     },
                     json={"labels": labels},
                 )
-        except httpx.HTTPError as e:
+        except Exception as e:
             self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
             return
         if not resp.is_success:
@@ -4575,20 +4575,23 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
-        # CEO is the only one who merges to master. This agent-facing merge path
-        # (a cell PM merging a leaf/cell PR up the chain) may NEVER target a
-        # repo's default branch — a root→master PR is merged solely by the CEO
-        # via approve-&-merge (merge_pr_for_task, CEO-gated from
-        # awaiting_ceo_approval). Agents open the master PR and escalate.
+        # CEO is the only one who merges into the project's head environment
+        # branch (ladder index 0 — "master" only when no ladder is declared;
+        # see _project_default_branch). This agent-facing merge path (a cell
+        # PM merging a leaf/cell PR up the chain) may NEVER target it — that
+        # PR is merged solely by the CEO via approve-&-merge
+        # (merge_pr_for_task, CEO-gated from awaiting_ceo_approval). Agents
+        # open the PR to it and escalate.
         default_branch = await self._project_default_branch(project.slug)
         if target == default_branch:
             raise UnauthorizedError(
                 action="pr_merge",
                 reason=(
-                    "CEO_ONLY: merging into the default branch "
-                    f"('{default_branch}') is reserved for the CEO via "
-                    "approve-&-merge from awaiting_ceo_approval. Open the PR "
-                    "and escalate; agents never merge to master."
+                    f"CEO_ONLY: merging into '{default_branch}' (this "
+                    "project's head environment branch) is reserved for the "
+                    "CEO via approve-&-merge from awaiting_ceo_approval. "
+                    "Open the PR and escalate; agents never merge directly "
+                    f"into '{default_branch}'."
                 ),
             )
 

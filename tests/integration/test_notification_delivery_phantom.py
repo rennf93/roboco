@@ -12,11 +12,14 @@ from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.db.tables import AgentTable, NotificationTable
 from roboco.events import Event, EventType
 from roboco.models import AgentRole, AgentStatus, NotificationPriority, NotificationType
 from roboco.models.base import Team
 from roboco.services.notification_delivery import get_notification_delivery_service
+from roboco.services.telegram_client import TelegramSendResult
+from roboco.services.telegram_credentials import TelegramCredentialsData
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -251,3 +254,99 @@ async def test_acknowledge_rollback_drops_phantom(
     await _await_drain(db_session)
 
     assert bus.published == []
+
+
+# --- Telegram send rides the same after-commit outbox, not an inline await ---
+
+
+@pytest.mark.asyncio
+async def test_notify_telegram_send_deferred_to_after_commit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_notify_telegram`` must not block the caller's open transaction on
+    the Telegram Bot API call — the network send is deferred to the same
+    after-commit outbox the bus publish above uses, and never fires on a
+    rollback."""
+    monkeypatch.setattr(settings, "telegram_enabled", True)
+    monkeypatch.setattr(settings, "panel_base_url", "")
+
+    creds = TelegramCredentialsData(bot_token="t", chat_id="1")
+
+    class _FakeCredsService:
+        async def get_decrypted(self) -> TelegramCredentialsData:
+            return creds
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_credentials.get_telegram_credentials_service",
+        lambda _session: _FakeCredsService(),
+    )
+
+    sent: list[str] = []
+
+    class _FakeTelegramClient:
+        async def send_message(self, text: str) -> TelegramSendResult:
+            sent.append(text)
+            return TelegramSendResult(sent=True)
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_client.build_telegram_client",
+        lambda _creds, **_kwargs: _FakeTelegramClient(),
+    )
+
+    service = get_notification_delivery_service(db_session)
+    await service._notify_telegram(task_id=uuid4(), subject="Hello CEO")
+
+    # Pre-commit: the network send must not have fired yet.
+    assert sent == []
+
+    await db_session.commit()
+    await _await_drain(db_session)
+
+    assert sent == ["Hello CEO"]
+
+
+@pytest.mark.asyncio
+async def test_notify_telegram_rollback_drops_send(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollback drops the deferred Telegram send — it never fires for a
+    notification whose row never became durable."""
+    monkeypatch.setattr(settings, "telegram_enabled", True)
+    monkeypatch.setattr(settings, "panel_base_url", "")
+
+    creds = TelegramCredentialsData(bot_token="t", chat_id="1")
+
+    class _FakeCredsService:
+        async def get_decrypted(self) -> TelegramCredentialsData:
+            return creds
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_credentials.get_telegram_credentials_service",
+        lambda _session: _FakeCredsService(),
+    )
+
+    sent: list[str] = []
+
+    class _FakeTelegramClient:
+        async def send_message(self, text: str) -> TelegramSendResult:
+            sent.append(text)
+            return TelegramSendResult(sent=True)
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_client.build_telegram_client",
+        lambda _creds, **_kwargs: _FakeTelegramClient(),
+    )
+
+    service = get_notification_delivery_service(db_session)
+    await service._notify_telegram(task_id=uuid4(), subject="Hello CEO")
+
+    await db_session.rollback()
+    await _await_drain(db_session)
+
+    assert sent == []

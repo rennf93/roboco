@@ -102,9 +102,9 @@ def _compute_file_range(
     """Resolve the (start, end, truncated) slice for a file-content read.
 
     Explicit ``start``/``end`` win; else ``line`` centers a context window;
-    else the whole file. The whole-file case is capped at ``_FILE_MAX_LINES``.
-    Returns 1-based inclusive [start, end] and whether the slice is shorter
-    than the file.
+    else the whole file. Whichever branch resolves the window, it is capped
+    at ``_FILE_MAX_LINES`` lines afterward. Returns 1-based inclusive
+    [start, end] and whether the slice is shorter than the file.
     """
     if start is not None and end is not None:
         s, e_ = start, end
@@ -118,8 +118,8 @@ def _compute_file_range(
     e_ = max(s, min(e_, total))
 
     truncated = e_ < total
-    if s == 1 and e_ == total and total > _FILE_MAX_LINES:
-        e_ = _FILE_MAX_LINES
+    if e_ - s + 1 > _FILE_MAX_LINES:
+        e_ = s + _FILE_MAX_LINES - 1
         truncated = True
     return s, e_, truncated
 
