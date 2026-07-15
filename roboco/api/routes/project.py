@@ -26,6 +26,7 @@ from roboco.api.schemas.project import (
     ProjectCreateRequest,
     ProjectResponse,
     ProjectSummaryResponse,
+    ProjectTaskCounts,
     ProjectUpdateRequest,
     SetWorkspaceRequest,
     SyncStateRequest,
@@ -75,7 +76,24 @@ async def list_projects(
             offset=offset,
         )
 
-    return [project_to_summary(p) for p in projects]
+    counts = await service.task_counts_for_projects(projects)
+    out: list[ProjectSummaryResponse] = []
+    for p in projects:
+        pid = cast("UUID", p.id)
+        c = counts.get(pid)
+        out.append(
+            project_to_summary(
+                p,
+                task_counts=(
+                    ProjectTaskCounts(
+                        done=c["done"], active=c["active"], blocked=c["blocked"]
+                    )
+                    if c
+                    else None
+                ),
+            )
+        )
+    return out
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -141,6 +159,7 @@ async def create_project(
         git_url=data.git_url,
         default_branch=data.default_branch,
         protected_branches=protected_branches,
+        environments=data.environments,
         assigned_cell=data.assigned_cell,
         git_token=data.git_token,
         test_command=data.test_command,

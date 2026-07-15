@@ -1022,12 +1022,21 @@ export enum WorkSessionStatus {
   ABANDONED = "abandoned",
 }
 
+// One rung of a project's ordered environment ladder.
+export interface EnvironmentRung {
+  name: string;
+  branch: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   slug: string;
   git_url: string;
   default_branch: string;
+  // Ordered environment ladder (first=head/PR-target, last=prod/release-target).
+  // Null/empty => degenerate 1-rung ladder synthesized from default_branch.
+  environments: EnvironmentRung[] | null;
   protected_branches: string[];
   assigned_cell: Team;
   // Git authentication (token never exposed, only boolean indicator)
@@ -1063,6 +1072,8 @@ export interface ProjectCreate {
   slug: string;
   git_url: string;
   default_branch?: string;
+  // Ordered environment ladder; null/empty inherits default_branch (shim).
+  environments?: EnvironmentRung[] | null;
   protected_branches?: string[];
   assigned_cell: Team;
   // Git authentication (stored encrypted, never returned)
@@ -1079,6 +1090,8 @@ export interface ProjectUpdate {
   name?: string;
   git_url?: string;
   default_branch?: string;
+  // Ordered environment ladder; null clears (reverts to default_branch shim).
+  environments?: EnvironmentRung[] | null;
   protected_branches?: string[];
   assigned_cell?: Team;
   // Git authentication (empty string clears, undefined leaves unchanged)
@@ -1100,6 +1113,12 @@ export interface ProjectUpdate {
   sandbox_extensions?: Record<string, string[]>;
 }
 
+export interface ProjectTaskCounts {
+  done: number;
+  active: number;
+  blocked: number;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -1110,6 +1129,8 @@ export interface ProjectSummary {
   has_workspace: boolean;
   has_git_token: boolean;
   video_engine_enabled: boolean;
+  ci_watch_enabled: boolean;
+  task_counts: ProjectTaskCounts | null;
 }
 
 export interface ProductCellMapping {
@@ -1128,11 +1149,25 @@ export interface Product {
   updated_at: string | null;
 }
 
+export interface ProductCellSummary {
+  team: Team;
+  project_id: string;
+  project_name: string;
+}
+
+export interface ProductProgressSummary {
+  done: number;
+  active: number;
+  blocked: number;
+}
+
 export interface ProductSummary {
   id: string;
   name: string;
   slug: string;
   cell_count: number;
+  cells: ProductCellSummary[];
+  progress: ProductProgressSummary;
 }
 
 export interface ProductCreate {

@@ -102,6 +102,7 @@ async def test_h24_wait_for_ci_polls_through_non_success(
         git_url="",
         git_prefix=[],
         ci_workflow=None,
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     sha = "abc123"

@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { GitCommit, User, Calendar } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitLogPanelProps {
   log: GitLogResponse | undefined;
@@ -105,12 +106,14 @@ export function GitLogPanel({
                       <p className="text-sm font-medium leading-snug line-clamp-2">
                         {commit.message}
                       </p>
-                      <Badge
-                        variant="outline"
-                        className="font-mono text-xs shrink-0"
-                      >
-                        {commit.short_hash}
-                      </Badge>
+                      <HelpTip label="Short commit hash">
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-xs shrink-0"
+                        >
+                          {commit.short_hash}
+                        </Badge>
+                      </HelpTip>
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">

@@ -23,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { GitBranch, Check, Cloud, Plus, RefreshCw } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface GitBranchPanelProps {
   branches: GitBranchListResponse | undefined;
@@ -183,9 +184,11 @@ export function GitBranchPanel({
                       </span>
                     </div>
                     {branch.last_commit && (
-                      <span className="text-xs text-muted-foreground font-mono shrink-0">
-                        {branch.last_commit.slice(0, 7)}
-                      </span>
+                      <HelpTip label="Short commit hash on this branch">
+                        <span className="text-xs text-muted-foreground font-mono shrink-0">
+                          {branch.last_commit.slice(0, 7)}
+                        </span>
+                      </HelpTip>
                     )}
                   </Button>
                 ))}

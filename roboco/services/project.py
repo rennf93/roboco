@@ -6,18 +6,27 @@ Projects represent git repositories that agents work on.
 """
 
 from typing import ClassVar
+from typing import cast as typing_cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
-from roboco.db.tables import ProjectTable
+from roboco.db.tables import ProjectTable, TaskTable
 from roboco.exceptions import ValidationError
-from roboco.models.base import Team
+from roboco.models.base import TaskStatus, Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
 from roboco.utils.crypto import EncryptionError, decrypt_token, encrypt_token
+
+# Statuses that are NOT active progress: completed (done), cancelled
+# (abandoned), blocked (its own bucket). Everything else counts as active.
+_INACTIVE_STATUSES = (
+    TaskStatus.COMPLETED,
+    TaskStatus.CANCELLED,
+    TaskStatus.BLOCKED,
+)
 
 
 class ProjectService(BaseService):
@@ -96,6 +105,7 @@ class ProjectService(BaseService):
             git_url=data.git_url,
             default_branch=data.default_branch,
             protected_branches=data.protected_branches,
+            environments=data.environments,
             assigned_cell=data.assigned_cell,
             git_token_encrypted=encrypted_token,
             test_command=data.test_command,
@@ -342,6 +352,53 @@ class ProjectService(BaseService):
 
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def task_counts_for_projects(
+        self, projects: list[ProjectTable]
+    ) -> dict[UUID, dict[str, int]]:
+        """Per-project task progress (done/active/blocked) — one grouped query.
+
+        One ``GROUP BY project_id`` over tasks for every distinct project_id
+        in the list. Returns {project_id: {done, active, blocked}}; a project
+        with no tasks is absent (the caller falls back to zeros).
+        """
+        project_ids = [typing_cast("UUID", p.id) for p in projects if p.id is not None]
+        if not project_ids:
+            return {}
+
+        result = await self.session.execute(
+            select(
+                TaskTable.project_id,
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.COMPLETED, 1), else_=0)
+                    ),
+                    0,
+                ).label("done"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.BLOCKED, 1), else_=0)
+                    ),
+                    0,
+                ).label("blocked"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status.in_(_INACTIVE_STATUSES), 0), else_=1)
+                    ),
+                    0,
+                ).label("active"),
+            )
+            .where(TaskTable.project_id.in_(project_ids))
+            .group_by(TaskTable.project_id)
+        )
+        out: dict[UUID, dict[str, int]] = {}
+        for row in result.fetchall():
+            out[typing_cast("UUID", row.project_id)] = {
+                "done": int(row.done or 0),
+                "active": int(row.active or 0),
+                "blocked": int(row.blocked or 0),
+            }
+        return out
 
     async def list_by_cell(
         self,

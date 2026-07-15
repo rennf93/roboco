@@ -19,12 +19,71 @@ import {
 } from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Boxes, Pencil } from "lucide-react";
-import type { ProductSummary } from "@/types";
+import type { ProductSummary, Team } from "@/types";
 import { EditProductDialog } from "./edit-product-dialog";
+
+const TEAM_LABELS: Record<Team, string> = {
+  board: "Board",
+  main_pm: "Main PM",
+  backend: "Backend",
+  frontend: "Frontend",
+  ux_ui: "UX/UI",
+  marketing: "Marketing",
+};
 
 interface ProductTableProps {
   products: ProductSummary[] | undefined;
   isLoading: boolean;
+}
+
+function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
+  if (cells.length === 0) {
+    return <span className="text-muted-foreground text-sm">Unmapped</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {cells.map((c) => (
+        <div key={`${c.team}-${c.project_id}`} className="flex items-center gap-2">
+          <Badge
+            variant="outline"
+            className="bg-blue-500/10 text-blue-500 text-xs"
+          >
+            {TEAM_LABELS[c.team] ?? c.team}
+          </Badge>
+          <span className="text-muted-foreground text-xs truncate">
+            {c.project_name || "—"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProgressCell({
+  progress,
+}: {
+  progress: ProductSummary["progress"];
+}) {
+  const { done, active, blocked } = progress;
+  const atRisk = blocked > 0;
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={
+          "h-2 w-2 rounded-full " +
+          (atRisk ? "bg-amber-500" : done > 0 ? "bg-emerald-500" : "bg-muted")
+        }
+        title={atRisk ? "At risk: blocked tasks" : "Healthy"}
+      />
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-emerald-600 dark:text-emerald-400">{done} done</span>
+        <span className="text-muted-foreground">{active} active</span>
+        {blocked > 0 && (
+          <span className="text-amber-600 dark:text-amber-400">{blocked} blocked</span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function ProductTable({ products, isLoading }: ProductTableProps) {
@@ -59,7 +118,8 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Product</TableHead>
-                  <TableHead>Cells Mapped</TableHead>
+                  <TableHead>Cells</TableHead>
+                  <TableHead>Progress</TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -81,9 +141,10 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge className="bg-blue-500/10 text-blue-500">
-                        {product.cell_count} / 3
-                      </Badge>
+                      <CellsList cells={product.cells} />
+                    </TableCell>
+                    <TableCell>
+                      <ProgressCell progress={product.progress} />
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
@@ -131,10 +192,25 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                   </Button>
                 </div>
                 <div className="mt-3 divide-y">
-                  <ResponsiveTableCardRow label="Cells Mapped">
-                    <Badge className="bg-blue-500/10 text-blue-500">
-                      {product.cell_count} / 3
-                    </Badge>
+                  <ResponsiveTableCardRow label="Cells">
+                    <div className="flex flex-col items-end gap-1">
+                      {product.cells.map((c) => (
+                        <span
+                          key={`${c.team}-${c.project_id}`}
+                          className="text-xs text-muted-foreground"
+                        >
+                          {TEAM_LABELS[c.team] ?? c.team}: {c.project_name || "—"}
+                        </span>
+                      ))}
+                      {product.cells.length === 0 && (
+                        <span className="text-muted-foreground text-xs">
+                          Unmapped
+                        </span>
+                      )}
+                    </div>
+                  </ResponsiveTableCardRow>
+                  <ResponsiveTableCardRow label="Progress">
+                    <ProgressCell progress={product.progress} />
                   </ResponsiveTableCardRow>
                 </div>
               </ResponsiveTableCard>

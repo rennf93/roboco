@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { HelpTip } from "@/components/ui/help-tip";
 import {
   Clock,
   RefreshCw,
@@ -53,10 +54,30 @@ const stateIcons: Record<string, React.ReactNode> = {
   terminated: <Square className="h-4 w-4" />,
 };
 
+const stateDescriptions: Record<string, string> = {
+  active: "Agent is actively working a task.",
+  running: "Agent is running — currently executing.",
+  ready: "Agent is ready and waiting for work.",
+  starting: "Agent container is starting up.",
+  idle: "Agent is idle — no task currently claimed.",
+  waiting_long: "Agent has been waiting a long time; may need attention.",
+  paused: "Agent is paused; can resume.",
+  stopped: "Agent container is stopped; can be restarted.",
+  terminated: "Agent container has been terminated.",
+  offline: "Agent is offline.",
+  error: "Agent hit an error state; needs attention.",
+};
+
 interface AgentStateBadgeProps {
   state: AgentStateString | string;
   showIcon?: boolean;
   size?: "sm" | "md" | "lg";
+}
+
+/** Plain-language explanation for an agent state. Reused by the shared badge
+ * and by inline agent-state renderers. Empty for an unknown state. */
+export function agentStateDescription(state: string): string {
+  return stateDescriptions[state] ?? "";
 }
 
 export function AgentStateBadge({
@@ -74,10 +95,12 @@ export function AgentStateBadge({
   const icon = stateIcons[state] || <Square className="h-4 w-4" />;
 
   return (
-    <Badge className={`${color} text-white ${sizeClasses[size]}`}>
-      {showIcon && <span className="mr-1">{icon}</span>}
-      {state.replace(/_/g, " ")}
-    </Badge>
+    <HelpTip label={stateDescriptions[state]}>
+      <Badge className={`${color} text-white ${sizeClasses[size]}`}>
+        {showIcon && <span className="mr-1">{icon}</span>}
+        {state.replace(/_/g, " ")}
+      </Badge>
+    </HelpTip>
   );
 }
 

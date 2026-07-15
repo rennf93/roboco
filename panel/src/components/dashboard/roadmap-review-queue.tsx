@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { CheckCircle2, Map, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const _MIN_REASON_CHARS = 4;
 
@@ -68,8 +69,12 @@ function RoadmapItemRow({
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="font-medium">{item.title}</span>
         <Badge variant="outline">{item.team}</Badge>
-        <Badge variant="outline">{item.project_slug}</Badge>
-        <Badge variant="secondary">P{item.priority}</Badge>
+        <HelpTip label="The project (repository) this roadmap item targets">
+          <Badge variant="outline">{item.project_slug}</Badge>
+        </HelpTip>
+        <HelpTip label={`Priority P${item.priority} — ${item.priority === 0 ? "critical" : item.priority === 1 ? "high" : item.priority === 2 ? "medium" : "low"}`}>
+          <Badge variant="secondary">P{item.priority}</Badge>
+        </HelpTip>
         {itemStatusBadge(item)}
       </div>
       <p className="text-sm text-muted-foreground">{item.description}</p>

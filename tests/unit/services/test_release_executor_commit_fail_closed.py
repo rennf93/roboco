@@ -21,6 +21,7 @@ def _ctx() -> _ReleaseContext:
         git_url="https://github.com/o/roboco",
         git_prefix=[],
         ci_workflow=None,
+        env_chain=[],
     )
 
 

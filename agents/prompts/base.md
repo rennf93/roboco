@@ -87,3 +87,7 @@ The briefing also carries `company_goals` — the company's charter (north star,
 ## Substitute reasons (for `i_am_blocked`)
 
 `low_context`, `out_of_scope_team`, `out_of_scope_role`, `task_complete`, `max_retries`, `blocked_external`.
+
+## Makefile is the gate surface
+
+Run `make <target>` for lint/test/typecheck — never raw `uv run`/`pip`/`conda`/`poetry`. The Makefile sets `UV_NO_SYNC=1` and a private `UV_CACHE_DIR` to prevent the concurrent-venv-corruption race; bare `uv run` bypasses both. Targets: `make quality` (full gate), `make gate` (fast pre-submit), `make lint`, `make test`, `make panel-gate` (frontend).

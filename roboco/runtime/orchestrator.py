@@ -1109,6 +1109,7 @@ class AgentOrchestrator:
         self._self_heal_task: asyncio.Task | None = None
         self._ci_watch_task: asyncio.Task | None = None
         self._dep_update_task: asyncio.Task | None = None
+        self._env_sync_task: asyncio.Task | None = None
         self._release_manager_task: asyncio.Task | None = None
         self._x_mentions_task: asyncio.Task | None = None
         self._roadmap_engine_task: asyncio.Task | None = None
@@ -1205,6 +1206,7 @@ class AgentOrchestrator:
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
+        self._env_sync_task = asyncio.create_task(self._env_sync_loop())
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
         self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
         self._roadmap_engine_task = asyncio.create_task(self._roadmap_engine_loop())
@@ -1321,6 +1323,7 @@ class AgentOrchestrator:
             self._self_heal_task,
             self._ci_watch_task,
             self._dep_update_task,
+            self._env_sync_task,
             self._release_manager_task,
             self._x_mentions_task,
             self._roadmap_engine_task,
@@ -2118,24 +2121,22 @@ class AgentOrchestrator:
 
         from roboco.db.base import get_db_context
         from roboco.db.tables import ProjectTable
+        from roboco.models.env_branches import head_branch
 
         try:
             async with get_db_context() as db:
                 result = await db.execute(
-                    select(ProjectTable.slug, ProjectTable.default_branch)
+                    select(ProjectTable)
                     .where(ProjectTable.is_active.is_(True))
                     .order_by(ProjectTable.created_at.asc())
                     .limit(1)
                 )
-                row = result.first()
-                if row is None:
-                    return None
-                slug, default_branch = row
-                if not slug:
+                project = result.scalar_one_or_none()
+                if project is None or not project.slug:
                     return None
                 return SpawnGitContext(
-                    project_slug=slug,
-                    branch_name=default_branch,
+                    project_slug=project.slug,
+                    branch_name=head_branch(project),
                 )
         except Exception as e:
             logger.warning(
@@ -8139,6 +8140,72 @@ Start by:
             await get_dep_update_engine(db).run_cycle(projects)
             await db.commit()
 
+    async def _env_sync_loop(self) -> None:
+        """Env-sync: cascade prod→…→head so dev never falls behind prod.
+
+        Dormant by default — returns immediately unless ``env_sync_enabled``,
+        so a standard deployment adds zero behaviour. Each interval it loads the
+        opted-in projects (a declared env ladder + a git token), cascades the
+        ladder top-down via GitHub's merges API, and opens ONE sync PR + tracked
+        task per conflicted repo. Never pushes prod (the cascade's target is a
+        non-prod rung by construction), so "only the CEO merges master" holds.
+        """
+        if not settings.env_sync_enabled:
+            return
+        interval = settings.env_sync_interval_seconds
+        self._record_loop_heartbeat("env_sync", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_env_sync_cycle()
+                self._record_loop_heartbeat("env_sync", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("env-sync cycle failed")
+
+    async def _run_env_sync_cycle(self) -> None:
+        """One env-sync pass: load the opted-in set, run the engine, commit.
+
+        Extracted from the loop so it is testable without the sleep. Warns when
+        env-sync is armed but no project has a declared env ladder — so a
+        misconfiguration isn't mistaken for "everything is in sync".
+        """
+        from roboco.db import get_db_context
+        from roboco.services.env_sync_engine import get_env_sync_engine
+
+        async with get_db_context() as db:
+            projects = await self._load_env_sync_set(db)
+            if not projects:
+                logger.warning(
+                    "env-sync enabled but no project has a declared environment "
+                    "ladder + git token — nothing to cascade"
+                )
+                return
+            await get_env_sync_engine(db).run_cycle(projects)
+            await db.commit()
+
+    async def _load_env_sync_set(self, db: Any) -> list[Any]:
+        """Projects opted into env-sync: a declared env ladder (more than one
+        rung, so there are pairs to cascade) + a git_url, one per repo.
+
+        A degenerate ladder (head==prod, one rung) has no pairs to cascade, so it
+        is excluded here — there is nothing to sync. Collapse to one canonical
+        project per repo: the engine's per-``git_url`` open-task dedup means a
+        monorepo's several cell-projects share one cascade anyway.
+        """
+        from roboco.models.env_branches import ladder_pairs
+        from roboco.services.project import get_project_service
+
+        projects = await get_project_service(db).list_all(active_only=True)
+        eligible = [
+            p for p in projects if getattr(p, "git_url", None) and ladder_pairs(p)
+        ]
+        return self._projects_one_per_key(
+            eligible,
+            key_fn=lambda p: (self._repo_key(str(getattr(p, "git_url", "") or "")),),
+        )
+
     async def _release_manager_loop(self) -> None:
         """Gated release manager: at a logical point, propose a CEO-gated release.
 
@@ -12638,6 +12705,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """Validate and spawn a dev agent for a pending, pre-assigned task."""
         if self._is_agent_active(agent_slug):
             return
+        # Sequence is the bar: skip the spawn when the assignee-blind sequence
+        # guard would refuse the claim (a non-terminal lower-sequence same-parent
+        # sibling). Mirrors _route_unassigned_pm_task's prefilter so a
+        # sequence-held dev leaf isn't booted into a claim the chokepoint will
+        # refuse — pure spawn churn until the predecessor goes terminal.
+        if await self._pending_claim_blocked(task.get("id")):
+            return
         # Per-dev queue order: hold a dev's higher-sequence code leaf while it
         # still has an earlier non-terminal code sibling under the same parent,
         # so the dev works its queue one task at a time, in order. Loop-free —
@@ -14165,6 +14239,18 @@ Run the project's quality checks against acceptance criteria:
    — chains submit_verification + push + create_pr + submit_qa.
 4. If issues found: commit() the fixes and retry.
 """,
+            "WORK_ALREADY_DONE": f"""## WORK ALREADY DONE
+
+Your task already has commits and an open PR — the work appears complete. The
+server's fast path runs the slimmed gate set (ownership / commits / PR / open
+findings / acceptance criteria / branch-pushed / not-behind-base / conventions /
+CI-green) for you, so skip re-verification and submit directly:
+
+  i_am_done(task_id="{task_id}", notes="<one-line summary of what was done>")
+
+If the fast path refuses (a gate it checks is not actually met), the
+`remediate` field names exactly what's missing — fix it and retry i_am_done.
+""",
         }
         return instructions.get(
             state, f'Call evidence(task_id="{task_id}") to check status.'
@@ -14180,6 +14266,20 @@ Run the project's quality checks against acceptance criteria:
         # Determine workflow state based on task attributes
         has_plan = bool(task.get("plan"))
         workflow_state = self._get_workflow_state(status, has_plan)
+        # Possibilities-matrix prompt proxy: when the flag is armed and the
+        # task already has commits + an open PR, steer the dev to submit in one
+        # turn instead of re-deriving (re-running gates, re-reading the diff).
+        # This is a cheap sync proxy — the async DB gates (AC coverage, open
+        # findings) are NOT re-checked here; the server fast path
+        # (_i_am_done_fast_path) is the authority and runs them. The prompt
+        # just collapses the 3-5-turn re-derivation to a single i_am_done call.
+        if (
+            settings.possibilities_matrix_enabled
+            and status in ("claimed", "in_progress", "verifying")
+            and task.get("pr_created")
+            and task.get("commits")
+        ):
+            workflow_state = "WORK_ALREADY_DONE"
         open_findings_block = ""
         if workflow_state == "REVISION_REQUIRED":
             open_findings_block = await self._open_findings_prompt_block(str(task_id))

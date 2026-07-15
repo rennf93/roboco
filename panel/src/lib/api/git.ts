@@ -11,6 +11,7 @@ import type {
   GitLogResponse,
   GitBranchListResponse,
   GitDiffResponse,
+  GitFileContentResponse,
   GitCommitRequest,
   GitCommitResponse,
   GitPushRequest,
@@ -156,6 +157,35 @@ export const gitApi = {
     }
     const { data } = await api.get<GitDiffResponse>("/git/diff", {
       params: { project_slug: projectSlug, staged, file_path: filePath },
+    });
+    return data;
+  },
+
+  /**
+   * Read a file's content at a branch tip, sliced to a line window.
+   */
+  getFile: async (
+    branch: string,
+    path: string,
+    line?: number,
+    context: number = 10,
+  ): Promise<GitFileContentResponse> => {
+    if (isMockMode()) {
+      const lines = Array.from(
+        { length: 5 },
+        (_, i) => `// mock line ${i + 1}`,
+      );
+      return {
+        branch,
+        path,
+        content: lines.join("\n"),
+        start_line: 1,
+        total_lines: lines.length,
+        truncated: false,
+      };
+    }
+    const { data } = await api.get<GitFileContentResponse>("/git/file", {
+      params: { branch, path, line, context },
     });
     return data;
   },

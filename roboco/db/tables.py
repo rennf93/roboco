@@ -498,6 +498,14 @@ class ProjectTable(Base):
     protected_branches: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=lambda: ["main", "master"]
     )
+    # Ordered environment ladder [{name, branch}]: index 0 = head (PR target),
+    # index -1 = prod (release target), middle = intermediates. Null →
+    # roboco.services.env_branches synthesizes a degenerate single-branch
+    # ladder from default_branch (head == prod == default_branch), so behavior
+    # is unchanged until the operator declares a real split.
+    environments: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     git_token_encrypted: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # Fernet-encrypted GitHub PAT
@@ -2345,6 +2353,27 @@ class XCredentialsTable(Base):
     access_token_secret_encrypted: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
+class TelegramCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted Telegram bot token + chat id
+    (mirrors ``XCredentialsTable``). At most one row ever exists;
+    ``TelegramCredentialsService`` upserts it. Decrypted only server-side, by
+    ``telegram_client`` — the API never returns plaintext."""
+
+    __tablename__ = "telegram_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

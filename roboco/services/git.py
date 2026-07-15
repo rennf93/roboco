@@ -51,7 +51,9 @@ from roboco.exceptions import (
     MergeConflictError,
 )
 from roboco.foundation.policy import lifecycle
+from roboco.foundation.policy.pr_labels import CONVENTIONS_PR_LABELS, derive_pr_labels
 from roboco.models.base import AgentRole, TaskStatus
+from roboco.models.env_branches import head_branch
 from roboco.services.base import (
     BaseService,
     NotFoundError,
@@ -297,6 +299,10 @@ _REV_LIST_PARTS = 2
 
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
+# merges-API success codes: 201 = merge commit created + pushed; 204 = nothing
+# to merge (head already an ancestor of base).
+_HTTP_CREATED = 201
+_HTTP_NO_CONTENT = 204
 # 404 means the PR (or repo) does not exist; surfaced as a typed GitError
 # by `update_pr_for_task` so the gateway can convert it into a specific
 # invalid_state envelope rather than the generic refusal message.
@@ -574,7 +580,7 @@ class GitService(BaseService):
                     project_slug=project_slug,
                     agent_id=agent_id,
                     git_url=project.git_url,
-                    default_branch=project.default_branch or "master",
+                    default_branch=head_branch(project),
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -1124,14 +1130,17 @@ class GitService(BaseService):
         return await self._project_default_branch(project_slug)
 
     async def _project_default_branch(self, project_slug: str) -> str:
-        """Return the project's configured default branch, or 'master'."""
+        """Return the project's head environment branch (ladder index 0).
+
+        This is where dev/cell/leaf PRs target — the dev trunk. Falls back to
+        default_branch (and then 'master') via the env-ladder shim when the
+        project has no declared environment ladder.
+        """
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
-        return (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "master"
-        )
+        if project is None:
+            return "master"
+        return head_branch(project)
 
     async def _checkout_base_with_fallback(
         self,
@@ -1505,8 +1514,8 @@ class GitService(BaseService):
         task_service = get_task_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         allowed: set[str] = set()
-        if project and project.default_branch:
-            allowed.add(project.default_branch)
+        if project:
+            allowed.add(head_branch(project))
 
         # Include tasks where agent is either assignee OR claimer
         result = await self.session.execute(
@@ -2220,7 +2229,7 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        branch = project.default_branch or "master"
+        branch = head_branch(project)
         query = _CiRunQuery(
             project_slug=project_slug,
             owner_repo=(owner, repo),
@@ -2352,6 +2361,92 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    # A single neutral color — labels are distinguished by name, not hue, and
+    # GitHub's create-label endpoint requires a color (it won't auto-assign).
+    _PR_LABEL_COLOR = "5e6ad2"
+
+    async def _ensure_label_exists(
+        self, owner: str, repo: str, git_token: str, name: str
+    ) -> None:
+        """Create a repo label if missing (GitHub's add-label API 404s on an
+        unknown label instead of auto-creating). Swallow 'already exists'
+        (422/409). Best-effort: logs and never raises — a missing label must not
+        block PR creation."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"name": name, "color": self._PR_LABEL_COLOR},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
+            return
+        # 422 (already_exists) / 409 (conflict) = the label is already present.
+        if resp.is_success or resp.status_code in (409, 422):
+            return
+        self.log.warning(
+            "could not ensure PR label exists",
+            label=name,
+            status=resp.status_code,
+            body=(resp.text or "")[:200],
+        )
+
+    async def _apply_pr_labels(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        pr_number: int,
+        labels: list[str],
+    ) -> None:
+        """Best-effort: create each label (GitHub won't auto-create on add) then
+        add them to the PR. Re-adding is a no-op, so the 422 'PR already exists'
+        path is safe to re-label. Never raises — labeling must not block PR
+        creation (same posture as ``_record_pr_atomically``)."""
+        if not labels:
+            return
+        for name in labels:
+            await self._ensure_label_exists(owner, repo, git_token, name)
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"labels": labels},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
+            return
+        if not resp.is_success:
+            self.log.warning(
+                "could not add PR labels",
+                pr=pr_number,
+                status=resp.status_code,
+                body=(resp.text or "")[:200],
+            )
+
+    async def _task_has_children(self, task_id: UUID) -> bool:
+        """True iff the task has any subtask (a one-row probe). PR creation is
+        rare; the query is negligible and keeps ``has_children`` honest instead
+        of assumed per call site."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
+
     async def _pr_base_on_remote(
         self,
         workspace: Path,
@@ -2437,10 +2532,13 @@ class GitService(BaseService):
             },
         )
 
+        labels = await self._labels_for_pr_request(request)
+
         existing = await self._existing_pr_tuple(
             resp, (owner, repo), (source_branch, target_branch), git_token, pr_title
         )
         if existing is not None:
+            await self._apply_pr_labels(owner, repo, git_token, existing[0], labels)
             return existing
 
         if not resp.is_success:
@@ -2451,12 +2549,191 @@ class GitService(BaseService):
             )
 
         pr_data = resp.json()
+        pr_number = int(pr_data["number"])
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return (
-            int(pr_data["number"]),
+            pr_number,
             str(pr_data["html_url"]),
             pr_title or "",
             source_branch,
             target_branch,
+        )
+
+    async def sync_env_branch(
+        self, project_slug: str, target_branch: str, source_branch: str
+    ) -> dict[str, Any]:
+        """Merge ``source_branch`` (an upper env rung) into ``target_branch`` (the
+        lower rung) server-side via GitHub's merges API — one step of the
+        prod→head cascade. The merge commit lands on ``target_branch`` (the
+        clean-cascade auto-push). The cascade's target is never prod by
+        construction (``ladder_pairs``), so prod is never pushed here.
+
+        Returns ``{"status": ...}``:
+
+        * ``already_ancestor`` — target already contains source (HTTP 204).
+        * ``merged`` — merge commit created + pushed to target (HTTP 201; ``sha``).
+        * ``conflict`` — non-fast-forward / merge conflict (HTTP 409); no commit.
+        * ``missing_ref`` — no token / unparseable remote / a branch absent (422).
+
+        Never raises into the engine loop. Does NOT open a PR on conflict —
+        the caller decides that.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return {"status": "missing_ref"}
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return {"status": "missing_ref"}
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return {"status": "missing_ref"}
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/merges",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={
+                        "base": target_branch,
+                        "head": source_branch,
+                        "commit_message": f"sync: {source_branch} → {target_branch}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            self.log.warning(
+                "env-sync merges API error", project=project_slug, error=str(exc)
+            )
+            return {"status": "missing_ref"}
+        return self._env_merge_status(resp, project_slug)
+
+    def _env_merge_status(
+        self, resp: httpx.Response, project_slug: str
+    ) -> dict[str, Any]:
+        """Map a GitHub merges-API response to an env-sync status dict.
+
+        ``merged`` carries the new merge ``sha``; ``conflict`` (409) leaves the
+        target untouched; any other code (incl. 422 missing-ref / no-merge) is
+        ``missing_ref`` so the engine skips without opening a PR.
+        """
+        if resp.status_code == _HTTP_CREATED:
+            return {"status": "merged", "sha": resp.json().get("sha")}
+        if resp.status_code == _HTTP_NO_CONTENT:
+            return {"status": "already_ancestor"}
+        if resp.status_code == _HTTP_CONFLICT:
+            return {"status": "conflict"}
+        self.log.warning(
+            "env-sync merges API unexpected status",
+            project=project_slug,
+            status=resp.status_code,
+            body=resp.text[:200],
+        )
+        return {"status": "missing_ref"}
+
+    async def open_sync_pr(
+        self, project_slug: str, source_branch: str, target_branch: str, body: str
+    ) -> dict[str, Any] | None:
+        """Open (or reuse) a sync PR ``source_branch → target_branch``.
+
+        Idempotent: reuses an already-open PR for the same head→base. Returns
+        ``{"number", "url"}`` or None on a missing token / unparseable remote /
+        GitHub error — never raises into the engine loop.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        try:
+            owner_repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        return await self._post_sync_pr(
+            owner_repo, git_token, (source_branch, target_branch), body, project_slug
+        )
+
+    async def _post_sync_pr(
+        self,
+        owner_repo: tuple[str, str],
+        git_token: str,
+        branches: tuple[str, str],
+        body: str,
+        project_slug: str,
+    ) -> dict[str, Any] | None:
+        """Reuse an open sync PR or create a new one for ``source→target``.
+
+        Never raises into the engine loop: a missing existing PR, a rejected
+        create, or a transport error all return None.
+        """
+        owner, repo = owner_repo
+        source_branch, target_branch = branches
+        existing = await self._find_existing_pr(
+            owner, repo, source_branch, target_branch, git_token
+        )
+        if existing is not None:
+            return {
+                "number": int(existing["number"]),
+                "url": str(existing.get("html_url", "")),
+            }
+        try:
+            resp = await self._post_pr(
+                owner,
+                repo,
+                git_token,
+                {
+                    "title": f"sync: {source_branch} → {target_branch}",
+                    "body": body,
+                    "head": source_branch,
+                    "base": target_branch,
+                },
+            )
+        except GitError as exc:
+            self.log.warning(
+                "env-sync PR create failed", project=project_slug, error=str(exc)
+            )
+            return None
+        if not resp.is_success:
+            self.log.warning(
+                "env-sync PR create rejected",
+                project=project_slug,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
+            return None
+        data = resp.json()
+        return {"number": int(data["number"]), "url": str(data.get("html_url", ""))}
+
+    async def _labels_for_pr_request(
+        self,
+        request: GitCreatePRRequest,
+    ) -> list[str]:
+        """The org-structure labels for the REST/task PR path. A task PR derives
+        team / batch / has_children from the task; a freeform PR (``task_id``
+        None) carries only the tree + root flags."""
+        if request.task_id is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        task = await get_task_service(self.session).get(request.task_id)
+        if task is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        return derive_pr_labels(
+            is_root_pr=request.is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=await self._task_has_children(UUID(str(task.id))),
         )
 
     async def _resolve_new_pr_context(
@@ -4022,6 +4299,15 @@ class GitService(BaseService):
             },
         )
 
+        # Org-structure labels: create_pr is always an assembled PM PR
+        # (cell->root or root->master), so has_children is True by construction.
+        labels = derive_pr_labels(
+            is_root_pr=is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=True,
+        )
+
         if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
             found = await self._find_existing_pr(
                 owner, repo, branch_name, parent, git_token
@@ -4036,6 +4322,7 @@ class GitService(BaseService):
                 await _await_shielded(
                     self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
                 )
+                await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
                 return {
                     "pr_number": pr_number,
                     "pr_url": pr_url,
@@ -4061,6 +4348,7 @@ class GitService(BaseService):
         await _await_shielded(
             self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
         )
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
     async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:
@@ -5340,7 +5628,7 @@ class GitService(BaseService):
                 ws = None
         if ws is None or not ws.exists():
             return None
-        base = project.default_branch or "master"
+        base = head_branch(project)
         spec = _ConventionsPr(
             content=content,
             branch=CONVENTIONS_SCAFFOLD_BRANCH,
@@ -5429,9 +5717,16 @@ class GitService(BaseService):
         if not resp.is_success:
             return unopened
         data = resp.json()
+        pr_number = data.get("number")
+        if pr_number is not None:
+            # Static label — a project-level scaffold/restore PR has no task or
+            # org layer; best-effort, never blocks.
+            await self._apply_pr_labels(
+                owner, repo, token, int(pr_number), CONVENTIONS_PR_LABELS
+            )
         return {
             "branch": spec.branch,
-            "pr_number": data.get("number"),
+            "pr_number": pr_number,
             "pr_url": data.get("html_url"),
         }
 

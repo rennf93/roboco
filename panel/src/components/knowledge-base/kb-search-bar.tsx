@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, X, Loader2 } from "lucide-react";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface KBSearchBarProps {
   value: string;
@@ -64,15 +65,17 @@ export function KBSearchBar({
           className="pl-9 pr-9"
         />
         {localValue && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={handleClear}
-            aria-label="Clear search"
-            className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          <HelpTip label="Clear search">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={handleClear}
+              aria-label="Clear search"
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </HelpTip>
         )}
       </div>
       {onSearch && (

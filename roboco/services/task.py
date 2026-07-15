@@ -60,6 +60,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.models.env_branches import head_branch
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
@@ -601,6 +602,12 @@ DEP_UPDATE_SOURCE = "dep_update"
 # successful release publish. Rides the normal delivery lifecycle and never
 # auto-merges; requires the roboco-website project to be registered.
 DOCS_SYNC_SOURCE = "docs_sync"
+
+# Source tag for an env-sync conflict task: opened by the EnvSyncEngine when the
+# prod→…→head cascade hits a non-fast-forward on a rung and opens a sync PR. Rides
+# the normal delivery lifecycle (+ PR-review gate) and is never auto-merged; the
+# task tracks the PR so the dedup cap + panel visibility work.
+ENV_SYNC_SOURCE = "env_sync"
 
 # Source tag for a gated release proposal: opened by the release-manager engine
 # when accumulated unreleased changes pass the threshold + the gate is green.
@@ -1574,6 +1581,26 @@ class TaskService(BaseService):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_open_env_sync_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal env_sync conflict tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` (matched on the normalized
+        repo key). A conflict stops the cascade at that rung, so at most one
+        open env_sync task exists per repo: while it is open the repo's cascade
+        is paused and the engine skips it until the PR resolves.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == ENV_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            stmt = stmt.where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_open_docs_sync_tasks(
         self, version: str | None = None
     ) -> list[TaskTable]:
@@ -2313,8 +2340,8 @@ class TaskService(BaseService):
         Used by the gateway merge-target resolver
         (:func:`roboco.services.gateway.merge_chain.resolve_parent_branch`) when
         a child task's parent is branchless (a coordination/fan-out parent that
-        owns no repo): the real merge target is the child's own project default
-        branch — the branch the child was actually cut from — not a derived ref
+        owns no repo): the real merge target is the child's own project head
+        rung — the branch the child was actually cut from — not a derived ref
         the parent never created. Returns None for a task with no
         project_id (e.g. a coordination task itself).
         """
@@ -2322,12 +2349,10 @@ class TaskService(BaseService):
         if project_id is None:
             return None
         result = await self.session.execute(
-            select(ProjectTable.default_branch).where(
-                ProjectTable.id == UUID(str(project_id))
-            )
+            select(ProjectTable).where(ProjectTable.id == UUID(str(project_id)))
         )
-        default_branch = result.scalar_one_or_none()
-        return str(default_branch) if default_branch else None
+        project = result.scalar_one_or_none()
+        return head_branch(project) if project else None
 
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
         """Pick parent branch for a new task branch, fall back to project default."""
@@ -2336,9 +2361,7 @@ class TaskService(BaseService):
             parent_branch = await self._find_ancestor_branch(task)
 
         if not parent_branch:
-            default_branch = (
-                str(project.default_branch) if project.default_branch else "master"
-            )
+            default_branch = head_branch(project)
             self.log.info(
                 "No ancestor branch found, using project default",
                 task_id=str(task.id),
@@ -3466,9 +3489,8 @@ class TaskService(BaseService):
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
-        # - For parent tasks: merge into default branch (master)
-        default_branch = project.default_branch
-        target_branch: str = str(default_branch) if default_branch else "master"
+        # - For parent tasks: merge into the project's head rung (dev trunk)
+        target_branch = head_branch(project)
         if task.parent_task_id:
             # Get parent task's branch
             parent_id = cast("UUID", task.parent_task_id)

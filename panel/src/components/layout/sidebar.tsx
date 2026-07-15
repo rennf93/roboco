@@ -119,18 +119,24 @@ export function SidebarFooter({
   collapsed?: boolean;
   onNavigate?: () => void;
 }) {
+  const pathname = usePathname();
   // No Separator here: both wrappers (desktop aside + mobile Sheet) already
   // draw a border-t, and a second line reads as a rendering glitch.
   return (
     <div className="space-y-1">
       {footerItems.map((item) => {
+        // Exact match: /settings must not also highlight on /settings/ai-providers.
+        const isActive = pathname === item.href;
         const link = (
           <Link
             prefetch={false}
             href={item.href}
             onClick={onNavigate}
             className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              isActive
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
               collapsed && "justify-center px-2",
             )}
           >

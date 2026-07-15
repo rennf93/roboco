@@ -23,9 +23,10 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, XCircle, Rocket, AlertTriangle } from "lucide-react";
+import { CheckCircle2, XCircle, Rocket, AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { usePageRefresh } from "@/hooks";
+import { HelpTip } from "@/components/ui/help-tip";
 
 const _MIN_REJECT_CHARS = 10;
 
@@ -100,7 +101,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     mutationFn: (changes: string) => releaseApi.reject(changes),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["release", "proposal"] });
-      toast.success("Proposal sent back with required changes");
+      toast.success("Proposal rejected — a fresh assessment runs next cycle");
       closeDialog();
     },
     onError: (error) => {
@@ -157,6 +158,12 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
 
   const { report } = proposal;
   const pending = approveMutation.isPending || rejectMutation.isPending;
+  // The ~40min execute runs in the background; the Redis mutex already refuses
+  // a double-click server-side — execute_in_flight is the UX (disable approve,
+  // show a running badge). A persisted execute_status on a still-open proposal
+  // is a failure (a publish would have completed + hidden the card).
+  const executeInFlight = !!proposal.execute_in_flight;
+  const executeFailed = !!proposal.execute_status && !executeInFlight;
 
   return (
     <>
@@ -166,10 +173,14 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             <Rocket className="h-5 w-5" />
             Release Proposal
             <Badge variant="outline">v{report.proposed_version}</Badge>
-            <Badge variant="secondary">{report.bump_kind}</Badge>
-            <Badge variant={gateBadgeVariant(report.gate_state)}>
-              gate: {report.gate_state}
-            </Badge>
+            <HelpTip label="Semver bump type — how the version number increases (major, minor, or patch)">
+              <Badge variant="secondary">{report.bump_kind}</Badge>
+            </HelpTip>
+            <HelpTip label="Quality gate status — green means all checks pass, red means failures must be fixed before release">
+              <Badge variant={gateBadgeVariant(report.gate_state)}>
+                gate: {report.gate_state}
+              </Badge>
+            </HelpTip>
           </CardTitle>
           <CardDescription>
             {report.change_summary.length} change(s) since the last tag · review
@@ -233,12 +244,40 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             </p>
           )}
 
+          {executeInFlight && (
+            <div className="flex items-center gap-2 rounded-md border border-blue-500/40 bg-blue-500/10 p-3">
+              <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+              <span className="text-sm text-blue-600 dark:text-blue-400">
+                Release execute running in the background (~40 min) — this card
+                updates when it finishes.
+              </span>
+            </div>
+          )}
+
+          {executeFailed && (
+            <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-red-600">
+                <XCircle className="h-4 w-4" />
+                Last execute failed ({proposal.execute_status})
+              </p>
+              {proposal.execute_detail && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {proposal.execute_detail}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">
+                Fix the cause and approve again to retry.
+              </p>
+            </div>
+          )}
+
           <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
             <Button
               variant="outline"
               size="sm"
               className="text-destructive hover:text-destructive"
               onClick={() => setAction("reject")}
+              disabled={executeInFlight}
             >
               <XCircle className="mr-1 h-4 w-4" />
               Reject with changes
@@ -247,9 +286,10 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
               size="sm"
               className="bg-green-600 hover:bg-green-700"
               onClick={() => setAction("approve")}
+              disabled={executeInFlight}
             >
               <CheckCircle2 className="mr-1 h-4 w-4" />
-              Approve &amp; publish
+              {executeFailed ? "Retry approve & publish" : "Approve & publish"}
             </Button>
           </div>
         </CardContent>
@@ -266,7 +306,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             <DialogDescription>
               {action === "approve"
                 ? "This runs the fail-closed executor: write the bumps + CHANGELOG, run make quality, commit, wait for green CI, then publish. It aborts on a red gate or red CI."
-                : "Record what must change. The proposal stays open for revision; nothing is published."}
+                : "Record what must change. The proposal is cancelled and the release manager re-assesses next cycle; nothing is published."}
             </DialogDescription>
           </DialogHeader>
 

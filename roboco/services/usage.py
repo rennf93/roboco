@@ -59,7 +59,7 @@ def _session_row(row: Any) -> dict[str, Any]:
 def _parse_period(period: str) -> tuple[datetime, int]:
     """Parse period string into (start_dt, hours).
 
-    Accepts '24h', '7d', '30d'. Defaults to 24h for unknown values.
+    Accepts '24h', '7d', '30d', '90d'. Defaults to 24h for unknown values.
     Returns (start_datetime_utc, total_hours).
     """
     now = datetime.now(UTC)
@@ -67,6 +67,8 @@ def _parse_period(period: str) -> tuple[datetime, int]:
         return now - timedelta(days=7), 7 * 24
     if period == "30d":
         return now - timedelta(days=30), 30 * 24
+    if period == "90d":
+        return now - timedelta(days=90), 90 * 24
     # default 24h
     return now - timedelta(hours=24), 24
 
@@ -172,11 +174,13 @@ class UsageService(BaseService):
     # TIME SERIES
     # =========================================================================
 
-    async def get_time_series(self, period: str = "24h") -> list[dict[str, Any]]:
+    async def get_time_series(
+        self, period: str = "24h", agent_slug: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return bucketed time-series data points.
 
         - 24h → hourly buckets
-        - 7d / 30d → daily buckets
+        - 7d / 30d / 90d → daily buckets
 
         Each point has: bucket (ISO string), tokens_input, tokens_output,
         total_tokens, cost_usd.
@@ -184,6 +188,10 @@ class UsageService(BaseService):
         total_tokens includes all 4 token types (input + output + cache_read +
         cache_write) so it is consistent with get_summary()'s total_tokens
         field — the two sums must match for the same period.
+
+        When ``agent_slug`` is set the query is scoped to that one agent's
+        spawn sessions (the per-agent sparkline); otherwise the whole fleet
+        is summed.
         """
         start_dt, _hours = _parse_period(period)
 
@@ -194,7 +202,7 @@ class UsageService(BaseService):
             # Daily buckets
             trunc_fn = func.date_trunc("day", AgentSpawnSessionTable.started_at)
 
-        result = await self.session.execute(
+        stmt = (
             select(
                 trunc_fn.label("bucket"),
                 func.coalesce(func.sum(AgentSpawnSessionTable.tokens_input), 0).label(
@@ -220,6 +228,10 @@ class UsageService(BaseService):
             .group_by(trunc_fn)
             .order_by(trunc_fn)
         )
+        if agent_slug is not None:
+            stmt = stmt.where(AgentSpawnSessionTable.agent_slug == agent_slug)
+
+        result = await self.session.execute(stmt)
         rows = result.fetchall()
 
         points = []

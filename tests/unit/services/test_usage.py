@@ -13,11 +13,12 @@ verify the arithmetic / logic of each analytics method:
 from __future__ import annotations
 
 import datetime
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from roboco.services.usage import UsageService
+from roboco.services.usage import UsageService, _parse_period
 
 # ---------------------------------------------------------------------------
 # Named constants (ruff PLR2004: magic values in comparisons must be named).
@@ -99,6 +100,45 @@ def _service_with_execute(*return_values: object) -> UsageService:
     session = MagicMock()
     session.execute = AsyncMock(side_effect=list(return_values))
     return UsageService(session)
+
+
+# ---------------------------------------------------------------------------
+# _parse_period — period string → (start_dt, hours)
+# ---------------------------------------------------------------------------
+
+
+class TestParsePeriod:
+    """_parse_period maps each period string to (start_dt, hours).
+
+    90d is the new window (W9-2); the others pin the existing contract so a
+    future refactor can't silently drop a window.
+    """
+
+    _HOURS_PER_DAY = 24
+
+    def test_24h_default(self) -> None:
+        start, hours = _parse_period("24h")
+        assert hours == self._HOURS_PER_DAY
+        elapsed_h = (datetime.datetime.now(datetime.UTC) - start).total_seconds() / 3600
+        assert elapsed_h == pytest.approx(self._HOURS_PER_DAY, abs=1)
+
+    def test_7d(self) -> None:
+        _, hours = _parse_period("7d")
+        assert hours == 7 * self._HOURS_PER_DAY
+
+    def test_30d(self) -> None:
+        _, hours = _parse_period("30d")
+        assert hours == 30 * self._HOURS_PER_DAY
+
+    def test_90d(self) -> None:
+        start, hours = _parse_period("90d")
+        assert hours == 90 * self._HOURS_PER_DAY
+        elapsed_h = (datetime.datetime.now(datetime.UTC) - start).total_seconds() / 3600
+        assert elapsed_h == pytest.approx(90 * self._HOURS_PER_DAY, abs=1)
+
+    def test_unknown_defaults_to_24h(self) -> None:
+        _, hours = _parse_period("bogus")
+        assert hours == self._HOURS_PER_DAY
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +336,40 @@ class TestGetTimeSeries:
             "cost_usd",
         ):
             assert field in point, f"Missing field: {field}"
+
+    @pytest.mark.asyncio
+    async def test_agent_slug_filter_scopes_query(self) -> None:
+        """agent_slug adds an agent_slug WHERE clause to the time-series query."""
+        row = _make_row(
+            bucket=datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC),
+            tokens_input=100,
+            tokens_output=100,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        await svc.get_time_series("7d", agent_slug="be-dev-1")
+        stmt = cast("MagicMock", svc.session.execute).call_args_list[0][0][0]
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "be-dev-1" in sql
+
+    @pytest.mark.asyncio
+    async def test_no_agent_slug_filter_when_none(self) -> None:
+        """Without agent_slug the query is not scoped to one agent."""
+        row = _make_row(
+            bucket=datetime.datetime(2026, 6, 9, 12, 0, 0, tzinfo=datetime.UTC),
+            tokens_input=100,
+            tokens_output=100,
+            tokens_cache_read=_ZERO,
+            tokens_cache_write=_ZERO,
+            cost_usd=0.01,
+        )
+        svc = _service_with_execute(_result_fetchall([row]))
+        await svc.get_time_series("7d")
+        stmt = cast("MagicMock", svc.session.execute).call_args_list[0][0][0]
+        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "agent_slug" not in sql
 
 
 # ---------------------------------------------------------------------------

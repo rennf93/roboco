@@ -318,6 +318,16 @@ class Settings(BaseSettings):
             "fully inert."
         ),
     )
+    possibilities_matrix_enabled: bool = Field(
+        default=False,
+        description=(
+            "Possibilities matrix: when a task's work is already done (commits "
+            "+ PR open + all acceptance criteria addressed + no open findings), "
+            "let i_am_done submit it for QA in one call, skipping the retroactive "
+            "rich-plan, journal tracing, and local quality (CI-green proxy) "
+            "gates. Off => the standard i_am_done path is unchanged."
+        ),
+    )
 
     # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
@@ -806,6 +816,37 @@ class Settings(BaseSettings):
         default=1,
         ge=1,
         description="Max dep_update tasks the loop may originate in one cycle.",
+    )
+
+    # Env-sync engine — cascades each opted-in project's env ladder prod→…→head
+    # (a clean merge auto-pushes to the lower rung; a conflict opens ONE sync PR)
+    # so dev never falls behind prod. Default-off; never pushes to prod (the
+    # cascade's lower/target rung is never prod by construction).
+    env_sync_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the env-sync cascade loop. OFF by default; when "
+            "off the loop does not run. Only projects with a declared env "
+            "ladder (environments set) AND a git token participate."
+        ),
+    )
+    env_sync_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between env-sync cascade passes.",
+    )
+    env_sync_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open env_sync conflict tasks across "
+            "all repos; the loop originates nothing more while this many are open."
+        ),
+    )
+    env_sync_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max projects the env-sync loop may cascade in one cycle.",
     )
 
     # Gated release manager — at a logical point (accumulated unreleased changes
@@ -1462,6 +1503,31 @@ class Settings(BaseSettings):
     public_base_url: str = Field(
         default="http://127.0.0.1:8000",
         description="Public base URL for commit-trailer links",
+    )
+
+    # Telegram notifications bridge — best-effort DMs to the CEO on escalation +
+    # completion. Default-off; sending requires stored credentials AND
+    # telegram_enabled. Server-side fan-out, never raises into the producer.
+    telegram_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Telegram notifications bridge. OFF by "
+            "default; when off no Telegram API call is ever made. Even when "
+            "on, sending requires stored bot-token + chat-id credentials."
+        ),
+    )
+    telegram_timeout_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="Timeout (seconds) for a Telegram Bot API sendMessage call.",
+    )
+    panel_base_url: str = Field(
+        default="",
+        description=(
+            "External panel base URL for Telegram message deep-links. Empty "
+            "omits the link; e.g. https://panel.example.com -> "
+            ".../tasks/<id8>."
+        ),
     )
 
     # Gateway coordination thresholds

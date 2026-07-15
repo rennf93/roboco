@@ -31,6 +31,7 @@ class ProjectResponse(BaseModel):
     git_url: str
     default_branch: str
     protected_branches: list[str]
+    environments: list[dict[str, str]] | None = None
     assigned_cell: Team
 
     # Git authentication status (token never exposed, only boolean)
@@ -67,12 +68,23 @@ class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProjectTaskCounts(BaseModel):
+    """Per-project task progress (done/active/blocked) for list views."""
+
+    done: int = 0
+    active: int = 0
+    blocked: int = 0
+
+
 class ProjectSummaryResponse(BaseModel):
     """Compact project response for list views.
 
     Returned by GET /api/projects; includes essential project metadata
     for list-view cards. The `video_engine_enabled` field indicates
     whether this project is opted in to the video engine subsystem.
+    `task_counts` is a done/active/blocked breakdown from one grouped
+    query over tasks; `ci_watch_enabled` signals CI-watch is armed (no
+    live-conclusion fan-out — that's a deferred cached endpoint).
     """
 
     id: UUID
@@ -85,6 +97,8 @@ class ProjectSummaryResponse(BaseModel):
     has_workspace: bool = False
     has_git_token: bool = False
     video_engine_enabled: bool = False
+    ci_watch_enabled: bool = False
+    task_counts: ProjectTaskCounts | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -104,6 +118,14 @@ class ProjectCreateRequest(BaseModel):
     protected_branches: list[str] | None = Field(
         default=None,
         description="Branches to protect. Defaults to [default_branch].",
+    )
+    environments: list[dict[str, str]] | None = Field(
+        default=None,
+        description=(
+            "Ordered environment ladder [{name, branch}]; first = head (PR "
+            "target), last = prod (release target). null → inherits "
+            "default_branch (head == prod)."
+        ),
     )
     assigned_cell: Team
 
@@ -129,6 +151,7 @@ class ProjectUpdateRequest(BaseModel):
     git_url: str | None = None
     default_branch: str | None = None
     protected_branches: list[str] | None = None
+    environments: list[dict[str, str]] | None = None
     assigned_cell: Team | None = None
 
     # Git authentication (empty string clears token, None leaves unchanged)
@@ -226,6 +249,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         git_url=str(project.git_url),
         default_branch=str(default_branch) if default_branch else "master",
         protected_branches=list(project.protected_branches or []),
+        environments=list(project.environments) if project.environments else None,
         assigned_cell=project.assigned_cell,
         has_git_token=bool(project.git_token_encrypted),
         test_command=project.test_command,
@@ -251,7 +275,10 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
     )
 
 
-def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
+def project_to_summary(
+    project: "ProjectTable",
+    task_counts: "ProjectTaskCounts | None" = None,
+) -> ProjectSummaryResponse:
     """Convert a ProjectTable to ProjectSummaryResponse."""
     default_branch = project.default_branch
     return ProjectSummaryResponse(
@@ -265,4 +292,6 @@ def project_to_summary(project: "ProjectTable") -> ProjectSummaryResponse:
         has_workspace=bool(project.workspace_path),
         has_git_token=bool(project.git_token_encrypted),
         video_engine_enabled=bool(project.video_engine_enabled),
+        ci_watch_enabled=bool(project.ci_watch_enabled),
+        task_counts=task_counts,
     )

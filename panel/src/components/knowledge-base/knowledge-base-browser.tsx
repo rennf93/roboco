@@ -46,9 +46,11 @@ import {
 } from "lucide-react";
 import { OfflineState } from "@/components/ui/offline-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTip } from "@/components/ui/help-tip";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { getErrorMessage } from "@/lib/api/client";
+import { pickTab } from "@/lib/tabs";
 import { usePageRefresh } from "@/hooks";
 
 // Components
@@ -62,7 +64,8 @@ import { MentorChat } from "./mentor-chat";
 import { KBCategoryNav } from "./kb-category-nav";
 import { KBCategoryView } from "./kb-category-view";
 
-type TabValue = "search" | "ask" | "mentor" | "browse" | "admin";
+const TAB_VALUES = ["search", "ask", "mentor", "browse", "admin"] as const;
+type TabValue = (typeof TAB_VALUES)[number];
 
 const INDEX_LABELS: Record<KBIndexType, string> = {
   [KBIndexType.DOCUMENTATION]: "Documentation",
@@ -95,8 +98,8 @@ function KnowledgeBaseBrowserContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Read state from URL params
-  const activeTab = (searchParams.get("tab") as TabValue) || "search";
+  // Read state from URL params; fall back to "search" on null/empty/invalid.
+  const activeTab: TabValue = pickTab(searchParams.get("tab"), TAB_VALUES, "search");
   const searchQuery = searchParams.get("q") || "";
   const filtersParam = searchParams.get("filters");
   const searchFilters: KBIndexType[] = filtersParam
@@ -591,29 +594,33 @@ function KnowledgeBaseBrowserContent() {
                                   </Badge>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      handleRefreshIndex(indexType)
-                                    }
-                                    disabled={refreshIndex.isPending}
-                                  >
-                                    {refreshIndex.isPending ? (
-                                      <RefreshCw className="h-3 w-3 animate-spin" />
-                                    ) : (
-                                      <RefreshCw className="h-3 w-3" />
-                                    )}
-                                  </Button>
+                                  <HelpTip label="Refresh this index">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        handleRefreshIndex(indexType)
+                                      }
+                                      disabled={refreshIndex.isPending}
+                                    >
+                                      {refreshIndex.isPending ? (
+                                        <RefreshCw className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <RefreshCw className="h-3 w-3" />
+                                      )}
+                                    </Button>
+                                  </HelpTip>
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="text-red-600"
-                                      >
-                                        <Trash2 className="h-3 w-3" />
-                                      </Button>
+                                      <HelpTip label="Delete this index and all its documents">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="text-red-600"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </Button>
+                                      </HelpTip>
                                     </AlertDialogTrigger>
                                     <AlertDialogContent>
                                       <AlertDialogHeader>

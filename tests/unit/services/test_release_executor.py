@@ -70,6 +70,9 @@ class _FakeOps:
         # instance (not via __init__ — keeps the constructor under the arg-count
         # gate) by tests that exercise the retry path.
         self._existing_sha: str | None = None
+        # env-chain promotion failure message; set on the instance (same arg-
+        # count-gate reason) by the promotion-failure test.
+        self._promote_raises: str | None = None
         self.calls: list[str] = []
         self.bumped_plan: list[str] | None = None
         self.bumped_version: str | None = None
@@ -78,6 +81,11 @@ class _FakeOps:
     async def is_already_published(self, _version: str) -> bool:
         self.calls.append("check")
         return self._already
+
+    async def promote_env_chain(self) -> None:
+        self.calls.append("promote")
+        if self._promote_raises is not None:
+            raise RuntimeError(self._promote_raises)
 
     async def release_commit_sha(self, _version: str) -> str | None:
         # Half-landed detection: a prior `chore(release): {version}` commit
@@ -127,6 +135,7 @@ async def test_green_path_publishes_once() -> None:
     assert ops.calls.count("publish") == _ONE
     assert ops.calls == [
         "check",
+        "promote",
         "bump",
         "changelog",
         "gate",
@@ -202,6 +211,22 @@ async def test_publish_failure_returns_structured_publish_failed() -> None:
     assert result.release_url is None
     assert "release publish failed" in result.detail
     assert ops.calls.count("publish") == _ONE
+
+
+@pytest.mark.asyncio
+async def test_promotion_failure_aborts_before_bump() -> None:
+    """A RuntimeError from promote_env_chain (a merge conflict in the
+    head->...->prod chain) becomes a structured ``promotion_failed`` result —
+    fail-closed: the bump/changelog/gate/commit/publish pipeline never runs."""
+    ops = _FakeOps()
+    ops._promote_raises = "env-chain promotion failed: non-fast-forward"
+    result = await ReleaseExecutor(ops).execute(_report())
+    assert result.status == "promotion_failed"
+    assert result.commit_sha is None
+    assert result.release_url is None
+    assert "bump" not in ops.calls
+    assert "commit" not in ops.calls
+    assert "publish" not in ops.calls
 
 
 def test_release_result_carries_outcome_fields() -> None:
@@ -291,6 +316,7 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -341,6 +367,7 @@ async def test_wait_for_ci_polls_through_rerun(
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -387,6 +414,7 @@ async def test_wait_for_ci_exhausts_window_on_persistent_failure(
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -515,6 +543,7 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
         git_url=git_url,
         git_prefix=git_prefix,
         ci_workflow=None,
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     sha = await ops.commit_and_push("0.13.0")

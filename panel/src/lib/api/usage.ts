@@ -13,14 +13,19 @@ import type {
   UsageSession,
 } from "@/types";
 
-export type UsagePeriod = "24h" | "7d" | "30d";
+export type UsagePeriod = "24h" | "7d" | "30d" | "90d";
 
 // =============================================================================
 // MOCK DATA  — shapes must exactly match the real backend response schemas
 // =============================================================================
 
+/** Linear scale factor for mock aggregates so a longer window shows more volume. */
+function scaleFor(period: UsagePeriod): number {
+  return period === "90d" ? 90 : period === "30d" ? 30 : period === "7d" ? 7 : 1;
+}
+
 function mockSummary(period: UsagePeriod = "24h"): UsageSummary {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const base = 124_800 * scale;
   return {
     tokens_input: Math.round(base * 0.55),
@@ -34,7 +39,7 @@ function mockSummary(period: UsagePeriod = "24h"): UsageSummary {
 
 function mockTimeSeries(period: UsagePeriod = "24h"): UsageTimePoint[] {
   const now = new Date();
-  const points = period === "24h" ? 24 : period === "7d" ? 7 : 30;
+  const points = period === "24h" ? 24 : period === "7d" ? 7 : period === "90d" ? 90 : 30;
   const step = period === "24h" ? "hour" : "day";
   return Array.from({ length: points }, (_, i) => {
     const ts = new Date(now);
@@ -59,7 +64,7 @@ function mockTimeSeries(period: UsagePeriod = "24h"): UsageTimePoint[] {
 }
 
 function mockAgentUsage(period: UsagePeriod = "24h"): AgentUsageRow[] {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const agents = [
     { agent_slug: "be-dev-1" },
     { agent_slug: "be-dev-2" },
@@ -87,7 +92,7 @@ function mockAgentUsage(period: UsagePeriod = "24h"): AgentUsageRow[] {
 }
 
 function mockTeamUsage(period: UsagePeriod = "24h"): TeamUsageRow[] {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const teams = ["backend", "frontend", "ux_ui", "main_pm"];
   const grand = teams.length * 50_000 * scale;
   return teams.map((team) => {
@@ -106,7 +111,7 @@ function mockTeamUsage(period: UsagePeriod = "24h"): TeamUsageRow[] {
 }
 
 function mockModelUsage(period: UsagePeriod = "24h"): ModelUsageSlice[] {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const models = [
     { model: "claude-opus-4", share: 0.548 },
     { model: "claude-sonnet-4", share: 0.346 },
@@ -156,7 +161,7 @@ function mockCacheEfficiency(
 }
 
 function mockRoleUsage(period: UsagePeriod = "24h"): RoleUsageRow[] {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const roles = [
     { role: "developer", share: 0.375 },
     { role: "main_pm", share: 0.301 },
@@ -187,7 +192,7 @@ function mockRoleUsage(period: UsagePeriod = "24h"): RoleUsageRow[] {
 }
 
 function mockSpawnWaste(period: UsagePeriod = "24h"): SpawnWasteResponse {
-  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const scale = scaleFor(period);
   const by_role = [
     { role: "developer", spawns: 51 * scale, unproductive: 42 * scale },
     { role: "cell_pm", spawns: 34 * scale, unproductive: 18 * scale },
@@ -270,13 +275,14 @@ export const usageApi = {
     return data;
   },
 
-  /** Bucketed time-series — GET /usage/time-series?period= */
+  /** Bucketed time-series — GET /usage/time-series?period=&agent_slug= */
   getUsageTimeSeries: async (
     period: UsagePeriod = "24h",
+    agentSlug?: string,
   ): Promise<UsageTimePoint[]> => {
     if (isMockMode()) return mockTimeSeries(period);
     const { data } = await api.get<UsageTimePoint[]>("/usage/time-series", {
-      params: { period },
+      params: agentSlug ? { period, agent_slug: agentSlug } : { period },
     });
     return data;
   },

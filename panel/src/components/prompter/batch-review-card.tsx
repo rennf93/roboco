@@ -17,6 +17,7 @@ import type { BatchProposal, StartRoute } from "@/hooks/use-prompter";
 import type { ProjectSummary } from "@/types";
 import type { CellWork, DraftProposal } from "@/lib/api/prompter";
 import { Team } from "@/types";
+import { HelpTip } from "@/components/ui/help-tip";
 
 /** The delivery cells a multi-cell draft fans out to (one the_work entry each). */
 const CELL_TEAMS: Team[] = [Team.BACKEND, Team.FRONTEND, Team.UX_UI];
@@ -158,16 +159,20 @@ export function BatchReviewCard({
                   </span>
                   <div className="flex shrink-0 items-center gap-1">
                     {draft.adds_migration && (
-                      <Badge variant="outline" className="gap-1 text-xs">
-                        <Database className="h-3 w-3" />
-                        migration
-                      </Badge>
+                      <HelpTip label="This task adds a database migration that must be applied in order">
+                        <Badge variant="outline" className="gap-1 text-xs">
+                          <Database className="h-3 w-3" />
+                          migration
+                        </Badge>
+                      </HelpTip>
                     )}
                     {draft.touches_shared && (
-                      <Badge variant="outline" className="gap-1 text-xs">
-                        <Share2 className="h-3 w-3" />
-                        shared
-                      </Badge>
+                      <HelpTip label="This task modifies shared code that other tasks may also touch">
+                        <Badge variant="outline" className="gap-1 text-xs">
+                          <Share2 className="h-3 w-3" />
+                          shared
+                        </Badge>
+                      </HelpTip>
                     )}
                   </div>
                 </div>

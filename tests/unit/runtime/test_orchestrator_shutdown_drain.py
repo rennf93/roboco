@@ -50,6 +50,7 @@ def _make_orchestrator() -> AgentOrchestrator:
         "_self_heal_task",
         "_ci_watch_task",
         "_dep_update_task",
+        "_env_sync_task",
         "_release_manager_task",
         "_x_mentions_task",
         "_roadmap_engine_task",

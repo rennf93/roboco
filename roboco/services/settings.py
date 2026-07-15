@@ -53,11 +53,16 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("provisioning_enabled", "Pitch auto-provisioning"),
     ("toolchain_match_enabled", "Agent runtime toolchain matching"),
     ("conventions_enabled", "Architectural conventions standard"),
+    (
+        "possibilities_matrix_enabled",
+        "Possibilities matrix (work-already-done fast path)",
+    ),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
     ("gateway_health_enabled", "Gateway-health recovery"),
     ("ci_watch_enabled", "Multi-repo CI-watch"),
     ("dep_update_enabled", "Dependency-update bot"),
+    ("env_sync_enabled", "Environment-branch sync (cascade prod→dev)"),
     ("docs_sync_enabled", "Docs-divergence sync (release -> docs-update task)"),
     ("release_manager_enabled", "Gated release manager"),
     ("org_memory_enabled", "Organizational memory loop"),
@@ -75,6 +80,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("vault_intake_enabled", "Vault intake watcher (notes -> held drafts)"),
     ("vault_report_enabled", "Vault weekly org-report note"),
     ("vault_kb_enabled", "Vault KB ingest (CEO notes -> RAG)"),
+    ("telegram_enabled", "Telegram notifications bridge (CEO DMs)"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
 

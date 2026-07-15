@@ -28,6 +28,9 @@ export interface ReleaseProposal {
   title: string;
   status: string;
   required_changes?: string | null;
+  execute_status?: string | null;
+  execute_detail?: string | null;
+  execute_in_flight?: boolean;
   report: ReleaseReport;
 }
 

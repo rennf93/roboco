@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, Trash2, Edit3, Check, X } from "lucide-react";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 import { CollapsibleSection } from "./collapsible-section";
 
 interface AcceptanceCriteriaProps {
@@ -257,22 +258,26 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
                     >
                       {text}
                     </span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => startEditing(idx)}
-                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <Edit3 className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleDeleteCriterion(idx)}
-                      className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
+                    <HelpTip label="Edit this criterion">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => startEditing(idx)}
+                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <Edit3 className="h-3 w-3" />
+                      </Button>
+                    </HelpTip>
+                    <HelpTip label="Delete this criterion">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDeleteCriterion(idx)}
+                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </HelpTip>
                   </>
                 )}
               </li>

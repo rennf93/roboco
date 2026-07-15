@@ -11,6 +11,12 @@ const { useTaskFindings } = vi.hoisted(() => ({ useTaskFindings: vi.fn() }));
 
 vi.mock("@/hooks/use-tasks", () => ({ useTaskFindings }));
 
+// CodeSnippet runs a real useQuery (needs a QueryClient); stub it so the
+// findings test stays focused on grouping/rendering, not git fetching.
+vi.mock("@/components/git/code-snippet", () => ({
+  CodeSnippet: () => <div data-testid="code-snippet" />,
+}));
+
 import { TabFindings } from "../tab-findings";
 
 function buildTask(overrides: Partial<Task> = {}): Task {

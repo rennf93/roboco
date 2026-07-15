@@ -24,6 +24,7 @@ import {
   Plus,
 } from "lucide-react";
 import { toast } from "sonner";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface TabNotesProps {
   task: Task;
@@ -47,9 +48,11 @@ function prReviewBadge(task: Task): React.ReactNode {
   )?.pr_review?.verdict;
   if (!verdict) {
     return (
-      <Badge variant="outline" className="ml-2 text-teal-600 border-teal-300">
-        Review Gate
-      </Badge>
+      <HelpTip label="PR review has not been submitted yet">
+        <Badge variant="outline" className="ml-2 text-teal-600 border-teal-300">
+          Review Gate
+        </Badge>
+      </HelpTip>
     );
   }
   const map: Record<string, { label: string; cls: string }> = {
@@ -345,9 +348,11 @@ export function TabNotes({ task }: TabNotesProps) {
         title="Quick Context"
         icon={<FileText className="h-5 w-5" />}
         badge={
-          <Badge variant="outline" className="ml-2">
-            For Resumption
-          </Badge>
+          <HelpTip label="Short context notes for quickly resuming work after an interruption">
+            <Badge variant="outline" className="ml-2">
+              For Resumption
+            </Badge>
+          </HelpTip>
         }
         bgClass="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800"
       />
@@ -420,12 +425,14 @@ export function TabNotes({ task }: TabNotesProps) {
         title="Auditor Notes"
         icon={<Shield className="h-5 w-5" />}
         badge={
-          <Badge
-            variant="outline"
-            className="ml-2 text-purple-600 border-purple-300"
-          >
-            Confidential
-          </Badge>
+          <HelpTip label="Visible only to the Auditor and CEO">
+            <Badge
+              variant="outline"
+              className="ml-2 text-purple-600 border-purple-300"
+            >
+              Confidential
+            </Badge>
+          </HelpTip>
         }
         bgClass="bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800"
       />

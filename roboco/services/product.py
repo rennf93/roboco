@@ -1,15 +1,42 @@
 """ProductService — CRUD + the per-cell project_for routing resolver."""
 
 from typing import ClassVar
+from typing import cast as typing_cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from roboco.db.tables import ProductProjectTable, ProductTable
+from roboco.db.tables import ProductProjectTable, ProductTable, TaskTable
 from roboco.foundation.identity import Team
+from roboco.models.base import TaskStatus
 from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
+
+# Statuses that are NOT active progress: completed (done), cancelled
+# (abandoned), blocked (its own bucket). Everything else counts as active.
+_INACTIVE_STATUSES = (
+    TaskStatus.COMPLETED,
+    TaskStatus.CANCELLED,
+    TaskStatus.BLOCKED,
+)
+
+
+def _project_to_products_map(
+    products: list[ProductTable],
+) -> dict[UUID, list[UUID]]:
+    """Distinct (project_id, product_id) pairs — dedup the monorepo case."""
+    proj_to_products: dict[UUID, list[UUID]] = {}
+    for product in products:
+        seen: set[UUID] = set()
+        for cell in product.cells:
+            pid = typing_cast("UUID", cell.project_id)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            proj_to_products.setdefault(pid, []).append(typing_cast("UUID", product.id))
+    return proj_to_products
 
 
 class ProductService(BaseService):
@@ -78,11 +105,79 @@ class ProductService(BaseService):
         return True
 
     async def list_all(self, limit: int = 100, offset: int = 0) -> list[ProductTable]:
+        # Eager-load cells + each cell's project so product_to_summary can read
+        # project.name without an N+1 lazy join per cell.
         query = (
-            select(ProductTable).order_by(ProductTable.name).limit(limit).offset(offset)
+            select(ProductTable)
+            .options(
+                selectinload(ProductTable.cells).joinedload(ProductProjectTable.project)
+            )
+            .order_by(ProductTable.name)
+            .limit(limit)
+            .offset(offset)
         )
         result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def progress_for_products(
+        self, products: list[ProductTable]
+    ) -> dict[UUID, dict[str, int]]:
+        """Per-product task progress (done/active/blocked) across cell projects.
+
+        One grouped query over tasks for every distinct project_id any product
+        references, summed per product. A product's cells may point several teams
+        at the same project (the monorepo case), so each project is counted once
+        per product. Returns {product_id: {done, active, blocked}}.
+        """
+        # distinct (product_id, project_id) pairs — dedup the monorepo case.
+        proj_to_products = _project_to_products_map(products)
+        if not proj_to_products:
+            return {}
+
+        result = await self.session.execute(
+            select(
+                TaskTable.project_id,
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.COMPLETED, 1), else_=0)
+                    ),
+                    0,
+                ).label("done"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.BLOCKED, 1), else_=0)
+                    ),
+                    0,
+                ).label("blocked"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status.in_(_INACTIVE_STATUSES), 0), else_=1)
+                    ),
+                    0,
+                ).label("active"),
+            )
+            .where(TaskTable.project_id.in_(list(proj_to_products.keys())))
+            .group_by(TaskTable.project_id)
+        )
+        per_project: dict[UUID, dict[str, int]] = {}
+        for row in result.fetchall():
+            per_project[typing_cast("UUID", row.project_id)] = {
+                "done": int(row.done or 0),
+                "active": int(row.active or 0),
+                "blocked": int(row.blocked or 0),
+            }
+
+        out: dict[UUID, dict[str, int]] = {}
+        for project_id, product_ids in proj_to_products.items():
+            counts = per_project.get(project_id)
+            if not counts:
+                continue
+            for pid in product_ids:
+                agg = out.setdefault(pid, {"done": 0, "active": 0, "blocked": 0})
+                agg["done"] += counts["done"]
+                agg["active"] += counts["active"]
+                agg["blocked"] += counts["blocked"]
+        return out
 
     async def project_for(self, product_id: UUID, team: Team | str) -> UUID | None:
         """Resolve the Project a given cell maps to within a product.

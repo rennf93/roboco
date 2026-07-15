@@ -18,8 +18,8 @@ import {
   ResponsiveTableCardRow,
 } from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ExternalLink, Pencil, GitBranch, Key, KeyRound } from "lucide-react";
-import type { ProjectSummary, Team } from "@/types";
+import { ExternalLink, Pencil, GitBranch, Key, KeyRound, Radar } from "lucide-react";
+import type { ProjectSummary, ProjectTaskCounts, Team } from "@/types";
 import { EditProjectDialog } from "./edit-project-dialog";
 
 interface ProjectTableProps {
@@ -58,6 +58,53 @@ function getTokenBadge(hasGitToken: boolean) {
     <Badge variant="outline" className="text-amber-500 border-amber-500/30">
       <KeyRound className="h-3 w-3 mr-1" />
       No Token
+    </Badge>
+  );
+}
+
+function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
+  if (!counts) {
+    return <span className="text-muted-foreground text-xs">—</span>;
+  }
+  const atRisk = counts.blocked > 0;
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={
+          "h-2 w-2 rounded-full " +
+          (atRisk
+            ? "bg-amber-500"
+            : counts.done > 0
+              ? "bg-emerald-500"
+              : "bg-muted")
+        }
+        title={atRisk ? "At risk: blocked tasks" : "Healthy"}
+      />
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-emerald-600 dark:text-emerald-400">
+          {counts.done} done
+        </span>
+        <span className="text-muted-foreground">{counts.active} active</span>
+        {counts.blocked > 0 && (
+          <span className="text-amber-600 dark:text-amber-400">
+            {counts.blocked} blocked
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CiWatchBadge({ enabled }: { enabled: boolean }) {
+  if (!enabled) return null;
+  return (
+    <Badge
+      variant="outline"
+      className="bg-sky-500/10 text-sky-500 border-sky-500/30"
+      title="CI-watch armed"
+    >
+      <Radar className="h-3 w-3 mr-1" />
+      CI-Watch
     </Badge>
   );
 }
@@ -111,6 +158,7 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                 <TableRow>
                   <TableHead>Project</TableHead>
                   <TableHead>Cell</TableHead>
+                  <TableHead>Tasks</TableHead>
                   <TableHead>Token</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="w-[100px]">Actions</TableHead>
@@ -131,12 +179,20 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                         <p className="text-xs text-muted-foreground font-mono">
                           {project.slug}
                         </p>
+                        {project.ci_watch_enabled && (
+                          <div className="mt-1">
+                            <CiWatchBadge enabled />
+                          </div>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>
                       <Badge className={teamColors[project.assigned_cell]}>
                         {teamLabels[project.assigned_cell]}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <TasksCell counts={project.task_counts} />
                     </TableCell>
                     <TableCell>
                       {getTokenBadge(project.has_git_token)}
@@ -235,22 +291,28 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                       {teamLabels[project.assigned_cell]}
                     </Badge>
                   </ResponsiveTableCardRow>
+                  <ResponsiveTableCardRow label="Tasks">
+                    <TasksCell counts={project.task_counts} />
+                  </ResponsiveTableCardRow>
                   <ResponsiveTableCardRow label="Token">
                     {getTokenBadge(project.has_git_token)}
                   </ResponsiveTableCardRow>
                   <ResponsiveTableCardRow label="Status">
-                    {project.is_active ? (
-                      <Badge className="bg-green-500/10 text-green-500">
-                        Active
-                      </Badge>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="text-muted-foreground"
-                      >
-                        Inactive
-                      </Badge>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {project.is_active ? (
+                        <Badge className="bg-green-500/10 text-green-500">
+                          Active
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="text-muted-foreground"
+                        >
+                          Inactive
+                        </Badge>
+                      )}
+                      {project.ci_watch_enabled && <CiWatchBadge enabled />}
+                    </div>
                   </ResponsiveTableCardRow>
                 </div>
               </ResponsiveTableCard>

@@ -9,6 +9,8 @@ import { ListTree, ExternalLink, Plus } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { HelpTip } from "@/components/ui/help-tip";
+import { taskStatusDescription } from "@/components/tasks/task-status-badge";
 
 interface SubtasksListProps {
   task: Task;
@@ -128,12 +130,14 @@ export function SubtasksList({ task }: SubtasksListProps) {
               >
                 <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
                   <div className="flex items-center gap-3 min-w-0">
-                    <Badge
-                      variant="secondary"
-                      className={`text-xs shrink-0 ${STATUS_COLORS[subtask.status]}`}
-                    >
-                      {subtask.status.replace(/_/g, " ")}
-                    </Badge>
+                    <HelpTip label={taskStatusDescription(subtask.status)}>
+                      <Badge
+                        variant="secondary"
+                        className={`text-xs shrink-0 ${STATUS_COLORS[subtask.status]}`}
+                      >
+                        {subtask.status.replace(/_/g, " ")}
+                      </Badge>
+                    </HelpTip>
                     <span className="text-sm truncate">{subtask.title}</span>
                   </div>
                   <div className="flex items-center gap-2">
