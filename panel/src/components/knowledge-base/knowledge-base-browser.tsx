@@ -555,14 +555,14 @@ function KnowledgeBaseBrowserContent() {
                   <CardTitle className="text-sm flex items-center justify-between">
                     <span>Summary</span>
                     <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <HelpTip label="Rebuilds the Documentation index from the repo's docs/ tree — the other categories (journals, conversations, etc.) are populated live by agent activity, not by this button">
+                      <HelpTip label="Rebuilds the Documentation index from the repo's docs/ tree — the other categories (journals, conversations, etc.) are populated live by agent activity, not by this button">
+                        <AlertDialogTrigger asChild>
                           <Button size="sm" variant="destructive">
                             <RefreshCw className="h-3 w-3 mr-1" />
                             Reindex All
                           </Button>
-                        </HelpTip>
-                      </AlertDialogTrigger>
+                        </AlertDialogTrigger>
+                      </HelpTip>
                       <AlertDialogContent>
                         <AlertDialogHeader>
                           <AlertDialogTitle>Reindex All Data?</AlertDialogTitle>
@@ -679,8 +679,8 @@ function KnowledgeBaseBrowserContent() {
                                     </Button>
                                   </HelpTip>
                                   <AlertDialog>
-                                    <AlertDialogTrigger asChild>
-                                      <HelpTip label="Delete this index and all its documents">
+                                    <HelpTip label="Delete this index and all its documents">
+                                      <AlertDialogTrigger asChild>
                                         <Button
                                           size="sm"
                                           variant="outline"
@@ -689,8 +689,8 @@ function KnowledgeBaseBrowserContent() {
                                         >
                                           <Trash2 className="h-3 w-3" />
                                         </Button>
-                                      </HelpTip>
-                                    </AlertDialogTrigger>
+                                      </AlertDialogTrigger>
+                                    </HelpTip>
                                     <AlertDialogContent>
                                       <AlertDialogHeader>
                                         <AlertDialogTitle>

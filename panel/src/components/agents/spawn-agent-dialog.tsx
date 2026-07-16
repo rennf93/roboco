@@ -70,18 +70,28 @@ export function SpawnAgentDialog({
     setInitialPrompt("");
   };
 
+  // The tooltip must wrap the DialogTrigger, never sit inside it: with
+  // HelpTip as DialogTrigger's asChild child, the dialog's click handler is
+  // cloned onto the Tooltip root (not a DOM element) and silently dropped.
   const defaultTrigger = (
-    <HelpTip label="Start this agent's container, optionally pre-claiming a task" side="left">
-      <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-        <Play className="h-4 w-4 mr-2" />
-        Spawn
-      </DropdownMenuItem>
-    </HelpTip>
+    <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+      <Play className="h-4 w-4 mr-2" />
+      Spawn
+    </DropdownMenuItem>
   );
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger || defaultTrigger}</DialogTrigger>
+      {trigger ? (
+        <DialogTrigger asChild>{trigger}</DialogTrigger>
+      ) : (
+        <HelpTip
+          label="Start this agent's container, optionally pre-claiming a task"
+          side="left"
+        >
+          <DialogTrigger asChild>{defaultTrigger}</DialogTrigger>
+        </HelpTip>
+      )}
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Spawn {agentName}</DialogTitle>

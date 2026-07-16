@@ -24,7 +24,10 @@ const PORT = Number(process.env.PORT ?? 3001);
 // safe path segment so a ".." / "/" / absolute-path value can't escape the
 // composition dir (path traversal). The orchestrator only ever sends a real
 // composition id, but this is the trust boundary — validate here.
-const COMPOSITION_ID_RE = /^[A-Za-z0-9_-]+$/;
+// Letters/digits/_/- plus interior single dots (e.g. release-0.25.0).
+// No leading dot and no adjacent dots, so '.'/'..' path segments and
+// hidden-file names remain unrepresentable — this stays the trust boundary.
+const COMPOSITION_ID_RE = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 
 // motion/ source (no node_modules, no build output) is a few hundred KB in
 // practice; this cap is generous headroom, not a tuned budget.
@@ -74,7 +77,7 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
   ) {
     res.status(400).json({
       error:
-        "'composition_id' must be a non-empty string of letters, digits, '_' or '-'",
+        "'composition_id' must be letters, digits, '_' or '-', with optional interior dots",
     });
     return;
   }

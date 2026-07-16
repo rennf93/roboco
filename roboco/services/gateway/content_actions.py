@@ -342,6 +342,8 @@ _CURATE_VAULT_ROLES: frozenset[str] = frozenset({"auditor"})
 # reuses MAX_TWEET_CHARS). No role frozenset here, unlike the sets above:
 # propose_video is gated on the caller's TEAM at runtime (_caller_team), not
 # role — Role.DEVELOPER doesn't distinguish a ux-dev from a be-dev/fe-dev.
+# Kept in lockstep with video-renderer/server.js COMPOSITION_ID_RE.
+_COMPOSITION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$")
 _VIDEO_PLATFORMS: frozenset[str] = frozenset({"x", "tiktok"})
 _MAX_TIKTOK_CAPTION_CHARS = 2200
 
@@ -1532,6 +1534,20 @@ class ContentActions:
         statement count under the xenon/PLR0911 budget)."""
         if rej := cls._reject_soup(composition_id, field="composition_id", min_chars=2):
             return rej
+        # Mirror the video-renderer sidecar's charset rule so an unrenderable
+        # id is refused at authoring time, not at render time days later.
+        if not _COMPOSITION_ID_RE.fullmatch(composition_id.strip()):
+            return Envelope.invalid_state(
+                message=(
+                    f"composition_id {composition_id!r} is not renderable — "
+                    "letters, digits, '_' or '-' with optional interior dots"
+                ),
+                remediate=(
+                    "rename the composition dir to match (e.g. "
+                    "'release-0-25-0' or 'release-0.25.0') and call "
+                    "propose_video again with that id"
+                ),
+            )
         if rej := cls._reject_caption(
             x_caption, field="x_caption", max_chars=MAX_TWEET_CHARS
         ):
