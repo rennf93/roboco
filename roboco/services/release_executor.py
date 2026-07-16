@@ -449,7 +449,10 @@ class _GitReleaseOps:
         git = get_git_service(self._session)
         for _ in range(_CI_MAX_POLLS):
             ci = await git.get_latest_ci_conclusion(
-                self._slug, workflow=self._ci_workflow, head_sha=commit_sha
+                self._slug,
+                workflow=self._ci_workflow,
+                head_sha=commit_sha,
+                branch=self._default_branch,
             )
             if ci and ci.get("head_sha") == commit_sha:
                 conclusion = (ci.get("conclusion") or "").lower()

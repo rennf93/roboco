@@ -2202,6 +2202,7 @@ class GitService(BaseService):
         *,
         workflow: str | None = None,
         head_sha: str | None = None,
+        branch: str | None = None,
     ) -> dict[str, Any] | None:
         """Latest completed CI (GitHub Actions) run on a project's default branch.
 
@@ -2229,7 +2230,10 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        branch = head_branch(project)
+        # Default to the head rung (where dev work and the release gate look);
+        # the release-commit CI wait overrides with the prod rung, where the
+        # pushed release commit actually lives.
+        branch = branch or head_branch(project)
         query = _CiRunQuery(
             project_slug=project_slug,
             owner_repo=(owner, repo),

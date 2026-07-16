@@ -587,3 +587,34 @@ def test_insert_changelog_entry_without_unreleased_is_unchanged_behavior() -> No
     result = re._insert_changelog_entry(existing, entry)
     assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
     assert "- old" in result and "- new" in result
+
+
+@pytest.mark.asyncio
+async def test_wait_for_ci_polls_the_prod_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The release commit lives on the prod rung — the CI wait must query that
+    branch, not the ladder head where get_latest_ci_conclusion defaults."""
+    seen: dict[str, object] = {}
+
+    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, object]:
+        seen.update(kwargs)
+        return {"head_sha": "cafebabe", "conclusion": "success"}
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: SimpleNamespace(get_latest_ci_conclusion=_fake_get_ci),
+    )
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        prod_branch="master",
+        root=tmp_path,
+        git_url="x",
+        git_prefix=[],
+        ci_workflow="ci.yml",
+        env_chain=["slave"],
+    )
+    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
+    ok = await ops.wait_for_ci("cafebabe")
+    assert ok is True
+    assert seen.get("branch") == "master"
