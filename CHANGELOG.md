@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **The release gate verifies CI instead of re-running the suite in production.** The executor's pre-commit gate ran `make quality` inside the orchestrator container, where production env (armed flags, host mounts, live Redis) breaks clean-env test assumptions wholesale — 1000 spurious failures on a tree that was green in CI. The gate now re-verifies the head rung's CI verdict at execute time, fail-closed on an absent or red run with the branch, sha, and conclusion named in the failure detail; the pushed release commit still gets its own CI wait before publish.
 - **Slave carries CI, and the release pipeline prefers curated notes.** The dev branch joined the CI push triggers — the release gate is fail-closed on the head commit's verdict, and a branch with no runs read as "unknown", silently blocking every release proposal. The readiness drafter now uses the curated `[Unreleased]` body as the release entry when one exists (falling back to per-commit transcription), and the executor empties `[Unreleased]` when stamping the entry so curated content never ships twice. CLAUDE.md gains the docs-sync engine paragraph it was missing.
 
 ### Fixed

@@ -104,9 +104,9 @@ class _FakeOps:
     async def write_changelog_entry(self, _entry: str) -> None:
         self.calls.append("changelog")
 
-    async def run_gate(self) -> bool:
+    async def run_gate(self) -> tuple[bool, str]:
         self.calls.append("gate")
-        return self._gate
+        return self._gate, "CI on slave@deadbeef is failure"
 
     async def commit_and_push(self, _version: str) -> str:
         self.calls.append("commit")

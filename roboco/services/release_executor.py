@@ -61,7 +61,7 @@ class ReleaseOps(Protocol):
 
     async def promote_env_chain(self) -> None: ...
 
-    async def run_gate(self) -> bool: ...
+    async def run_gate(self) -> tuple[bool, str]: ...
 
     async def commit_and_push(self, version: str) -> str: ...
 
@@ -183,14 +183,15 @@ class ReleaseExecutor:
         files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
         await self._ops.write_changelog_entry(report.drafted_changelog)
 
-        if not await self._ops.run_gate():
+        gate_ok, gate_detail = await self._ops.run_gate()
+        if not gate_ok:
             return ReleaseResult(
                 status="gate_failed",
                 version=version,
                 files_changed=files,
                 commit_sha=None,
                 release_url=None,
-                detail="make quality failed — aborted before commit (fail-closed).",
+                detail=(f"release gate refused — {gate_detail} (fail-closed).")[:280],
             )
 
         try:
@@ -285,6 +286,7 @@ class _GitReleaseOps:
         self._root = ctx.root
         self._git_url = ctx.git_url
         self._git_prefix = ctx.git_prefix
+        self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
         self._ci_workflow = ctx.ci_workflow
         self._env_chain = ctx.env_chain
 
@@ -385,21 +387,31 @@ class _GitReleaseOps:
                     f"env-chain merge {branch}→prod failed: {out.strip()[:200]}"
                 )
 
-    async def run_gate(self) -> bool:
-        proc = await asyncio.create_subprocess_exec(
-            "make",
-            "quality",
-            cwd=str(self._root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        rc, out = await _await_proc(proc, _RELEASE_GATE_TIMEOUT_SECONDS)
+    async def run_gate(self) -> tuple[bool, str]:
+        """Re-verify the head rung's CI verdict at execute time.
+
+        The readiness sweep already required a green run on the head rung to
+        propose at all; re-checking the same signal here keeps the gate
+        fail-closed without re-running the suite inside the production
+        container, whose env (armed flags, host mounts, live Redis) breaks
+        clean-env test assumptions wholesale. The pushed release commit still
+        gets its own ``wait_for_ci`` before publish.
+        """
+        rc, sha_out = await self._git("rev-parse", f"origin/{self._head_branch}")
         if rc != 0:
-            logger.warning(
-                "release gate (make quality) failed or timed out",
-                tail=out[-2000:],
-            )
-        return rc == 0
+            return False, f"cannot resolve origin/{self._head_branch}"
+        head_sha = sha_out.strip()
+        from roboco.services.git import get_git_service
+
+        git = get_git_service(self._session)
+        ci = await git.get_latest_ci_conclusion(
+            self._slug, workflow=self._ci_workflow, head_sha=head_sha
+        )
+        conclusion = ((ci or {}).get("conclusion") or "absent").lower()
+        detail = f"CI on {self._head_branch}@{head_sha[:8]} is {conclusion}"
+        if conclusion != "success":
+            logger.warning("release gate refused", detail=detail)
+        return conclusion == "success", detail
 
     async def commit_and_push(self, version: str) -> str:
         add_rc, add_out = await self._git("add", "-A")

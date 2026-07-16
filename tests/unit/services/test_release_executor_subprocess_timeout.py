@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -105,6 +106,7 @@ def _ops() -> _GitReleaseOps:
     ops._git_url = "https://github.com/o/roboco"
     ops._git_prefix = []
     ops._ci_workflow = None
+    ops._head_branch = "slave"
     # publish_release resolves the token via a (monkeypatched) ProjectService;
     # the session itself is never touched in these tests.
     ops._session = cast("AsyncSession", None)
@@ -189,23 +191,23 @@ async def test_git_op_timeout_reaps_the_zombie(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_run_gate_times_out_returns_false(
+async def test_run_gate_fails_closed_on_absent_ci(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A hung ``make quality`` fails closed: ``run_gate`` returns False (the
-    release aborts before commit), and the child is killed — not wedged."""
-    monkeypatch.setattr(
-        "roboco.services.release_executor._RELEASE_GATE_TIMEOUT_SECONDS", 0.05
-    )
-    proc = _HangingProc()
+    """No CI verdict on the head rung reads as absent — the gate refuses
+    (fail-closed) with a detail naming the branch and sha."""
+    proc = _DoneProc(0, b"deadbeefcafe\n")
     monkeypatch.setattr(
         "roboco.services.release_executor.asyncio.create_subprocess_exec",
         _exec_returning(proc),
     )
+    fake_git = MagicMock()
+    fake_git.get_latest_ci_conclusion = AsyncMock(return_value=None)
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
     ops = _ops()
-    passed = await asyncio.wait_for(ops.run_gate(), timeout=2.0)
+    passed, detail = await asyncio.wait_for(ops.run_gate(), timeout=2.0)
     assert passed is False
-    assert proc.killed
+    assert "absent" in detail and "deadbeef" in detail
 
 
 class _FakeResponse:
@@ -359,17 +361,21 @@ async def test_git_op_green_path_returns_real_rc(
 
 
 @pytest.mark.asyncio
-async def test_run_gate_green_path_returns_true(
+async def test_run_gate_green_ci_returns_true(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A green ``make quality`` (rc 0) returns True — the timeout wrap doesn't
-    turn a passing gate into a failure."""
-    proc = _DoneProc(0, b"all good\n")
+    """A green CI verdict on the head rung passes the gate."""
+    proc = _DoneProc(0, b"deadbeefcafe\n")
     monkeypatch.setattr(
         "roboco.services.release_executor.asyncio.create_subprocess_exec",
         _exec_returning(proc),
     )
+    fake_git = MagicMock()
+    fake_git.get_latest_ci_conclusion = AsyncMock(
+        return_value={"conclusion": "success", "head_sha": "deadbeefcafe"}
+    )
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
     ops = _ops()
-    passed = await asyncio.wait_for(ops.run_gate(), timeout=2.0)
+    passed, detail = await asyncio.wait_for(ops.run_gate(), timeout=2.0)
     assert passed is True
-    assert not proc.killed
+    assert "success" in detail
