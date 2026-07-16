@@ -188,7 +188,7 @@ jobs:
         # an `if:` that doesn't call a status function is otherwise
         # implicitly ANDed with success(), silently swallowing the report.
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
