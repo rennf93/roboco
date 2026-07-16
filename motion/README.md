@@ -71,3 +71,49 @@ Like every release composition, this one ships a tracked `captions.json` next to
 ```
 
 The smoke test (`release-recap.test.js`) asserts this schema, checks the counts, and regression-guards no em dashes in on-screen copy or captions (the design-bar violation QA caught on the prior text-card cut of this task).
+
+## Release-specific example: `release-0.25.0`
+
+`compositions/release-0.25.0/` is a panel-demo kit clip for the RoboCo v0.25.0 release. It builds on the `kit/` register instead of the text-card style, so it has no `theme.css` of its own.
+
+The story is "governance gets a better UI": the CEO types "Governance gets a better UI" into the panel intake, then three shipped feature cards — Env ladder, Collision map, Metrics donut — enter a kanban column and flip from `in progress` to `completed`. A cursor clicks through the cards, a stats overlay flashes "1 release / 25 agents / 1 human", and a toast confirms "v0.25.0 shipped / I approved once. 25 agents did the rest." The clip closes on the "roboco.tech" outro.
+
+The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern from `panel-demo` and `release-recap` to replace the `in progress` pill with `completed` on the same beat.
+
+### Preview / test this composition
+
+```bash
+pnpm preview:release-0.25.0
+pnpm test   # release-0.25.0.test.js is picked up by vitest
+```
+
+### `props.js` shape
+
+```js
+{
+  introText: string,   // text that types into the panel intake field
+  toastTitle: string, // headline inside the shipping toast
+  toastBody: string,   // sub-line inside the shipping toast
+}
+```
+
+`window.__ORIENTATION__` is set for local preview only; the sidecar overwrites both globals at render time.
+
+### `captions.json`
+
+Same schema as `release-recap`: one `captions.json` next to the HTML with self-verified X and TikTok captions:
+
+```json
+{
+  "composition_id": "release-0.25.0",
+  "occasion": "release: RoboCo v0.25.0",
+  "platforms": {
+    "x":      { "caption": "...", "char_count": 170, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "...", "char_count": 347, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+### Smoke-test invariants
+
+`release-0.25.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with the HyperFrames params, the kit CSS/JS wiring is present, three feature cards each carry a progress-to-completed pill swap, the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.

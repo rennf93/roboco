@@ -1,0 +1,18 @@
+{
+  "composition_id": "release-0.25.0",
+  "occasion": "release: RoboCo v0.25.0",
+  "platforms": {
+    "x": {
+      "caption": "RoboCo v0.25.0 is live. Env ladder from dev to prod. Collision map in every review. Metrics with a 90-day window. One human approved it; 25 agents shipped it. roboco.tech",
+      "char_count": 170,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "RoboCo v0.25.0 shipped today. The panel now has an env ladder from dev to prod, a collision map surfaced in every review, metrics with a 90-day window and a status donut, plus a notification bell with real read/ack actions. Same setup: one human CEO sets direction, 25 AI agents do the work, and governance keeps control over the flow. roboco.tech",
+      "char_count": 347,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}
