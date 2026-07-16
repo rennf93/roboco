@@ -63,6 +63,8 @@ def _parent(pm_id: object) -> MagicMock:
         team="backend",
         # delegate obligates the PM's quick_context resumption section.
         quick_context="Decomposition planned; cells implement their slice next.",
+        # These tests are about the parent-lock ordering, not AC coverage.
+        acceptance_criteria=[],
     )
 
 

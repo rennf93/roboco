@@ -702,17 +702,29 @@ def claim_review(task_id: str) -> dict[str, Any]:
 
 
 def pass_review(
-    task_id: str, notes: str, ac_verdicts: StrList | None = None
+    task_id: str,
+    notes: str,
+    ac_verdicts: StrList | None = None,
+    criteria_verified: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """QA: accept the work. notes >= 80 chars; journal:learning required.
 
-    ac_verdicts: one entry per acceptance criterion (in criterion order) stating
-    how you verified it. Every criterion must be covered — a pass is rejected
-    until all are. If any criterion does not hold, call fail_review instead.
+    criteria_verified: MANDATORY when the task has acceptance criteria — one
+    {criterion, evidence} entry per criterion. criterion must match an AC by
+    id or exact text; evidence must be concrete (file:line, screenshot ref,
+    rendered-frame path, test name), not a gestalt "looks good". Every
+    criterion must be covered, or the pass is rejected naming exactly which
+    are missing/unmatched. If any criterion does not hold, call fail_review
+    instead of passing a partial.
+
+    ac_verdicts: legacy free-text, one entry per acceptance criterion — still
+    folded into the persisted notes but no longer gates the pass.
     """
     payload: dict[str, Any] = {"task_id": task_id, "notes": notes}
     if ac_verdicts is not None:
         payload["ac_verdicts"] = ac_verdicts
+    if criteria_verified is not None:
+        payload["criteria_verified"] = criteria_verified
     return _post(_role_path("pass"), payload)
 
 
@@ -965,11 +977,15 @@ def delegate(
         nature: One of "technical" | "non_technical".
         acceptance_criteria: Non-empty list of verifiable outcome strings.
         estimated_complexity: One of "low" | "medium" | "high". Default "medium".
-        covers_parent_criteria: The parent task's acceptance-criterion ids this
-            subtask is responsible for. Declare these so the gateway can verify
-            EVERY parent criterion is claimed by a subtask and satisfied before
-            the parent rolls up — split the parent's criteria across subtasks so
-            their union covers all of them.
+        covers_parent_criteria: The parent task's acceptance-criterion ids (or
+            exact text) this subtask is responsible for. REQUIRED — non-empty
+            and resolvable — whenever the parent carries acceptance criteria;
+            delegate rejects a child that maps to none of them or to a ref
+            that matches no real criterion, naming the parent's actual
+            criteria in the rejection. A single delegate need not cover every
+            criterion (a wave may leave some for a later delegate — see the
+            response's evidence.parent_ac_coverage), but every child that IS
+            delegated must map to something real.
         intends_to_touch: Collision surface — file paths/globs this subtask
             will modify. REQUIRED for task_type="code": the sibling collision
             DAG can only sequence what is declared.

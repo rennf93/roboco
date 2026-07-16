@@ -517,6 +517,10 @@ async def test_full_chain_through_doc_handoff(
         task.id,
         notes=qa_notes,
         ac_verdicts=[f"verified: {crit}" for crit in task.acceptance_criteria],
+        criteria_verified=[
+            {"criterion": crit, "evidence": f"verified against the PR diff: {crit}"}
+            for crit in task.acceptance_criteria
+        ],
     )
     assert env.error is None, f"pass_review failed: {env.message}"
     assert env.status == "awaiting_documentation"

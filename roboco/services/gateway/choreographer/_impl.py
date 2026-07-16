@@ -5206,8 +5206,9 @@ class Choreographer:
         )
         # Spec gate passed. Run delegate-specific guards the spec doesn't
         # model: tracing (journal:decision), chain validation, enum
-        # coercion + assignee-vs-task_type, and parent-ownership/subtask-cap.
-        guard = await self._delegate_extra_guards(
+        # coercion + assignee-vs-task_type, parent-ownership/subtask-cap, and
+        # (last) decomposition-coverage.
+        guard = await self._delegate_post_spec_guards(
             pm_agent_id, parent_task_id, parent, role_str, inputs
         )
         if guard is not None:
@@ -5219,6 +5220,75 @@ class Choreographer:
             )
         return await self._create_subtask_and_envelope(
             pm_agent_id, parent, inputs, briefing, role_str
+        )
+
+    async def _delegate_post_spec_guards(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        role_str: str,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        """``_delegate_extra_guards``, then the decomposition-coverage gate.
+
+        Split out only to keep ``delegate()``'s own return count under the
+        complexity budget. The coverage gate deliberately runs LAST, after
+        every cap/chain/tracing/static rejection, so those guards keep their
+        own specific message (existing tests assert on it) and the coverage
+        gate only ever fires on an otherwise-valid delegate.
+        """
+        guard = await self._delegate_extra_guards(
+            pm_agent_id, parent_task_id, parent, role_str, inputs
+        )
+        if guard is not None:
+            return guard
+        return self._delegate_ac_coverage_guard(parent, inputs)
+
+    def _delegate_ac_coverage_guard(
+        self, parent: Any, inputs: DelegateInputs
+    ) -> Envelope | None:
+        """Reject a child that doesn't map to the parent's own criteria.
+
+        A parent with real acceptance criteria (every task has some) requires
+        every child to declare which ones it advances via
+        ``covers_parent_criteria`` — a child mapped to nothing is either scope
+        creep or a sign the parent's ACs are stale, and either way the PM must
+        decide now, not discover the gap late at submit_up's roll-up gate
+        (``_parent_acs_covered_envelope``) after the whole wave already ran.
+        Inert when the parent has no acceptance criteria at all (nothing to
+        map against) — mirrors the safe-by-construction posture of
+        ``uncovered_parent_acceptance_criteria`` et al. Does NOT require full
+        coverage in one call: a wave may deliberately leave criteria for a
+        later delegate (see the success envelope's ``parent_ac_coverage``
+        evidence for that signal).
+        """
+        ac_texts = parent.acceptance_criteria or []
+        if not ac_texts:
+            return None
+        refs = inputs.covers_parent_criteria or []
+        bad = self.task.unknown_ac_refs(parent, refs) if refs else []
+        if refs and not bad:
+            return None
+        listing = "; ".join(ac_texts)
+        if not refs:
+            message = (
+                f"'{inputs.title}' declares no covers_parent_criteria, but the "
+                "parent has acceptance criteria to decompose."
+            )
+        else:
+            message = (
+                f"'{inputs.title}' covers_parent_criteria has unresolvable "
+                f"ref(s): {'; '.join(bad)}"
+            )
+        return Envelope.invalid_state(
+            message=message,
+            remediate=(
+                "Map this subtask to the parent criteria it advances via "
+                "covers_parent_criteria (by id or exact text), or fix the "
+                f"parent's criteria first. Parent criteria: {listing}"
+            ),
+            context_briefing={},
         )
 
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
@@ -5977,8 +6047,28 @@ class Choreographer:
             status="created",
             task_id=str(new_task.id),
             next=spec_module._INTENT_VERBS["delegate"].next_hint(new_task),
+            evidence=await self._delegate_ac_coverage_evidence(parent, parent_task_id),
             context_briefing=briefing,
         ).with_introspection(task=new_task, role=role_str)
+
+    async def _delegate_ac_coverage_evidence(
+        self, parent: Any, parent_task_id: UUID
+    ) -> dict[str, Any]:
+        """``evidence.parent_ac_coverage`` for a successful delegate.
+
+        Reuses ``uncovered_parent_acceptance_criteria`` — the exact primitive
+        submit_up's roll-up gate checks — so the PM sees, in the same turn,
+        which parent criteria the wave-so-far still leaves uncovered instead
+        of discovering it later at assembly. Wave-based planning stays legal:
+        this never blocks, it only reports. Empty (``{}``) when the parent
+        carries no acceptance criteria at all.
+        """
+        ac_texts = parent.acceptance_criteria or []
+        if not ac_texts:
+            return {}
+        uncovered = await self.task.uncovered_parent_acceptance_criteria(parent_task_id)
+        covered = [t for t in ac_texts if t not in uncovered]
+        return {"parent_ac_coverage": {"covered": covered, "uncovered": uncovered}}
 
     @staticmethod
     def _team_value(value: Any) -> str:

@@ -65,6 +65,8 @@ def _parent_in_progress(pm_id: Any) -> MagicMock:
         priority=2,
         # delegate obligates the PM's quick_context resumption section.
         quick_context="Decomposition planned; cells implement their slice next.",
+        # These tests are about task_completeness, not AC coverage.
+        acceptance_criteria=[],
     )
 
 

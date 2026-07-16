@@ -201,9 +201,19 @@ class PassReviewRequest(BaseModel):
     ac_verdicts: StrList | None = Field(
         default=None,
         description=(
-            "One verification entry per acceptance criterion (in criterion "
-            "order) stating how QA verified it. Every criterion must be "
-            "covered before a pass is allowed."
+            "Legacy free-text per-criterion verdicts — still folded into the "
+            "persisted notes but no longer gates the pass (see "
+            "criteria_verified)."
+        ),
+    )
+    criteria_verified: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Mandatory when the task has acceptance criteria — one "
+            "{criterion, evidence} entry per criterion. criterion must match "
+            "an AC by id or exact text; evidence must be concrete (file:line, "
+            "screenshot ref, rendered-frame path, test name). Every criterion "
+            "must be covered or the pass is rejected."
         ),
     )
 

@@ -516,6 +516,13 @@ def qa_arc(stack: E2EStack, company: Company, task_id: Any) -> None:
             ac_verdicts=[
                 f"{c} — verified against the PR diff on the origin." for c in criteria
             ],
+            criteria_verified=[
+                {
+                    "criterion": c,
+                    "evidence": "verified against the PR diff on the origin",
+                }
+                for c in criteria
+            ],
         ),
         "qa pass_review",
     )

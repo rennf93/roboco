@@ -137,6 +137,7 @@ async def test_delegate_allows_when_parent_in_progress_and_owned() -> None:
         assigned_to=pm_id,
         team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
+        acceptance_criteria=[],
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -194,6 +195,7 @@ async def test_delegate_allows_when_subtask_cap_within_soft_zone() -> None:
         assigned_to=pm_id,
         team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
+        acceptance_criteria=[],
     )
     many = [MagicMock(id=uuid4()) for _ in range(10)]
     new_task = MagicMock(id=uuid4())
@@ -223,6 +225,7 @@ async def test_delegate_allows_at_zero_subtasks() -> None:
         assigned_to=pm_id,
         team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
+        acceptance_criteria=[],
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -313,6 +316,7 @@ async def test_delegate_past_max_depth_returns_invalid_state_not_500() -> None:
         assigned_to=pm_id,
         team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
+        acceptance_criteria=[],
     )
     depth_msg = (
         "Task hierarchy would exceed MAX_TASK_DEPTH=4. Create this work as a "

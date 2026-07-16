@@ -513,6 +513,10 @@ async def test_qa_pass_path(
         task.id,
         notes=_QA_PASS_NOTES,
         ac_verdicts=[f"verified: {crit}" for crit in task.acceptance_criteria],
+        criteria_verified=[
+            {"criterion": crit, "evidence": f"verified against the PR diff: {crit}"}
+            for crit in task.acceptance_criteria
+        ],
     )
     assert env.error is None, f"pass_review failed: {env.message}"
     assert env.status == Status.AWAITING_DOCUMENTATION.value

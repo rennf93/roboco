@@ -675,6 +675,8 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
         status="in_progress",
         assigned_to=main_pm_id,
         quick_context="Decomposition planned; cells implement their slice next.",
+        # This test is about role/chain wiring, not AC coverage.
+        acceptance_criteria=[],
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -719,6 +721,8 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
         assigned_to=cell_pm_id,
         team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
+        # This test is about role/chain wiring, not AC coverage.
+        acceptance_criteria=[],
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -1185,6 +1189,9 @@ async def test_delegate_main_pm_to_cell_pm_accepts_planning_subtask() -> None:
         status="in_progress",
         assigned_to=main_pm_id,
         quick_context="Decomposition planned; cells implement their slice next.",
+        # This test is about the code-vs-planning task_type guard, not AC
+        # coverage.
+        acceptance_criteria=[],
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
