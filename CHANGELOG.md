@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-16
+
 ### Added
 
 - **Env-branches ladder + EnvSyncEngine (default-off `ROBOCO_ENV_SYNC_ENABLED`).** Replaces a project's single `default_branch` with an ordered environment ladder — nullable `projects.environments` JSONB (migration 073): index 0 is the head rung (where dev/cell/leaf PRs land and the per-agent clone points), index -1 is the prod rung (where the gated release executor commits + tags). A null ladder degenerates to a single-branch ladder synthesized from `default_branch` at read time (`roboco/models/env_branches.py`), so every existing project keeps behaving byte-for-byte until the CEO declares a real split. The release executor promotes the full chain head→…→prod before bumping (fail-closed on a merge conflict) and release-readiness diffs `prod..head` with a tag-drift cross-check; `EnvSyncEngine` cascades the ladder prod→…→head via GitHub's merges API, auto-pushing a clean merge and opening one sync PR + Main-PM task on a conflict — never targeting the prod rung. The panel gains an environment-ladder editor on the project edit dialog.
