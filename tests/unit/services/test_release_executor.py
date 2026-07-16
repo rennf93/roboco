@@ -70,6 +70,9 @@ class _FakeOps:
         # instance (not via __init__ — keeps the constructor under the arg-count
         # gate) by tests that exercise the retry path.
         self._existing_sha: str | None = None
+        # env-chain promotion failure message; set on the instance (same arg-
+        # count-gate reason) by the promotion-failure test.
+        self._promote_raises: str | None = None
         self.calls: list[str] = []
         self.bumped_plan: list[str] | None = None
         self.bumped_version: str | None = None
@@ -78,6 +81,11 @@ class _FakeOps:
     async def is_already_published(self, _version: str) -> bool:
         self.calls.append("check")
         return self._already
+
+    async def promote_env_chain(self) -> None:
+        self.calls.append("promote")
+        if self._promote_raises is not None:
+            raise RuntimeError(self._promote_raises)
 
     async def release_commit_sha(self, _version: str) -> str | None:
         # Half-landed detection: a prior `chore(release): {version}` commit
@@ -96,9 +104,9 @@ class _FakeOps:
     async def write_changelog_entry(self, _entry: str) -> None:
         self.calls.append("changelog")
 
-    async def run_gate(self) -> bool:
+    async def run_gate(self) -> tuple[bool, str]:
         self.calls.append("gate")
-        return self._gate
+        return self._gate, "CI on slave@deadbeef is failure"
 
     async def commit_and_push(self, _version: str) -> str:
         self.calls.append("commit")
@@ -127,6 +135,7 @@ async def test_green_path_publishes_once() -> None:
     assert ops.calls.count("publish") == _ONE
     assert ops.calls == [
         "check",
+        "promote",
         "bump",
         "changelog",
         "gate",
@@ -202,6 +211,22 @@ async def test_publish_failure_returns_structured_publish_failed() -> None:
     assert result.release_url is None
     assert "release publish failed" in result.detail
     assert ops.calls.count("publish") == _ONE
+
+
+@pytest.mark.asyncio
+async def test_promotion_failure_aborts_before_bump() -> None:
+    """A RuntimeError from promote_env_chain (a merge conflict in the
+    head->...->prod chain) becomes a structured ``promotion_failed`` result —
+    fail-closed: the bump/changelog/gate/commit/publish pipeline never runs."""
+    ops = _FakeOps()
+    ops._promote_raises = "env-chain promotion failed: non-fast-forward"
+    result = await ReleaseExecutor(ops).execute(_report())
+    assert result.status == "promotion_failed"
+    assert result.commit_sha is None
+    assert result.release_url is None
+    assert "bump" not in ops.calls
+    assert "commit" not in ops.calls
+    assert "publish" not in ops.calls
 
 
 def test_release_result_carries_outcome_fields() -> None:
@@ -286,11 +311,12 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -336,11 +362,12 @@ async def test_wait_for_ci_polls_through_rerun(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -382,11 +409,12 @@ async def test_wait_for_ci_exhausts_window_on_persistent_failure(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url="x",
         git_prefix=[],
         ci_workflow="ci.yml",
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     ok = await ops.wait_for_ci(commit_sha)
@@ -492,10 +520,12 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
     git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
     captured: list[list[str]] = []
 
-    # commit_and_push issues: add -A, commit -S -m, rev-parse HEAD, push.
+    # commit_and_push issues: add -A, 2x identity config, commit, rev-parse, push.
     responses = iter(
         [
             _DoneProc(b""),  # add -A
+            _DoneProc(b""),  # config user.name
+            _DoneProc(b""),  # config user.email
             _DoneProc(b""),  # commit
             _DoneProc(b"deadbeef\n"),  # rev-parse HEAD
             _DoneProc(b"ok"),  # push
@@ -510,11 +540,12 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
 
     ctx = _ReleaseContext(
         slug="roboco-api",
-        default_branch="master",
+        prod_branch="master",
         root=tmp_path,
         git_url=git_url,
         git_prefix=git_prefix,
         ci_workflow=None,
+        env_chain=[],
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
     sha = await ops.commit_and_push("0.13.0")
@@ -533,3 +564,26 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
         == f"http.extraheader=Authorization: Basic {expected_basic}"
     )
     assert "push" in push_argv[c_idx + 2 :]
+
+
+def test_insert_changelog_entry_empties_unreleased_body() -> None:
+    existing = (
+        "# Changelog\n\nintro\n\n## [Unreleased]\n\n### Added\n\n"
+        "- **Curated bullet.**\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
+    )
+    entry = "## [0.25.0] - 2026-07-15\n\n### Added\n\n- **Curated bullet.**\n"
+    result = re._insert_changelog_entry(existing, entry)
+    unreleased = result.split("## [Unreleased]")[1].split("## [0.25.0]")[0]
+    assert "Curated bullet" not in unreleased
+    assert result.count("Curated bullet") == 1
+    assert result.index("## [Unreleased]") < result.index("## [0.25.0]")
+    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
+    assert "- old" in result
+
+
+def test_insert_changelog_entry_without_unreleased_is_unchanged_behavior() -> None:
+    existing = "# Changelog\n\n## [0.24.0] - 2026-07-14\n\n- old\n"
+    entry = "## [0.25.0] - 2026-07-15\n\n- new\n"
+    result = re._insert_changelog_entry(existing, entry)
+    assert result.index("## [0.25.0]") < result.index("## [0.24.0]")
+    assert "- old" in result and "- new" in result

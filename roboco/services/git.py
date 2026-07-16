@@ -51,7 +51,9 @@ from roboco.exceptions import (
     MergeConflictError,
 )
 from roboco.foundation.policy import lifecycle
+from roboco.foundation.policy.pr_labels import CONVENTIONS_PR_LABELS, derive_pr_labels
 from roboco.models.base import AgentRole, TaskStatus
+from roboco.models.env_branches import head_branch
 from roboco.services.base import (
     BaseService,
     NotFoundError,
@@ -216,6 +218,78 @@ def _remove_stale_git_locks(workspace: Path) -> None:
         return
 
 
+# Verbs that never write anything — `_run_git`'s post-op ownership repair is
+# pure waste after these (live NAS: a "rev-parse --verify" cost 5165ms of
+# chown for a command that touches nothing). Read-only forms of `branch` /
+# `symbolic-ref` are handled separately below since they share a verb name
+# with a mutating form.
+_READ_ONLY_GIT_VERBS = frozenset(
+    {
+        "status",
+        "log",
+        "diff",
+        "rev-parse",
+        "rev-list",
+        "ls-remote",
+        "merge-base",
+        "show",
+        "cherry",
+    }
+)
+
+# Verbs that write only inside `.git/` (refs, objects, index) — never the
+# working tree. Ownership repair can be scoped to `.git/` alone instead of a
+# full-workspace walk.
+_GIT_SCOPED_VERBS = frozenset({"add", "commit", "fetch", "push"})
+
+
+def _branch_or_symbolic_ref_scope(verb: str, rest: list[str]) -> str:
+    """Query vs SET form of `branch` / `symbolic-ref` (same verb, different
+    scope): query reads only, SET writes a ref under `.git/`.
+
+    Query: `branch --show-current` (0 positional) or `symbolic-ref [-q]
+    <name>` (1 positional — naming which ref to read). SET (`branch <name>
+    <start>`, `symbolic-ref <name> <ref>`) always carries 2+ positional args.
+    """
+    positional = [a for a in rest if not a.startswith("-")]
+    is_query = (verb == "branch" and not positional) or (
+        verb == "symbolic-ref" and len(positional) <= 1
+    )
+    return "none" if is_query else "git"
+
+
+def _git_ownership_scope(args: list[str]) -> str:
+    """Classify a git invocation's post-op ownership-repair scope.
+
+    Root cause of the chown cost: the orchestrator's git subprocess runs as
+    root, so a MUTATING op leaves root-owned files under `.git/` (and, for
+    checkout/reset/rebase/pull, the working tree) that the agent container
+    (uid 1000) can't write. A read-only op never writes anything, so
+    repairing ownership after one is pure waste — on the NAS this cost
+    5-10s PER git call, and a single `i_am_done` chains ~a dozen ops.
+
+    Returns "none" (skip repair — zero syscalls), "git" (repair `.git/`
+    only, worktree-aware via `_resolve_clone_root`), or "full" (repair the
+    whole workspace — unchanged behavior, and the safe default for
+    checkout/reset/rebase/pull/stash or any verb this classifier doesn't
+    recognize, so an unclassified op is never under-repaired). `stash`
+    (rebase_onto_base's `stash=True` path, #337 scoping) writes both the
+    working tree (push/pop) and `.git/` (the stash ref + objects) — it is
+    deliberately left unclassified so it falls to the safe "full" default
+    rather than a `.git/`-only repair that would strand agent-owned files.
+    """
+    if not args:
+        return "full"
+    verb = args[0]
+    if verb in _READ_ONLY_GIT_VERBS:
+        return "none"
+    if verb in ("branch", "symbolic-ref"):
+        return _branch_or_symbolic_ref_scope(verb, args[1:])
+    if verb in _GIT_SCOPED_VERBS:
+        return "git"
+    return "full"
+
+
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
 # GitHub REST API calls — no CLI dependency, and the PAT no longer touches
 # subprocess argv / environ.
@@ -225,6 +299,10 @@ _REV_LIST_PARTS = 2
 
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
+# merges-API success codes: 201 = merge commit created + pushed; 204 = nothing
+# to merge (head already an ancestor of base).
+_HTTP_CREATED = 201
+_HTTP_NO_CONTENT = 204
 # 404 means the PR (or repo) does not exist; surfaced as a typed GitError
 # by `update_pr_for_task` so the gateway can convert it into a specific
 # invalid_state envelope rather than the generic refusal message.
@@ -255,6 +333,17 @@ _CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
 # huge repo) can't hang the i_am_done/pr_pass gate forever.
 _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
+# --- pr_pass CI-status guard ------------------------------------------------
+# GitHub check-run conclusions that count as a failing check on a PR's head
+# commit. ``neutral``/``skipped``/``success`` (and ``None`` on a still-running
+# run) are not failing.
+_FAILING_CHECK_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "timed_out", "action_required"}
+)
+# A 404 resolving a PR's head SHA means the repo/PR is unreachable or doesn't
+# exist — classified as no_ci_configured, distinct from any other non-2xx
+# (a genuine API failure on a real, reachable repo) which is `error`.
+_HTTP_NOT_FOUND = 404
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -330,14 +419,15 @@ class GitService(BaseService):
         ``settings.git_commit_timeout_seconds``.
 
         After every orchestrator-side git op, hand ownership back to the
-        agent user. Git commands here run as root and create root-owned
-        files under .git/ (refs, logs/refs, packed-refs, index, objects).
-        If we don't re-chown, the agent container (uid 1000) can't append
-        to those files on its next commit and fails with
-        "unable to append to .git/logs/refs/heads/...".
+        agent user — SCOPED to what this op could actually have written
+        (see `_git_ownership_scope`). Git commands here run as root and
+        create root-owned files under .git/ (refs, logs/refs, packed-refs,
+        index, objects). If we don't re-chown, the agent container (uid
+        1000) can't append to those files on its next commit and fails
+        with "unable to append to .git/logs/refs/heads/...". A read-only
+        op (status, log, diff, ...) never writes, so it skips the repair
+        entirely.
         """
-        from roboco.services.workspace import _ensure_agent_owned
-
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
 
         prefix: list[str] = []
@@ -381,13 +471,7 @@ class GitService(BaseService):
                 " ".join(args), e.stderr or e.stdout or "Unknown error"
             ) from e
         git_ms = (time.monotonic() - t0) * 1000.0
-
-        # Hand .git (and tracked files) back to the agent: this root-run op
-        # created root-owned files under .git/. Runs in the dedicated git pool
-        # so it doesn't compete with the event loop's default executor.
-        t1 = time.monotonic()
-        await loop.run_in_executor(_GIT_EXECUTOR, _ensure_agent_owned, workspace)
-        chown_ms = (time.monotonic() - t1) * 1000.0
+        chown_ms = await self._reown_after_git_op(loop, workspace, args)
 
         # Surface slow git/chown ops (instrumentation): a single line that
         # pinpoints where an op's time went — the subprocess (e.g. a push to
@@ -402,6 +486,28 @@ class GitService(BaseService):
                 workspace=str(workspace),
             )
         return result
+
+    @staticmethod
+    async def _reown_after_git_op(
+        loop: asyncio.AbstractEventLoop, workspace: Path, args: list[str]
+    ) -> float:
+        """Run the scope-appropriate post-op ownership repair; return its ms cost.
+
+        Extracted out of `_run_git` so the classify-then-dispatch logic stays
+        out of that method's cyclomatic budget. Runs in the dedicated git
+        executor so it doesn't compete with the event loop's default pool.
+        A "none"-scope op costs zero syscalls and returns 0.0 so the slow-op
+        instrumentation still sees the true (near-zero) cost.
+        """
+        from roboco.services.workspace import _ensure_agent_owned, _ensure_git_dir_owned
+
+        scope = _git_ownership_scope(args)
+        if scope == "none":
+            return 0.0
+        repair = _ensure_git_dir_owned if scope == "git" else _ensure_agent_owned
+        t1 = time.monotonic()
+        await loop.run_in_executor(_GIT_EXECUTOR, repair, workspace)
+        return (time.monotonic() - t1) * 1000.0
 
     async def _token_for_project(self, project_slug: str) -> str | None:
         """Decrypted project token for orchestrator-side remote git ops.
@@ -474,7 +580,7 @@ class GitService(BaseService):
                     project_slug=project_slug,
                     agent_id=agent_id,
                     git_url=project.git_url,
-                    default_branch=project.default_branch or "master",
+                    default_branch=head_branch(project),
                 )
             else:
                 workspace = await workspace_service.resolve_workspace(
@@ -490,6 +596,41 @@ class GitService(BaseService):
             raise ValidationError(str(e)) from e
 
         return workspace
+
+    async def branch_exists_on_remote(
+        self,
+        project_slug: str,
+        branch_name: str,
+        agent_id: UUID | None = None,
+    ) -> bool | None:
+        """Probe whether ``branch_name`` exists on the project's ``origin``.
+
+        Returns True when the ref is present, False when confirmed absent, and
+        None when the probe itself errored (network blip, missing workspace or
+        token) — callers fail-soft on None so a transient glitch can't fail a
+        normal claim. Mirrors the ``ls-remote --heads origin <branch>`` idiom
+        in :meth:`create_branch`'s parent-branch check, reusing the same
+        workspace + decrypted-token resolution so the probe is authoritative.
+        """
+        try:
+            workspace = await self.get_workspace(project_slug, agent_id)
+            token = await self._token_for_project(project_slug)
+            result = await self._run_git(
+                workspace,
+                ["ls-remote", "--heads", "origin", branch_name],
+                check=False,
+                token=token,
+                timeout=_network_git_timeout(),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "branch_exists_on_remote probe failed; failing soft",
+                project_slug=project_slug,
+                branch_name=branch_name,
+                error=str(exc),
+            )
+            return None
+        return bool(result.stdout.strip())
 
     # =========================================================================
     # STATUS / INFO METHODS
@@ -989,14 +1130,17 @@ class GitService(BaseService):
         return await self._project_default_branch(project_slug)
 
     async def _project_default_branch(self, project_slug: str) -> str:
-        """Return the project's configured default branch, or 'master'."""
+        """Return the project's head environment branch (ladder index 0).
+
+        This is where dev/cell/leaf PRs target — the dev trunk. Falls back to
+        default_branch (and then 'master') via the env-ladder shim when the
+        project has no declared environment ladder.
+        """
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
-        return (
-            str(project.default_branch)
-            if project and project.default_branch
-            else "master"
-        )
+        if project is None:
+            return "master"
+        return head_branch(project)
 
     async def _checkout_base_with_fallback(
         self,
@@ -1163,6 +1307,84 @@ class GitService(BaseService):
 
         return branch_name, base_branch
 
+    async def merge_dependency_lineage(
+        self,
+        workspace: Path,
+        task_id: UUID,
+        branch_name: str,
+        source_branch: str,
+        project_slug: str,
+    ) -> dict[str, Any]:
+        """Backfill a freshly cut branch with a dependency's merged content.
+
+        The claim-time dependency gate only holds a task until every
+        ``dependency_ids`` entry is terminal (TIMING) — it never checks
+        whether that entry's merged work is actually reachable from this
+        branch's base (CONTENT). A cross-subtree/cross-cell dependency edge
+        can complete on a branch this one never descends from (e.g. a UX
+        cell task merges into the UX cell branch; a sibling frontend cell
+        task cut from the frontend cell branch has no ancestry into it until
+        the UX cell itself submits up).
+
+        No-op when ``source_branch`` is already an ancestor of
+        ``branch_name`` (the common, transitively-safe case: same-parent
+        siblings, same-project root waves — master/the shared ancestor
+        already carries the work). On a real conflict the merge is aborted
+        and the branch is left exactly at its cut point: this is a
+        claim-time content assist, never a gate, so it always returns a
+        status rather than raising.
+
+        Returns ``{"status": ...}``, one of ``already_ancestor`` /
+        ``missing_ref`` / ``merged`` / ``merged_push_failed`` / ``conflict``
+        (the last carries ``"files"``).
+        """
+        token = await self._token_for_project(project_slug)
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", source_branch],
+            check=False,
+            token=token,
+            timeout=_network_git_timeout(),
+        )
+        origin_ref = f"origin/{source_branch}"
+        if not await self._ref_exists(workspace, origin_ref):
+            return {"status": "missing_ref"}
+
+        worktree = self._worktree_for_task(workspace, task_id)
+        await self._ensure_worktree_for_commit(workspace, worktree, branch_name)
+
+        ancestor = await self._run_git(
+            worktree,
+            ["merge-base", "--is-ancestor", origin_ref, branch_name],
+            check=False,
+        )
+        if ancestor.returncode == 0:
+            return {"status": "already_ancestor"}
+
+        merge = await self._run_git(
+            worktree, ["merge", "--no-edit", origin_ref], check=False
+        )
+        if merge.returncode != 0:
+            return await self._abort_lineage_merge_conflict(worktree)
+
+        push = await self._run_git(
+            worktree,
+            ["push", "origin", branch_name],
+            check=False,
+            token=token,
+            timeout=_network_git_timeout(),
+        )
+        return {"status": "merged" if push.returncode == 0 else "merged_push_failed"}
+
+    async def _abort_lineage_merge_conflict(self, worktree: Path) -> dict[str, Any]:
+        """Collect conflicted files and abort a failed dependency-lineage merge."""
+        conflict = await self._run_git(
+            worktree, ["diff", "--name-only", "--diff-filter=U"], check=False
+        )
+        files = [f for f in conflict.stdout.splitlines() if f.strip()]
+        await self._run_git(worktree, ["merge", "--abort"], check=False)
+        return {"status": "conflict", "files": files}
+
     async def create_branch_from_pr_head(
         self,
         workspace: Path,
@@ -1292,8 +1514,8 @@ class GitService(BaseService):
         task_service = get_task_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         allowed: set[str] = set()
-        if project and project.default_branch:
-            allowed.add(project.default_branch)
+        if project:
+            allowed.add(head_branch(project))
 
         # Include tasks where agent is either assignee OR claimer
         result = await self.session.execute(
@@ -2007,7 +2229,7 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        branch = project.default_branch or "master"
+        branch = head_branch(project)
         query = _CiRunQuery(
             project_slug=project_slug,
             owner_repo=(owner, repo),
@@ -2139,6 +2361,92 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    # A single neutral color — labels are distinguished by name, not hue, and
+    # GitHub's create-label endpoint requires a color (it won't auto-assign).
+    _PR_LABEL_COLOR = "5e6ad2"
+
+    async def _ensure_label_exists(
+        self, owner: str, repo: str, git_token: str, name: str
+    ) -> None:
+        """Create a repo label if missing (GitHub's add-label API 404s on an
+        unknown label instead of auto-creating). Swallow 'already exists'
+        (422/409). Best-effort: logs and never raises — a missing label must not
+        block PR creation."""
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"name": name, "color": self._PR_LABEL_COLOR},
+                )
+        except Exception as e:
+            self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
+            return
+        # 422 (already_exists) / 409 (conflict) = the label is already present.
+        if resp.is_success or resp.status_code in (409, 422):
+            return
+        self.log.warning(
+            "could not ensure PR label exists",
+            label=name,
+            status=resp.status_code,
+            body=(resp.text or "")[:200],
+        )
+
+    async def _apply_pr_labels(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        pr_number: int,
+        labels: list[str],
+    ) -> None:
+        """Best-effort: create each label (GitHub won't auto-create on add) then
+        add them to the PR. Re-adding is a no-op, so the 422 'PR already exists'
+        path is safe to re-label. Never raises — labeling must not block PR
+        creation (same posture as ``_record_pr_atomically``)."""
+        if not labels:
+            return
+        for name in labels:
+            await self._ensure_label_exists(owner, repo, git_token, name)
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/issues/{pr_number}/labels",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"labels": labels},
+                )
+        except Exception as e:
+            self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
+            return
+        if not resp.is_success:
+            self.log.warning(
+                "could not add PR labels",
+                pr=pr_number,
+                status=resp.status_code,
+                body=(resp.text or "")[:200],
+            )
+
+    async def _task_has_children(self, task_id: UUID) -> bool:
+        """True iff the task has any subtask (a one-row probe). PR creation is
+        rare; the query is negligible and keeps ``has_children`` honest instead
+        of assumed per call site."""
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        result = await self.session.execute(
+            select(TaskTable.id).where(TaskTable.parent_task_id == task_id).limit(1)
+        )
+        return result.first() is not None
+
     async def _pr_base_on_remote(
         self,
         workspace: Path,
@@ -2224,10 +2532,13 @@ class GitService(BaseService):
             },
         )
 
+        labels = await self._labels_for_pr_request(request)
+
         existing = await self._existing_pr_tuple(
             resp, (owner, repo), (source_branch, target_branch), git_token, pr_title
         )
         if existing is not None:
+            await self._apply_pr_labels(owner, repo, git_token, existing[0], labels)
             return existing
 
         if not resp.is_success:
@@ -2238,12 +2549,191 @@ class GitService(BaseService):
             )
 
         pr_data = resp.json()
+        pr_number = int(pr_data["number"])
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return (
-            int(pr_data["number"]),
+            pr_number,
             str(pr_data["html_url"]),
             pr_title or "",
             source_branch,
             target_branch,
+        )
+
+    async def sync_env_branch(
+        self, project_slug: str, target_branch: str, source_branch: str
+    ) -> dict[str, Any]:
+        """Merge ``source_branch`` (an upper env rung) into ``target_branch`` (the
+        lower rung) server-side via GitHub's merges API — one step of the
+        prod→head cascade. The merge commit lands on ``target_branch`` (the
+        clean-cascade auto-push). The cascade's target is never prod by
+        construction (``ladder_pairs``), so prod is never pushed here.
+
+        Returns ``{"status": ...}``:
+
+        * ``already_ancestor`` — target already contains source (HTTP 204).
+        * ``merged`` — merge commit created + pushed to target (HTTP 201; ``sha``).
+        * ``conflict`` — non-fast-forward / merge conflict (HTTP 409); no commit.
+        * ``missing_ref`` — no token / unparseable remote / a branch absent (422).
+
+        Never raises into the engine loop. Does NOT open a PR on conflict —
+        the caller decides that.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return {"status": "missing_ref"}
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return {"status": "missing_ref"}
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return {"status": "missing_ref"}
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{_api_base()}/repos/{owner}/{repo}/merges",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={
+                        "base": target_branch,
+                        "head": source_branch,
+                        "commit_message": f"sync: {source_branch} → {target_branch}",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            self.log.warning(
+                "env-sync merges API error", project=project_slug, error=str(exc)
+            )
+            return {"status": "missing_ref"}
+        return self._env_merge_status(resp, project_slug)
+
+    def _env_merge_status(
+        self, resp: httpx.Response, project_slug: str
+    ) -> dict[str, Any]:
+        """Map a GitHub merges-API response to an env-sync status dict.
+
+        ``merged`` carries the new merge ``sha``; ``conflict`` (409) leaves the
+        target untouched; any other code (incl. 422 missing-ref / no-merge) is
+        ``missing_ref`` so the engine skips without opening a PR.
+        """
+        if resp.status_code == _HTTP_CREATED:
+            return {"status": "merged", "sha": resp.json().get("sha")}
+        if resp.status_code == _HTTP_NO_CONTENT:
+            return {"status": "already_ancestor"}
+        if resp.status_code == _HTTP_CONFLICT:
+            return {"status": "conflict"}
+        self.log.warning(
+            "env-sync merges API unexpected status",
+            project=project_slug,
+            status=resp.status_code,
+            body=resp.text[:200],
+        )
+        return {"status": "missing_ref"}
+
+    async def open_sync_pr(
+        self, project_slug: str, source_branch: str, target_branch: str, body: str
+    ) -> dict[str, Any] | None:
+        """Open (or reuse) a sync PR ``source_branch → target_branch``.
+
+        Idempotent: reuses an already-open PR for the same head→base. Returns
+        ``{"number", "url"}`` or None on a missing token / unparseable remote /
+        GitHub error — never raises into the engine loop.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        try:
+            owner_repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        return await self._post_sync_pr(
+            owner_repo, git_token, (source_branch, target_branch), body, project_slug
+        )
+
+    async def _post_sync_pr(
+        self,
+        owner_repo: tuple[str, str],
+        git_token: str,
+        branches: tuple[str, str],
+        body: str,
+        project_slug: str,
+    ) -> dict[str, Any] | None:
+        """Reuse an open sync PR or create a new one for ``source→target``.
+
+        Never raises into the engine loop: a missing existing PR, a rejected
+        create, or a transport error all return None.
+        """
+        owner, repo = owner_repo
+        source_branch, target_branch = branches
+        existing = await self._find_existing_pr(
+            owner, repo, source_branch, target_branch, git_token
+        )
+        if existing is not None:
+            return {
+                "number": int(existing["number"]),
+                "url": str(existing.get("html_url", "")),
+            }
+        try:
+            resp = await self._post_pr(
+                owner,
+                repo,
+                git_token,
+                {
+                    "title": f"sync: {source_branch} → {target_branch}",
+                    "body": body,
+                    "head": source_branch,
+                    "base": target_branch,
+                },
+            )
+        except GitError as exc:
+            self.log.warning(
+                "env-sync PR create failed", project=project_slug, error=str(exc)
+            )
+            return None
+        if not resp.is_success:
+            self.log.warning(
+                "env-sync PR create rejected",
+                project=project_slug,
+                status=resp.status_code,
+                body=resp.text[:200],
+            )
+            return None
+        data = resp.json()
+        return {"number": int(data["number"]), "url": str(data.get("html_url", ""))}
+
+    async def _labels_for_pr_request(
+        self,
+        request: GitCreatePRRequest,
+    ) -> list[str]:
+        """The org-structure labels for the REST/task PR path. A task PR derives
+        team / batch / has_children from the task; a freeform PR (``task_id``
+        None) carries only the tree + root flags."""
+        if request.task_id is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        task = await get_task_service(self.session).get(request.task_id)
+        if task is None:
+            return derive_pr_labels(
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        return derive_pr_labels(
+            is_root_pr=request.is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=await self._task_has_children(UUID(str(task.id))),
         )
 
     async def _resolve_new_pr_context(
@@ -2565,6 +3055,254 @@ class GitService(BaseService):
                 error=str(e),
             )
             return None
+
+    async def get_pr_ci_status(
+        self, project_slug: str, pr_number: int
+    ) -> dict[str, Any] | None:
+        """CI status of a PR's current head commit, for the in-path ``pr_pass`` gate.
+
+        Reads GitHub check-runs on the PR's head SHA — the same signal GitHub
+        Actions surfaces on the PR page — and classifies it into one
+        ``state``: ``success`` (every check-run completed with no failing
+        conclusion), ``failure`` (at least one completed check-run failed —
+        ``failing_checks`` names them), ``pending`` (at least one check-run
+        has not completed yet), ``pending_not_scheduled`` (zero check-runs
+        exist for this commit but the repo has workflows configured — CI
+        just hasn't started), ``no_ci_configured`` (zero check-runs AND the
+        repo has no workflows at all — or the project/git_url/token is
+        missing, or the repo/PR is unreachable/nonexistent), or ``error`` (a
+        genuine GitHub API failure on a real, reachable repo).
+
+        Every unresolvable case is now classified explicitly rather than
+        returning ``None``: a missing project/git_url/git-token, or an
+        unreachable/nonexistent repo or PR (a network failure or a 404 on
+        the PR-head, check-runs, or workflows lookup) all classify as
+        ``no_ci_configured`` — ``pr_pass`` passes through cleanly and still
+        stamps the evidence note, instead of silently skipping the guard. A
+        genuine GitHub API failure on a real, reachable repo (any other
+        non-2xx, or an unparseable response) classifies as ``error`` so
+        ``pr_pass`` stays fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
+        ``_capture_pr_head_sha`` in spirit (never mistake a configuration gap
+        for a CI signal) but resolves head-sha lookups via a dedicated helper
+        so the two failure classes above stay distinguishable — the shared
+        ``get_pr_head_sha`` (used by the unrelated pr_fail head-sha capture)
+        is untouched.
+
+        ponytail: reads GitHub check-runs only (the project's own CI is
+        GitHub Actions). A repo whose only signal is the legacy commit-status
+        API would show zero check-runs here; add a statuses fallback if that
+        ever becomes a real CI provider for a project.
+        """
+        config = await self._ci_status_config(project_slug)
+        if isinstance(config, dict):
+            return config
+        owner, repo, headers = config
+        head_sha_or_gap = await self._resolve_ci_head_sha(
+            project_slug, pr_number, owner, repo, headers
+        )
+        if isinstance(head_sha_or_gap, dict):
+            return head_sha_or_gap
+        head_sha = head_sha_or_gap
+        check_runs = await self._fetch_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+        if isinstance(check_runs, dict):
+            return check_runs
+        if check_runs:
+            return self._classify_check_runs(check_runs, head_sha)
+        return await self._classify_zero_check_runs(
+            project_slug, owner, repo, head_sha, headers
+        )
+
+    async def _ci_status_config(
+        self, project_slug: str
+    ) -> tuple[str, str, dict[str, str]] | dict[str, Any]:
+        """Resolve ``(owner, repo, auth headers)`` for a CI-status lookup, or
+        a terminal ``no_ci_configured`` gap dict when the project, its
+        git_url, or a git token is missing, or the git_url doesn't parse."""
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return {"state": "no_ci_configured", "head_sha": None}
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return {"state": "no_ci_configured", "head_sha": None}
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return {"state": "no_ci_configured", "head_sha": None}
+        headers = {
+            "Authorization": f"Bearer {git_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        return owner, repo, headers
+
+    async def _resolve_ci_head_sha(
+        self,
+        project_slug: str,
+        pr_number: int,
+        owner: str,
+        repo: str,
+        headers: dict[str, str],
+    ) -> str | dict[str, Any]:
+        """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
+
+        Returns the head SHA (``str``) on success, or a terminal gap-state
+        dict to return directly from the caller on failure. A network error
+        or a 404 (the repo or PR doesn't exist / isn't reachable) is
+        ``no_ci_configured`` — there is no way to determine a CI signal, so
+        the guard should pass through, not block. Any other non-2xx or an
+        unparseable response is a real, reachable repo whose API call itself
+        failed, so it is ``error`` — a retryable signal the guard must not
+        treat as green.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup unreachable",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "no_ci_configured", "head_sha": None}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": None}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status pr lookup non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": None}
+        try:
+            return str(resp.json()["head"]["sha"])
+        except (ValueError, KeyError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status pr lookup parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": None}
+
+    async def _fetch_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """GET the check-runs for ``head_sha``.
+
+        Returns the (possibly empty) check-runs list on success, or a
+        terminal gap-state dict to return directly from the caller: a 404
+        (the repo/commit isn't reachable, e.g. no CI integration at all) is
+        ``no_ci_configured``; any other failure (network, non-2xx,
+        unparseable body) is ``error``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+                    headers=headers,
+                    params={"per_page": 100},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status check-runs non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": head_sha}
+        try:
+            runs = resp.json().get("check_runs")
+        except (ValueError, AttributeError) as e:
+            self.log.warning(
+                "get_pr_ci_status check-runs parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        return runs if isinstance(runs, list) else []
+
+    @staticmethod
+    def _classify_check_runs(
+        check_runs: list[dict[str, Any]], head_sha: str
+    ) -> dict[str, Any]:
+        """Map a non-empty check-runs list to a failure/pending/success state."""
+        failing = [
+            str(cr.get("name") or "check")
+            for cr in check_runs
+            if cr.get("status") == "completed"
+            and cr.get("conclusion") in _FAILING_CHECK_CONCLUSIONS
+        ]
+        if failing:
+            return {"state": "failure", "failing_checks": failing, "head_sha": head_sha}
+        if any(cr.get("status") != "completed" for cr in check_runs):
+            return {"state": "pending", "head_sha": head_sha}
+        return {"state": "success", "head_sha": head_sha}
+
+    async def _classify_zero_check_runs(
+        self,
+        project_slug: str,
+        owner: str,
+        repo: str,
+        head_sha: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """No check-runs exist yet for ``head_sha`` — tell "not scheduled" apart
+        from "no CI configured" by asking whether the repo has any workflows.
+
+        A 404 here (repo unreachable/nonexistent — no CI integration) is
+        ``no_ci_configured``; any other failure is ``error``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{_api_base()}/repos/{owner}/{repo}/actions/workflows",
+                    headers=headers,
+                    params={"per_page": 1},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_ci_status workflows request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        if resp.status_code == _HTTP_NOT_FOUND:
+            return {"state": "no_ci_configured", "head_sha": head_sha}
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_ci_status workflows non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return {"state": "error", "head_sha": head_sha}
+        try:
+            total = int(resp.json().get("total_count") or 0)
+        except (ValueError, AttributeError, TypeError) as e:
+            self.log.warning(
+                "get_pr_ci_status workflows parse failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return {"state": "error", "head_sha": head_sha}
+        state = "pending_not_scheduled" if total > 0 else "no_ci_configured"
+        return {"state": state, "head_sha": head_sha}
 
     async def update_pr_for_task(
         self,
@@ -3561,6 +4299,15 @@ class GitService(BaseService):
             },
         )
 
+        # Org-structure labels: create_pr is always an assembled PM PR
+        # (cell->root or root->master), so has_children is True by construction.
+        labels = derive_pr_labels(
+            is_root_pr=is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=True,
+        )
+
         if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
             found = await self._find_existing_pr(
                 owner, repo, branch_name, parent, git_token
@@ -3575,6 +4322,7 @@ class GitService(BaseService):
                 await _await_shielded(
                     self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
                 )
+                await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
                 return {
                     "pr_number": pr_number,
                     "pr_url": pr_url,
@@ -3600,6 +4348,7 @@ class GitService(BaseService):
         await _await_shielded(
             self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
         )
+        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
     async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:
@@ -3826,20 +4575,23 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
-        # CEO is the only one who merges to master. This agent-facing merge path
-        # (a cell PM merging a leaf/cell PR up the chain) may NEVER target a
-        # repo's default branch — a root→master PR is merged solely by the CEO
-        # via approve-&-merge (merge_pr_for_task, CEO-gated from
-        # awaiting_ceo_approval). Agents open the master PR and escalate.
+        # CEO is the only one who merges into the project's head environment
+        # branch (ladder index 0 — "master" only when no ladder is declared;
+        # see _project_default_branch). This agent-facing merge path (a cell
+        # PM merging a leaf/cell PR up the chain) may NEVER target it — that
+        # PR is merged solely by the CEO via approve-&-merge
+        # (merge_pr_for_task, CEO-gated from awaiting_ceo_approval). Agents
+        # open the PR to it and escalate.
         default_branch = await self._project_default_branch(project.slug)
         if target == default_branch:
             raise UnauthorizedError(
                 action="pr_merge",
                 reason=(
-                    "CEO_ONLY: merging into the default branch "
-                    f"('{default_branch}') is reserved for the CEO via "
-                    "approve-&-merge from awaiting_ceo_approval. Open the PR "
-                    "and escalate; agents never merge to master."
+                    f"CEO_ONLY: merging into '{default_branch}' (this "
+                    "project's head environment branch) is reserved for the "
+                    "CEO via approve-&-merge from awaiting_ceo_approval. "
+                    "Open the PR and escalate; agents never merge directly "
+                    f"into '{default_branch}'."
                 ),
             )
 
@@ -3901,6 +4653,7 @@ class GitService(BaseService):
         head_branch: str,
         base_branch: str,
         git_token: str,
+        stash: bool = False,
     ) -> dict[str, Any]:
         """Rebase ``head_branch`` onto the latest ``base_branch`` from origin.
 
@@ -3918,23 +4671,26 @@ class GitService(BaseService):
             can now merge cleanly.
           - ``{"status": "conflicts", "files": [...]}`` — the rebase hit
             conflicts and was aborted; a developer must resolve by hand.
+        Any of the above may carry ``"stash_pop_conflict": True`` when
+        ``stash`` popped into a conflict (see below).
 
         Never touches the base branch and only ever force-pushes
-        ``head_branch`` (with ``--force-with-lease``). The caller must ensure
-        ``base_branch`` is not a protected/default branch — agents never
-        rebase-merge into master.
+        ``head_branch`` (with ``--force-with-lease``). A master/main base is
+        legitimate when it is the head's true merge target; the choreographer
+        refuses only a mis-resolved one.
 
         Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
-        ``git reset --hard`` below can't discard uncommitted agent edits.
+        ``git reset --hard`` below can't discard uncommitted agent edits —
+        UNLESS ``stash=True``, in which case the dirty worktree (tracked +
+        untracked, ``-u``) is stashed first and popped back after the rebase
+        instead of refusing outright (the dev-facing dead end this closes:
+        DIRTY_WORKSPACE had no in-gate remedy other than a raw ``git`` the
+        agent is denied). A pop conflict is never auto-resolved — the stash
+        is left in place (never dropped) and the result gets
+        ``stash_pop_conflict: True`` so the caller returns an actionable
+        envelope; the agent's uncommitted work is never lost.
         """
-        status_result = await self._run_git(
-            workspace, ["status", "--porcelain"], check=False
-        )
-        if status_result.stdout.strip():
-            raise ValidationError(
-                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
-                "Stage and commit (or stash) your changes before rebasing."
-            )
+        stashed = await self._stash_if_dirty(workspace, stash=stash)
 
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
         await self._run_git(workspace, ["checkout", head_branch])
@@ -3943,27 +4699,72 @@ class GitService(BaseService):
             workspace, ["rebase", f"origin/{base_branch}"], check=False
         )
         if rebase.returncode != 0:
-            conflict = await self._run_git(
-                workspace,
-                ["diff", "--name-only", "--diff-filter=U"],
-                check=False,
-            )
-            files = [f for f in conflict.stdout.splitlines() if f.strip()]
-            await self._run_git(workspace, ["rebase", "--abort"], check=False)
-            return {"status": "conflicts", "files": files}
+            return await self._abort_rebase_conflict(workspace, stashed=stashed)
         count = await self._run_git(
             workspace,
             ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
         )
         unique = int(count.stdout.strip() or "0")
         if unique == 0:
-            return {"status": "superseded"}
-        await self._run_git(
-            workspace,
-            ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
-            token=git_token,
+            result: dict[str, Any] = {"status": "superseded"}
+        else:
+            await self._run_git(
+                workspace,
+                ["push", "--force-with-lease", "origin", f"HEAD:{head_branch}"],
+                token=git_token,
+            )
+            result = {"status": "rebased", "unique_commits": unique}
+        if stashed:
+            await self._pop_stash_into(workspace, result)
+        return result
+
+    async def _stash_if_dirty(self, workspace: Path, *, stash: bool) -> bool:
+        """Clean-tree gate for :meth:`rebase_onto_base`.
+
+        Refuses a dirty worktree (``DIRTY_WORKSPACE``) unless ``stash`` is
+        set, in which case it auto-stashes (tracked + untracked) and returns
+        ``True`` so the caller knows to pop it back later.
+        """
+        status_result = await self._run_git(
+            workspace, ["status", "--porcelain"], check=False
         )
-        return {"status": "rebased", "unique_commits": unique}
+        if not status_result.stdout.strip():
+            return False
+        if not stash:
+            raise ValidationError(
+                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
+                "Stage and commit (or stash) your changes before rebasing."
+            )
+        await self._run_git(
+            workspace, ["stash", "push", "-u", "-m", "sync_branch autostash"]
+        )
+        return True
+
+    async def _abort_rebase_conflict(
+        self, workspace: Path, *, stashed: bool
+    ) -> dict[str, Any]:
+        """Collect conflicted files and abort a failed rebase.
+
+        The stash (if one was taken) is left untouched here — popping it onto
+        an aborted, still-conflicted rebase would just stack a second conflict
+        on top of the first. ``stash_preserved`` is only added when a stash
+        was actually taken, so the non-stash result shape is unchanged.
+        """
+        conflict = await self._run_git(
+            workspace, ["diff", "--name-only", "--diff-filter=U"], check=False
+        )
+        files = [f for f in conflict.stdout.splitlines() if f.strip()]
+        await self._run_git(workspace, ["rebase", "--abort"], check=False)
+        result: dict[str, Any] = {"status": "conflicts", "files": files}
+        if stashed:
+            result["stash_preserved"] = True
+        return result
+
+    async def _pop_stash_into(self, workspace: Path, result: dict[str, Any]) -> None:
+        """Pop the autostash, flagging (never auto-resolving) a pop conflict."""
+        pop = await self._run_git(workspace, ["stash", "pop"], check=False)
+        if pop.returncode != 0:
+            result["stash_pop_conflict"] = True
 
     async def rebase_pr_for_task(
         self,
@@ -4026,6 +4827,7 @@ class GitService(BaseService):
         *,
         base_branch: str,
         actor_agent_id: UUID | None = None,
+        stash: bool = False,
     ) -> dict[str, Any]:
         """Rebase a task's branch onto ``base_branch`` through the gate.
 
@@ -4039,8 +4841,13 @@ class GitService(BaseService):
         resolution and delegates to :meth:`rebase_onto_base`, returning the same
         classification dict (``rebased`` / ``superseded`` / ``conflicts``).
 
-        The caller MUST ensure ``base_branch`` is not a protected branch —
-        agents never rebase into master/main; the choreographer guards this.
+        ``stash`` forwards to :meth:`rebase_onto_base` — auto-stash a dirty
+        worktree instead of refusing DIRTY_WORKSPACE.
+
+        A master/main base is legitimate when it is the task's true merge
+        target (standalone task, branchless-parent child); the choreographer
+        refuses only a mis-resolved one. The push only ever targets the task
+        branch.
         """
         if not task.branch_name:
             raise ValueError("sync_task_branch requires a task with a branch_name")
@@ -4060,6 +4867,7 @@ class GitService(BaseService):
             head_branch=task.branch_name,
             base_branch=base_branch,
             git_token=git_token,
+            stash=stash,
         )
 
     async def unmerged_child_commits(
@@ -4405,7 +5213,12 @@ class GitService(BaseService):
         return "origin/master"
 
     async def _resolve_diff_base(
-        self, workspace: Any, branch_name: str, token: str | None = None
+        self,
+        workspace: Any,
+        branch_name: str,
+        token: str | None = None,
+        *,
+        preferred_parent: str | None = None,
     ) -> str:
         """Best diff base for `branch_name` when no explicit base is given.
 
@@ -4422,10 +5235,23 @@ class GitService(BaseService):
         a stale base spans the whole repo delta, not the branch's change.
         Re-fetch the resolved base authenticated (unauth fails on private
         repos) so the base is current.
+
+        ``preferred_parent``, when given, overrides the string-derived
+        ``parent_branch_for`` with an authoritative parent branch name (e.g.
+        ``merge_chain.resolve_parent_branch``, which reads the parent TASK's
+        own ``branch_name`` — correct across a team boundary, unlike the
+        derivation below which reuses ``branch_name``'s own team segment).
+        Still falls back to the repo default branch when that parent was
+        never pushed, so an unassembled/branchless parent can't crash the
+        diff.
         """
         from roboco.services.gateway.merge_chain import parent_branch_for
 
-        parent = parent_branch_for(branch_name)
+        parent = (
+            preferred_parent
+            if preferred_parent is not None
+            else parent_branch_for(branch_name)
+        )
         await self._run_git(
             workspace, ["fetch", "origin", parent], check=False, token=token
         )
@@ -4487,6 +5313,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> str:
         """Return the git diff for `branch_name` against `base`.
 
@@ -4498,6 +5325,11 @@ class GitService(BaseService):
         ``actor_agent_id`` resolves the workspace via the caller's clone
         when ``task.assigned_to`` is None — important for
         QA reviewing post-submit_qa.
+
+        ``preferred_parent`` is ignored once ``base`` is explicit; it only
+        overrides the derived-parent lookup (see ``_resolve_diff_base``) for
+        a caller with an authoritative parent branch name (a cross-team
+        assembled-PR review) — never a literal ref like ``base="HEAD~1"``.
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4507,7 +5339,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         diff_result = await self._run_git(
             workspace, ["diff", f"{base_ref}...{head_ref}"], check=False
@@ -4520,6 +5354,7 @@ class GitService(BaseService):
         branch_name: str,
         base: str | None = None,
         actor_agent_id: UUID | None = None,
+        preferred_parent: str | None = None,
     ) -> list[str]:
         """Return the file paths changed on `branch_name` relative to `base`.
 
@@ -4529,7 +5364,7 @@ class GitService(BaseService):
         ever called the legacy ``add_files_modified`` HTTP endpoint
         (which the gateway commit() does not call). Empty paths are
         skipped; output preserves git's order. Same default-
-        branch fallback as ``diff``.
+        branch fallback as ``diff`` (including ``preferred_parent``).
         """
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
@@ -4539,7 +5374,9 @@ class GitService(BaseService):
         base_ref = (
             base
             if base is not None
-            else await self._resolve_diff_base(workspace, branch_name, token=token)
+            else await self._resolve_diff_base(
+                workspace, branch_name, token=token, preferred_parent=preferred_parent
+            )
         )
         result = await self._run_git(
             workspace,
@@ -4658,7 +5495,11 @@ class GitService(BaseService):
         }
 
     async def conventions_check_for_task(
-        self, actor_agent_id: UUID | None, task: Any
+        self,
+        actor_agent_id: UUID | None,
+        task: Any,
+        *,
+        preferred_parent: str | None = None,
     ) -> dict[str, Any]:
         """Run the conventions validator on a task's changed files.
 
@@ -4670,6 +5511,9 @@ class GitService(BaseService):
         exit-3 philosophy). The two empty-result paths stay fail-open: a
         branchless task (no ``branch_name``) and a task with no changed files
         genuinely have nothing to validate, so the gate correctly passes.
+
+        ``preferred_parent`` threads to ``list_changed_files`` — the in-path
+        PR-review gate's cross-team parent (see ``diff``'s docstring).
         """
         try:
             branch = task.branch_name
@@ -4679,7 +5523,9 @@ class GitService(BaseService):
                 branch, actor_agent_id=actor_agent_id
             )
             changed = await self.list_changed_files(
-                branch_name=branch, actor_agent_id=actor_agent_id
+                branch_name=branch,
+                actor_agent_id=actor_agent_id,
+                preferred_parent=preferred_parent,
             )
         except Exception as exc:
             return {
@@ -4769,12 +5615,23 @@ class GitService(BaseService):
         project = await project_service.get_by_slug(project_slug)
         if project is None:
             return None
-        ws = workspace or (
-            Path(project.workspace_path) if project.workspace_path else None
-        )
+        ws = workspace
+        if ws is None and project.workspace_path:
+            # workspace_path is API-settable (PM-gated route): only a path
+            # inside THIS project's workspace tree may receive the scaffold
+            # commit — anything else (arbitrary dir, another project's clone)
+            # is refused as "no usable workspace".
+            candidate = Path(project.workspace_path)
+            try:
+                candidate.resolve().relative_to(
+                    Path(settings.workspaces_root) / project.slug
+                )
+                ws = candidate
+            except (ValueError, OSError):
+                ws = None
         if ws is None or not ws.exists():
             return None
-        base = project.default_branch or "master"
+        base = head_branch(project)
         spec = _ConventionsPr(
             content=content,
             branch=CONVENTIONS_SCAFFOLD_BRANCH,
@@ -4863,9 +5720,16 @@ class GitService(BaseService):
         if not resp.is_success:
             return unopened
         data = resp.json()
+        pr_number = data.get("number")
+        if pr_number is not None:
+            # Static label — a project-level scaffold/restore PR has no task or
+            # org layer; best-effort, never blocks.
+            await self._apply_pr_labels(
+                owner, repo, token, int(pr_number), CONVENTIONS_PR_LABELS
+            )
         return {
             "branch": spec.branch,
-            "pr_number": data.get("number"),
+            "pr_number": pr_number,
             "pr_url": data.get("html_url"),
         }
 
