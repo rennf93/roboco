@@ -488,7 +488,9 @@ class VideoPostService(BaseService):
         )
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
-        """Record the CEO's reason and cancel the draft (never posted).
+        """Record the CEO's reason, cancel the draft (never posted), and
+        route the feedback into a fresh authoring task that revises the same
+        composition.
 
         Acquires the same post-mutex ``approve()`` holds (same key, same
         non-blocking acquire style) so a reject can't interleave with a
@@ -534,9 +536,31 @@ class VideoPostService(BaseService):
             markers.set_video_reject_reason(locked, reason)
             locked.status = TaskStatus.CANCELLED
             await self.session.flush()
-            return locked
+            cancelled = locked
         finally:
             await mutex.release(token)
+        # Outside the lock/try-finally, after the cancel is committed/flushed:
+        # a reauthor failure must never fail or roll back the reject above.
+        if reason.strip():
+            await self._reauthor_after_reject(cancelled, reason)
+        return cancelled
+
+    async def _reauthor_after_reject(self, task: TaskTable, reason: str) -> None:
+        """Best-effort: hand the CEO's reject reason to VideoEngine so it
+        opens a revision authoring task. Never raises."""
+        # Local import: no cycle (video_engine doesn't import this module),
+        # but mirrors the lazy get_video_engine import every other caller
+        # (release_proposal.py, x_post_service.py) uses.
+        from roboco.services.video_engine import get_video_engine
+
+        try:
+            await get_video_engine(self.session).reauthor_from_rejection(task, reason)
+        except Exception as exc:
+            logger.warning(
+                "video-post reauthor-from-rejection failed for task %s: %s",
+                task.id,
+                exc,
+            )
 
 
 def get_video_post_service(

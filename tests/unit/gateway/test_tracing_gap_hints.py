@@ -64,6 +64,7 @@ def _build_choreographer() -> Choreographer:
         "commits>=1",
         "pr_open",
         "self_verified",
+        "render_preview",
     ],
 )
 def test_hint_registered_for_previously_unhinted_token(token: str) -> None:
@@ -91,6 +92,13 @@ def test_during_work_hint_warns_reflect_doesnt_count() -> None:
         or "do not count" in lower
         or "not count" in lower
     ), f"during_work hint must warn that scope='reflect' doesn't satisfy this: {hint!r}"
+
+
+def test_render_preview_hint_mentions_request_render() -> None:
+    """The render_preview hint must name the exact next call (request_render)."""
+    hint = Choreographer._hint_for_missing_key("render_preview", uuid4())
+    assert hint is not None
+    assert "request_render" in hint
 
 
 # ---------------------------------------------------------------------------

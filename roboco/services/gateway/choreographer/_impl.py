@@ -56,6 +56,7 @@ from roboco.services.gateway.remediation import (
     hint_for_missing_qa_notes,
     hint_for_missing_reflect,
     hint_for_open_findings,
+    hint_for_render_preview,
     hint_for_short_dev_notes,
     hint_for_short_doc_notes,
     hint_for_short_pr_reviewer_notes,
@@ -2856,12 +2857,20 @@ class Choreographer:
     async def _fast_path_rejection(self, ctx: _IAmDoneContext) -> Any:
         """The fast path's ordered rejection cascade; None means proceed.
 
-        Order matters: notes first (cheap, no writes), then finding
+        Order matters: notes first (cheap, no writes), then the video
+        render-preview check (cheap, no writes — a video task cannot fast-
+        path around looking at the rendered artifact), then finding
         resolution + guards, then the open-findings re-check, then the
         quality verdict with its toolchain backstop.
         """
         if soup := self._soup_reason(ctx.notes, "notes", 4):
             return soup
+        if getattr(
+            ctx.task, "source", None
+        ) == markers.VIDEO_TASK_SOURCE and not markers.get_render_preview(ctx.task):
+            return await self._build_tracing_gap(
+                ctx.agent_id, ctx.task_id, ["render_preview"], task=ctx.task
+            )
         await self._apply_resolved_findings(ctx)
         guards = (
             lambda: self._check_submit_qa_field_gates(
@@ -3477,6 +3486,7 @@ class Choreographer:
                 "submit_verification automatically; if you see this gap, "
                 "retry i_am_done after the previous call returned."
             ),
+            "render_preview": hint_for_render_preview(),
         }
         return simple_hints.get(missing_key)
 

@@ -202,6 +202,28 @@ class QAMixin(_Base):
             return [{"could_not_run": True, "reason": reason}]
         return list(result.get("findings", []))
 
+    @staticmethod
+    def _qa_video_context(t: Any) -> dict[str, Any] | None:
+        """QA-facing artifact context for a video-authoring task.
+
+        None for every non-video task. Carries the composition id (from the
+        ``video_draft`` marker) + the latest ``request_render`` preview so QA
+        is pointed at the rendered artifact instead of the source alone.
+        """
+        if getattr(t, "source", None) != markers.VIDEO_TASK_SOURCE:
+            return None
+        draft = markers.get_video_draft(t) or {}
+        return {
+            "composition_id": draft.get("composition_id"),
+            "render_preview": markers.get_render_preview(t),
+            "note": (
+                "This task ships a rendered video. Call request_render to "
+                "render the PR branch state, then Read every returned frame "
+                "image — verify each acceptance criterion's scene appears "
+                "fully and legibly. Do not pass on source reading alone."
+            ),
+        }
+
     async def _build_qa_claim_evidence(
         self, qa_agent_id: UUID, t: Any, task_id: UUID
     ) -> Any:
@@ -264,6 +286,7 @@ class QAMixin(_Base):
             prior_findings=prior_findings,
             parent_context=parent_context,
             collision_context=collision_context,
+            video_context=self._qa_video_context(t),
         )
 
     async def _verify_qa_owner(

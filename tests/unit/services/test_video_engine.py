@@ -35,6 +35,7 @@ SLUG = "roboco"
 ONE = 1
 TWO = 2
 THREE = 3
+FOUR = 4
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -138,9 +139,11 @@ async def test_open_video_task_creates_assigned_authoring_task(
     assert task.estimated_complexity == Complexity.LOW
     assert task.acceptance_criteria  # non-empty
     # Third AC line: composition follows the design bar / demo-kit register.
-    assert len(task.acceptance_criteria) == THREE
+    assert len(task.acceptance_criteria) == FOUR
     assert "motion/README.md" in task.acceptance_criteria[2]
     assert "panel-demo" in task.acceptance_criteria[2]
+    # Fourth AC line: request_render preview frames must be verified.
+    assert "request_render" in task.acceptance_criteria[3]
     project = await db_session.get(ProjectTable, task.project_id)
     assert project is not None
     assert project.slug == SLUG
@@ -154,6 +157,7 @@ async def test_open_video_task_creates_assigned_authoring_task(
     assert "motion/README.md" in draft["brief"]
     assert "motion/kit/README.md" in draft["brief"]
     assert "compositions/panel-demo/" in draft["brief"]
+    assert "request_render" in draft["brief"]  # verify-the-render pointer
     assert "Brand voice" not in draft["brief"]  # unset -> omitted
     assert draft["suggested_input_props"] == {}  # none supplied
     assert task.description == draft["brief"]
@@ -715,9 +719,10 @@ async def test_open_video_task_acceptance_criteria_has_design_bar_line(
         occasion="release v9.9.9", script="s", platforms=["x"], brief="b"
     )
     assert task is not None
-    assert len(task.acceptance_criteria) == THREE
+    assert len(task.acceptance_criteria) == FOUR
     assert "motion/README.md" in task.acceptance_criteria[2]
     assert "panel-demo" in task.acceptance_criteria[2]
+    assert "request_render" in task.acceptance_criteria[3]
 
 
 @pytest.mark.asyncio
@@ -818,3 +823,76 @@ async def test_rerender_none_for_missing_task(db_session: AsyncSession) -> None:
     assert result is None
     open_tasks = await get_task_service(db_session).list_open_video_posts()
     assert open_tasks == []
+
+
+# --------------------------------------------------------------------------- #
+# reauthor_from_rejection — CEO reject feedback loop
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_reauthor_from_rejection_opens_revision_with_reason_and_pointer(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    source_task = await engine.open_video_task(
+        occasion="release v1.0.0",
+        script="Here's what shipped",
+        platforms=["x", "tiktok"],
+        brief="Announce the release",
+    )
+    assert source_task is not None
+    draft = markers.get_video_draft(source_task) or {}
+    markers.set_video_draft(source_task, {**draft, "composition_id": "ReleaseIntro"})
+    # Mirrors production: the render loop only fires once the authoring task
+    # has gone through the full delivery lifecycle to COMPLETED — an open
+    # source task with the same occasion would otherwise dedupe the revision
+    # reauthor is about to open right back against itself.
+    source_task.status = TS.COMPLETED
+    await db_session.flush()
+
+    post_task = await engine._originate_video_post(
+        source_task=source_task,
+        mp4_paths={"vertical": "a.mp4", "square": "b.mp4"},
+        captions={"x": "cap", "tiktok": "cap2"},
+        platforms=["x", "tiktok"],
+    )
+    # Mirrors VideoPostService.reject: the draft is already CANCELLED by the
+    # time reauthor_from_rejection runs, so open_video_task's own-occasion
+    # dedup (which only scans OPEN drafts) doesn't block against it.
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    revision = await engine.reauthor_from_rejection(
+        post_task, "Logo is cut off in the second scene"
+    )
+    assert revision is not None
+    assert revision.id != post_task.id
+    assert revision.source == VIDEO_SOURCE
+    revision_draft = markers.get_video_draft(revision)
+    assert revision_draft is not None
+    assert revision_draft["occasion"] == "release v1.0.0"  # SAME occasion
+    assert revision_draft["platforms"] == ["x", "tiktok"]
+    assert "Logo is cut off in the second scene" in revision_draft["brief"]
+    assert "motion/compositions/ReleaseIntro/" in revision_draft["brief"]
+    assert "do not start a new composition" in revision_draft["brief"]
+
+
+@pytest.mark.asyncio
+async def test_reauthor_from_rejection_missing_draft_returns_none(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="no-draft", script="s", platforms=["x"], brief="b"
+    )
+    assert task is not None
+    task.orchestration_markers = {}  # strip the video_draft marker
+    await db_session.flush()
+
+    result = await engine.reauthor_from_rejection(task, "some reason")
+    assert result is None

@@ -11,9 +11,15 @@ Pure orchestration; no DB writes outside what the underlying services do.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import io
 import re
+import shutil
+import tarfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import structlog
@@ -32,6 +38,7 @@ from roboco.services.gateway.evidence_builder import build_evidence_for_task
 from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from uuid import UUID
 
     from roboco.foundation.identity import Team
@@ -304,6 +311,19 @@ class ContentActionsDeps:
     # optional so tests that don't exercise sandbox provisioning need not plumb
     # it in; None degrades to a retryable "orchestrator unavailable" envelope.
     orchestrator: Any = None
+
+
+@dataclass(frozen=True)
+class _RenderSource:
+    """A request_render source: a directory containing ``motion/``, plus its
+    provenance. ``cleanup`` (set only for a QA branch-export scratch dir) is
+    always called by request_render's ``finally``, dev or QA alike."""
+
+    root: Path
+    head_sha: str | None
+    dirty: bool
+    kind: str  # "workspace" (dev's own tree) | "branch" (QA's read-only export)
+    cleanup: Callable[[], None] | None = None
 
 
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
@@ -2193,6 +2213,452 @@ class ContentActions:
             next="use the returned creds for this session; call again anytime",
             evidence=filtered,
             context_briefing={},
+        )
+
+    async def _render_active_video_task(
+        self, agent_id: UUID
+    ) -> tuple[Any, Envelope | None]:
+        """request_render's task guard: an active, project-bound video-
+        authoring task, or a clean invalid_state rejection."""
+        from roboco.services.task import VIDEO_SOURCE
+
+        t = await self.task.get_active_task_for_agent(agent_id)
+        if t is None or t.project_id is None or t.source != VIDEO_SOURCE:
+            return None, Envelope.invalid_state(
+                message="no active video-authoring task assigned to you",
+                remediate=(
+                    "request_render is only available on a video-authoring "
+                    "task — claim your assigned authoring task first"
+                ),
+                context_briefing={},
+            )
+        return t, None
+
+    @staticmethod
+    def _render_resolve_composition_id(
+        task: Any, composition_id: str | None
+    ) -> tuple[str, Envelope | None]:
+        """Explicit ``composition_id``, else the task's ``video_draft``
+        marker's, validated with the SAME charset regex ``propose_video``
+        enforces so an unrenderable id is refused here, not deep inside the
+        sidecar call."""
+        resolved = composition_id or (markers.get_video_draft(task) or {}).get(
+            "composition_id"
+        )
+        if not resolved or not str(resolved).strip():
+            return "", Envelope.incomplete_input(
+                missing=["composition_id"],
+                field_hints={"composition_id": "the HyperFrames composition id"},
+                remediate=(
+                    "pass composition_id explicitly, or call propose_video "
+                    "first so it's on the task's video_draft marker"
+                ),
+                context_briefing={},
+            )
+        resolved = str(resolved).strip()
+        if not _COMPOSITION_ID_RE.fullmatch(resolved):
+            return "", Envelope.invalid_state(
+                message=f"composition_id {resolved!r} is not renderable",
+                remediate=(
+                    "letters, digits, '_' or '-' with optional interior dots — "
+                    "match the directory name under motion/compositions/"
+                ),
+                context_briefing={},
+            )
+        return resolved, None
+
+    _RENDER_ORIENTATIONS: ClassVar[frozenset[str]] = frozenset({"vertical", "square"})
+    _RENDER_MAX_FRAMES: ClassVar[int] = 32
+
+    @classmethod
+    def _render_validate_params(
+        cls, orientation: str, frame_count: int
+    ) -> Envelope | None:
+        """``orientation``/``frame_count`` bounds guard, folded into one
+        rejection point so ``request_render`` keeps one return per guard."""
+        if orientation not in cls._RENDER_ORIENTATIONS:
+            return Envelope.invalid_state(
+                message=f"orientation {orientation!r} must be 'vertical' or 'square'",
+                remediate="pass orientation='vertical' or orientation='square'",
+                context_briefing={},
+            )
+        if not isinstance(frame_count, int) or not (
+            1 <= frame_count <= cls._RENDER_MAX_FRAMES
+        ):
+            bound = cls._RENDER_MAX_FRAMES
+            return Envelope.invalid_state(
+                message=f"frame_count {frame_count!r} must be an integer 1-{bound}",
+                remediate=f"pass frame_count between 1 and {bound}",
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _render_resolve_input_props(
+        task: Any, input_props: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        if input_props is not None:
+            return input_props
+        draft = markers.get_video_draft(task) or {}
+        return draft.get("input_props") or draft.get("suggested_input_props") or {}
+
+    @staticmethod
+    async def _render_git_rev(workspace: Path, ref: str) -> str | None:
+        """Best-effort ``git rev-parse <ref>`` in ``workspace``; ``None`` on
+        any failure (missing ref, missing dir, no git binary). The render
+        preview's provenance stamp is best-effort — a git hiccup must never
+        block the render response itself."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(workspace),
+                "rev-parse",
+                ref,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        sha = out.decode().strip()
+        return sha or None
+
+    @classmethod
+    async def _render_git_head_and_dirty(
+        cls, workspace: Path
+    ) -> tuple[str | None, bool]:
+        """Best-effort ``(HEAD sha, has-uncommitted-changes)`` for a dev's own
+        working tree. ``(None, False)`` on any failure."""
+        head = await cls._render_git_rev(workspace, "HEAD")
+        if head is None:
+            return None, False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "-C",
+                str(workspace),
+                "status",
+                "--porcelain",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+        except OSError:
+            return head, False
+        dirty = bool(out.decode().strip()) if proc.returncode == 0 else False
+        return head, dirty
+
+    async def _render_dev_source(
+        self, agent_id: UUID, agent_slug: str, task: Any, project: Any
+    ) -> tuple[Any, Envelope | None]:
+        """A developer's own working tree — the per-task worktree when one
+        exists on disk, else the clone root (F123)."""
+        from roboco.services.workspace import WorkspaceError
+
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not agent.team:
+            return None, Envelope.invalid_state(
+                message="your team could not be resolved",
+                remediate="ensure your agent record has a team, then retry",
+                context_briefing={},
+            )
+        try:
+            clone_root = self.workspace.get_clone_root_path(
+                project.slug, agent.team, agent_slug
+            )
+            worktree = self.workspace.get_worktree_path(
+                project.slug, agent.team, agent_slug, task.id.hex[:8]
+            )
+        except WorkspaceError as exc:
+            return None, Envelope.invalid_state(
+                message=f"could not resolve your workspace path: {exc}",
+                remediate="retry request_render; escalate to your PM if it persists",
+                context_briefing={},
+            )
+        root = worktree if worktree.exists() else clone_root
+        head_sha, dirty = await self._render_git_head_and_dirty(root)
+        return (
+            _RenderSource(root=root, head_sha=head_sha, dirty=dirty, kind="workspace"),
+            None,
+        )
+
+    async def _render_qa_source(
+        self, task: Any, project: Any
+    ) -> tuple[Any, Envelope | None]:
+        """QA never renders from a working tree: a read-only export of the
+        assembled branch's ``motion/`` subtree via
+        ``WorkspaceService.export_branch_motion``."""
+        from roboco.services.workspace import WorkspaceError
+
+        branch = getattr(task, "branch_name", None)
+        if not branch:
+            return None, Envelope.invalid_state(
+                message="task has no recorded branch to export for a QA render",
+                remediate=(
+                    "the assembled PR's branch must exist before requesting a render"
+                ),
+                context_briefing={},
+            )
+        try:
+            scratch = await self.workspace.export_branch_motion(project, branch)
+        except WorkspaceError as exc:
+            return None, Envelope.invalid_state(
+                message=f"could not export branch {branch!r} for render: {exc}",
+                remediate=(
+                    "ensure the branch is pushed to origin, then retry request_render"
+                ),
+                context_briefing={},
+            )
+        read_clone = await self.workspace.ensure_read_clone(project.slug)
+        head_sha = await self._render_git_rev(
+            read_clone, f"refs/remotes/origin/{branch}"
+        )
+
+        def _cleanup() -> None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+        return (
+            _RenderSource(
+                root=scratch,
+                head_sha=head_sha,
+                dirty=False,
+                kind="branch",
+                cleanup=_cleanup,
+            ),
+            None,
+        )
+
+    async def _render_resolve_source(
+        self, agent_id: UUID, agent_slug: str, task: Any, project: Any
+    ) -> tuple[Any, Envelope | None]:
+        """Dispatch the render SOURCE by the caller's role: developer → their
+        own tree; QA → a read-only branch export; anyone else → refused."""
+        role = await self._caller_role(agent_id)
+        if role == "developer":
+            return await self._render_dev_source(agent_id, agent_slug, task, project)
+        if role == "qa":
+            return await self._render_qa_source(task, project)
+        return None, Envelope.not_authorized(
+            message=f"role {role!r} may not request a render",
+            remediate="request_render is developer/QA only",
+            context_briefing={},
+        )
+
+    async def _render_resolve_project_and_source(
+        self, agent_id: UUID, agent_slug: str, task: Any
+    ) -> tuple[Any, Envelope | None]:
+        """Resolve the task's project, then the caller's render source —
+        bundled into one combined-rejection helper so ``request_render``'s
+        own return count stays under the xenon/PLR0911 budget. Success value
+        is a ``(project, source)`` pair."""
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(self.task.session).get(task.project_id)
+        if project is None:
+            return None, Envelope.invalid_state(
+                message="task's project could not be resolved",
+                remediate="retry shortly; the project record may be mid-update",
+                context_briefing={},
+            )
+        source, rejection = await self._render_resolve_source(
+            agent_id, agent_slug, task, project
+        )
+        if rejection is not None:
+            return None, rejection
+        return (project, source), None
+
+    def _render_extract_frames(
+        self, project_slug: str, task_id: Any, orientation: str, frames_tar_gz: bytes
+    ) -> list[str]:
+        """Extract the sidecar's frames tar.gz to the container-shared
+        preview dir, wiping any stale render first; returns sorted absolute
+        frame paths. Every agent container mounts the same /data/workspaces
+        volume, so this path is identical inside every container regardless
+        of who rendered — that's what lets a dev render and a QA (or PM)
+        read the same frames from their own container."""
+        out_dir = (
+            Path(settings.workspaces_root)
+            / project_slug
+            / ".previews"
+            / task_id.hex[:8]
+            / orientation
+        )
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(frames_tar_gz)) as tar:
+            tar.extractall(out_dir, filter="data")
+        return sorted(str(p) for p in out_dir.rglob("*") if p.is_file())
+
+    async def _render_execute(
+        self,
+        *,
+        task: Any,
+        project: Any,
+        agent_slug: str,
+        resolved_id: str,
+        resolved_props: dict[str, Any],
+        orientation: str,
+        frame_count: int,
+        source: Any,
+    ) -> Envelope:
+        """The render call + frame extraction + marker stamp, once every
+        guard in ``request_render`` has passed. Always cleans up a QA
+        scratch-dir source (dev sources have no cleanup callback)."""
+        try:
+            comp_dir = source.root / "motion" / "compositions" / resolved_id
+            if not comp_dir.is_dir():
+                expected = f"motion/compositions/{resolved_id}/"
+                return Envelope.invalid_state(
+                    message=f"no composition found at {expected}",
+                    remediate=(
+                        f"build the composition under {expected} first "
+                        "(propose_video / commit it), then retry request_render"
+                    ),
+                    context_briefing={},
+                )
+            from roboco.services.video_renderer_client import (
+                VideoRendererError,
+                get_video_renderer,
+            )
+
+            try:
+                frames_tar_gz, duration = await get_video_renderer().render_frames(
+                    str(source.root / "motion"),
+                    composition_id=resolved_id,
+                    input_props=resolved_props,
+                    orientation=orientation,
+                    frame_count=frame_count,
+                )
+            except VideoRendererError as exc:
+                return Envelope.invalid_state(
+                    message=f"render failed: {exc}",
+                    remediate=(
+                        "retry request_render shortly; escalate to your PM if "
+                        "it keeps failing"
+                    ),
+                    context_briefing={},
+                )
+            frames = self._render_extract_frames(
+                project.slug, task.id, orientation, frames_tar_gz
+            )
+            payload = {
+                "at": datetime.now(UTC).isoformat(),
+                "composition_id": resolved_id,
+                "orientation": orientation,
+                "frame_count": frame_count,
+                "duration_seconds": duration,
+                "frames": frames,
+                "head_sha": source.head_sha,
+                "dirty": source.dirty,
+                "rendered_by": agent_slug,
+                "source": source.kind,
+            }
+            markers.set_render_preview(task, payload)
+            # The post-completion render loop keys on video_draft.composition_id
+            # — a dev who only ever passed composition_id explicitly (never
+            # propose_video) must still leave it stamped, or the loop skips the
+            # completed task silently (proven live on task 1dae04a7).
+            draft = markers.get_video_draft(task) or {}
+            if not draft.get("composition_id"):
+                markers.set_video_draft(task, {**draft, "composition_id": resolved_id})
+            await self.task.session.flush()
+            await self._touch_heartbeat(task.id)
+            return Envelope.ok(
+                status=str(task.status),
+                task_id=str(task.id),
+                next=(
+                    "Read every frames[] path with your file tools; if any "
+                    "scene is missing or clipped, fix the composition and "
+                    "call request_render again."
+                ),
+                evidence={
+                    **payload,
+                    "note": (
+                        "Read each frame image and verify every scene/feature "
+                        "from the brief appears fully and legibly before "
+                        "i_am_done."
+                    ),
+                },
+                context_briefing={},
+            )
+        finally:
+            if source.cleanup is not None:
+                source.cleanup()
+
+    async def request_render(
+        self,
+        *,
+        agent_id: UUID,
+        composition_id: str | None = None,
+        orientation: str = "vertical",
+        frame_count: int = 8,
+        input_props: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Render a video composition to a strip of preview frames the
+        caller reads with file tools — verifying the RENDERED artifact, not
+        just the HyperFrames source, which can look plausible and still
+        render wrong (missing scene, clipped layout, wrong text).
+
+        Guards, in order: video engine flag off; caller has no active,
+        project-bound video-authoring task (`_render_active_video_task`);
+        the renderer sidecar unconfigured (`video_renderer_base_url`);
+        `composition_id` unresolvable or failing `propose_video`'s own
+        charset regex, or `orientation`/`frame_count` out of range; the
+        caller's role-based SOURCE (`_render_resolve_source` — a developer's
+        own tree, or QA's read-only branch export, never a QA working tree);
+        the resolved source missing `motion/compositions/<id>/`; the sidecar
+        call itself (`VideoRendererError` -> a retryable rejection). On
+        success, extracts the returned frames to a container-shared
+        `.previews/<task>/<orientation>/` path and stamps `render_preview` —
+        the marker `i_am_done`'s RENDER_VERIFIED gate checks.
+        """
+        if not settings.video_engine_enabled:
+            return Envelope.invalid_state(
+                message="the video engine is disabled",
+                remediate="ROBOCO_VIDEO_ENGINE_ENABLED is off — nothing to render",
+                context_briefing={},
+            )
+        t, rejection = await self._render_active_video_task(agent_id)
+        if rejection is not None:
+            return rejection
+        renderer_rej = (
+            None
+            if settings.video_renderer_base_url.strip()
+            else Envelope.invalid_state(
+                message="the video-renderer sidecar is not configured",
+                remediate="ask the CEO to set ROBOCO_VIDEO_RENDERER_BASE_URL",
+                context_briefing={},
+            )
+        )
+        resolved_id, rej_id = self._render_resolve_composition_id(t, composition_id)
+        rej_params = self._render_validate_params(orientation, frame_count)
+        rejection = renderer_rej or rej_id or rej_params
+        if rejection is not None:
+            return rejection
+        resolved_props = self._render_resolve_input_props(t, input_props)
+
+        from roboco.agents_config import _resolve_to_slug
+
+        agent_slug = _resolve_to_slug(str(agent_id))
+        resolved, rejection = await self._render_resolve_project_and_source(
+            agent_id, agent_slug, t
+        )
+        if rejection is not None:
+            return rejection
+        project, source = resolved
+        return await self._render_execute(
+            task=t,
+            project=project,
+            agent_slug=agent_slug,
+            resolved_id=resolved_id,
+            resolved_props=resolved_props,
+            orientation=orientation,
+            frame_count=frame_count,
+            source=source,
         )
 
     # =========================================================================

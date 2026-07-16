@@ -152,6 +152,130 @@ async def test_null_renderer_raises_without_network_call(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.asyncio
+async def test_render_frames_posts_frames_field_and_parses_duration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_source(tmp_path)
+    monkeypatch.setattr(cfg, "video_request_timeout_seconds", 5.0)
+    monkeypatch.setattr(cfg, "video_render_timeout_seconds", 30.0)
+    captured: dict[str, bytes] = {}
+
+    expected_duration = 12.5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            content=b"fake-frames-tar-gz",
+            headers={"X-Video-Duration": str(expected_duration)},
+        )
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
+
+    tar_bytes, duration = await renderer.render_frames(
+        str(source),
+        composition_id="Intro",
+        input_props={"title": "hello"},
+        orientation="vertical",
+        frame_count=8,
+    )
+    await http_client.aclose()
+
+    assert tar_bytes == b"fake-frames-tar-gz"
+    assert duration == expected_duration
+    body = captured["body"]
+    assert isinstance(body, bytes)
+    assert b'name="frames"' in body
+    assert b"8" in body
+
+
+@pytest.mark.asyncio
+async def test_render_frames_missing_duration_header_returns_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_source(tmp_path)
+    monkeypatch.setattr(cfg, "video_request_timeout_seconds", 5.0)
+    monkeypatch.setattr(cfg, "video_render_timeout_seconds", 30.0)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"fake-frames-tar-gz")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
+
+    tar_bytes, duration = await renderer.render_frames(
+        str(source),
+        composition_id="Intro",
+        input_props={},
+        orientation="square",
+        frame_count=4,
+    )
+    await http_client.aclose()
+
+    assert tar_bytes == b"fake-frames-tar-gz"
+    assert duration == 0.0
+
+
+@pytest.mark.asyncio
+async def test_render_frames_non_success_response_raises_clear_error(
+    tmp_path: Path,
+) -> None:
+    source = _make_source(tmp_path)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="frames out of bounds")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
+
+    with pytest.raises(VideoRendererError, match="400"):
+        await renderer.render_frames(
+            str(source),
+            composition_id="Intro",
+            input_props={},
+            orientation="square",
+            frame_count=4,
+        )
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_render_frames_unconfigured_renderer_raises_without_network_call(
+    tmp_path: Path,
+) -> None:
+    source = _make_source(tmp_path)
+    renderer = VideoRenderer(base_url="")
+    with pytest.raises(VideoRendererError, match="not configured"):
+        await renderer.render_frames(
+            str(source),
+            composition_id="Intro",
+            input_props={},
+            orientation="vertical",
+            frame_count=4,
+        )
+
+
+@pytest.mark.asyncio
+async def test_render_frames_null_renderer_raises_without_network_call(
+    tmp_path: Path,
+) -> None:
+    source = _make_source(tmp_path)
+    renderer = NullVideoRenderer()
+    with pytest.raises(VideoRendererError, match="not configured"):
+        await renderer.render_frames(
+            str(source),
+            composition_id="Intro",
+            input_props={},
+            orientation="vertical",
+            frame_count=4,
+        )
+
+
 def test_get_video_renderer_returns_null_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
