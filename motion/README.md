@@ -76,7 +76,14 @@ The smoke test (`release-recap.test.js`) asserts this schema, checks the counts,
 
 `compositions/release-0.25.0/` is a panel-demo kit clip for the RoboCo v0.25.0 release. It builds on the `kit/` register instead of the text-card style, so it has no `theme.css` of its own.
 
-The story is "governance gets a better UI": the CEO types "Governance gets a better UI" into the panel intake, then three shipped feature cards — Env ladder, Collision map, Metrics donut — enter a kanban column and flip from `in progress` to `completed`. A cursor clicks through the cards, a stats overlay flashes "1 release / 25 agents / 1 human", and a toast confirms "v0.25.0 shipped / I approved once. 25 agents did the rest." The clip closes on the "roboco.tech" outro.
+The current revision runs **40 seconds** total (up from an earlier 14s cut) so every feature card is fully visible before the next one enters. The story is still "governance gets a better UI": the CEO types "Governance gets a better UI" into the panel intake at 3.6s, then four shipped feature cards enter the kanban column one per scene and flip from `in progress` to `completed`:
+
+1. **Env ladder** — enters at 5.0s, completes at 6.6s ("Dev to prod, one rung at a time.").
+2. **Collision map** — enters at 10.0s, completes at 11.6s ("See who touched what before you review.").
+3. **Metrics donut** — enters at 15.0s, completes at 16.6s ("90 days of real task flow.").
+4. **Notification bell** — enters at 20.0s, completes at 21.6s ("Real read/ack actions on every alert.").
+
+Each card gets roughly five seconds of fully visible time before the next card enters. A cursor clicks the column at 22.0s, the stats overlay shows "1 release / 25 agents / 1 human" from 24.0s to 32.0s, the toast "v0.25.0 shipped / I approved once. 25 agents did the rest." runs from 30.0s to 38.0s, and the "roboco.tech" outro lands at 36.0s and holds through the end.
 
 The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern from `panel-demo` and `release-recap` to replace the `in progress` pill with `completed` on the same beat.
 
@@ -101,14 +108,14 @@ pnpm test   # release-0.25.0.test.js is picked up by vitest
 
 ### `captions.json`
 
-Same schema as `release-recap`: one `captions.json` next to the HTML with self-verified X and TikTok captions:
+Same schema as `release-recap`: one `captions.json` next to the HTML with self-verified X and TikTok captions. The X caption was updated to include the Notification bell feature and now totals **216 characters**:
 
 ```json
 {
   "composition_id": "release-0.25.0",
   "occasion": "release: RoboCo v0.25.0",
   "platforms": {
-    "x":      { "caption": "...", "char_count": 170, "limit": 280,  "within_limit": true },
+    "x":      { "caption": "...", "char_count": 216, "limit": 280,  "within_limit": true },
     "tiktok": { "caption": "...", "char_count": 347, "limit": 2200, "within_limit": true }
   }
 }
@@ -116,4 +123,4 @@ Same schema as `release-recap`: one `captions.json` next to the HTML with self-v
 
 ### Smoke-test invariants
 
-`release-0.25.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with the HyperFrames params, the kit CSS/JS wiring is present, three feature cards each carry a progress-to-completed pill swap, the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.
+`release-0.25.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the "Notification bell" text, the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.

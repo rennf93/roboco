@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-composition-id="release-0.25.0" data-composition-duration="14" data-fps="30">
+<html lang="en" data-composition-id="release-0.25.0" data-composition-duration="40" data-fps="30">
   <head>
     <meta charset="utf-8" />
     <title>RoboCo v0.25.0 Release - square (1080×1080)</title>
@@ -8,7 +8,7 @@
     <script src="../../kit/kit.js"></script>
     <style>
       /* Square cut of the v0.25.0 release clip. Tighter spacing, smaller hero,
-         and the stats overlay covers the full frame for readability. */
+         and the stats overlay covers the full frame for readability. Total 40s. */
 
       .r25-hero {
         position: absolute;
@@ -128,7 +128,7 @@
         z-index: 20;
         font-family: var(--pk-font-display);
         opacity: 0;
-        animation: r25-stats-in 0.4s var(--pk-ease) 10.8s forwards, r25-stats-out 0.5s var(--pk-ease) 12.2s forwards;
+        animation: r25-stats-in 0.4s var(--pk-ease) 24.0s forwards, r25-stats-out 0.5s var(--pk-ease) 32.0s forwards;
       }
       @keyframes r25-stats-in { to { opacity: 1; } }
       .r25-stats__line {
@@ -161,9 +161,9 @@
     </style>
   </head>
   <body>
-    <div id="stage" data-composition-id="release-0.25.0" data-width="1080" data-height="1080" data-start="0" data-duration="14" data-fps="30">
+    <div id="stage" data-composition-id="release-0.25.0" data-width="1080" data-height="1080" data-start="0" data-duration="40" data-fps="30">
 
-      <div class="r25-hero clip" data-start="0" data-duration="3.2" data-track-index="13">
+      <div class="r25-hero clip" data-start="0" data-duration="3.2" data-track-index="16">
         <div class="r25-hero__markwrap">
           <img class="r25-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
           <div class="r25-hero__ring"></div>
@@ -172,7 +172,7 @@
         <div class="r25-hero__tag">governance gets a better UI</div>
       </div>
 
-      <div class="pk-frame clip" data-start="2.6" data-duration="11.4" data-track-index="1">
+      <div class="pk-frame clip" data-start="2.6" data-duration="37.4" data-track-index="1">
         <aside class="pk-frame__sidebar">
           <div class="r25-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
           <div class="r25-nav">Overview</div>
@@ -188,7 +188,7 @@
         <header class="pk-frame__topbar">
           <div class="pk-frame__search">Search tasks, agents...</div>
           <div class="r25-user">
-            <div class="pk-frame__status clip" data-start="2.6" data-duration="11.4" data-track-index="0">
+            <div class="pk-frame__status clip" data-start="2.6" data-duration="37.4" data-track-index="0">
               <span class="pk-frame__statusdot"></span>
               <span>Live</span>
             </div>
@@ -197,7 +197,7 @@
         </header>
 
         <div class="pk-frame__content">
-          <div class="pk-intake clip" data-start="3.6" data-duration="10.4" data-track-index="2" style="animation-delay: 3.6s;">
+          <div class="pk-intake clip" data-start="3.6" data-duration="36.4" data-track-index="2" style="animation-delay: 3.6s;">
             <div class="pk-intake__label">New task</div>
             <div class="pk-intake__field"><span id="typeIntro">Governance gets a better UI</span><span class="pk-caret"></span></div>
           </div>
@@ -205,55 +205,67 @@
           <div class="pk-column">
             <div class="pk-column__header">Shipped in v0.25.0</div>
 
-            <div class="pk-card clip" data-start="5.2" data-duration="8.8" data-track-index="3" style="animation-delay: 5.2s;">
+            <div class="pk-card clip" data-start="5.0" data-duration="35" data-track-index="3" style="animation-delay: 5.0s;">
               <div class="pk-card__title">Env ladder</div>
               <div class="r25-sub">Dev to prod, one rung at a time.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">project settings</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="5.2" data-duration="1.6" data-track-index="4" style="--pk-pill-enter-delay: 5.2s; --pk-pill-exit-delay: 6.6s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="6.8" data-duration="7.2" data-track-index="5" style="--pk-pill-enter-delay: 6.8s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="5.0" data-duration="1.6" data-track-index="4" style="--pk-pill-enter-delay: 5.0s; --pk-pill-exit-delay: 6.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="6.6" data-duration="33.4" data-track-index="5" style="--pk-pill-enter-delay: 6.6s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="7" data-duration="7" data-track-index="6" style="animation-delay: 7s;">
+            <div class="pk-card clip" data-start="10.0" data-duration="30" data-track-index="6" style="animation-delay: 10.0s;">
               <div class="pk-card__title">Collision map</div>
               <div class="r25-sub">See who touched what before you review.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">task detail</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="7" data-duration="1.6" data-track-index="7" style="--pk-pill-enter-delay: 7s; --pk-pill-exit-delay: 8.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="8.6" data-duration="5.4" data-track-index="8" style="--pk-pill-enter-delay: 8.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="10.0" data-duration="1.6" data-track-index="7" style="--pk-pill-enter-delay: 10.0s; --pk-pill-exit-delay: 11.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="11.6" data-duration="28.4" data-track-index="8" style="--pk-pill-enter-delay: 11.6s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="8.8" data-duration="5.2" data-track-index="9" style="animation-delay: 8.8s;">
+            <div class="pk-card clip" data-start="15.0" data-duration="25" data-track-index="9" style="animation-delay: 15.0s;">
               <div class="pk-card__title">Metrics donut</div>
               <div class="r25-sub">90 days of real task flow.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">performance tab</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="8.8" data-duration="1.6" data-track-index="10" style="--pk-pill-enter-delay: 8.8s; --pk-pill-exit-delay: 10.2s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="10.4" data-duration="3.6" data-track-index="11" style="--pk-pill-enter-delay: 10.4s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="15.0" data-duration="1.6" data-track-index="10" style="--pk-pill-enter-delay: 15.0s; --pk-pill-exit-delay: 16.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="16.6" data-duration="23.4" data-track-index="11" style="--pk-pill-enter-delay: 16.6s;">completed</span>
+              </div>
+            </div>
+
+            <div class="pk-card clip" data-start="20.0" data-duration="20" data-track-index="12" style="animation-delay: 20.0s;">
+              <div class="pk-card__title">Notification bell</div>
+              <div class="r25-sub">Real read/ack actions on every alert.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">notifications</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="20.0" data-duration="1.6" data-track-index="13" style="--pk-pill-enter-delay: 20.0s; --pk-pill-exit-delay: 21.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="21.6" data-duration="18.4" data-track-index="14" style="--pk-pill-enter-delay: 21.6s;">completed</span>
               </div>
             </div>
           </div>
 
-          <div class="pk-cursor clip" data-start="9.4" data-duration="4.6" data-track-index="12" style="--pk-cursor-delay: 9.4s; --pk-cursor-x0: 700px; --pk-cursor-y0: 300px; --pk-cursor-x1: 200px; --pk-cursor-y1: 1110px;">
+          <div class="pk-cursor clip" data-start="22.0" data-duration="6" data-track-index="15" style="--pk-cursor-delay: 22.0s; --pk-cursor-x0: 700px; --pk-cursor-y0: 300px; --pk-cursor-x1: 200px; --pk-cursor-y1: 700px;">
             <div class="pk-cursor__glyph"></div>
-            <div class="pk-cursor__ring" style="--pk-click-delay: 10.4s;"></div>
+            <div class="pk-cursor__ring" style="--pk-click-delay: 23.4s;"></div>
           </div>
 
-          <div class="r25-stats clip" data-start="10.8" data-duration="3.2" data-track-index="14">
-            <div class="r25-stats__line" style="animation-delay: 10.8s;">1 release</div>
-            <div class="r25-stats__line r25-stats__line--accent" style="animation-delay: 11.1s;">25 agents</div>
-            <div class="r25-stats__line" style="animation-delay: 11.4s;">1 human</div>
+          <div class="r25-stats clip" data-start="24.0" data-duration="8" data-track-index="17">
+            <div class="r25-stats__line" style="animation-delay: 24.0s;">1 release</div>
+            <div class="r25-stats__line r25-stats__line--accent" style="animation-delay: 24.3s;">25 agents</div>
+            <div class="r25-stats__line" style="animation-delay: 24.6s;">1 human</div>
           </div>
 
-          <div class="pk-toast clip" data-start="11.8" data-duration="2.2" data-track-index="15" style="animation-delay: 11.8s;">
+          <div class="pk-toast clip" data-start="30.0" data-duration="8" data-track-index="18" style="animation-delay: 30.0s;">
             <div class="pk-toast__icon"></div>
             <div class="pk-toast__body">
               <div class="pk-toast__title" id="toastTitle">v0.25.0 shipped</div>
@@ -261,7 +273,7 @@
             </div>
           </div>
 
-          <div class="pk-outro clip" data-start="12.6" data-duration="1.4" data-track-index="16" style="animation-delay: 12.6s;">
+          <div class="pk-outro clip" data-start="36.0" data-duration="4" data-track-index="19" style="animation-delay: 36.0s;">
             <span class="r25-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
             <span>roboco.tech</span>
           </div>
@@ -273,7 +285,7 @@
       window.__timelines = window.__timelines || {};
       window.__timelines["release-0.25.0"] = {
         id: "release-0.25.0",
-        duration: 14,
+        duration: 40,
         fps: 30,
         animations: []
       };

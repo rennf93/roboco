@@ -286,3 +286,14 @@ async def test_propose_video_defaults_input_props_to_empty_dict(
     draft = markers.get_video_draft(authoring)
     assert draft is not None
     assert draft["input_props"] == {}
+
+
+@pytest.mark.asyncio
+async def test_propose_video_rejects_unrenderable_composition_id() -> None:
+    """An id the renderer's charset rule would 400 is refused at authoring
+    time, not at render time days later."""
+    env = await _actions("developer", "ux_ui").propose_video(
+        agent_id=uuid4(), **_valid_kwargs(composition_id="release 0.25.0!")
+    )
+    assert env.error == "invalid_state"
+    assert "not renderable" in (env.message or "")

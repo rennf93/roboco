@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // HTML-structure smoke test for the RoboCo v0.25.0 release composition.
-// Extends the panel-demo register: panel chrome, typing reveal, feature cards
+// Extends the panel-demo register: panel chrome, typing reveal, four feature cards
 // with progress -> completed pill flips, cursor, stats overlay, toast,
 // outro, offline constraint, and the captions.json schema/limits.
 
@@ -34,7 +34,7 @@ describe("release-0.25.0 composition", () => {
 
     expect(html).toContain('data-width="1080"');
     expect(html).toContain(`data-height="${height}"`);
-    expect(html).toMatch(/data-duration="14"/);
+    expect(html).toMatch(/data-duration="40"/);
     expect(html).toMatch(/data-fps="30"/);
 
     const propsIdx = html.indexOf('<script src="props.js"></script>');
@@ -58,14 +58,15 @@ describe("release-0.25.0 composition", () => {
     const cardCount = (html.match(/pk-card clip/g) || []).length;
     const progressCount = (html.match(/pk-pill--progress/g) || []).length;
     const completedCount = (html.match(/pk-pill--completed/g) || []).length;
-    expect(cardCount).toBe(3);
-    expect(progressCount).toBe(3);
-    expect(completedCount).toBe(3);
+    expect(cardCount).toBe(4);
+    expect(progressCount).toBe(4);
+    expect(completedCount).toBe(4);
 
     expect(html).toContain("v0.25.0");
     expect(html).toContain("Env ladder");
     expect(html).toContain("Collision map");
     expect(html).toContain("Metrics donut");
+    expect(html).toContain("Notification bell");
 
     expect(html).toContain("pk-cursor");
     expect(html).toContain("pk-cursor__ring");

@@ -12090,11 +12090,15 @@ Start now: evidence(task_id="{task_id}")
 
     @staticmethod
     def _already_promoted_for_closure(task: dict[str, Any]) -> bool:
-        """Skip closure respawn when PR+status show task has moved up."""
+        """Skip closure respawn when PR+status show task has moved past the PM.
+
+        ``awaiting_pm_review`` is deliberately NOT in the skip set: it is the
+        PM's own merge/review turn, and the session that submitted may be gone
+        (restart, idle-reap) — the ``_is_agent_active`` check below already
+        prevents double-spawning while a PM is genuinely alive."""
         return bool(
             task.get("pr_number")
-            and task.get("status")
-            in ("awaiting_pm_review", "awaiting_ceo_approval", "completed")
+            and task.get("status") in ("awaiting_ceo_approval", "completed")
         )
 
     @staticmethod
@@ -12314,7 +12318,15 @@ Start now: evidence(task_id="{task_id}")
             return
 
         descendants = await self._fetch_all_descendants(client, task_id)
-        if not descendants or not self._all_descendants_terminal(descendants):
+        # A childless task in awaiting_pm_review IS the PM's review turn —
+        # its dev→qa→doc stages ran on the task itself. Without this, a leaf
+        # review stranded by a restart (the submit-time PM session gone) had
+        # no periodic pickup at all — proven live on the docs-sync leaf
+        # after the 0.25.0 redeploy.
+        is_leaf_review = not descendants and task.get("status") == "awaiting_pm_review"
+        if not is_leaf_review and (
+            not descendants or not self._all_descendants_terminal(descendants)
+        ):
             return
         if self._already_promoted_for_closure(task):
             return

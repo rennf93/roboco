@@ -3,8 +3,8 @@
   "occasion": "release: RoboCo v0.25.0",
   "platforms": {
     "x": {
-      "caption": "RoboCo v0.25.0 is live. Env ladder from dev to prod. Collision map in every review. Metrics with a 90-day window. One human approved it; 25 agents shipped it. roboco.tech",
-      "char_count": 170,
+      "caption": "RoboCo v0.25.0 is live. Env ladder from dev to prod. Collision map in every review. Metrics with a 90-day window. Notification bell with real read/ack actions. One human approved it; 25 agents shipped it. roboco.tech",
+      "char_count": 216,
       "limit": 280,
       "within_limit": true
     },
