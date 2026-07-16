@@ -59,9 +59,7 @@ class ReleaseOps(Protocol):
 
     async def write_changelog_entry(self, entry: str) -> None: ...
 
-    async def promote_env_chain(self) -> None: ...
-
-    async def run_gate(self) -> tuple[bool, str]: ...
+    async def run_gate(self) -> bool: ...
 
     async def commit_and_push(self, version: str) -> str: ...
 
@@ -107,10 +105,41 @@ class ReleaseExecutor:
             commit_sha = existing_sha
             files: list[str] = []
         else:
-            fresh = await self._run_fresh_release(version, report)
-            if isinstance(fresh, ReleaseResult):
-                return fresh  # promotion / gate / commit failed (fail-closed)
-            commit_sha, files = fresh
+            files = await self._ops.apply_version_bumps(
+                report.version_bump_plan, version
+            )
+            await self._ops.write_changelog_entry(report.drafted_changelog)
+
+            if not await self._ops.run_gate():
+                return ReleaseResult(
+                    status="gate_failed",
+                    version=version,
+                    files_changed=files,
+                    commit_sha=None,
+                    release_url=None,
+                    detail="make quality failed — aborted before commit (fail-closed).",
+                )
+
+            try:
+                commit_sha = await self._ops.commit_and_push(version)
+            except RuntimeError as exc:
+                # The ops layer raises RuntimeError on a failed add/commit/push
+                # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push).
+                # That is the correct fail-closed abort at the ops layer; the
+                # EXECUTOR turns it into a structured outcome so the CEO sees
+                # the cause instead of a 500 bubbling out of ``approve``.
+                logger.error("release commit/push failed", error=str(exc)[:300])
+                detail = (
+                    f"release commit/push failed — not published (fail-closed): {exc}"
+                )[:280]
+                return ReleaseResult(
+                    status="commit_failed",
+                    version=version,
+                    files_changed=files,
+                    commit_sha=None,
+                    release_url=None,
+                    detail=detail,
+                )
 
         if not await self._ops.wait_for_ci(commit_sha):
             return ReleaseResult(
@@ -154,64 +183,6 @@ class ReleaseExecutor:
             release_url=release_url,
             detail=f"Published v{version}.",
         )
-
-    async def _run_fresh_release(
-        self, version: str, report: ReleaseReadinessReport
-    ) -> ReleaseResult | tuple[str, list[str]]:
-        """Fresh-release pipeline: promote → bump → changelog → gate → commit.
-
-        Returns ``(commit_sha, files)`` on success, or a ``ReleaseResult`` on a
-        fail-closed abort (promotion conflict / red gate / commit-push failure)
-        so ``execute`` surfaces it to the CEO as a structured outcome, not a 500.
-        """
-        # Full-chain promotion: merge the env ladder head→…→prod into the prod
-        # checkout before bumping, so the release commits the promoted state.
-        try:
-            await self._ops.promote_env_chain()
-        except RuntimeError as exc:
-            logger.error("env-chain promotion failed", error=str(exc)[:300])
-            return ReleaseResult(
-                status="promotion_failed",
-                version=version,
-                files_changed=[],
-                commit_sha=None,
-                release_url=None,
-                detail=(
-                    f"env-chain promotion failed — not published (fail-closed): {exc}"
-                )[:280],
-            )
-        files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
-        await self._ops.write_changelog_entry(report.drafted_changelog)
-
-        gate_ok, gate_detail = await self._ops.run_gate()
-        if not gate_ok:
-            return ReleaseResult(
-                status="gate_failed",
-                version=version,
-                files_changed=files,
-                commit_sha=None,
-                release_url=None,
-                detail=(f"release gate refused — {gate_detail} (fail-closed).")[:280],
-            )
-
-        try:
-            commit_sha = await self._ops.commit_and_push(version)
-        except RuntimeError as exc:
-            # The ops layer raises RuntimeError on a failed add/commit/push
-            # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push).
-            logger.error("release commit/push failed", error=str(exc)[:300])
-            detail = (
-                f"release commit/push failed — not published (fail-closed): {exc}"
-            )[:280]
-            return ReleaseResult(
-                status="commit_failed",
-                version=version,
-                files_changed=files,
-                commit_sha=None,
-                release_url=None,
-                detail=detail,
-            )
-        return commit_sha, files
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +233,7 @@ class _ReleaseContext:
     """Writable-clone coordinates for the production release ops."""
 
     slug: str
-    prod_branch: str
+    default_branch: str
     root: Path
     git_url: str
     # Per-call ``-c http.extraheader=Authorization: Basic …`` prefix so the PAT
@@ -270,10 +241,6 @@ class _ReleaseContext:
     # a URL-embedded token). Empty for SSH / tokenless repos.
     git_prefix: list[str]
     ci_workflow: str | None
-    # Env-ladder rung branches to merge into the prod checkout head→…→just-
-    # below-prod before the bump (full-chain promotion). Empty for a
-    # degenerate (head==prod) ladder → promote_env_chain is a no-op.
-    env_chain: list[str]
 
 
 class _GitReleaseOps:
@@ -282,13 +249,11 @@ class _GitReleaseOps:
     def __init__(self, session: AsyncSession, ctx: _ReleaseContext) -> None:
         self._session = session
         self._slug = ctx.slug
-        self._default_branch = ctx.prod_branch
+        self._default_branch = ctx.default_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
         self._git_prefix = ctx.git_prefix
-        self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
         self._ci_workflow = ctx.ci_workflow
-        self._env_chain = ctx.env_chain
 
     async def _git(self, *args: str) -> tuple[int, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -363,70 +328,29 @@ class _GitReleaseOps:
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         path.write_text(_insert_changelog_entry(existing, entry), encoding="utf-8")
 
-    async def promote_env_chain(self) -> None:
-        """Merge the env ladder head→…→just-below-prod into the prod checkout.
-
-        Brings the dev trunk's unreleased work down to prod before the version
-        bump, so the release commits + tags the promoted state (generalizes the
-        slave→master promotion to the full declared chain). ``--no-edit``,
-        fail-closed on a fetch or merge conflict — a divergent rung aborts the
-        release before any bump rather than landing a half-promoted prod. No-op
-        for a degenerate (head==prod) ladder (empty chain).
-        """
-        if not self._env_chain:
-            return
-        # Fresh ``--branch <prod>`` clone only has prod's history — fetch every
-        # rung branch so ``origin/<branch>`` resolves for the merges.
-        rc, out = await self._git(*self._git_prefix, "fetch", "origin")
-        if rc != 0:
-            raise RuntimeError(f"env-chain fetch failed: {out.strip()[:200]}")
-        for branch in self._env_chain:
-            rc, out = await self._git("merge", "--no-edit", f"origin/{branch}")
-            if rc != 0:
-                raise RuntimeError(
-                    f"env-chain merge {branch}→prod failed: {out.strip()[:200]}"
-                )
-
-    async def run_gate(self) -> tuple[bool, str]:
-        """Re-verify the head rung's CI verdict at execute time.
-
-        The readiness sweep already required a green run on the head rung to
-        propose at all; re-checking the same signal here keeps the gate
-        fail-closed without re-running the suite inside the production
-        container, whose env (armed flags, host mounts, live Redis) breaks
-        clean-env test assumptions wholesale. The pushed release commit still
-        gets its own ``wait_for_ci`` before publish.
-        """
-        rc, sha_out = await self._git("rev-parse", f"origin/{self._head_branch}")
-        if rc != 0:
-            return False, f"cannot resolve origin/{self._head_branch}"
-        head_sha = sha_out.strip()
-        from roboco.services.git import get_git_service
-
-        git = get_git_service(self._session)
-        ci = await git.get_latest_ci_conclusion(
-            self._slug, workflow=self._ci_workflow, head_sha=head_sha
+    async def run_gate(self) -> bool:
+        proc = await asyncio.create_subprocess_exec(
+            "make",
+            "quality",
+            cwd=str(self._root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        conclusion = ((ci or {}).get("conclusion") or "absent").lower()
-        detail = f"CI on {self._head_branch}@{head_sha[:8]} is {conclusion}"
-        if conclusion != "success":
-            logger.warning("release gate refused", detail=detail)
-        return conclusion == "success", detail
+        rc, out = await _await_proc(proc, _RELEASE_GATE_TIMEOUT_SECONDS)
+        if rc != 0:
+            logger.warning(
+                "release gate (make quality) failed or timed out",
+                tail=out[-2000:],
+            )
+        return rc == 0
 
     async def commit_and_push(self, version: str) -> str:
-        from roboco.config import settings
-
         add_rc, add_out = await self._git("add", "-A")
         if add_rc != 0:
             logger.error("release git add failed", error=add_out.strip()[:300])
             raise RuntimeError(f"release git add failed: {add_out.strip()[:200]}")
-        # The clone is fresh per execute and the container has no global git
-        # identity — set it per-clone or the commit refuses outright.
-        await self._git("config", "user.name", settings.release_git_name)
-        await self._git("config", "user.email", settings.release_git_email)
-        sign = ["-S"] if settings.release_sign_commits else []
         commit_rc, commit_out = await self._git(
-            "commit", *sign, "-m", f"chore(release): {version}"
+            "commit", "-S", "-m", f"chore(release): {version}"
         )
         if commit_rc != 0:
             # A failed commit (gpgsign/pre-commit reject/no-op bump) must abort
@@ -449,10 +373,7 @@ class _GitReleaseOps:
         git = get_git_service(self._session)
         for _ in range(_CI_MAX_POLLS):
             ci = await git.get_latest_ci_conclusion(
-                self._slug,
-                workflow=self._ci_workflow,
-                head_sha=commit_sha,
-                branch=self._default_branch,
+                self._slug, workflow=self._ci_workflow, head_sha=commit_sha
             )
             if ci and ci.get("head_sha") == commit_sha:
                 conclusion = (ci.get("conclusion") or "").lower()
@@ -521,26 +442,14 @@ def _bump_uv_lock(text: str, old: str, new: str) -> str:
 
 
 def _insert_changelog_entry(existing: str, entry: str) -> str:
-    """Insert ``entry`` above the first released version heading (Keep a
-    Changelog), emptying ``[Unreleased]``'s body — the readiness drafter uses
-    that body as the entry when it's curated, so leaving it in place would
-    ship the same content twice."""
+    """Insert ``entry`` above the first released version heading (Keep a Changelog)."""
     block = entry.rstrip() + "\n"
     if not existing.strip():
         return block
     lines = existing.splitlines(keepends=True)
-    unreleased_idx = None
     for idx, line in enumerate(lines):
-        if line.startswith("## [") and "Unreleased" in line:
-            unreleased_idx = idx
-        elif line.startswith("## ["):
-            if unreleased_idx is None:
-                return "".join(lines[:idx]) + block + "\n" + "".join(lines[idx:])
-            prefix = "".join(lines[: unreleased_idx + 1]).rstrip("\n") + "\n\n"
-            return prefix + block + "\n" + "".join(lines[idx:])
-    if unreleased_idx is not None:
-        prefix = "".join(lines[: unreleased_idx + 1]).rstrip("\n") + "\n\n"
-        return prefix + block
+        if line.startswith("## [") and "Unreleased" not in line:
+            return "".join(lines[:idx]) + block + "\n" + "".join(lines[idx:])
     return existing.rstrip() + "\n\n" + block
 
 
@@ -561,7 +470,6 @@ def _resolve_release_ci_workflow() -> str:
 async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     """Build a ReleaseExecutor with a production ops over a fresh writable clone."""
     from roboco.config import settings
-    from roboco.models.env_branches import prod_branch, promotion_chain
     from roboco.services.project import get_project_service
 
     slug = (settings.self_heal_project_slug or "roboco-api").strip()
@@ -571,12 +479,7 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
         raise RuntimeError(f"release executor: project {slug!r} not found")
     token = await project_svc.get_decrypted_token_by_slug(slug)
     git_url = str(project.git_url)
-    # Release target = prod rung (W-H decouple): releases land on prod regardless
-    # of the dev retarget. default_branch stays as the legacy/shim source.
-    default_branch = prod_branch(project)
-    # Full-chain promotion: rung branches head→…→just-below-prod to merge into
-    # the prod checkout before bumping. Degenerate (head==prod) → [] → no-op.
-    env_chain = promotion_chain(project)
+    default_branch = str(project.default_branch or "master")
     # PAT rides a per-call ``-c http.extraheader=Authorization: Basic …`` config
     # (mirrors workspace.py :642 / :1285) so it never lands in the clone/push
     # argv — ``/proc/<pid>/cmdline`` would otherwise expose a URL-embedded token.
@@ -590,12 +493,11 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     root = await _prepare_release_clone(slug, git_url, git_prefix, default_branch)
     ctx = _ReleaseContext(
         slug=slug,
-        prod_branch=default_branch,
+        default_branch=default_branch,
         root=root,
         git_url=git_url,
         git_prefix=git_prefix,
         ci_workflow=_resolve_release_ci_workflow(),
-        env_chain=env_chain,
     )
     return ReleaseExecutor(_GitReleaseOps(session, ctx))
 
