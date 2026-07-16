@@ -105,6 +105,7 @@ class _MockChoreographer:
         _task_id: object,
         _notes: object,
         _ac_verdicts: object = None,
+        _criteria_verified: object = None,
     ) -> Envelope:
         self._state["task_status"] = "awaiting_documentation"
         return Envelope.ok(

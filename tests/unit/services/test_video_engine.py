@@ -36,6 +36,9 @@ ONE = 1
 TWO = 2
 THREE = 3
 FOUR = 4
+FIVE = 5
+SEVEN = 7
+_AC_ITEM_CHAR_CAP = 200  # mirrors task_completeness._AC_MAX_ITEM_CHARS
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -896,3 +899,152 @@ async def test_reauthor_from_rejection_missing_draft_returns_none(
 
     result = await engine.reauthor_from_rejection(task, "some reason")
     assert result is None
+
+
+# --------------------------------------------------------------------------- #
+# scene criterion — a brief-named feature list becomes its own gate-checkable
+# AC (delegation detail-fidelity: prose feature counts used to pass gates
+# even when a dev shipped fewer scenes than the brief named)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_carries_scene_criterion_for_highlights(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is not None
+    assert len(task.acceptance_criteria) == FIVE
+    scene_ac = task.acceptance_criteria[FOUR]
+    assert scene_ac.startswith("Every brief-named feature appears as its own")
+    assert "a huge new release" in scene_ac
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_no_highlights_keeps_ac_count_unchanged(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="spotlight no-highlights",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        suggested_input_props={"version": "1.0.0"},  # no "highlights" key
+    )
+    assert task is not None
+    assert len(task.acceptance_criteria) == FOUR  # no scene criterion appended
+
+
+@pytest.mark.asyncio
+async def test_reauthor_from_rejection_with_highlights_regenerates_scene_criterion(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    source_task = await engine.open_video_task(
+        occasion="release v3.0.0",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        suggested_input_props={
+            "version": "3.0.0",
+            "highlights": ["Feature A", "Feature B"],
+        },
+    )
+    assert source_task is not None
+    draft = markers.get_video_draft(source_task) or {}
+    # Simulate propose_video: the dev's real input_props carries the same
+    # highlights forward onto the marker.
+    markers.set_video_draft(
+        source_task,
+        {
+            **draft,
+            "composition_id": "ReleaseIntro",
+            "input_props": {
+                "version": "3.0.0",
+                "highlights": ["Feature A", "Feature B"],
+            },
+        },
+    )
+    source_task.status = TS.COMPLETED
+    await db_session.flush()
+
+    post_task = await engine._originate_video_post(
+        source_task=source_task,
+        mp4_paths={"vertical": "a.mp4", "square": "b.mp4"},
+        captions={"x": "cap"},
+        platforms=["x"],
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    revision = await engine.reauthor_from_rejection(post_task, "Logo too small")
+    assert revision is not None
+    assert len(revision.acceptance_criteria) == FIVE
+    scene_ac = revision.acceptance_criteria[FOUR]
+    assert "Feature A" in scene_ac
+    assert "Feature B" in scene_ac
+
+
+@pytest.mark.asyncio
+async def test_reauthor_from_rejection_without_highlights_adds_feedback_criterion(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    source_task = await engine.open_video_task(
+        occasion="release v4.0.0", script="s", platforms=["x"], brief="b"
+    )
+    assert source_task is not None
+    draft = markers.get_video_draft(source_task) or {}
+    markers.set_video_draft(source_task, {**draft, "composition_id": "Intro"})
+    source_task.status = TS.COMPLETED
+    await db_session.flush()
+
+    post_task = await engine._originate_video_post(
+        source_task=source_task,
+        mp4_paths={"vertical": "a.mp4", "square": "b.mp4"},
+        captions={"x": "cap"},
+        platforms=["x"],
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    revision = await engine.reauthor_from_rejection(post_task, "Logo is cut off")
+    assert revision is not None
+    assert len(revision.acceptance_criteria) == FIVE
+    assert revision.acceptance_criteria[FOUR] == (
+        "Every point in the CEO rejection feedback is visibly addressed in "
+        "the rendered cut"
+    )
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_scene_criterion_truncates_pathological_feature_list(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    features = [f"Feature number {i}" for i in range(50)]
+    task = await engine.open_video_task(
+        occasion="release pathological",
+        script="s",
+        platforms=["x"],
+        brief="b",
+        suggested_input_props={"highlights": features},
+    )
+    assert task is not None
+    assert len(task.acceptance_criteria) <= SEVEN
+    scene_ac = task.acceptance_criteria[-1]
+    assert len(scene_ac) <= _AC_ITEM_CHAR_CAP
+    assert "more)" in scene_ac  # truncated, not silently dropped

@@ -51,6 +51,8 @@ def _parent(pm_id: Any, product_id: Any = None, project_id: Any = None) -> Magic
         team="backend",
         # delegate obligates the PM's quick_context resumption section.
         quick_context="Decomposition planned; cells implement their slice next.",
+        # These tests are about project routing, not AC coverage.
+        acceptance_criteria=[],
     )
 
 

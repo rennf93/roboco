@@ -54,6 +54,18 @@ _AUTHORING_ACCEPTANCE_CRITERIA = [
 ]
 _POST_ACCEPTANCE_CRITERIA = ["CEO approves or rejects the draft"]
 
+# Mirrors task_completeness._AC_MAX_ITEMS / _AC_MAX_ITEM_CHARS (mig 068) —
+# duplicated locally per this file's no-cross-service-internals idiom (see
+# vault_intake_engine.py / api/schemas/v1/flow.py for the same pattern).
+_AC_MAX_ITEMS = 7
+_AC_MAX_ITEM_CHARS = 200
+
+# reauthor_from_rejection's fallback AC when the original brief named no
+# enumerable features — the rejection reason is already verbatim in the brief.
+_REAUTHOR_FEEDBACK_CRITERION = (
+    "Every point in the CEO rejection feedback is visibly addressed in the rendered cut"
+)
+
 _CHAT_TIMEOUT_SECONDS = 60.0
 
 # The whole CHANGELOG section for a release, not one bullet — capped so a
@@ -144,6 +156,47 @@ def _release_video_brief(version: str, changelog: str, highlights: list[str]) ->
         bullets = "\n".join(f"- {h}" for h in highlights)
         parts.append(f"Highlights:\n{bullets}")
     return "\n\n".join(parts)
+
+
+def _scene_criterion(features: list[str]) -> str | None:
+    """Turn an enumerable brief feature list into its own gate-checkable AC.
+
+    The live failure this closes: a brief named N features, the task's ACs
+    stayed generic, a dev shipped fewer scenes, and every gate passed because
+    "N features" existed only in prose. None for an empty/absent list. The
+    joined list is bounded to the AC per-item char cap — truncated with an
+    "… (+N more)" tail rather than overrunning it.
+    """
+    trimmed = [f.strip() for f in features if f and f.strip()]
+    if not trimmed:
+        return None
+    prefix = "Every brief-named feature appears as its own fully readable scene: "
+    budget = _AC_MAX_ITEM_CHARS - len(prefix)
+    kept = list(trimmed)
+    while kept:
+        omitted = len(trimmed) - len(kept)
+        tail = f"… (+{omitted} more)" if omitted else ""
+        body = "; ".join(kept) + tail
+        if len(body) <= budget:
+            return prefix + body
+        kept.pop()
+    return prefix + "…"  # pathological: even one (huge) feature name overruns
+
+
+def _authoring_criteria(
+    suggested_input_props: dict[str, Any] | None,
+    fallback_acceptance_criterion: str | None,
+) -> list[str]:
+    """The base authoring ACs plus one derived/fallback criterion: the scene
+    criterion when ``suggested_input_props["highlights"]`` is a real list,
+    else ``fallback_acceptance_criterion`` (when given), else nothing."""
+    criteria = list(_AUTHORING_ACCEPTANCE_CRITERIA)
+    features = (suggested_input_props or {}).get("highlights")
+    criterion = _scene_criterion(features if isinstance(features, list) else [])
+    criterion = criterion or fallback_acceptance_criterion
+    if criterion is not None and len(criteria) < _AC_MAX_ITEMS:
+        criteria.append(criterion)
+    return criteria
 
 
 def _reauthor_brief(reason: str, draft: dict[str, Any]) -> str:
@@ -270,6 +323,7 @@ class VideoEngine(BaseService):
         brief: str,
         suggested_input_props: dict[str, Any] | None = None,
         project_id: UUID | None = None,
+        fallback_acceptance_criterion: str | None = None,
     ) -> TaskTable | None:
         """Originate ONE UX/UI authoring task for a bespoke video, or None.
 
@@ -292,6 +346,14 @@ class VideoEngine(BaseService):
         "highlights": [...]}`` from the release caller) is seeded onto the
         marker as-is so the dev copies real structured data into
         ``propose_video``'s ``input_props`` instead of hand-typing facts.
+
+        When ``suggested_input_props`` carries a ``highlights`` list, it
+        becomes its OWN acceptance criterion (``_scene_criterion``) — a
+        prose-only feature list used to pass gates even when a dev shipped
+        fewer scenes than named. Absent highlights,
+        ``fallback_acceptance_criterion`` (when supplied) is appended instead
+        — ``reauthor_from_rejection`` uses this for its
+        feedback-must-be-addressed criterion.
         """
         if not settings.video_engine_enabled:
             return None
@@ -316,6 +378,9 @@ class VideoEngine(BaseService):
 
         assignee = self._select_ux_dev(open_tasks)
         enriched_brief = await self._enrich_brief(brief)
+        acceptance_criteria = _authoring_criteria(
+            suggested_input_props, fallback_acceptance_criterion
+        )
         # Savepoint-isolate the insert: a DBAPI error here (FK, deadlock,
         # dropped connection) must roll back ONLY this insert, never poison the
         # shared session — whose next commit is the caller's release-publish
@@ -326,7 +391,7 @@ class VideoEngine(BaseService):
                     TaskCreateRequest(
                         title=f"Video: {occasion}",
                         description=enriched_brief,
-                        acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
+                        acceptance_criteria=acceptance_criteria,
                         team=Team.UX_UI,
                         assigned_to=assignee,
                         created_by=_foundation.AGENTS["system"].uuid,
@@ -533,6 +598,10 @@ class VideoEngine(BaseService):
                     draft.get("input_props") or draft.get("suggested_input_props")
                 ),
                 project_id=project_id,
+                # Original had highlights -> the scene criterion regenerates
+                # from them; no highlights -> this fallback names the reason
+                # (already verbatim in the brief) as the checkable outcome.
+                fallback_acceptance_criterion=_REAUTHOR_FEEDBACK_CRITERION,
             )
         except Exception as exc:
             self.log.warning(

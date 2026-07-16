@@ -105,8 +105,15 @@ def _resubmit_root(
 
 @pytest.mark.asyncio
 async def test_submit_root_refuses_unchanged_pr_after_pr_fail() -> None:
-    """The loop-stopper: prior pr_fail stamped head SHA X, the PR head is still
-    X (no new cell work on the root branch) → refuse, do not open the gate."""
+    """The loop-stopper still holds past the one-shot exemption: prior
+    pr_fail stamped head SHA X, the PR head is still X (no new cell work on
+    the root branch). The findings ledger here fail-opens to "nothing open"
+    (mock session, no real query) — the same signal ``_check_submit_up_gates``
+    upstream already reads for FINDINGS_ADDRESSED — so the first resubmit at
+    this head is the one-shot exemption (see
+    test_resubmit_unchanged_head_exemption.py for full exemption coverage);
+    a second resubmit at the SAME head refuses, so the loop still can't run
+    forever."""
     c, main_pm_id, root_task_id = _resubmit_root(
         notes_structured={
             "pr_review": {"verdict": "failed", "head_sha": SHA_OLD, "summary": "..."}
@@ -114,8 +121,13 @@ async def test_submit_root_refuses_unchanged_pr_after_pr_fail() -> None:
     )
     c.git.get_pr_head_sha = AsyncMock(return_value=SHA_OLD)
 
-    env = await c.submit_root(
+    first = await c.submit_root(
         main_pm_id, root_task_id, notes="re-submitting the root after the fix"
+    )
+    assert first.error is None, first.as_dict()
+
+    env = await c.submit_root(
+        main_pm_id, root_task_id, notes="re-submitting again; still unchanged"
     )
 
     assert env.error is not None, env.as_dict()
@@ -124,8 +136,9 @@ async def test_submit_root_refuses_unchanged_pr_after_pr_fail() -> None:
     remediate = env.remediate or ""
     assert "re-delegate" in remediate
     assert "submit_root" in remediate
-    # The PR was NOT re-opened / re-pushed — the runner never ran.
-    c.task.submit_for_review.assert_not_awaited()
+    # The second attempt's PR was NOT re-opened / re-pushed — the runner ran
+    # only for the first (exempted) call.
+    c.task.submit_for_review.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -231,6 +231,7 @@ _WAF_FREETEXT_BODY_FIELDS: set[str] = {
     "consequences",
     "content",
     "context",
+    "criteria_verified",
     "decision",
     "description",
     "details",

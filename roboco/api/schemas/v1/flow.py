@@ -26,6 +26,10 @@ StrList = Annotated[list[str], BeforeValidator(coerce_str_list)]
 _AC_MAX_ITEMS = 7
 _AC_MAX_ITEM_CHARS = 200
 
+# approach's truncate-not-reject ceiling — must match _PM_APPROACH_MIN_LEN's
+# sibling ceiling in choreographer._impl (the gate re-derives its own copy).
+_APPROACH_MAX_CHARS = 800
+
 
 class SubTaskCreate(BaseModel):
     """A PM sub_task — a delegate target AND a progress-checklist item.
@@ -201,9 +205,19 @@ class PassReviewRequest(BaseModel):
     ac_verdicts: StrList | None = Field(
         default=None,
         description=(
-            "One verification entry per acceptance criterion (in criterion "
-            "order) stating how QA verified it. Every criterion must be "
-            "covered before a pass is allowed."
+            "Legacy free-text per-criterion verdicts — still folded into the "
+            "persisted notes but no longer gates the pass (see "
+            "criteria_verified)."
+        ),
+    )
+    criteria_verified: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Mandatory when the task has acceptance criteria — one "
+            "{criterion, evidence} entry per criterion. criterion must match "
+            "an AC by id or exact text; evidence must be concrete (file:line, "
+            "screenshot ref, rendered-frame path, test name). Every criterion "
+            "must be covered or the pass is rejected."
         ),
     )
 
@@ -348,9 +362,11 @@ class IWillPlanRequest(BaseModel):
     # min_length must match choreographer._impl._PM_APPROACH_MIN_LEN. Raised
     # 20→150: a 20-char approach was a one-liner; the approach +
     # sub_tasks are also the progress checklist, so they must be substantive.
-    # max_length caps the bloat defect (approach that ran to thousands of
-    # chars restating the description). Must match the gate ceiling.
-    approach: str = Field(..., min_length=150, max_length=800)
+    # Overflow past 800 chars is truncated, not rejected — a 422 here used to
+    # throw away an otherwise-good plan and degrade the PM to a bare unblock
+    # (live incident: an over-length approach 422'd mid-flow). min_length
+    # stays a hard reject: a thin plan IS a defect.
+    approach: str = Field(..., min_length=150)
     sub_tasks: list[SubTaskCreate] = Field(
         default_factory=list,
         description="List of {title, description} — server assigns id + order",
@@ -358,6 +374,13 @@ class IWillPlanRequest(BaseModel):
     technical_considerations: StrList = Field(default_factory=list)
     risks: list[RiskCreate] = Field(default_factory=list)
     open_questions: list[OpenQuestionCreate] = Field(default_factory=list)
+
+    @field_validator("approach", mode="before")
+    @classmethod
+    def _truncate_approach(cls, v: object) -> object:
+        if isinstance(v, str) and len(v) > _APPROACH_MAX_CHARS:
+            return v[: _APPROACH_MAX_CHARS - 3] + "..."
+        return v
 
 
 class DelegateRequest(BaseModel):

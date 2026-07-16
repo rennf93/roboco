@@ -321,6 +321,94 @@ async def test_pass_review_succeeds_and_transitions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pass_review_rejects_without_criteria_verified_when_acs_present() -> None:
+    """A task with real acceptance criteria demands criteria_verified — a
+    gestalt "looks good" notes string alone is no longer enough."""
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = _qa_owned_task(
+        task_id, qa_id, acceptance_criteria=["returns 200", "includes timestamp"]
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "x" * 100
+    env = await c.pass_review(qa_id, task_id, notes=notes)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state", body
+    assert "returns 200" in body["message"]
+    assert "includes timestamp" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_pass_review_renders_criteria_verified_into_notes() -> None:
+    """Happy path: every AC matched + evidenced renders '[AC] ...' lines into
+    the persisted qa_notes and the transition still fires."""
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = _qa_owned_task(
+        task_id, qa_id, acceptance_criteria=["returns 200", "includes timestamp"]
+    )
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_documentation",
+        assigned_to=qa_id,
+        team="backend",
+        pr_url="https://x/pr/8",
+        qa_evidence_inspected=True,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
+    task_svc.qa_pass.return_value = after
+    task_svc.documenter_for_team.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    _stub_empty_ledger(task_svc.session)
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    a2a_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    c = Choreographer(deps)
+
+    notes = (
+        "Reviewed PR carefully. Rendered every scene and checked each frame "
+        "against the brief before approving."
+    )
+    env = await c.pass_review(
+        qa_id,
+        task_id,
+        notes=notes,
+        criteria_verified=[
+            {"criterion": "returns 200", "evidence": "test_healthz asserts 200"},
+            {
+                "criterion": "includes timestamp",
+                "evidence": "frame diff shows ts field at README.md line 12",
+            },
+        ],
+    )
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_documentation"
+    task_svc.qa_pass.assert_awaited_once()
+    persisted_notes = task_svc.qa_pass.call_args.args[2]
+    assert "[AC] returns 200 — verified: test_healthz asserts 200" in persisted_notes
+    assert (
+        "[AC] includes timestamp — verified: frame diff shows ts field at "
+        "README.md line 12" in persisted_notes
+    )
+
+
+@pytest.mark.asyncio
 async def test_pass_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()
