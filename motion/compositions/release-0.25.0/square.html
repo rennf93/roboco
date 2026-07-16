@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en" data-composition-id="release-0.25.0" data-composition-duration="14" data-fps="30">
+  <head>
+    <meta charset="utf-8" />
+    <title>RoboCo v0.25.0 Release - square (1080×1080)</title>
+    <link rel="stylesheet" href="../../kit/kit.css" />
+    <script src="props.js"></script>
+    <script src="../../kit/kit.js"></script>
+    <style>
+      /* Square cut of the v0.25.0 release clip. Tighter spacing, smaller hero,
+         and the stats overlay covers the full frame for readability. */
+
+      .r25-hero {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        background: var(--pk-bg);
+        z-index: 30;
+        animation: r25-hero-out 0.6s var(--pk-ease) 2.6s forwards;
+      }
+      @keyframes r25-hero-out { to { opacity: 0; visibility: hidden; } }
+
+      .r25-hero__markwrap { position: relative; width: 400px; height: 400px; }
+      .r25-hero__mark {
+        width: 400px;
+        height: 400px;
+        transform: scale(0.82);
+        opacity: 0;
+        filter: drop-shadow(0 12px 60px rgba(255, 90, 31, 0.18));
+        animation: r25-mark-in 1s var(--pk-ease) 0.2s forwards;
+      }
+      @keyframes r25-mark-in { to { transform: scale(1); opacity: 1; } }
+
+      .r25-hero__ring {
+        position: absolute;
+        inset: 6px;
+        border-radius: 50%;
+        padding: 3px;
+        background: conic-gradient(from 0deg, transparent 0 78%, var(--pk-accent) 92%, transparent 100%);
+        -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+        -webkit-mask-composite: xor;
+        mask-composite: exclude;
+        opacity: 0;
+        animation: r25-ring-in 0.3s linear 0.9s forwards, r25-ring-spin 1.4s cubic-bezier(0.5, 0, 0.3, 1) 0.9s forwards;
+      }
+      @keyframes r25-ring-in { to { opacity: 1; } }
+      @keyframes r25-ring-spin { to { transform: rotate(360deg); opacity: 0; } }
+
+      .r25-hero__version {
+        font-family: var(--pk-font-display);
+        font-size: 96px;
+        color: var(--pk-text);
+        opacity: 0;
+        transform: translateY(18px);
+        animation: pk-enter-rise 0.7s var(--pk-ease) 1.2s forwards;
+      }
+      .r25-hero__tag {
+        font-size: 26px;
+        color: var(--pk-text-muted);
+        opacity: 0;
+        transform: translateY(14px);
+        animation: pk-enter-rise 0.7s var(--pk-ease) 1.5s forwards;
+      }
+
+      .pk-frame { animation-delay: 2.6s; }
+      .pk-frame__sidebar {
+        width: 220px;
+        align-items: stretch;
+        gap: 6px;
+        padding: 24px 16px 0 16px;
+        transform: translateX(-40px);
+        opacity: 0;
+        animation: r25-side-in 0.7s var(--pk-ease) 2.8s forwards;
+      }
+      @keyframes r25-side-in { to { transform: translateX(0); opacity: 1; } }
+
+      .r25-side__logo {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        background: #f4f6f8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 0 18px 4px;
+      }
+      .r25-side__logo img { width: 30px; height: 30px; }
+
+      .r25-nav {
+        display: flex;
+        align-items: center;
+        height: 44px;
+        padding: 0 14px;
+        border-radius: 10px;
+        font-size: 18px;
+        color: var(--pk-text-muted);
+      }
+      .r25-nav--active { background: var(--pk-active-bg); color: var(--pk-active-fg); font-weight: 600; }
+
+      .pk-frame__topbar { left: 220px; height: 84px; padding: 0 32px; }
+      .pk-frame__content { left: 220px; top: 84px; }
+      .r25-user { font-size: 18px; }
+      .r25-user__chip { padding: 6px 14px; }
+
+      .pk-frame__search { width: 280px; height: 42px; font-size: 18px; }
+
+      .pk-intake { --pk-intake-top: 18px; }
+      .pk-intake__field { height: 60px; font-size: 28px; }
+      .pk-column { --pk-column-top: 130px; width: 560px; }
+      .pk-column .pk-card { position: static; margin-bottom: 12px; padding: 18px 24px; }
+      .pk-card__title { font-size: 28px; }
+      .r25-sub { font-size: 18px; }
+
+      .r25-stats {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        background: rgba(10, 10, 10, 0.88);
+        z-index: 20;
+        font-family: var(--pk-font-display);
+        opacity: 0;
+        animation: r25-stats-in 0.4s var(--pk-ease) 10.8s forwards, r25-stats-out 0.5s var(--pk-ease) 12.2s forwards;
+      }
+      @keyframes r25-stats-in { to { opacity: 1; } }
+      .r25-stats__line {
+        font-size: 80px;
+        line-height: 1.25;
+        color: var(--pk-text);
+        opacity: 0;
+        transform: translateY(24px) scale(0.96);
+        animation: pk-enter-rise-scale 0.55s var(--pk-ease) forwards;
+      }
+      .r25-stats__line--accent { color: var(--pk-accent); }
+      @keyframes r25-stats-out { to { opacity: 0; } }
+
+      .pk-toast { --pk-toast-bottom: 84px; width: 480px; }
+
+      .pk-outro { --pk-outro-bottom: 28px; }
+      .r25-outro__logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        background: #f4f6f8;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .r25-outro__logo img { width: 36px; height: 36px; }
+
+      #typeIntro { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; width: 0; }
+      @keyframes type-reveal { to { width: var(--type-ch, 20ch); } }
+    </style>
+  </head>
+  <body>
+    <div id="stage" data-composition-id="release-0.25.0" data-width="1080" data-height="1080" data-start="0" data-duration="14" data-fps="30">
+
+      <div class="r25-hero clip" data-start="0" data-duration="3.2" data-track-index="13">
+        <div class="r25-hero__markwrap">
+          <img class="r25-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
+          <div class="r25-hero__ring"></div>
+        </div>
+        <div class="r25-hero__version">v0.25.0</div>
+        <div class="r25-hero__tag">governance gets a better UI</div>
+      </div>
+
+      <div class="pk-frame clip" data-start="2.6" data-duration="11.4" data-track-index="1">
+        <aside class="pk-frame__sidebar">
+          <div class="r25-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
+          <div class="r25-nav">Overview</div>
+          <div class="r25-nav">Business</div>
+          <div class="r25-nav">Social</div>
+          <div class="r25-nav r25-nav--active">Tasks</div>
+          <div class="r25-nav">Kanban</div>
+          <div class="r25-nav">Git</div>
+          <div class="r25-nav">Agents</div>
+          <div class="r25-nav">Metrics</div>
+        </aside>
+
+        <header class="pk-frame__topbar">
+          <div class="pk-frame__search">Search tasks, agents...</div>
+          <div class="r25-user">
+            <div class="pk-frame__status clip" data-start="2.6" data-duration="11.4" data-track-index="0">
+              <span class="pk-frame__statusdot"></span>
+              <span>Live</span>
+            </div>
+            <span class="r25-user__chip">CEO · Renzo</span>
+          </div>
+        </header>
+
+        <div class="pk-frame__content">
+          <div class="pk-intake clip" data-start="3.6" data-duration="10.4" data-track-index="2" style="animation-delay: 3.6s;">
+            <div class="pk-intake__label">New task</div>
+            <div class="pk-intake__field"><span id="typeIntro">Governance gets a better UI</span><span class="pk-caret"></span></div>
+          </div>
+
+          <div class="pk-column">
+            <div class="pk-column__header">Shipped in v0.25.0</div>
+
+            <div class="pk-card clip" data-start="5.2" data-duration="8.8" data-track-index="3" style="animation-delay: 5.2s;">
+              <div class="pk-card__title">Env ladder</div>
+              <div class="r25-sub">Dev to prod, one rung at a time.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">project settings</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="5.2" data-duration="1.6" data-track-index="4" style="--pk-pill-enter-delay: 5.2s; --pk-pill-exit-delay: 6.6s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="6.8" data-duration="7.2" data-track-index="5" style="--pk-pill-enter-delay: 6.8s;">completed</span>
+              </div>
+            </div>
+
+            <div class="pk-card clip" data-start="7" data-duration="7" data-track-index="6" style="animation-delay: 7s;">
+              <div class="pk-card__title">Collision map</div>
+              <div class="r25-sub">See who touched what before you review.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">task detail</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="7" data-duration="1.6" data-track-index="7" style="--pk-pill-enter-delay: 7s; --pk-pill-exit-delay: 8.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="8.6" data-duration="5.4" data-track-index="8" style="--pk-pill-enter-delay: 8.6s;">completed</span>
+              </div>
+            </div>
+
+            <div class="pk-card clip" data-start="8.8" data-duration="5.2" data-track-index="9" style="animation-delay: 8.8s;">
+              <div class="pk-card__title">Metrics donut</div>
+              <div class="r25-sub">90 days of real task flow.</div>
+              <div class="pk-card__meta">
+                <span class="pk-chip pk-chip--gray">performance tab</span>
+              </div>
+              <div class="pk-card__status">
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="8.8" data-duration="1.6" data-track-index="10" style="--pk-pill-enter-delay: 8.8s; --pk-pill-exit-delay: 10.2s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="10.4" data-duration="3.6" data-track-index="11" style="--pk-pill-enter-delay: 10.4s;">completed</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="pk-cursor clip" data-start="9.4" data-duration="4.6" data-track-index="12" style="--pk-cursor-delay: 9.4s; --pk-cursor-x0: 700px; --pk-cursor-y0: 300px; --pk-cursor-x1: 200px; --pk-cursor-y1: 1110px;">
+            <div class="pk-cursor__glyph"></div>
+            <div class="pk-cursor__ring" style="--pk-click-delay: 10.4s;"></div>
+          </div>
+
+          <div class="r25-stats clip" data-start="10.8" data-duration="3.2" data-track-index="14">
+            <div class="r25-stats__line" style="animation-delay: 10.8s;">1 release</div>
+            <div class="r25-stats__line r25-stats__line--accent" style="animation-delay: 11.1s;">25 agents</div>
+            <div class="r25-stats__line" style="animation-delay: 11.4s;">1 human</div>
+          </div>
+
+          <div class="pk-toast clip" data-start="11.8" data-duration="2.2" data-track-index="15" style="animation-delay: 11.8s;">
+            <div class="pk-toast__icon"></div>
+            <div class="pk-toast__body">
+              <div class="pk-toast__title" id="toastTitle">v0.25.0 shipped</div>
+              <div class="pk-toast__text" id="toastBody">I approved once. 25 agents did the rest.</div>
+            </div>
+          </div>
+
+          <div class="pk-outro clip" data-start="12.6" data-duration="1.4" data-track-index="16" style="animation-delay: 12.6s;">
+            <span class="r25-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
+            <span>roboco.tech</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["release-0.25.0"] = {
+        id: "release-0.25.0",
+        duration: 14,
+        fps: 30,
+        animations: []
+      };
+
+      (function () {
+        var props = (window.__PROPS__ && typeof window.__PROPS__ === "object") ? window.__PROPS__ : {};
+
+        function setText(id, value) {
+          if (typeof value !== "string" || !value) return;
+          var el = document.getElementById(id);
+          if (el) el.textContent = value;
+        }
+
+        setText("toastTitle", props.toastTitle);
+        setText("toastBody", props.toastBody);
+
+        function typeReveal(el) {
+          var n = (el.textContent || "").length || 1;
+          el.style.setProperty("--type-ch", (n + 1) + "ch");
+          el.style.animation = "type-reveal " + (n * 0.07).toFixed(2) + "s steps(" + n + ", end) 4.0s forwards";
+        }
+        var typeEl = document.getElementById("typeIntro");
+        if (typeEl) {
+          if (typeof props.introText === "string" && props.introText) {
+            typeEl.textContent = props.introText;
+          }
+          typeReveal(typeEl);
+        }
+      })();
+    </script>
+  </body>
+</html>

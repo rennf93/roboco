@@ -6,6 +6,9 @@
   "type": "module",
   "scripts": {
     "preview": "hyperframes preview compositions/release-announcement",
+    "preview:panel-demo": "hyperframes preview compositions/panel-demo",
+    "preview:release-recap": "hyperframes preview compositions/release-recap",
+    "preview:release-0.25.0": "hyperframes preview compositions/release-0.25.0",
     "lint": "hyperframes lint compositions/release-announcement",
     "test": "vitest run"
   },
