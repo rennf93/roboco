@@ -125,7 +125,7 @@ export function Header() {
             </div>
           </TooltipTrigger>
           <TooltipContent>
-            Signed in as the CEO — the panel's single human operator
+            Signed in as the CEO — the panel&apos;s single human operator
           </TooltipContent>
         </Tooltip>
       </div>
