@@ -129,7 +129,7 @@ jobs:
           done
 
       - name: Set up Node (for the panel screenshot step below)
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
