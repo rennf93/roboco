@@ -161,3 +161,38 @@ async def test_auto_recover_blocked_swallows_errors() -> None:
 
     # Must not raise.
     await orch._auto_recover_blocked_parent(client, "p")
+
+
+@pytest.mark.asyncio
+async def test_childless_awaiting_pm_review_reaches_closure() -> None:
+    """A leaf task in awaiting_pm_review (dev->qa->doc ran on the task itself)
+    is the PM's review turn — it must flow past the descendants gate, or a
+    restart-stranded review has no periodic pickup at all."""
+    orch = _ready_orch()
+    orch._fetch_all_descendants = AsyncMock(return_value=[])
+    orch._closure_handled_without_pm = AsyncMock(return_value=(True, None))
+    task = {"id": "t1", "status": "awaiting_pm_review", "team": "frontend"}
+    await orch._maybe_spawn_pm_closure(MagicMock(), task)
+    orch._closure_handled_without_pm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_childless_in_progress_still_bails() -> None:
+    """A childless claimed/in_progress task is a dev's work, not PM closure
+    material — the descendants gate must still bail."""
+    orch = _ready_orch()
+    orch._fetch_all_descendants = AsyncMock(return_value=[])
+    orch._closure_handled_without_pm = AsyncMock(return_value=(True, None))
+    task = {"id": "t1", "status": "in_progress", "team": "frontend"}
+    await orch._maybe_spawn_pm_closure(MagicMock(), task)
+    orch._closure_handled_without_pm.assert_not_awaited()
+
+
+def test_promoted_skip_excludes_the_pm_merge_turn() -> None:
+    """awaiting_pm_review IS the PM's turn — a PR-bearing task there must not
+    be skipped as already-promoted (the submit-time PM session may be gone)."""
+    promoted = AgentOrchestrator._already_promoted_for_closure
+    assert not promoted({"pr_number": 5, "status": "awaiting_pm_review"})
+    assert promoted({"pr_number": 5, "status": "awaiting_ceo_approval"})
+    assert promoted({"pr_number": 5, "status": "completed"})
+    assert not promoted({"pr_number": None, "status": "completed"})
