@@ -183,6 +183,17 @@ class RequestSandboxRequest(BaseModel):
     extensions: dict[str, list[str]] | None = None
 
 
+class RequestRenderRequest(BaseModel):
+    """Render a video composition to preview frames for artifact
+    verification. Omitted `composition_id` falls back to the task's
+    `video_draft` marker."""
+
+    composition_id: str | None = None
+    orientation: str = "vertical"
+    frame_count: int = 8
+    input_props: dict[str, Any] | None = None
+
+
 class ProgressRequest(BaseModel):
     """Progress update; % is DERIVED from the plan checklist.
 

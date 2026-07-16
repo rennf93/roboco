@@ -59,6 +59,10 @@ _DEV_DO = (
     # On-demand sandbox DB/Redis/Mongo — carried unconditionally (declarative
     # manifest), gated for real by request_sandbox's project opt-in check.
     "request_sandbox",
+    # Render the video composition to preview frames (dev's own working
+    # tree); manifest carries it unconditionally, gated for real by
+    # request_render's active-video-task + flag checks.
+    "request_render",
     *_NOTIFY_RECEIVER,
 )
 
@@ -69,6 +73,9 @@ _QA_DO = (
     "evidence",
     "draft_playbook",
     "request_sandbox",
+    # QA's render source is a read-only branch export, never a working tree
+    # (see request_render/_render_qa_source); gated the same way as above.
+    "request_render",
     *_NOTIFY_RECEIVER,
 )
 

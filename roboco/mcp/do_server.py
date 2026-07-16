@@ -50,6 +50,10 @@ _COMMIT_TIMEOUT = 190
 # 1035s — images are pre-pulled at startup in practice, so cold pulls here
 # are the exception, but the timeout must cover the worst case anyway.
 _SANDBOX_TIMEOUT = 1080
+# request_render runs an inline sidecar render call; the sidecar's own render
+# ceiling is video_render_timeout_seconds (default 600s) plus its request
+# timeout for uploading the tarball — 660s gives that headroom.
+_RENDER_TIMEOUT = 660
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -658,6 +662,10 @@ def propose_video(
     composition in motion/compositions/<id>/. Then commit + open_pr to send
     it through the normal PR-review gate.
 
+    After proposing, call request_render and verify the frames it returns
+    before i_am_done — the composition's SOURCE looking right is not the
+    same as the RENDERED artifact looking right.
+
     Args:
         composition_id: The HyperFrames composition id (the directory name
             under motion/compositions/, e.g. 'release-announcement').
@@ -751,6 +759,44 @@ def request_sandbox(
         "/api/v1/do/request_sandbox",
         {"services": services, "extensions": extensions},
         timeout=_SANDBOX_TIMEOUT,
+    )
+
+
+def request_render(
+    composition_id: str | None = None,
+    orientation: str = "vertical",
+    frame_count: int = 8,
+    input_props: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Render your video composition to a strip of preview frames — call
+    this after building or altering the HyperFrames composition, on a
+    video-authoring task, to verify the RENDERED artifact rather than just
+    trusting the source looks right.
+
+    Omit ``composition_id`` to use the one already proposed via
+    propose_video. Returns ``evidence.frames`` — absolute paths to the
+    rendered frame images. Read EVERY frame with your file tools before
+    calling i_am_done; if a scene is missing, clipped, or wrong, fix the
+    composition and call this again. A developer renders from their own
+    working tree; QA renders from a read-only export of the assembled
+    branch — either way this never mutates your working tree.
+
+    Args:
+        composition_id: The composition id under motion/compositions/. Omit
+            to use the task's already-proposed composition_id.
+        orientation: 'vertical' or 'square'.
+        frame_count: How many evenly-spaced preview frames to extract (1-32).
+        input_props: Optional props passed into the composition at render time.
+    """
+    return _post(
+        "/api/v1/do/request_render",
+        {
+            "composition_id": composition_id,
+            "orientation": orientation,
+            "frame_count": frame_count,
+            "input_props": input_props,
+        },
+        timeout=_RENDER_TIMEOUT,
     )
 
 
@@ -962,6 +1008,7 @@ _TOOLS: dict[str, Any] = {
     "notify": notify,
     "evidence": evidence,
     "request_sandbox": request_sandbox,
+    "request_render": request_render,
     "progress": progress,
     "notify_list": notify_list,
     "notify_get": notify_get,

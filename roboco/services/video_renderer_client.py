@@ -76,7 +76,7 @@ class VideoRenderer:
                 "video-renderer sidecar not configured (video_renderer_base_url unset)"
             )
         tar_bytes = await asyncio.to_thread(self._tar_source, source_dir)
-        mp4_bytes = await self._post(
+        response = await self._post(
             tar_bytes,
             composition_id=composition_id,
             input_props=input_props,
@@ -84,10 +84,44 @@ class VideoRenderer:
         )
         return await asyncio.to_thread(
             self._save,
-            mp4_bytes,
+            response.content,
             render_key=render_key,
             orientation=orientation,
         )
+
+    async def render_frames(
+        self,
+        source_dir: str,
+        *,
+        composition_id: str,
+        input_props: dict[str, Any],
+        orientation: str,
+        frame_count: int,
+    ) -> tuple[bytes, float]:
+        """Render one cut and extract ``frame_count`` preview keyframes.
+
+        Returns the frames tar.gz bytes plus the sidecar-probed real render
+        duration (parsed from the ``X-Video-Duration`` response header, or
+        ``0.0`` when absent/unparsable — never a save, never MinIO: this is
+        the artifact-verification surface, not the publish path).
+        """
+        if not self._base_url:
+            raise VideoRendererError(
+                "video-renderer sidecar not configured (video_renderer_base_url unset)"
+            )
+        tar_bytes = await asyncio.to_thread(self._tar_source, source_dir)
+        response = await self._post(
+            tar_bytes,
+            composition_id=composition_id,
+            input_props=input_props,
+            orientation=orientation,
+            frames=frame_count,
+        )
+        try:
+            duration = float(response.headers.get("X-Video-Duration", ""))
+        except ValueError:
+            duration = 0.0
+        return response.content, duration
 
     @staticmethod
     def _tar_source(source_dir: str) -> bytes:
@@ -109,26 +143,31 @@ class VideoRenderer:
         composition_id: str,
         input_props: dict[str, Any],
         orientation: str,
-    ) -> bytes:
-        """POST the tarball + render params; return the MP4 response body.
+        frames: int | None = None,
+    ) -> httpx.Response:
+        """POST the tarball + render params; return the raw response.
 
         Timeout is split: connect/write/pool use the short request timeout
         (sending the tar), while `read` gets the long render timeout (the
-        sidecar renders before it writes the response body).
+        sidecar renders before it writes the response body). ``frames`` set
+        switches the sidecar to the frames-tar branch instead of the MP4.
         """
         timeout = httpx.Timeout(
             settings.video_request_timeout_seconds,
             read=settings.video_render_timeout_seconds,
         )
+        data = {
+            "composition_id": composition_id,
+            "orientation": orientation,
+            "input_props": json.dumps(input_props),
+        }
+        if frames is not None:
+            data["frames"] = str(frames)
         client = await self._http(timeout)
         try:
             response = await client.post(
                 f"{self._base_url}/render",
-                data={
-                    "composition_id": composition_id,
-                    "orientation": orientation,
-                    "input_props": json.dumps(input_props),
-                },
+                data=data,
                 files={"source": ("motion.tar.gz", tar_bytes, "application/gzip")},
                 timeout=timeout,
             )
@@ -138,7 +177,7 @@ class VideoRenderer:
             raise VideoRendererError(
                 f"render failed: HTTP {response.status_code}: {response.text[:200]}"
             )
-        return response.content
+        return response
 
     @staticmethod
     def _save(mp4_bytes: bytes, *, render_key: str, orientation: str) -> str:

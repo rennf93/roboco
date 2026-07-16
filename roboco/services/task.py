@@ -642,8 +642,10 @@ X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
 # dispatched — a normal, pre-assigned delivery task like any other cell code
-# task — so it stays out of every held-source skip bucket.
-VIDEO_SOURCE = "video"
+# task — so it stays out of every held-source skip bucket. Canonical string
+# lives in foundation (markers.VIDEO_TASK_SOURCE) so the tracing gate can
+# key on it without importing this layer.
+VIDEO_SOURCE = markers.VIDEO_TASK_SOURCE
 
 # Source tag for a held video-post draft: mp4s + captions ready for CEO
 # approval. Like release_manager/X_SOURCES this is NEVER dispatched — held

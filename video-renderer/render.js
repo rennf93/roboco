@@ -8,12 +8,16 @@
 // render call produces its own temp file the caller cleans up once it has
 // streamed the response.
 import { createRenderJob, executeRenderJob } from "@hyperframes/producer";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { promisify } from "node:util";
 import * as tar from "tar";
+
+const execFileP = promisify(execFile);
 
 // @hyperframes/producer reads each cut's dimensions from the composition HTML
 // itself (data-width/data-height on the stage), so the sidecar no longer
@@ -244,6 +248,87 @@ export async function renderComposition({
     await rm(extractDir, { recursive: true, force: true }).catch(() => {});
     if (outDir) {
       await rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+    throw err;
+  }
+}
+
+export const MAX_PREVIEW_FRAMES = 32;
+
+// Downscaled so agents reading the frames as images get a small file that
+// still keeps on-screen copy legible (720 wide ≈ half of a 1080 cut).
+const PREVIEW_FRAME_WIDTH = 720;
+
+/**
+ * Render one cut and extract `frameCount` evenly spaced keyframes from it —
+ * the preview surface behind the fleet's `request_render` verb, so an agent
+ * can verify the actual artifact instead of the composition source. Samples
+ * scene MIDPOINTS (duration * (i + 0.5) / N), never t=0 or t=duration, so a
+ * fade-in first frame or an EOF seek can't produce a blank/missing frame.
+ * Returns the frames tarball path, the probed real duration, and a cleanup
+ * callback the caller MUST invoke after streaming.
+ */
+export async function renderFrames({
+  tarBuffer,
+  compositionId,
+  inputProps,
+  orientation,
+  frameCount,
+}) {
+  const { outputLocation, cleanup: cleanupRender } = await renderComposition({
+    tarBuffer,
+    compositionId,
+    inputProps,
+    orientation,
+  });
+  let framesDir;
+  try {
+    // ffprobe the RENDERED file rather than trusting the composition's
+    // data-duration attribute — the whole point is ground truth.
+    const { stdout } = await execFileP("ffprobe", [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "csv=p=0",
+      outputLocation,
+    ]);
+    const duration = Number(stdout.trim());
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new Error("could not probe rendered video duration");
+    }
+
+    framesDir = await mkdtemp(path.join(tmpdir(), "hyperframes-frames-"));
+    const files = [];
+    for (let i = 0; i < frameCount; i++) {
+      const t = (duration * (i + 0.5)) / frameCount;
+      // Timestamp in the filename — self-describing, no manifest needed.
+      const name = `frame-${String(i + 1).padStart(2, "0")}-of-${frameCount}-at-${t.toFixed(1)}s.png`;
+      await execFileP("ffmpeg", [
+        "-v", "error",
+        "-ss", t.toFixed(3),
+        "-i", outputLocation,
+        "-frames:v", "1",
+        "-vf", `scale=${PREVIEW_FRAME_WIDTH}:-2`,
+        "-y",
+        path.join(framesDir, name),
+      ]);
+      files.push(name);
+    }
+
+    const tarPath = path.join(framesDir, "frames.tar.gz");
+    await tar.create({ gzip: true, cwd: framesDir, file: tarPath }, files);
+    return {
+      tarPath,
+      duration,
+      cleanup: () =>
+        Promise.all([
+          cleanupRender(),
+          rm(framesDir, { recursive: true, force: true }).catch(() => {}),
+        ]),
+    };
+  } catch (err) {
+    await cleanupRender();
+    if (framesDir) {
+      await rm(framesDir, { recursive: true, force: true }).catch(() => {});
     }
     throw err;
   }

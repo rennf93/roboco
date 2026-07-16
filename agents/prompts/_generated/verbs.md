@@ -39,6 +39,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `propose_video` | `propose_video(composition_id: str, x_caption: str, tiktok_caption: str, platforms: list[str], input_props: str | Any | None = None)` |
 | `request_sandbox` | `request_sandbox(services: list[str] | None = None, extensions: str | list[str] | None = None)` |
+| `request_render` | `request_render(composition_id: str | None = None, orientation: str = 'vertical', frame_count: int = 8, input_props: str | Any | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -69,6 +70,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `evidence` | `evidence(task_id: UUID)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `request_sandbox` | `request_sandbox(services: list[str] | None = None, extensions: str | list[str] | None = None)` |
+| `request_render` | `request_render(composition_id: str | None = None, orientation: str = 'vertical', frame_count: int = 8, input_props: str | Any | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |

@@ -510,6 +510,80 @@ async def test_reject_records_reason_and_cancels(db_session: AsyncSession) -> No
 
 
 @pytest.mark.asyncio
+async def test_reject_with_reason_calls_reauthor_with_cancelled_task(
+    db_session: AsyncSession,
+) -> None:
+    """A non-blank reject reason routes into VideoEngine.reauthor_from_rejection,
+    called with the just-cancelled task and the verbatim reason."""
+    task = await _seed_video_post(db_session)
+    fake_engine = MagicMock()
+    fake_engine.reauthor_from_rejection = AsyncMock(return_value=None)
+    with (
+        _LOCKED[0],
+        _LOCKED[1],
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=fake_engine,
+        ),
+    ):
+        updated = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+    fake_engine.reauthor_from_rejection.assert_awaited_once()
+    called_task, called_reason = fake_engine.reauthor_from_rejection.await_args.args
+    assert called_task.id == task.id
+    assert called_reason == "Doesn't match the release"
+
+
+@pytest.mark.asyncio
+async def test_reject_succeeds_even_when_reauthor_raises(
+    db_session: AsyncSession,
+) -> None:
+    """A reauthor failure must never fail or roll back the reject — the
+    cancel already committed before this best-effort seam runs."""
+    task = await _seed_video_post(db_session)
+    fake_engine = MagicMock()
+    fake_engine.reauthor_from_rejection = AsyncMock(side_effect=RuntimeError("boom"))
+    with (
+        _LOCKED[0],
+        _LOCKED[1],
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=fake_engine,
+        ),
+    ):
+        updated = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "Doesn't match the release")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+    assert markers.get_video_reject_reason(updated) == "Doesn't match the release"
+
+
+@pytest.mark.asyncio
+async def test_reject_blank_reason_skips_reauthor(db_session: AsyncSession) -> None:
+    task = await _seed_video_post(db_session)
+    fake_engine = MagicMock()
+    fake_engine.reauthor_from_rejection = AsyncMock()
+    with (
+        _LOCKED[0],
+        _LOCKED[1],
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=fake_engine,
+        ),
+    ):
+        updated = await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "   ")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+    fake_engine.reauthor_from_rejection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reject_takes_the_same_lock_approve_holds(
     db_session: AsyncSession,
 ) -> None:
