@@ -20,6 +20,7 @@ Example:
 
 import asyncio
 import contextlib
+import io
 import json
 import math
 import os
@@ -27,6 +28,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
@@ -1965,6 +1967,78 @@ class WorkspaceService:
         # root-side fetch updated refs/objects.
         await asyncio.to_thread(_ensure_agent_owned, workspace)
         return workspace
+
+    async def export_branch_motion(self, project: Any, branch: str) -> Path:
+        """Export ``branch``'s ``motion/`` subtree into a fresh scratch dir —
+        request_render's QA source. Read-only by construction: fetches
+        ``origin/<branch>`` into the project's shared READ CLONE (never a
+        per-agent working tree) and ``git archive``s the commit directly —
+        no checkout, so the read clone's own pinned HEAD is undisturbed for
+        every other conventions-standard reader of that same clone. Caller
+        owns cleanup of the returned scratch dir.
+
+        Raises WorkspaceError only when the branch itself can't be fetched
+        (bad ref, auth failure, network). A branch that fetches fine but has
+        no ``motion/`` at that commit yields an EMPTY scratch dir — the
+        caller's ``motion/compositions/<id>/`` existence check handles that
+        uniformly alongside the ordinary "missing composition" case, rather
+        than a second distinct error path here.
+        """
+        from roboco.services.project import get_project_service
+
+        project_service = get_project_service(self.session)
+        workspace = await self.ensure_read_clone(project.slug)
+        git_token = await self._read_clone_token(project_service, project.slug)
+
+        prefix: list[str] = []
+        if git_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+
+        def _git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *prefix, *args],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        def _export() -> Path:
+            fetched = _git("fetch", "--no-tags", "origin", branch)
+            if fetched.returncode != 0:
+                raise WorkspaceError(
+                    f"export_branch_motion: fetch of {branch!r} failed: "
+                    f"{fetched.stderr.strip()}"
+                )
+            sha = _git("rev-parse", "FETCH_HEAD").stdout.strip()
+            scratch = Path(tempfile.mkdtemp(prefix="render-src-"))
+            if not sha:
+                return scratch
+            archive = subprocess.run(
+                ["git", "archive", sha, "--", "motion"],
+                cwd=str(workspace),
+                capture_output=True,
+                check=False,
+            )
+            if archive.returncode != 0:
+                # Most commonly: no motion/ tree at this commit. Leave the
+                # scratch dir empty so the caller's composition-path check
+                # reports the clean "missing composition" rejection instead
+                # of a second distinct error here.
+                logger.warning(
+                    "export_branch_motion: git archive found no motion/ tree",
+                    branch=branch,
+                    stderr=archive.stderr.decode(errors="replace").strip()[:200],
+                )
+                return scratch
+            with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+                tar.extractall(scratch, filter="data")
+            return scratch
+
+        return await asyncio.to_thread(_export)
 
     async def delete_workspace(
         self,

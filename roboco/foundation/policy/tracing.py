@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from roboco.foundation.policy.content import markers
+
 
 class Requirement(StrEnum):
     PLAN = "plan"
@@ -55,6 +57,10 @@ class Requirement(StrEnum):
     # before the developer can resubmit. Trivially satisfied by an empty
     # ledger (no findings ever filed).
     FINDINGS_ADDRESSED = "findings_addressed"
+    # A video-authoring task must carry a request_render preview before
+    # i_am_done — proof the author looked at the rendered artifact, not just
+    # the source. No-op for a non-video task.
+    RENDER_VERIFIED = "render_verified"
 
 
 @dataclass(frozen=True)
@@ -218,6 +224,13 @@ def _check_findings_addressed(_task: Any, ctx: GateContext) -> list[str]:
     return [f"finding:{fid}" for fid in ctx.open_finding_ids]
 
 
+def _check_render_verified(task: Any, _ctx: GateContext) -> list[str]:
+    """The gate that makes a video dev look at the rendered artifact."""
+    if getattr(task, "source", None) != markers.VIDEO_TASK_SOURCE:
+        return []
+    return [] if markers.get_render_preview(task) else ["render_preview"]
+
+
 def _check_subtasks_terminal(task: Any, _ctx: GateContext) -> list[str]:
     """Caller passes a task whose `_subtasks_all_terminal` boolean is set
     by the choreographer based on a DB query. Validator just reads it."""
@@ -250,6 +263,7 @@ _CHECKERS: dict[Requirement, Checker] = {
     Requirement.PR_REVIEWER_NOTES_MIN_CHARS: _check_pr_reviewer_notes_min_chars,
     Requirement.QUICK_CONTEXT_MIN_CHARS: _check_quick_context_min_chars,
     Requirement.FINDINGS_ADDRESSED: _check_findings_addressed,
+    Requirement.RENDER_VERIFIED: _check_render_verified,
 }
 
 
@@ -314,6 +328,9 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             # `resolved_findings`) before resubmitting. Trivially satisfied
             # when the ledger has no rows for this task.
             Requirement.FINDINGS_ADDRESSED,
+            # A video-authoring task must have a request_render preview on
+            # file. No-op for every other task source.
+            Requirement.RENDER_VERIFIED,
         }
     ),
     # QA pass/fail.

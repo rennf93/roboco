@@ -24,6 +24,10 @@ Even when enabled, distribution requires an explicit per-clip CEO approval — a
 
 All three open a normal, **assigned** UX/UI authoring task (balanced across the two ux-devs) rather than a held draft — the dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` (one `<id>/vertical.html` + `<id>/square.html` carrying the HyperFrames render params on `<html>`) and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle.
 
+## Artifact verification (request_render)
+
+Authoring is gated on the RENDERED artifact, not just its source: the `request_render` do-tool (developer/QA) renders the caller's actual composition through the sidecar and extracts evenly spaced keyframe PNGs to a container-shared `.previews/` path, returning their absolute paths in the envelope's `evidence.frames`. The agent must Read every frame and verify each scene/feature from the brief appears fully and legibly — a 14-second cut that only ever shows its first scene is exactly what this catches. A developer renders their own working tree (worktree-aware, `head_sha`/`dirty` provenance stamped); QA renders a read-only `git archive` export of the assembled branch — never a working tree. A successful render stamps the task's `render_preview` marker, and `i_am_done` on a video-authoring task refuses without it (`Requirement.RENDER_VERIFIED`, mirrored in the possibilities-matrix fast path), so no video task can complete on a source-only self-review. QA's `claim_review` evidence carries a `video_context` block (composition id + the dev's stamped preview + an instruction to re-render the branch state) so the reviewer checks output, not source.
+
 ## Render loop and the sidecar
 
 Once the authoring task completes, an orchestrator render loop (`_video_render_loop`, interval `ROBOCO_VIDEO_RENDER_INTERVAL_SECONDS`) tars the merged `motion/` source and POSTs it to the `video-renderer` sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`). The sidecar is credential-free and git-free — it reads only what it's POSTed, bundles the composition, renders both the 9:16 and 1:1 MP4 cuts (`ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` per render), and streams the bytes back. The orchestrator writes the MP4s to `ROBOCO_VIDEO_OUTPUT_DIR` (bind-mounted in all three compose files so renders survive container recreation) — the sidecar never writes to disk directly. The sidecar renders via `@hyperframes/producer` — agent-authored HTML rendered in headless Chrome plus system `ffmpeg` for the seek-driven, frame-deterministic MP4 cut. HyperFrames was chosen for its Apache-2.0 license (no React/TSX toolchain lock-in for the authoring agents), agent-authored HTML as the composition substrate, and seek-driven deterministic renders that match the post-pipeline shape without a node-bundled renderer.
@@ -36,7 +40,7 @@ The render pass materializes a held `video_post` draft — mirroring the X-post/
 |----------|--------|
 | `GET /api/video/posts` | List every held video draft awaiting decision. |
 | `POST /api/video/posts/{task_id}/approve` | Post the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload). Idempotent — approving an already-posted draft is a no-op. |
-| `POST /api/video/posts/{task_id}/reject` | Cancel the draft with a reason. Terminal. |
+| `POST /api/video/posts/{task_id}/reject` | Cancel the draft with a reason — and route the feedback back into the flow: a non-empty reason opens a fresh authoring task (same occasion, brief = the CEO's verbatim feedback + a revise-in-place pointer at the existing composition), so a rejection is a rework loop, not a dead end. |
 | `POST /api/video/request` | Open an on-demand authoring task (CEO-only). |
 
 Approval runs under a Redis heartbeat-renewed lock so a double-click can't double-post; the task is marked `COMPLETED` under the same lock before it releases.

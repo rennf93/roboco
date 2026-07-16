@@ -26,6 +26,7 @@ _EVIDENCE_OMIT_WHEN_EMPTY = (
     "parent_context",
     "description",
     "collision_context",
+    "video_context",
 )
 
 
@@ -64,6 +65,10 @@ class EvidencePayload:
     # declared-vs-actual drift. Empty for a root or a task with no colliding
     # siblings; the block is omitted when empty (zero token cost).
     collision_context: list[dict[str, Any]] = field(default_factory=list)
+    # QA-facing artifact context for a video-authoring task (composition_id +
+    # the latest request_render preview + a verification instruction). None
+    # for every non-video task; omitted from the dict when empty.
+    video_context: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -167,6 +172,7 @@ def build_evidence_for_task(
     prior_findings: list[Any] | None = None,
     parent_context: list[dict[str, Any]] | None = None,
     collision_context: list[dict[str, Any]] | None = None,
+    video_context: dict[str, Any] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data.
 
@@ -177,7 +183,9 @@ def build_evidence_for_task(
     reads the intake's original analysis verbatim. ``collision_context`` is
     the prebuilt collision-map block (the caller fetches siblings + actual
     files and runs the pure ``build_collision_context``); passed through
-    verbatim so this module stays DB-free.
+    verbatim so this module stays DB-free. ``video_context`` is the
+    prebuilt video-artifact block (caller-assembled from the task's
+    ``video_draft`` marker + render preview); passed through verbatim.
     """
     return EvidencePayload(
         pr_number=task.pr_number,
@@ -194,6 +202,7 @@ def build_evidence_for_task(
         revision_findings=render_findings(revision_findings),
         prior_findings=render_findings(prior_findings),
         collision_context=list(collision_context or []),
+        video_context=video_context,
     )
 
 

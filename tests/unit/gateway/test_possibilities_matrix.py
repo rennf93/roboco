@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.foundation.policy.content import markers
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.envelope import Envelope
 
@@ -61,6 +62,8 @@ def _t(
     t.pr_number = 12345 if pr_created else None
     t.acceptance_criteria = list(criteria)
     t.acceptance_criteria_status = ac_status
+    t.source = "code"
+    t.orchestration_markers = None
     return t
 
 
@@ -332,6 +335,44 @@ async def test_fast_path_open_findings_blocks(monkeypatch: pytest.MonkeyPatch) -
     await c._i_am_done_fast_path(_ctx())
     stubs.reject.assert_awaited_once()
     c.task.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fast_path_video_task_without_render_preview_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A video-authoring task with no request_render preview must not be
+    able to fast-path around looking at the rendered artifact."""
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    tracing_gap = AsyncMock(
+        return_value=Envelope.tracing_gap(missing=["render_preview"], remediate="x")
+    )
+    monkeypatch.setattr(c, "_build_tracing_gap", tracing_gap)
+    ctx = _ctx()
+    ctx.task = _t()
+    ctx.task.source = markers.VIDEO_TASK_SOURCE
+    await c._i_am_done_fast_path(ctx)
+    stubs.reject.assert_awaited_once()
+    c.task.submit_qa.assert_not_awaited()
+    tracing_gap.assert_awaited_once_with(
+        ctx.agent_id, ctx.task_id, ["render_preview"], task=ctx.task
+    )
+
+
+@pytest.mark.asyncio
+async def test_fast_path_video_task_with_render_preview_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = Choreographer(_deps())
+    stubs = _stub_fast_path(c, monkeypatch)
+    ctx = _ctx()
+    ctx.task = _t()
+    ctx.task.source = markers.VIDEO_TASK_SOURCE
+    ctx.task.orchestration_markers = {markers.RENDER_PREVIEW: {"frames": ["a.png"]}}
+    await c._i_am_done_fast_path(ctx)
+    stubs.ok.assert_awaited_once()
+    c.task.submit_qa.assert_awaited_once()
 
 
 @pytest.mark.asyncio

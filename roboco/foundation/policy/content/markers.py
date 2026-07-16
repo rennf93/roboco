@@ -48,6 +48,7 @@ X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
+RENDER_PREVIEW = "render_preview"
 VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
 VAULT_NOTE_REF = "vault_note_ref"
 DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
@@ -300,6 +301,29 @@ def get_video_reject_reason(task: HasMarkers) -> str | None:
 
 def set_video_reject_reason(task: HasMarkers, reason: str) -> None:
     set_marker(task, VIDEO_REJECT_REASON, reason)
+
+
+# Task-source tag for a video-authoring task. Canonical here so foundation-
+# layer gates can key on it without importing the services layer;
+# services/task.py's VIDEO_SOURCE aliases this.
+VIDEO_TASK_SOURCE = "video"
+
+
+def get_render_preview(task: HasMarkers) -> dict[str, Any] | None:
+    """The last ``request_render`` preview stamped on a video-authoring task.
+
+    Payload: {at, composition_id, orientation, frame_count, duration_seconds,
+    frames (absolute container paths, readable from every agent container),
+    head_sha, dirty, rendered_by, source ("workspace"|"branch")}. Its
+    presence is what the i_am_done RENDER_VERIFIED gate checks — proof the
+    author looked at the actual rendered artifact, not just the source.
+    """
+    val = get_marker(task, RENDER_PREVIEW)
+    return val if isinstance(val, dict) else None
+
+
+def set_render_preview(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, RENDER_PREVIEW, payload)
 
 
 # --- vault curation ---------------------------------------------------------
