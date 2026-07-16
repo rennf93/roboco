@@ -50,8 +50,9 @@ async def test_commit_failure_aborts_before_push() -> None:
     """A failed ``git commit`` must raise — never push the pre-bump base."""
     ops = _FakeGitOps(
         _ctx(),
-        # add ok, commit FAILS (rc=1, e.g. gpgsign/pre-commit reject).
-        script=[(0, ""), (1, "error: gpg failed to sign the data")],
+        # add ok, 2x identity config ok, commit FAILS (rc=1, e.g.
+        # gpgsign/pre-commit reject).
+        script=[(0, ""), (0, ""), (0, ""), (1, "error: gpg failed to sign the data")],
     )
     with pytest.raises(RuntimeError, match="commit"):
         await ops.commit_and_push("0.13.0")
@@ -75,11 +76,13 @@ async def test_green_commit_then_push_returns_sha() -> None:
     """Happy path: add ok, commit ok, rev-parse sha, push ok → returns the sha."""
     ops = _FakeGitOps(
         _ctx(),
-        script=[(0, ""), (0, ""), (0, "deadbeef\n"), (0, "ok")],
+        script=[(0, ""), (0, ""), (0, ""), (0, ""), (0, "deadbeef\n"), (0, "ok")],
     )
     sha = await ops.commit_and_push("0.13.0")
     assert sha == "deadbeef"
     assert ops.calls[0][:1] == ("add",)
-    assert ops.calls[1][:1] == ("commit",)
-    assert ops.calls[2][:1] == ("rev-parse",)
-    assert ops.calls[3][:1] == ("push",)
+    assert ops.calls[1][:1] == ("config",)
+    assert ops.calls[2][:1] == ("config",)
+    assert ops.calls[3][:1] == ("commit",)
+    assert ops.calls[4][:1] == ("rev-parse",)
+    assert ops.calls[5][:1] == ("push",)

@@ -414,12 +414,19 @@ class _GitReleaseOps:
         return conclusion == "success", detail
 
     async def commit_and_push(self, version: str) -> str:
+        from roboco.config import settings
+
         add_rc, add_out = await self._git("add", "-A")
         if add_rc != 0:
             logger.error("release git add failed", error=add_out.strip()[:300])
             raise RuntimeError(f"release git add failed: {add_out.strip()[:200]}")
+        # The clone is fresh per execute and the container has no global git
+        # identity — set it per-clone or the commit refuses outright.
+        await self._git("config", "user.name", settings.release_git_name)
+        await self._git("config", "user.email", settings.release_git_email)
+        sign = ["-S"] if settings.release_sign_commits else []
         commit_rc, commit_out = await self._git(
-            "commit", "-S", "-m", f"chore(release): {version}"
+            "commit", *sign, "-m", f"chore(release): {version}"
         )
         if commit_rc != 0:
             # A failed commit (gpgsign/pre-commit reject/no-op bump) must abort

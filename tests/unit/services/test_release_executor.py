@@ -520,10 +520,12 @@ async def test_release_push_argv_uses_extraheader_not_url_token(
     git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
     captured: list[list[str]] = []
 
-    # commit_and_push issues: add -A, commit -S -m, rev-parse HEAD, push.
+    # commit_and_push issues: add -A, 2x identity config, commit, rev-parse, push.
     responses = iter(
         [
             _DoneProc(b""),  # add -A
+            _DoneProc(b""),  # config user.name
+            _DoneProc(b""),  # config user.email
             _DoneProc(b""),  # commit
             _DoneProc(b"deadbeef\n"),  # rev-parse HEAD
             _DoneProc(b"ok"),  # push

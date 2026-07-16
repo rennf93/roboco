@@ -861,6 +861,21 @@ class Settings(BaseSettings):
             "Even when on it only PROPOSES — the CEO approves before any publish."
         ),
     )
+    release_git_name: str = Field(
+        default="RoboCo Release Manager",
+        description="Committer identity for the executor's release commit.",
+    )
+    release_git_email: str = Field(
+        default="release-manager@roboco.local",
+        description="Committer email for the executor's release commit.",
+    )
+    release_sign_commits: bool = Field(
+        default=False,
+        description=(
+            "Sign the release commit (-S). Off by default: the orchestrator "
+            "container carries no signing key; arm only with a mounted key."
+        ),
+    )
     release_min_commits: int = Field(
         default=8,
         ge=1,
