@@ -690,17 +690,18 @@ class PRGateMixin(_Base):
 
         A reviewer must not PASS an assembled PR whose suite can't run in the
         workspace, that carries unresolved architectural-convention
-        violations, or whose CI is red/pending/unscheduled/unresolvable;
-        pr_fail stays available for all three. Returns ``(rejection, None)``
-        to block, or ``(None, ci_note)`` to proceed — ``ci_note`` is a
-        non-None evidence stamp only when the CI guard passed through a
-        project with no CI configured at all. The toolchain/conventions
-        guards are inert when their flag is off; the CI guard fails open on
-        an unresolvable gate-level slug/PR number (``None`` from
-        ``_resolve_ci_status``) and also passes through — with an evidence
-        stamp — when ``get_pr_ci_status`` itself classifies a missing
-        project/git_url/token or an unreachable/nonexistent repo as
-        ``no_ci_configured``.
+        violations, or whose CI is red/pending/unscheduled/unresolvable; only
+        red CI is a code defect pr_fail should act on — an unresolvable CI
+        lookup is a platform blip to retry, never a finding. Returns
+        ``(rejection, None)`` to block, or ``(None, ci_note)`` to proceed —
+        ``ci_note`` is a non-None evidence stamp only when the CI guard
+        passed through a project with no CI configured at all. The
+        toolchain/conventions guards are inert when their flag is off; the
+        CI guard fails open on an unresolvable gate-level slug/PR number
+        (``None`` from ``_resolve_ci_status``) and also passes through —
+        with an evidence stamp — when ``get_pr_ci_status`` itself classifies
+        a missing project/git_url/token or an unreachable/nonexistent repo
+        as ``no_ci_configured``.
         """
         from roboco.config import settings as _settings
 
@@ -806,12 +807,13 @@ class PRGateMixin(_Base):
         """Refuse pr_pass unless CI on the assembled PR's head commit is green.
 
         Failing, pending, unscheduled, or unresolvable-via-API CI states all
-        block with a reviewer-aware remediation pointing at ``pr_fail`` (a
-        reviewer has no ``i_am_blocked``) — pending/unscheduled/error are
-        framed as retryable (wait and call pr_pass again), never as a defect
-        to route back to the dev. A project with no CI configured at all
-        passes through cleanly, returning an evidence note so the caller can
-        stamp the verdict with why the guard did not block.
+        block, but only ``failure`` remediates via ``pr_fail`` (a reviewer
+        has no ``i_am_blocked``); pending/unscheduled/error are framed as
+        retryable (wait and call pr_pass again), never as a defect to route
+        back to the dev — a GitHub API lookup error is a platform blip, not
+        a finding. A project with no CI configured at all passes through
+        cleanly, returning an evidence note so the caller can stamp the
+        verdict with why the guard did not block.
         """
         status = await self._resolve_ci_status(task_id, t)
         if status is None:
@@ -871,11 +873,16 @@ class PRGateMixin(_Base):
                 "green — do NOT pr_pass before any check has run",
             )
         # state == "error" (or an unrecognized value) — a genuine GitHub API
-        # failure resolving the signal; never treat this as green.
+        # lookup failure, never treat this as a property of the PR itself.
+        # Live incident: a reviewer converted this transient blip into an
+        # unwaivable blocker finding whose own fix text said "no code change
+        # required" — a platform hiccup is not a diff defect.
         return (
-            "could not determine CI status for the assembled PR (GitHub API error)",
-            "retry pr_pass shortly once the CI status can be resolved; "
-            "if it persists, pr_fail(issues=[...]) to unwedge the PR",
+            "GitHub API error resolving CI status for the assembled PR — "
+            "this is a transient lookup failure, not a property of the PR",
+            "wait a few minutes and retry pr_pass — do NOT pr_fail over a "
+            "CI-status lookup error; a platform blip is not a code finding, "
+            "findings are for defects in the diff",
         )
 
     def _record_gate_verdict(

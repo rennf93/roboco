@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 from roboco.foundation.policy.content import markers as m
 
+# Named constant — ruff PLR2004 forbids magic-value comparisons.
+_TWO = 2
+
 
 def _task(om: dict | None = None) -> SimpleNamespace:
     return SimpleNamespace(orchestration_markers=om)
@@ -130,3 +133,25 @@ def test_docs_sync_release_version_roundtrip() -> None:
     assert m.get_docs_sync_release_version(t) is None
     m.set_docs_sync_release_version(t, "0.23.0")
     assert m.get_docs_sync_release_version(t) == "0.23.0"
+
+
+def test_resubmit_unchanged_head_roundtrip() -> None:
+    t = _task()
+    assert m.get_resubmit_unchanged_head(t) is None
+    m.set_resubmit_unchanged_head(t, "aaaa1111bbbb2222")
+    assert m.get_resubmit_unchanged_head(t) == "aaaa1111bbbb2222"
+
+
+def test_block_flip_count_bump_and_notify() -> None:
+    t = _task()
+    assert m.get_block_flip_count(t) == 0
+    assert m.is_block_flip_notified(t) is False
+    assert m.bump_block_flip_count(t) == 1
+    assert m.bump_block_flip_count(t) == _TWO
+    assert m.get_block_flip_count(t) == _TWO
+    # notified stays False across bumps until explicitly marked.
+    assert m.is_block_flip_notified(t) is False
+    m.mark_block_flip_notified(t)
+    assert m.is_block_flip_notified(t) is True
+    # Marking notified must not reset the counter.
+    assert m.get_block_flip_count(t) == _TWO

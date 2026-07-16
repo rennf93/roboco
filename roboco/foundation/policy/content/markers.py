@@ -460,3 +460,62 @@ def get_docs_sync_release_version(task: HasMarkers) -> str | None:
 
 def set_docs_sync_release_version(task: HasMarkers, version: str) -> None:
     set_marker(task, DOCS_SYNC_RELEASE_VERSION, version)
+
+
+# --- resubmit-unchanged-head exemption -------------------------------------
+# submit_root/submit_up hard-refuse a re-submit whose assembled PR head is
+# unchanged since the last pr_fail (the 2026-06-27 loop-stopper). That's a
+# structural deadlock when the rejection round needed no code change (e.g. a
+# transient CI-lookup error) — every ledger finding gets addressed/waived but
+# the head sha never moves. This records the head sha that was granted ONE
+# resubmit exemption, so a second attempt at the SAME head still refuses (see
+# choreographer._unchanged_pr_guard).
+
+RESUBMIT_UNCHANGED_HEAD = "resubmit_unchanged_head"
+
+
+def get_resubmit_unchanged_head(task: HasMarkers) -> str | None:
+    val = get_marker(task, RESUBMIT_UNCHANGED_HEAD)
+    return str(val) if val else None
+
+
+def set_resubmit_unchanged_head(task: HasMarkers, head_sha: str) -> None:
+    set_marker(task, RESUBMIT_UNCHANGED_HEAD, head_sha)
+
+
+# --- block/unblock flip breaker --------------------------------------------
+# Counts successful `unblock` calls on a task so a repeating block/unblock
+# cycle (e.g. escalate_up auto-blocks, a PM unblocks, repeat — live incident:
+# 10 flips, 43 spawns with no forward progress) can alert the CEO instead of
+# burning spawns forever. Payload: {"count": int, "notified": bool} — one key
+# so the counter and the notified-once flag stay atomic with each other.
+
+BLOCK_FLIP_COUNT = "block_flip_count"
+
+
+def get_block_flip_count(task: HasMarkers) -> int:
+    val = get_marker(task, BLOCK_FLIP_COUNT)
+    count = val.get("count") if isinstance(val, dict) else None
+    return int(count) if isinstance(count, int) else 0
+
+
+def is_block_flip_notified(task: HasMarkers) -> bool:
+    val = get_marker(task, BLOCK_FLIP_COUNT)
+    return bool(val.get("notified")) if isinstance(val, dict) else False
+
+
+def bump_block_flip_count(task: HasMarkers) -> int:
+    """Increment the flip counter; returns the new count."""
+    count = get_block_flip_count(task) + 1
+    set_marker(
+        task,
+        BLOCK_FLIP_COUNT,
+        {"count": count, "notified": is_block_flip_notified(task)},
+    )
+    return count
+
+
+def mark_block_flip_notified(task: HasMarkers) -> None:
+    set_marker(
+        task, BLOCK_FLIP_COUNT, {"count": get_block_flip_count(task), "notified": True}
+    )

@@ -102,6 +102,11 @@ _PM_SUBTASK_DESC_MAX_LEN = 600
 # tasks, not one giant plan.
 _PM_SUBTASKS_MAX = 7
 
+# unblock's flip breaker: alert the CEO once a task has flip-flopped
+# block/unblock this many times (live incident: 10 flips, 43 spawns with no
+# forward progress before anyone noticed).
+_BLOCK_FLIP_NOTIFY_THRESHOLD = 3
+
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
     """Return a hint if any PM sub_task is title-only / thin / over-long.
@@ -6882,6 +6887,7 @@ class Choreographer:
             )
 
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
+        await self._maybe_notify_block_flip(task_id, t)
         next_msg = (
             "task restored to its pre-block state — original assignee will resume"
             if restore
@@ -6893,6 +6899,39 @@ class Choreographer:
             next=next_msg,
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role=role)
+
+    async def _maybe_notify_block_flip(self, task_id: UUID, t: Any) -> None:
+        """Bump the flip counter; alert the CEO once past the threshold.
+
+        A resolver that keeps unblocking a task that keeps re-blocking
+        (fe-pm escalate_up auto-blocks / main_pm unblocks, live incident: 10
+        flips, 43 spawns) is a structural wedge, not automatic recovery
+        working as intended. Signal it once at the 3rd flip; the unblock
+        itself always still succeeds regardless.
+        """
+        flip_count = markers.bump_block_flip_count(t)
+        if (
+            flip_count >= _BLOCK_FLIP_NOTIFY_THRESHOLD
+            and not markers.is_block_flip_notified(t)
+        ):
+            markers.mark_block_flip_notified(t)
+            await self._notify_ceo_block_flip(task_id, flip_count)
+
+    async def _notify_ceo_block_flip(self, task_id: UUID, flip_count: int) -> None:
+        """Best-effort CEO alert for a repeating block/unblock cycle; never
+        raises — the breaker signals, it does not wedge unblock itself."""
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_block_flip_notification(
+                task_id=str(task_id), flip_count=flip_count
+            )
+        except Exception:
+            logger.warning(
+                "failed to send CEO block-flip notification",
+                task_id=str(task_id),
+                flip_count=flip_count,
+            )
 
     async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
         """Remediate suffix naming the PM's OWN task ready to complete.
@@ -7338,25 +7377,40 @@ class Choreographer:
             )
         return None
 
-    async def _submit_root_unchanged_pr_guard(
-        self, t: Any, briefing: dict[str, Any]
+    async def _unchanged_pr_guard(
+        self,
+        t: Any,
+        briefing: dict[str, Any],
+        *,
+        verb: str,
+        pr_scope: str,
+        delegate_target: str,
+        subtask_noun: str,
+        work_noun: str,
     ) -> Envelope | None:
-        """Refuse to re-submit a root PR whose diff is unchanged since the last fail.
+        """Shared unchanged-PR loop-stopper for submit_root (root) / submit_up (cell).
 
         The hard loop-stopper for the 2026-06-27 ``pr_fail`` re-submit loop. A
         prior ``pr_fail`` stamped the assembled PR's head SHA into
         ``notes_structured.pr_review.head_sha`` (see ``_capture_pr_head_sha`` /
-        ``_record_gate_verdict``). On the next ``submit_root`` this looks up the
-        PR's CURRENT head SHA and compares. Equal ⇒ no new cell work landed on
-        the root branch since the fail ⇒ the diff the reviewer would see is
-        byte-identical to the one just rejected ⇒ refuse, so no model can loop
-        itself back into ``awaiting_pr_review``. Different ⇒ the branch advanced
-        ⇒ allow. Returns ``None`` (proceed) on every ambiguous case so the gate
-        FAILS OPEN: no prior ``pr_fail`` verdict, no recorded ``head_sha`` (e.g.
-        a verdict written before this field existed), no ``pr_number``, no
+        ``_record_gate_verdict``). This looks up the PR's CURRENT head SHA and
+        compares. Equal ⇒ no new work has landed on the branch since the fail ⇒
+        the diff the reviewer would see is byte-identical to the one just
+        rejected. Different ⇒ the branch advanced ⇒ allow.
+
+        A same-head resubmit isn't always a loop: when the rejection round's
+        findings needed no code change (e.g. a transient CI-lookup error
+        ledgered as a finding, then waived/addressed), a flat refuse deadlocks
+        the task forever — the head sha can never move because there is
+        nothing to fix. So once every ledger finding is resolved
+        (``_open_finding_ids`` empty), ONE resubmission is exempted per head
+        sha (``markers.resubmit_unchanged_head``); a second attempt at the SAME
+        head still refuses — one-shot, not a standing bypass.
+
+        Returns ``None`` (proceed) on every ambiguous case so the gate FAILS
+        OPEN: no prior ``pr_fail`` verdict, no recorded ``head_sha`` (e.g. a
+        verdict written before this field existed), no ``pr_number``, no
         resolvable project, or a git/closed-PR lookup that returns ``None``.
-        Only the exact-unchanged case is hard-blocked; the rest fall through to
-        the reviewer, who can still ``pr_fail`` if the diff is bad.
         """
         pr_review = (getattr(t, "notes_structured", None) or {}).get("pr_review") or {}
         if pr_review.get("verdict") != "failed":
@@ -7367,22 +7421,53 @@ class Choreographer:
         current = await self._current_pr_head_sha(t)
         if current is None or current != recorded:
             return None
+        exemption_note = ""
+        if not await self._open_finding_ids(t.id):
+            if markers.get_resubmit_unchanged_head(t) == current:
+                exemption_note = (
+                    " (the one-shot exemption for this head was already used)"
+                )
+            else:
+                markers.set_resubmit_unchanged_head(t, current)
+                logger.info(
+                    "unchanged-PR resubmit exemption granted — all findings"
+                    " resolved without a code change",
+                    task_id=str(t.id),
+                    verb=verb,
+                    head=current[:7],
+                )
+                return None
         return Envelope.invalid_state(
             message=(
-                "the assembled root PR is unchanged since the last pr_fail"
-                f" (head {current[:7]}). No new cell work has landed on the"
-                " root branch, so re-submitting would re-open the exact diff"
-                " the reviewer just rejected and loop straight back to"
-                " awaiting_pr_review."
+                f"the assembled {pr_scope} PR is unchanged since the last"
+                f" pr_fail (head {current[:7]}). No new {work_noun} has"
+                f" landed on the {pr_scope} branch, so re-submitting would"
+                " re-open the exact diff the reviewer just rejected and loop"
+                f" straight back to awaiting_pr_review.{exemption_note}"
             ),
             remediate=(
-                "re-delegate the fixes to the owning cell PM(s) via"
-                " delegate(...) and wait for the cell subtasks to complete"
-                " and the root branch to be re-assembled. Do NOT call"
-                " submit_root again until new cell work has advanced the"
-                " root branch HEAD."
+                f"re-delegate the fixes to the {delegate_target} via"
+                f" delegate(...) and wait for the {subtask_noun} to complete"
+                f" and the {pr_scope} branch to be re-assembled. Do NOT call"
+                f" {verb} again until new {work_noun} has advanced the"
+                f" {pr_scope} branch HEAD."
             ),
             context_briefing=briefing,
+        )
+
+    async def _submit_root_unchanged_pr_guard(
+        self, t: Any, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse to re-submit a root PR whose diff is unchanged since the last
+        fail. See ``_unchanged_pr_guard`` for the shared logic."""
+        return await self._unchanged_pr_guard(
+            t,
+            briefing,
+            verb="submit_root",
+            pr_scope="root",
+            delegate_target="owning cell PM(s)",
+            subtask_noun="cell subtasks",
+            work_noun="cell work",
         )
 
     async def _current_pr_head_sha(self, t: Any) -> str | None:
@@ -7428,33 +7513,17 @@ class Choreographer:
 
         Refuses re-submit when the cell PR's current head SHA equals the SHA
         ``pr_fail`` recorded in ``notes_structured.pr_review.head_sha`` (no new
-        dev work landed ⇒ byte-identical diff). Ambiguous cases FAIL OPEN via
-        ``_current_pr_head_sha``; only the exact-unchanged case is hard-blocked.
+        dev work landed ⇒ byte-identical diff). See ``_unchanged_pr_guard`` for
+        the shared logic (including the findings-resolved one-shot exemption).
         """
-        pr_review = (getattr(t, "notes_structured", None) or {}).get("pr_review") or {}
-        if pr_review.get("verdict") != "failed":
-            return None
-        recorded = pr_review.get("head_sha")
-        if not recorded:
-            return None
-        current = await self._current_pr_head_sha(t)
-        if current is None or current != recorded:
-            return None
-        return Envelope.invalid_state(
-            message=(
-                "the assembled cell PR is unchanged since the last pr_fail"
-                f" (head {current[:7]}). No new dev work has landed on the"
-                " cell branch, so re-submitting would re-open the exact diff"
-                " the reviewer just rejected and loop straight back to"
-                " awaiting_pr_review."
-            ),
-            remediate=(
-                "re-delegate the fixes to the owning developer(s) via"
-                " delegate(...) and wait for the dev subtasks to complete and"
-                " the cell branch to be re-assembled. Do NOT call submit_up"
-                " again until new dev work has advanced the cell branch HEAD."
-            ),
-            context_briefing=briefing,
+        return await self._unchanged_pr_guard(
+            t,
+            briefing,
+            verb="submit_up",
+            pr_scope="cell",
+            delegate_target="owning developer(s)",
+            subtask_noun="dev subtasks",
+            work_noun="dev work",
         )
 
     async def submit_root(

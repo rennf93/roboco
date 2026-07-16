@@ -125,6 +125,40 @@ class NotificationService:
             )
         )
 
+    async def send_block_flip_notification(
+        self,
+        task_id: str,
+        flip_count: int,
+        to_agent: str = "ceo",
+    ) -> None:
+        """Alert an overseer that a task keeps flip-flopping block/unblock.
+
+        Raised from the choreographer's ``unblock`` once the per-task flip
+        counter crosses the threshold — a resolver keeps unblocking a task
+        that keeps re-blocking, which usually means a structural wedge (e.g.
+        an escalate_up/unblock cycle with no forward progress) rather than a
+        one-off block.
+        """
+        logger.info(
+            "Sending block-flip notification", task_id=task_id, flip_count=flip_count
+        )
+        body = (
+            f"Task {task_id} has been blocked and unblocked {flip_count} times. "
+            "This flip-flop usually means a structural wedge rather than a "
+            "one-off block — please investigate."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Task {task_id} flip-flopping block/unblock ({flip_count}x)",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_qa_ready_notification(
         self,
         task_id: str,

@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from roboco.api.schemas.v1.flow import (
+    _APPROACH_MAX_CHARS,
     DelegateRequest,
     IWillPlanRequest,
     IWillWorkOnRequest,
@@ -165,13 +166,35 @@ def test_i_will_plan_request_rejects_overlong_plan() -> None:
     assert "plan" in str(exc.value)
 
 
-def test_i_will_plan_request_rejects_overlong_approach() -> None:
-    """approach >800 chars is rejected — no ceiling was the bloat bug."""
+def test_i_will_plan_request_truncates_overlong_approach() -> None:
+    """approach >800 chars is truncated to 800 (797 + "..."), never rejected —
+    a hard 422 here used to throw away an otherwise-good plan and degrade the
+    PM to a bare unblock (live incident)."""
+    req = IWillPlanRequest(
+        task_id=uuid4(),
+        plan="plan",
+        approach="a" * (_APPROACH_MAX_CHARS + 1),
+    )
+    assert len(req.approach) == _APPROACH_MAX_CHARS
+    assert req.approach.endswith("...")
+    assert req.approach == "a" * (_APPROACH_MAX_CHARS - 3) + "..."
+
+
+def test_i_will_plan_request_approach_exactly_800_untruncated() -> None:
+    """Exactly the ceiling is the boundary — passes through byte-for-byte."""
+    approach = "a" * _APPROACH_MAX_CHARS
+    req = IWillPlanRequest(task_id=uuid4(), plan="plan", approach=approach)
+    assert req.approach == approach
+    assert not req.approach.endswith("...")
+
+
+def test_i_will_plan_request_rejects_thin_approach() -> None:
+    """approach <150 chars is still a hard reject — a thin plan IS a defect."""
     with pytest.raises(ValidationError) as exc:
         IWillPlanRequest(
             task_id=uuid4(),
             plan="plan",
-            approach="a" * 801,
+            approach="a" * 149,
         )
     assert "approach" in str(exc.value)
 
