@@ -10,9 +10,12 @@ import express from "express";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { createReadStream } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   renderComposition,
+  renderFrames,
   ExtractedSizeExceededError,
+  MAX_PREVIEW_FRAMES,
   RenderTimeoutError,
   UnknownCompositionError,
 } from "./render.js";
@@ -58,6 +61,61 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
+/**
+ * Validate the optional 'frames' form field. Absent/empty keeps the
+ * existing MP4 behavior (`count: null`); present must be an integer in
+ * 1..MAX_PREVIEW_FRAMES or `error` names the bound for the 400 response.
+ * Pure + exported so the branch is unit-testable without a live server.
+ */
+export function parseFramesField(raw) {
+  if (raw === undefined || raw === null || raw === "") return { count: null };
+  const count = Number(raw);
+  if (!Number.isInteger(count) || count < 1 || count > MAX_PREVIEW_FRAMES) {
+    return {
+      error: `'frames' must be an integer between 1 and ${MAX_PREVIEW_FRAMES}`,
+    };
+  }
+  return { count };
+}
+
+/**
+ * Stream `filePath` as the response body and run `cleanup` once the
+ * response is done — shared by both the MP4 and the frames-tar branches of
+ * /render. See the inline comment below on why cleanup fires from both the
+ * source stream's own "close" and the response's "close" (client abort).
+ */
+function streamFileWithCleanup(res, filePath, { contentType, headers, cleanup }) {
+  res.status(200);
+  res.setHeader("Content-Type", contentType);
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    res.setHeader(name, value);
+  }
+  const stream = createReadStream(filePath);
+  stream.on("error", (err) => {
+    console.error("video-renderer: stream error", err);
+    if (!res.headersSent) {
+      res.status(500);
+    }
+    res.end();
+    cleanup();
+  });
+  stream.on("close", () => {
+    cleanup();
+  });
+  // stream.pipe() never propagates a DESTINATION close back to the
+  // source: if the client aborts, or the orchestrator's retry-on-timeout
+  // hangs up mid-download, `res` closes but the source stream's own
+  // "close" above never fires — leaking this request's render-output
+  // temp dir on every such disconnect. Destroying the still-open source
+  // releases its fd immediately; cleanup() is idempotent (rm force:true)
+  // so also landing here on a normal end-of-stream close is harmless.
+  res.on("close", () => {
+    stream.destroy();
+    cleanup();
+  });
+  stream.pipe(res);
+}
+
 app.post("/render", renderLimiter, upload.single("source"), async (req, res) => {
   const body = req.body ?? {};
   const compositionId = body.composition_id;
@@ -96,40 +154,39 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
     return;
   }
 
+  const framesField = parseFramesField(body.frames);
+  if (framesField.error) {
+    res.status(400).json({ error: framesField.error });
+    return;
+  }
+
   try {
+    if (framesField.count !== null) {
+      const { tarPath, duration, cleanup } = await renderFrames({
+        tarBuffer: req.file.buffer,
+        compositionId,
+        inputProps,
+        orientation,
+        frameCount: framesField.count,
+      });
+      streamFileWithCleanup(res, tarPath, {
+        contentType: "application/gzip",
+        headers: { "X-Video-Duration": String(duration) },
+        cleanup,
+      });
+      return;
+    }
+
     const { outputLocation, cleanup } = await renderComposition({
       tarBuffer: req.file.buffer,
       compositionId,
       inputProps,
       orientation,
     });
-
-    res.status(200);
-    res.setHeader("Content-Type", "video/mp4");
-    const stream = createReadStream(outputLocation);
-    stream.on("error", (err) => {
-      console.error("video-renderer: stream error", err);
-      if (!res.headersSent) {
-        res.status(500);
-      }
-      res.end();
-      cleanup();
+    streamFileWithCleanup(res, outputLocation, {
+      contentType: "video/mp4",
+      cleanup,
     });
-    stream.on("close", () => {
-      cleanup();
-    });
-    // stream.pipe() never propagates a DESTINATION close back to the
-    // source: if the client aborts, or the orchestrator's retry-on-timeout
-    // hangs up mid-download, `res` closes but the source stream's own
-    // "close" above never fires — leaking this request's render-output
-    // temp dir on every such disconnect. Destroying the still-open source
-    // releases its fd immediately; cleanup() is idempotent (rm force:true)
-    // so also landing here on a normal end-of-stream close is harmless.
-    res.on("close", () => {
-      stream.destroy();
-      cleanup();
-    });
-    stream.pipe(res);
   } catch (err) {
     if (
       err instanceof UnknownCompositionError ||
@@ -171,6 +228,10 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: "internal error" });
 });
 
-app.listen(PORT, () => {
-  console.log(`video-renderer listening on :${PORT}`);
-});
+// Guarded so a test can `import` this module (for parseFramesField) without
+// also binding the real port — only `node server.js` triggers the listen.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  app.listen(PORT, () => {
+    console.log(`video-renderer listening on :${PORT}`);
+  });
+}

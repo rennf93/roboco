@@ -32,6 +32,7 @@ from roboco.api.schemas.v1.do import (
     PRUpdateRequest,
     ReadMessagesRequest,
     RejectPlaybookRequest,
+    RequestRenderRequest,
     RequestSandboxRequest,
 )
 from roboco.security import (
@@ -270,6 +271,23 @@ async def do_request_sandbox(
 ) -> dict:
     env = await actions.request_sandbox(
         agent_id=x_agent_id, services=body.services, extensions=body.extensions
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/request_render")
+async def do_request_render(
+    request: Request,
+    body: RequestRenderRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.request_render(
+        agent_id=x_agent_id,
+        composition_id=body.composition_id,
+        orientation=body.orientation,
+        frame_count=body.frame_count,
+        input_props=body.input_props,
     )
     return envelope_to_response(env, request)
 

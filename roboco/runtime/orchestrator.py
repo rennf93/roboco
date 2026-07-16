@@ -77,6 +77,7 @@ from roboco.services.task import (
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
     VIDEO_HELD_SOURCES,
+    VIDEO_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
 )
@@ -14268,6 +14269,28 @@ If the fast path refuses (a gate it checks is not actually met), the
             state, f'Call evidence(task_id="{task_id}") to check status.'
         )
 
+    def _video_prompt_block(self) -> str:
+        """Video-authoring instructions appended for a ``source=VIDEO_SOURCE``
+        task: build + propose the composition, then render it and eyeball
+        every keyframe — a clean source review is not evidence the RENDERED
+        clip is right; the frames are."""
+        return """
+## VIDEO TASK — verify the RENDERED clip, not just the source
+
+1. Build/extend the composition under motion/compositions/<id>/ per the brief.
+2. propose_video(composition_id="<id>", x_caption="...", tiktok_caption="...",
+   platforms=[...], input_props={<real facts from the brief>}) — once.
+3. request_render() renders your actual composition and
+   returns keyframe PNG paths — Read every one. Confirm each scene/feature
+   named in the brief appears fully and legibly, and that the authored
+   data-duration actually covers all scenes (nothing cut off or rushed).
+4. A frame doesn't prove it: fix the composition, then request_render()
+   again. Repeat until every frame checks out.
+
+i_am_done() refuses without a stamped render preview — a clean self-review of
+the source is not enough; the rendered frames are the evidence.
+"""
+
     async def _build_dev_prompt(self, task: dict[str, Any]) -> str:
         """Build state-aware initial prompt for a developer."""
         task_id = task.get("id", "unknown")
@@ -14298,6 +14321,9 @@ If the fast path refuses (a gate it checks is not actually met), the
         instructions = self._get_workflow_instructions(
             workflow_state, task_id, open_findings_block
         )
+        video_block = (
+            self._video_prompt_block() if task.get("source") == VIDEO_SOURCE else ""
+        )
 
         # The task spec travels with the prompt so the dev starts with the
         # actual ask (file:line targets, constraints, the intake's rationale)
@@ -14320,7 +14346,7 @@ and constraints come from the intake analysis and PM decomposition. Re-articulat
 only the HOW (the solution); the WHAT is already decided upstream.
 
 {instructions}
-
+{video_block}
 Start by calling evidence(task_id="{task_id}") for full details, acceptance
 criteria, and the upstream parent/ancestor context (the original intake analysis).
 

@@ -101,6 +101,14 @@ def hint_for_short_pr_reviewer_notes(*, min_chars: int) -> str:
     )
 
 
+def hint_for_render_preview() -> str:
+    return (
+        "call request_render() to render this task's PR branch, Read every "
+        "returned frame image, and verify each scene/feature from the brief "
+        "appears fully and legibly — then retry i_am_done"
+    )
+
+
 def hint_for_short_quick_context(*, min_chars: int, task_id: str) -> str:
     return (
         f"your quick_context section is empty or under {min_chars} chars. Before "
