@@ -78,6 +78,21 @@ def test_fresh_auth_date_within_window_accepted() -> None:
     assert validate_init_data(init_data, _BOT_TOKEN, max_age_seconds=600) is not None
 
 
+def test_far_future_auth_date_rejected() -> None:
+    # A far-future auth_date is nonsense from a server-stamped field; without
+    # an upper bound it would count as eternally fresh.
+    fields = {"auth_date": str(int(time.time()) + 100_000)}
+    init_data = _init_data(fields)
+    assert validate_init_data(init_data, _BOT_TOKEN, max_age_seconds=600) is None
+
+
+def test_slightly_future_auth_date_within_skew_tolerance_accepted() -> None:
+    # Local clock lagging Telegram's by a few seconds must not break login.
+    fields = {"auth_date": str(int(time.time()) + 30)}
+    init_data = _init_data(fields)
+    assert validate_init_data(init_data, _BOT_TOKEN, max_age_seconds=600) is not None
+
+
 def test_missing_auth_date_rejected() -> None:
     fields = {"query_id": "abc"}
     init_data = _init_data(fields)

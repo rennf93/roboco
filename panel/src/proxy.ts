@@ -66,6 +66,6 @@ export const config = {
   // phone session that can never reach that page), Next's internal asset
   // paths, and the static icon files at the app root.
   matcher: [
-    "/((?!login|api|tg|_next/static|_next/image|favicon.ico|apple-icon.png|icon.png).*)",
+    "/((?!login|api|tg(?:/|$)|_next/static|_next/image|favicon.ico|apple-icon.png|icon.png).*)",
   ],
 };

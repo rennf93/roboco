@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
 from roboco.api.auth.backend import cookie_transport, get_jwt_strategy
+from roboco.api.auth.login_limit import LoginRateLimiter
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.telegram import (
     TelegramCredentialsSetRequest,
@@ -171,3 +172,13 @@ def mount_telegram_miniapp_auth(app: FastAPI, prefix: str) -> None:
     if not (settings.telegram_miniapp_enabled and settings.cloud_auth_enabled):
         return
     app.include_router(webapp_auth_router, prefix=prefix, tags=["Telegram"])
+    # Unconditional per-IP limiter, same backstop /auth/login gets: the guard
+    # middleware's rate_limit decorator only bites when ROBOCO_GUARD_ENABLED
+    # is on, which is toggled independently — a public session-minting route
+    # must not depend on that coupling.
+    app.add_middleware(
+        LoginRateLimiter,
+        paths=(f"{prefix}/webapp-auth",),
+        max_attempts=settings.login_max_attempts,
+        window=60,
+    )

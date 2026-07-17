@@ -28,6 +28,12 @@ def _hash_matches(fields: dict[str, str], received_hash: str, bot_token: str) ->
     return hmac.compare_digest(expected_hash, received_hash)
 
 
+# Telegram stamps auth_date server-side; allow a small negative delta for
+# local clock skew, but a far-future auth_date is nonsense — reject it
+# rather than treating it as eternally fresh.
+_CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
+
 def _is_fresh(auth_date_raw: str | None, max_age_seconds: int) -> bool:
     if auth_date_raw is None:
         return False
@@ -35,7 +41,8 @@ def _is_fresh(auth_date_raw: str | None, max_age_seconds: int) -> bool:
         auth_date = int(auth_date_raw)
     except ValueError:
         return False
-    return time.time() - auth_date <= max_age_seconds
+    delta = time.time() - auth_date
+    return -_CLOCK_SKEW_TOLERANCE_SECONDS <= delta <= max_age_seconds
 
 
 def validate_init_data(
