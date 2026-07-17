@@ -231,7 +231,7 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
-      toast.success("All agents now on Anthropic");
+      toast.success("Role/global routing now on Anthropic — per-agent pins kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -250,7 +250,7 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({ mode: "grok" });
-      toast.success("All agents now on Grok");
+      toast.success("Role/global routing now on Grok — per-agent pins kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -269,7 +269,7 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({ mode: "ollama" });
-      toast.success("All agents now on Ollama");
+      toast.success("Role/global routing now on Ollama — per-agent pins kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -291,7 +291,7 @@ export function AIRoutingCard() {
         mode: "self_hosted",
         ...(selfHostedModel ? { default_model: selfHostedModel } : {}),
       });
-      toast.success("All agents now on Self-Hosted LLM");
+      toast.success("Role/global routing now on Self-Hosted LLM — per-agent pins kept");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -494,7 +494,7 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Ollama / Self-Hosted route every agent to one provider and clear all per-agent overrides below. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
