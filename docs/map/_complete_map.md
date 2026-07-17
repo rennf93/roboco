@@ -1589,7 +1589,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `project.py` | `Project` + `BranchReason` + `ProjectCreate`/`ProjectUpdate` (CI-watch, dep-update, quality_command fields) | 178 |
 | `agent.py` | `Agent` API model + `ModelConfig`/`AgentPermissions`/`AgentMetrics` + `AgentCreate`/`AgentUpdate` | 172 |
 | `kanban.py` | `KanbanBoard`/`KanbanColumn`/`KanbanCard`/`KanbanSwimlane` + per-role column configs + `get_column_config` | 159 |
-| `llm_catalog.py` | `CatalogEntry` + `MODEL_CATALOG`/`MODEL_CATALOG_BY_NAME`/`provider_type_for_model` + `OLLAMA_ROLE_DEFAULTS`/`OLLAMA_DEFAULT_MODEL` (Settings dropdown source of truth) | 132 |
+| `llm_catalog.py` | `CatalogEntry` + `MODEL_CATALOG`/`MODEL_CATALOG_BY_NAME`/`provider_type_for_model` + `OLLAMA_DEFAULT_MODEL` (Settings dropdown source of truth) | 103 |
 | `message.py` | `ExtractedMessage` + `RawStream` | 137 |
 | `runtime.py` | Orchestrator runtime types — `OrchestratorAgentState`, `SpawnGitContext`, `OrchestratorAgentConfig`, `AgentInstance`, `WaitingRecord`, `MODEL_MAP`, `ROLE_MODEL_MAP` | 128 |
 | `transcription.py` | `StreamBuffer` (flush heuristic) + `TranscriptionConfig` | 119 |
@@ -1654,7 +1654,6 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `ROLE_MODEL_MAP` | dict | runtime.py:114 | per-role default tier: developer/cell_pm/main_pm→sonnet, qa/documenter→haiku, pr_reviewer/auditor/board/ceo→opus (qa→haiku, main_pm→sonnet, pr_reviewer→opus are the cost-tuned defaults) |
 | `ROLE_EFFORT_MAP` | dict | runtime.py | per-role `CLAUDE_CODE_EFFORT_LEVEL` override injected at spawn; **empty/inert by default** (opt-in per role after verifying the level moves usage) |
 | `MODEL_CATALOG` | tuple | llm_catalog.py:67 | Settings-dropdown source of truth; Anthropic entries derived from `MODEL_MAP` |
-| `OLLAMA_ROLE_DEFAULTS` | dict | llm_catalog.py:107 | Per-role model for "pure Ollama" mode |
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |
 | `COMMUNICATION_MATRIX` | dict | permissions.py:83 | Who can directly communicate with whom (role→role set) |
 | `IndexType` | StrEnum | optimal.py:13 | code/documentation/conversations/journals/errors/standards/decisions/reviews/learnings/playbooks |
@@ -1738,7 +1737,7 @@ models/
 │   └── dashboard.py       FlagData, ReportData, TeamHealthData, AuditQueueItem, DashboardStorage
 ├── llm
 │   ├── llm.py             LLMUsage, ToonConfig, EncodedBlock, ToonMetrics
-│   ├── llm_catalog.py     CatalogEntry, MODEL_CATALOG, provider_type_for_model, OLLAMA_ROLE_DEFAULTS, OLLAMA_DEFAULT_MODEL
+│   ├── llm_catalog.py     CatalogEntry, MODEL_CATALOG, provider_type_for_model, OLLAMA_DEFAULT_MODEL
 │   └── runtime.py         OrchestratorAgentState, SpawnGitContext, OrchestratorAgentConfig, AgentInstance, WaitingRecord, MODEL_MAP, ROLE_MODEL_MAP
 ├── metrics
 │   └── metrics.py         VelocityMetrics, BlockerMetrics, TeamMetrics, AgentMetrics, StageTiming, StageBottleneck, BottleneckReport, AgentReworkRate, TeamReworkRate, ReworkReport, Scorecard
@@ -1831,7 +1830,7 @@ Logic-touching commits:
 | `TaskCreate._exactly_one_target` 3-way validator | task.py:405 | Tests/clients asserting the old 2-way error message ("a task needs either a project_id… or a product_id…") will fail against the new message ("a task needs exactly one target: … or cell_projects …"). Any caller that constructed a `TaskCreate` with both `project_id` and `product_id` was already rejected; callers passing `cell_projects` + another target are newly rejected. | Medium |
 | `Task.cell_projects` requires migration 052 | task.py:179 | The `cell_projects` field exists on the model regardless of DB state, but persistence (`TaskTable.cell_projects` relationship + `task_cell_projects` table) needs migration 052. On a DB where 052 hasn't run, `TaskService.create` with a non-empty `cell_projects` will fail at insert. | Medium |
 | `SpawnGitContext.task_short_id` consumer parity | runtime.py:38 | The field is additive with a `None` default, but every spawn-path consumer that should route the agent into the per-task worktree must read it; a missed consumer silently falls back to the clone root (the old behavior). | Low |
-| Ollama catalog defaults vs persisted assignments | llm_catalog.py:107 | `OLLAMA_ROLE_DEFAULTS` / `OLLAMA_DEFAULT_MODEL` changed, but spawn reads persisted `model_assignments` rows — so the defaults only apply when no row exists. An operator who deletes the `model_assignments` rows (the documented "kill stale fleet model" procedure) will now get kimi-k2.7-code / glm-5.2 instead of minimax-m3 / kimi-k2.6. Verify the new tags actually work on the Ollama Cloud plan before relying on this. | Low |
+| Ollama catalog defaults vs persisted assignments | llm_catalog.py:103 | `OLLAMA_DEFAULT_MODEL` changed, but spawn reads persisted `model_assignments` rows — so the default only applies when no row exists. An operator who deletes the `model_assignments` rows (the documented "kill stale fleet model" procedure) will now get kimi-k2.7-code instead of minimax-m3. Verify the tag actually works on the Ollama Cloud plan before relying on this. (`OLLAMA_ROLE_DEFAULTS` was removed 2026-07-17 as dead code — it was never consulted by routing.) | Low |
 | `ProductCellMapping` import cycle risk | task.py:24 | `task.py` now imports from `product.py` at module load. `product.py` imports only from `foundation.identity` and `base.py` — no cycle today, but a future `product.py` → `task.py` import would create one. | Low |
 | `AgentRole`/`Team` alias removal pending | base.py:21–24 | The aliases to `foundation.identity` are a migration shim ("Removed in Phase 4 housekeeping"). Consumers still importing `AgentRole`/`Team` from `roboco.models.base` will break when the shim is removed. | Low |
 
@@ -2522,6 +2521,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
 | `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | routes/orchestrator.py:37 | Router-level CEO-HMAC guard on orchestrator control routes. |
+| `_validated_agent_id` | fn | routes/orchestrator.py:99 | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
 | `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
 | `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
@@ -2665,6 +2665,7 @@ roboco/api/
 > - `d1cf6ecb` Wave 1 (#295) — adds `GET /api/tasks/summary?q=` search (`TaskService.search_tasks`), `GET /api/prompter/live/{id}/search-tasks` (intake memory), `GET /api/secretary/tasks?q=` (Secretary task-by-name lookup), and the Secretary `edit` directive action.
 > - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
+> - `637c75dc` (2026-07-17, PR #546, "wave-1 quick wins") fix(api): normalize agent UUID to slug at the orchestrator route boundary — `_validated_agent_id` now also calls `_resolve_to_slug` after its path-injection checks, so a caller-supplied DB UUID (e.g. from the panel) resolves to the canonical slug before spawn/stop/status/resolve-wait/mark-waiting address the runtime, fixing UUID-named containers and registry misses.
 
 ## Regression Risks
 
@@ -4339,7 +4340,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `resolve_for_agent` | method | `services/llm.py:124` | Precedence ladder agent>role>global; never raises — downgrades to legacy Anthropic path |
 | `probe_ollama_tags` | func | `services/llm.py:63` | `{base_url}/api/tags` probe; never raises, returns `([], error)` |
 | `upsert_assignment` | method | `services/llm.py:241` | Insert-or-update by `(scope, scope_value)`; routes non-catalog names to LOCAL; auto-enables LOCAL provider |
-| `apply_mode` | method | `services/llm.py:418` | Wipe + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
+| `apply_mode` | method | `services/llm.py:418` | Wipe role/global rows (AGENT_SLUG pins preserved) + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
 | `derive_mode` | method | `services/llm.py:314` | Settings UI label from current assignments |
 | `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:340,360` | Encrypt+enable / clear+disable on the seeded provider row |
 | `ProactiveKnowledgeService` | class | `services/proactive.py:90` | Builds `ContextPackage` from multiple RAG indexes on claim/session |
@@ -4582,11 +4583,12 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441`. Range `fd10cc86..HEAD` (3a
 
 No logic-touching commits to list — IMPACT: none.
 
-> Post-snapshot updates (since 2026-06-29): four commits touched this slice after the baseline was cut.
+> Post-snapshot updates (since 2026-06-29): five commits touched this slice after the baseline was cut.
 > - `e4ed970f` [chore] stream-bus: poison-pill ACK + dead-letter (`DEAD_LETTER_STREAM`, `_dead_letter`), periodic `_reclaim_loop` spawned alongside `_listen_loop`, `_run_handler_guarded` catches `BaseException` for cancelled-handler marker cleanup (3 gaps).
 > - `6b441e42` [chore] converters: `InvalidIdentifierError(ValueError)` introduced; `require_uuid` now raises it for both None and unparseable input; `repo_key` git-URL normalizer added; orchestrator reaper now logs the typed error instead of silently swallowing it.
 > - `321e68d7` [sweep] proactive: `_find_code_patterns` method, its call, summary line, and count removed; `ContextPackage.code_patterns` field retained (always-empty, back-compat).
 > - `536bbb64` Chore/all/logical-gaps-sweep (#286) — merge commit pulling the above into the branch.
+> - `d83104e9` (2026-07-17, PR #546, "wave-1 quick wins") fix(llm): provider mode switches preserve per-agent model pins — `_apply_anthropic`/`_apply_grok`/`_apply_ollama`/`_apply_self_hosted` now delete only ROLE/GLOBAL `model_assignments` rows (`scope != AGENT_SLUG`) instead of wiping the whole table, so an AGENT_SLUG pin survives a mode switch; `OLLAMA_ROLE_DEFAULTS` removed from `llm_catalog.py` as dead code (it was never consulted by routing — see `models.md`).
 
 ## Regression Risks
 
@@ -8230,6 +8232,10 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 > - `da563487` Wave 2: A2A live view (#297) — new `app/(dashboard)/a2a/page.tsx` (classic list view + transcript + `A2AReplyComposer`), `hooks/use-a2a-live.ts`, `lib/api/a2a.ts` admin client, `useA2ALiveStream` added to `use-websocket.ts`. Backend pairs with `EventType.A2A_MESSAGE_SENT` + `websocket_bridge._handle_a2a_message_event`.
 > - `876e19b3` A2A switchboard (#298) — `page.tsx` gains the switchboard/list view toggle (default switchboard) + `peekedPair` state; new `components/a2a/{a2a-switchboard,a2a-switchboard-utils,a2a-pair-card}.tsx`; `useA2AAdminPairs` added to `use-a2a-live.ts`.
 > - `a7147702` feat(panel): full mobile responsiveness pass — touches the A2A page's single-visible-pane layout (`h-dvh`, back affordance) among other routes.
+> - (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: new `tab-findings.tsx` (7th task-detail tab, `useTaskFindings` → `GET /tasks/{id}/findings`), a `bounced xN` chip on `task-header.tsx` (`revision_count`), and "PM rejects"/"CEO rejects" columns on `delivery-tab.tsx`'s rework table. See `docs/map/review-findings.md`.
+> - `abf4b35f` (2026-07-17, PR #546, "wave-1 quick wins") — notifications page resolves `from_agent` via `getAgentDisplayName` (was `notification.from_agent.slice(0, 8)`, a raw UUID prefix); metrics charts (usage time-series, agent/team usage, model donut) gained a "no data" empty state alongside the existing loading skeleton.
+> - `ca07c83f` + `40b1a586` (2026-07-17, PR #546) — scroll-bounce fix: `scroll-restoration.tsx`'s route key now strips UI-only params before comparing (`UI_ONLY_PARAMS=["expanded"]`, exported `buildRouteKey`) so a tasks-page row expand/collapse no longer forks/resets the saved scroll position; new floating `ScrollJumpButtons` (`components/scroll-jump-buttons.tsx`, mounted as a `<main>` sibling in `(dashboard)/layout.tsx`) re-observes `<main>`'s children via `MutationObserver` across a Suspense fallback→content swap so the `ResizeObserver` never watches a detached fallback node; the dead, unfiltered duplicate `hooks/use-scroll-restoration.ts` was deleted; `agent-utils.ts` `AGENT_NAMES` gains `system: "System"` for backend-authored notifications/events.
+> - `d83104e9` + `9a08cb3e` (2026-07-17, PR #546) — `ai-routing-card.tsx` confirm/toast copy now reads "Role/global routing now on … — per-agent pins kept" (was "All agents now on … Clears any overrides"), matching the backend fix that mode switches no longer wipe the whole `model_assignments` table — see `docs/map/support-services.md`.
 > - **Wave 3** (2026-07-17, branch `feature/wave-3-a2a-ceo`, PR #547) — CEO New-DM composer: `a2a-new-dm-dialog.tsx` (opens a fresh CEO-owned 1:1, `AgentSelector`'s new `excludeRoles` prop) + `a2a-direct-composer.tsx` (posts in a CEO-owned thread, no task link needed) wired into `page.tsx`'s composer-selection branch (CEO-owned thread → direct composer; task-linked watched thread → reply composer; else read-only). `use-a2a-live.ts` adds `useCreateCeoConversation`/`useSendCeoMessage`; `lib/api/a2a.ts` adds `createConversation`/`sendCeoMessage` (both force `X-Agent-ID: "ceo"` per-call). `client.ts`'s header injection changed from an unconditional overwrite to a `has()`/`set()` default so a per-call override survives. Backend: `A2AService._maybe_wake_ceo_recipient` wakes an offline `read_a2a`-capable recipient of a CEO DM via the `a2a_request` dispatch path — see `docs/map/a2a-audit-journal-permissions.md`. Same branch also scrubbed "message the CEO" recipes from `docs/rag`/`agents/prompts` (agents are never taught to DM the CEO — reply-only).
 
 ## Regression Risks

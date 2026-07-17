@@ -59,6 +59,10 @@ export function UsageTimeSeriesChart({
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-52 w-full" />
+        ) : chartData.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-16 text-center">
+            No usage recorded in this window yet.
+          </p>
         ) : (
           <ResponsiveContainer width="100%" height={208}>
             <AreaChart

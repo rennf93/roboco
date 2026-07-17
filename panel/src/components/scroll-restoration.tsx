@@ -4,6 +4,19 @@ import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useScrollRestorationStore } from "@/lib/stores/scroll-restoration-store";
 
+// Params that reflect UI-only state (e.g. tasks/page.tsx row expand/collapse)
+// rather than a distinct "page" a user navigated to — excluded from the
+// route key so toggling them doesn't fork/reset the saved scroll position.
+const UI_ONLY_PARAMS = ["expanded"];
+
+// Exported for a cheap direct unit test — no need to render the component
+// or mock next/navigation/zustand just to check param filtering.
+export function buildRouteKey(pathname: string, searchParams: URLSearchParams) {
+  const filtered = new URLSearchParams(searchParams);
+  UI_ONLY_PARAMS.forEach((param) => filtered.delete(param));
+  return `${pathname}?${filtered.toString()}`;
+}
+
 /**
  * Global scroll restoration component.
  * Add this to the layout to automatically save/restore scroll positions.
@@ -17,7 +30,7 @@ export function ScrollRestoration() {
   const hasRestored = useRef(false);
   const prevRouteKey = useRef<string>("");
 
-  const routeKey = `${pathname}?${searchParams.toString()}`;
+  const routeKey = buildRouteKey(pathname, searchParams);
 
   // Track last visited route per section
   useEffect(() => {
