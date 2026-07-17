@@ -1,0 +1,136 @@
+"""Pure-function coverage for telegram_inbound: command parsing, callback
+build/parse round-trip, and chat-id authorization. No I/O, no DB."""
+
+from __future__ import annotations
+
+import pytest
+from roboco.config import settings as cfg
+from roboco.services.telegram_inbound import (
+    ParsedCallback,
+    _authorized_chat,
+    build_action_keyboard,
+    build_callback,
+    parse_callback,
+    parse_command,
+)
+
+_CALLBACK_DATA_MAX_BYTES = 64  # mirrors Telegram's own callback_data cap
+_KEYBOARD_ROW_LEN_NO_OPEN_BUTTON = 2  # Approve + Reject, no panel_base_url
+
+
+class TestParseCommand:
+    def test_plain_command(self) -> None:
+        assert parse_command("/status") == ("status", "")
+
+    def test_command_with_args(self) -> None:
+        assert parse_command("/task abc12345 extra words") == (
+            "task",
+            "abc12345 extra words",
+        )
+
+    def test_strips_botname_suffix(self) -> None:
+        assert parse_command("/status@my_roboco_bot") == ("status", "")
+
+    def test_non_command_text_is_empty(self) -> None:
+        assert parse_command("hello there") == ("", "")
+
+    def test_empty_text_is_empty(self) -> None:
+        assert parse_command("") == ("", "")
+
+    def test_case_insensitive(self) -> None:
+        assert parse_command("/STATUS") == ("status", "")
+
+
+class TestCallbackRoundTrip:
+    @pytest.mark.parametrize(
+        "action,kind,id8,extra",
+        [
+            ("apv", "task", "a1b2c3d4", ""),
+            ("rej", "release", "deadbeef", ""),
+            ("apv", "xpost", "12345678", ""),
+            ("rej", "video", "87654321", ""),
+            ("apv", "roadmap", "abcdef12", "item-3"),
+        ],
+    )
+    def test_build_then_parse_round_trips(
+        self, action: str, kind: str, id8: str, extra: str
+    ) -> None:
+        data = build_callback(action, kind, id8, extra)
+        parsed = parse_callback(data)
+        assert parsed == ParsedCallback(action=action, kind=kind, id8=id8, extra=extra)
+
+    def test_callback_data_stays_under_64_bytes(self) -> None:
+        data = build_callback("apv", "roadmap", "a1b2c3d4", "item-99")
+        assert len(data.encode()) <= _CALLBACK_DATA_MAX_BYTES
+
+    def test_oversized_callback_raises(self) -> None:
+        with pytest.raises(ValueError, match="64 bytes"):
+            build_callback("apv", "roadmap", "a1b2c3d4", "x" * 60)
+
+    def test_parse_rejects_unknown_action(self) -> None:
+        assert parse_callback("nope:task:a1b2c3d4") is None
+
+    def test_parse_rejects_unknown_kind(self) -> None:
+        assert parse_callback("apv:bogus:a1b2c3d4") is None
+
+    def test_parse_rejects_malformed_shape(self) -> None:
+        assert parse_callback("apv:task") is None
+        assert parse_callback("apv:task:a1:b2:c3") is None
+
+    def test_parse_rejects_empty_string(self) -> None:
+        assert parse_callback("") is None
+
+    def test_parse_rejects_empty_id8(self) -> None:
+        assert parse_callback("apv:task:") is None
+
+
+class TestActionKeyboard:
+    def test_builds_approve_reject_row(self) -> None:
+        kb = build_action_keyboard("task", "a1b2c3d4")
+        row = kb["inline_keyboard"][0]
+        assert row[0] == {
+            "text": "Approve",
+            "callback_data": "apv:task:a1b2c3d4",
+        }
+        assert row[1] == {
+            "text": "Reject",
+            "callback_data": "rej:task:a1b2c3d4",
+        }
+
+    def test_omits_open_button_without_panel_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "panel_base_url", "")
+        kb = build_action_keyboard("task", "a1b2c3d4")
+        assert len(kb["inline_keyboard"][0]) == _KEYBOARD_ROW_LEN_NO_OPEN_BUTTON
+
+    def test_includes_open_button_with_panel_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "panel_base_url", "https://panel.example.com")
+        kb = build_action_keyboard("task", "a1b2c3d4")
+        row = kb["inline_keyboard"][0]
+        assert row[2] == {
+            "text": "Open",
+            "url": "https://panel.example.com/tasks/a1b2c3d4",
+        }
+
+    def test_roadmap_deep_link_carries_no_item_id_it_points_at_the_cycle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "panel_base_url", "https://panel.example.com")
+        kb = build_action_keyboard("roadmap", "a1b2c3d4", "item-2")
+        row = kb["inline_keyboard"][0]
+        assert row[2]["url"] == "https://panel.example.com/overview"
+        assert row[0]["callback_data"] == "apv:roadmap:a1b2c3d4:item-2"
+
+
+class TestAuthorizedChat:
+    def test_matching_chat_id_authorized(self) -> None:
+        assert _authorized_chat("12345", "12345") is True
+
+    def test_mismatched_chat_id_rejected(self) -> None:
+        assert _authorized_chat("99999", "12345") is False
+
+    def test_empty_chat_id_rejected(self) -> None:
+        assert _authorized_chat("", "12345") is False

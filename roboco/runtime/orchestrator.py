@@ -1119,6 +1119,7 @@ class AgentOrchestrator:
         self._vault_intake_task: asyncio.Task | None = None
         self._vault_janitor_task: asyncio.Task | None = None
         self._vault_kb_task: asyncio.Task | None = None
+        self._telegram_poll_task: asyncio.Task | None = None
 
     def _record_loop_heartbeat(self, name: str, interval: float) -> None:
         self._loop_heartbeats[name] = (time.monotonic(), interval)
@@ -1218,6 +1219,7 @@ class AgentOrchestrator:
         self._vault_intake_task = asyncio.create_task(self._vault_intake_loop())
         self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
         self._vault_kb_task = asyncio.create_task(self._vault_kb_loop())
+        self._telegram_poll_task = asyncio.create_task(self._telegram_poll_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1333,6 +1335,7 @@ class AgentOrchestrator:
             self._vault_intake_task,
             self._vault_janitor_task,
             self._vault_kb_task,
+            self._telegram_poll_task,
         ):
             await self._cancel_background_task(task)
 
@@ -8443,6 +8446,40 @@ Start by:
 
         async with get_db_context() as db:
             await get_vault_kb_engine(db).run_cycle()
+            await db.commit()
+
+    async def _telegram_poll_loop(self) -> None:
+        """Telegram V2: on an interval, long-poll getUpdates and dispatch any
+        commands/callbacks.
+
+        Dormant unless BOTH ``telegram_enabled`` AND ``telegram_inbound_enabled``
+        are on (the engine's own ``run_cycle`` additionally no-ops without
+        stored credentials) — a standard deployment polls nothing. The sleep
+        interval is a floor between long-poll re-issues; each ``getUpdates``
+        call itself already blocks server-side up to
+        ``telegram_poll_timeout_seconds``.
+        """
+        if not (settings.telegram_enabled and settings.telegram_inbound_enabled):
+            return
+        interval = settings.telegram_poll_interval_seconds
+        self._record_loop_heartbeat("telegram_poll", interval)
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_telegram_poll_cycle()
+                self._record_loop_heartbeat("telegram_poll", interval)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("telegram poll cycle failed")
+
+    async def _run_telegram_poll_cycle(self) -> None:
+        """One Telegram poll pass: run the engine, commit. Testable w/o sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.telegram_inbound import get_telegram_inbound_engine
+
+        async with get_db_context() as db:
+            await get_telegram_inbound_engine(db).run_cycle()
             await db.commit()
 
     async def _x_feature_spotlight_loop(self) -> None:

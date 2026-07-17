@@ -4806,7 +4806,7 @@ stateDiagram-v2
   - Gateway-health: `_probe_gateway_health` → `_gateway_broken_past_grace` → `_maybe_recover_broken_gateway` (kill+evict)
   - Respawn tracker: `_pm_respawn_should_gate` → `_persist_respawn_record` (durable upsert) + `restore_respawn_tracker` at startup
   - PM closure / PR-gate turn cut: `_maybe_spawn_pm_closure` → `_closure_handled_without_pm` (recover paused/blocked status) → `_try_auto_submit` (system-side submit_up/submit_root via `_AUTO_SUBMIT_VERB_BY_ROLE`, unconditional — no flag); only a gate refusal falls through to an actual PM spawn, with the refusal reason threaded into its prompt
-  - Default-off loops: `_self_heal_loop`, `_ci_watch_loop`, `_dep_update_loop`, `_release_manager_loop`, `_strategy_engine_loop`, `_external_pr_poll_loop`, `_x_mentions_poll_loop`, `_roadmap_engine_loop`
+  - Default-off loops: `_self_heal_loop`, `_ci_watch_loop`, `_dep_update_loop`, `_release_manager_loop`, `_strategy_engine_loop`, `_external_pr_poll_loop`, `_x_mentions_poll_loop`, `_roadmap_engine_loop`, `_telegram_poll_loop`
   - Interactive: `start_intake_session` / `_spawn_intake_container` / `_spawn_secretary_container` / `_reap_idle_interactive_sessions`
   - Shutdown (`stop`): cancel loops → `stop_agent(release_claim=True)` (skip provider-parked) → `_drain_bg_tasks` → `_stopped`
 
@@ -4841,6 +4841,7 @@ stateDiagram-v2
 - `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED` (+ `_interval_seconds` default 259200/3d, default off, sub-switch of `x_engine_enabled`) — gates `_x_feature_spotlight_loop`.
 - `ROBOCO_FABLE_MODE_ENABLED` (default off) — gates `_fable_hook_groups` (Claude-path hook install) and, via `roboco/agents/factories/_base.py`, the `fable_doctrine_layer` prompt layer; off = byte-for-byte unchanged spawn path.
 - No flag — the PR-gate turn cut is unconditional: when every child of an assembled parent is terminal, `_try_auto_submit` always runs the owning PM's submit_up/submit_root gate system-side instead of spawning the PM for that turn; a gate rejection (freshness/integrity/AC-coverage/race) falls back to the classic PM closure spawn (the sole safety net), with the reason threaded into the PM's closure prompt. The `pr_gate_auto_submit_enabled` kill-switch that gated this through 0.19.0 has been removed.
+- `ROBOCO_TELEGRAM_ENABLED` (default off) — V1 master switch; `telegram_inbound_enabled` is a sub-switch on top of it, so both plus stored credentials are required before `_telegram_poll_loop` does anything. `ROBOCO_TELEGRAM_INBOUND_ENABLED` (default off, NAS compose arms it `true`) — gates `_telegram_poll_loop`; also makes escalation DMs carry an actionable Approve/Reject/Open keyboard.
 
 ## Gotchas
 - Respawn-tracker rows are restored at startup and re-stamped to live values; terminal/missing-task rows are evicted, so a stale row can't gate a fresh task. The upsert is race-free but fire-and-forget persists are ordered by `_respawn_persist_lock` acquisition (= schedule order); a stale persist resolving after a fresh one would otherwise re-burn the strike threshold on restart.
@@ -4870,6 +4871,7 @@ stateDiagram-v2
 > - `6b441e42` Converters: `InvalidIdentifierError` now caught explicitly in `_release_stopped_agent_claim` with a structured warning log instead of a silent broad-except return.
 > - `d1cf6ecb` Wave 1: PR-gate turn cut, task search, trace timestamps, Secretary edits + e2e scenarios 2–3 (#295) — adds `config.pr_gate_auto_submit_enabled` (default True) + `_AUTO_SUBMIT_VERB_BY_ROLE` / `_auto_submit_target` / `_try_auto_submit` / `_closure_handled_without_pm`, wired into `_maybe_spawn_pm_closure` so an assembled, all-children-terminal parent is submitted to the PR gate system-side instead of always spawning the PM for that turn; fires a new `task.auto_submitted` audit event.
 > - **v0.18.0** (2026-07-04): Fable mode — `_fable_hook_groups` (orchestrator.py:1414) appends 5 vendored hook scripts after RoboCo's own inside `_generate_agent_settings`, gated by `fable_mode_enabled` (default off). X feature-spotlight — `_x_feature_spotlight_loop`/`_run_x_feature_spotlight_cycle` (mirrors `_x_mentions_poll_loop`'s shape) + `_dispatch_feature_spotlight_exploration`/`_build_feature_spotlight_prompt` (mirrors the roadmap engine's one-shot board-solo dispatch) open a held Head-of-Marketing exploration task every `x_feature_spotlight_interval_seconds`, gated by `x_feature_spotlight_enabled` (sub-switch of `x_engine_enabled`, both default off).
+> - `3b9fd0e0` (PR #551, Telegram V2, 2026-07-17): adds `_telegram_poll_task` + `_telegram_poll_loop`/`_run_telegram_poll_cycle` (mirrors the `_x_mentions_poll_loop` shape: gated on BOTH `telegram_enabled` AND `telegram_inbound_enabled`, started in `start()`, cancelled in `stop()`) driving the new `TelegramInboundEngine` (`roboco/services/telegram_inbound.py`) — long-polls Telegram `getUpdates` and dispatches `/status` `/queue` `/task` commands plus Approve/Reject button callbacks to the SAME CEO-gated service methods the HTTP routes call. (Note: this section has not been kept current with every intervening orchestrator change since v0.18.0 — e.g. the vault V2 loops and PR #502/#504 `__new__` hardening are documented in the live `docs/map/orchestrator.md` but not mirrored here; not backfilled by this sweep.)
 
 ## Regression Risks
 
@@ -5519,7 +5521,7 @@ prompts-roles-taxonomy slice
 The composition pipeline is well-structured and deterministic: a single ordered join over gracefully-degrading layers, with CI-gated autogenerated artifacts (lifecycle + verb tables) that cannot silently drift from the spec, and a clean separation between the prompt corpus (markdown), the taxonomy (agents_config.py, derived from foundation so it cannot drift from the org chart), and the guard (prompt_guard.py, mirroring the bash hook). The main open integrity risks are (a) the prompt-only enforcement of the new collision-surface declaration on delegate — the 2026-06-27 out-of-order break this was added to fix can still recur if a PM omits intends_to_touch on a code subtask; (b) the stale agent-count in base.md (22 vs CLAUDE.md's 25) and the cosmetic but inconsistent `role:` labels in identity YAML. Previously flagged risks (b/c as of 2026-06-29 snapshot) have been closed: documenter/qa i_am_blocked is confirmed granted by the lifecycle spec (_DEV_ROLES|_QA_ROLES|_DOC_ROLES), and submit_root's branch-keyed claim is now backed by PRECONDITION_ROOT_NOT_CODE in the spec gate (536bbb64). BeforeValidator repr in prompt tables also cleaned (536bbb64).
 
 ## Purpose
-This slice implements RoboCo's formal-notification backbone: NotificationService is the typed notification factory (blocker, QA-ready, A2A, board-review, ack), NotificationDeliveryService handles delivery (transactional-outbox bus publish), ACK tracking, expiry sweeps, and PM/CEO task-handoff notifications, and notification_dedup is a bounded Redis SET-NX re-fire guard for loop-prone notification types. Together they turn lifecycle events into both a durable DB record and a real-time push, with multiple dedup layers (Redis re-fire window + DB purpose-dedup) to keep agent inboxes from flooding under coordinator loops.
+This slice implements RoboCo's formal-notification backbone: NotificationService is the typed notification factory (blocker, QA-ready, A2A, board-review, ack), NotificationDeliveryService handles delivery (transactional-outbox bus publish), ACK tracking, expiry sweeps, PM/CEO task-handoff notifications, and the best-effort Telegram DM bridge (`_notify_telegram`), and notification_dedup is a bounded Redis SET-NX re-fire guard for loop-prone notification types. Together they turn lifecycle events into both a durable DB record and a real-time push, with multiple dedup layers (Redis re-fire window + DB purpose-dedup) to keep agent inboxes from flooding under coordinator loops. The Telegram side has grown into its own two-way bridge: V1 (outbound-only DMs on escalation/completion) plus V2's `TelegramInboundEngine` (`telegram_inbound.py`) — a poll loop that turns the CEO's Telegram replies/button-taps into the same CEO-gated service calls the HTTP routes make.
 
 ## Files
 
@@ -5527,7 +5529,10 @@ This slice implements RoboCo's formal-notification backbone: NotificationService
 |---|---|---|
 | roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 943 |
 | roboco/services/notification_dedup.py | Bounded Redis SET-NX re-fire guard for loop-prone notification types (TASK_ASSIGNMENT/REVIEW_REQUEST/DOCUMENTATION_REQUEST/BROADCAST); 60s TTL, fail-open | 91 |
-| roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD | 1034 |
+| roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD, `_notify_telegram` best-effort CEO DM fan-out (V2: `actionable=True` on escalation attaches an Approve/Reject/Open inline keyboard) | 1305 |
+| roboco/services/telegram_client.py | Bot API client ABC + `NullTelegramClient` (unconfigured, never egresses) + `LiveTelegramClient`: `send_message` (reply_markup/reply_to_message_id), V2 additions `get_updates` (long-poll), `answer_callback_query`, `edit_message_reply_markup`, `edit_message_text` | 247 |
+| roboco/services/telegram_credentials.py | Singleton Fernet-encrypted `bot_token`/`chat_id` CRUD (mirrors `x_credentials.py`); decrypts server-side only, API returns `has_credentials` only | 109 |
+| roboco/services/telegram_inbound.py | V2: `TelegramInboundEngine` — getUpdates poll cycle (offset persisted as `telegram_last_update_id` in system_settings), chat-id AND sender-id authorization, `/status` `/queue` `/task` command router, `apv|rej:<kind>:<id8>` callback codec, force_reply reject/approve-notes state machine (in-memory `_PENDING_REPLIES`, TTL), per-kind dispatch to the SAME service methods the CEO-gated HTTP routes call (task/release/xpost/video/roadmap), `via=telegram` audit rows | 858 |
 
 ## Data Flow
 Two create-and-deliver paths exist. (A) NotificationService._create_notification (notification.py) opens its OWN get_db_context, resolves sender + recipients to UUIDs via _resolve_agent_uuid, runs the Redis re-fire guard (all_recipients_recently_notified), then DB purpose-dedup (ack-required types only, same sender+type+task+overlapping recipients not yet acked), builds NotificationTable with requires_ack from ACK_REQUIRED_BY_TYPE, flushes, calls NotificationDeliveryService.deliver (which defers NOTIFICATION_SENT bus events to after_commit), and finally commits — the commit triggers the deferred bus drain. (B) NotificationDeliveryService._persist_and_deliver (notification_delivery.py) is used by the task-handoff helpers (notify_pm_of_block, escalate_and_notify, etc.): it runs inside the CALLER's open transaction, applies only the Redis re-fire guard (no DB purpose-dedup), adds+flushes+delivers, and leaves the commit to the caller (api/routes/tasks.py). Sweeper loops in the orchestrator call sweep_expired_notifications periodically. Real-time push: deliver defers per-recipient NOTIFICATION_SENT events; the after_commit listener schedules _drain_pending_publishes which publishes to the StreamEventBus; websocket_bridge forwards to /ws/notifications/{id} sockets. ACKs flow acknowledge → acked_by/read_by mutation + NOTIFICATION_ACKED event.
@@ -5599,11 +5604,24 @@ notification
     │   ├── notify_ceo_of_escalation
     │   └── _persist_and_deliver (re-fire guard only, caller commits)
     ├── Recipient helpers: _resolve_team_pm / _resolve_pm_for_agent_or_team / _get_agent_by_id/slug / _get_ceo_agent
-    └── API-facing: list_system_notifications / list_for_agent / get_for_recipient_and_mark_read / acknowledge_for_recipient / mark_read_for_recipient
+    ├── API-facing: list_system_notifications / list_for_agent / get_for_recipient_and_mark_read / acknowledge_for_recipient / mark_read_for_recipient
+    └── _notify_telegram (best-effort CEO DM; actionable=True on escalation attaches build_action_keyboard)
+telegram_client.py (TelegramClient ABC / NullTelegramClient / LiveTelegramClient)
+├── V1: send_message (reply_markup, reply_to_message_id)
+└── V2: get_updates (long-poll) / answer_callback_query / edit_message_reply_markup / edit_message_text
+telegram_inbound.py (TelegramInboundEngine, V2)
+├── run_cycle (getUpdates offset cursor, dispatch each update, advance+persist offset)
+├── _handle_message (chat+sender auth, force_reply pending-consume, command dispatch)
+├── _dispatch_command (/status /queue /task /help)
+├── _handle_callback (chat+sender auth, parse_callback, needs_reply branch → _prompt_for_reply, else _dispatch_approve)
+├── _dispatch_approve / _dispatch_reject (per-kind handler dict: task/release/xpost/video/roadmap)
+│   └── each handler calls the SAME service method the CEO-gated HTTP route calls; _mark_audit stamps a via=telegram AuditLogTable row
+└── _finish_action (clears the buttoned message's keyboard, stamps the outcome)
 ```
 
 ## Dependencies
 - Internal: roboco.config.settings (redis_url), roboco.db.tables (NotificationTable, AgentTable, TaskTable), roboco.db.base.get_db_context, roboco.events (Event, EventType, get_event_bus), roboco.foundation.policy.communications.ACK_REQUIRED_BY_TYPE, roboco.models.base (NotificationPriority, NotificationType, AgentRole), roboco.models.notification.CreateNotificationParams, roboco.services.base (BaseService, ConflictError, NotFoundError), roboco.services.permissions.has_privileged_access, roboco.services.repositories.get_agent_slug, roboco.agents_config (get_escalation_target, get_pm_for_agent, get_pm_for_team), roboco.utils.converters (require_uuid, to_python_uuid)
+- telegram_inbound.py additionally imports: roboco.services.release_proposal (dispatch_approve, get_release_proposal_service, TaskAlreadyCompletedError), roboco.services.roadmap_service, roboco.services.task.get_task_service, roboco.services.telegram_credentials, roboco.services.tiktok_client/tiktok_credentials, roboco.services.video_post_service (VideoPostService, TaskAlreadyCompletedError, VideoCaptionTooLongError), roboco.services.x_credentials, roboco.services.x_post_service (TaskAlreadyCompletedError, XPostBodyTooLongError), roboco.services.x_video_client, roboco.foundation.policy.content.validators.reject_trivial, roboco.seeds.initial_data.AGENT_UUIDS
 - External: sqlalchemy (select, and_, or_, func, event, joinedload, selectinload, with_for_update, IntegrityError, AsyncSession), redis.asyncio (from_url, set NX EX, aclose), asyncio (create_task, get_running_loop), structlog, datetime (UTC, datetime, timedelta), uuid.UUID, dataclasses
 
 ## Entry Points
@@ -5615,9 +5633,13 @@ notification
 | NotificationDeliveryService.notify_pm_of_block / escalate_and_notify / notify_ceo_of_escalation | roboco/services/notification_delivery.py | api/routes/tasks.py i_am_blocked / escalate / ceo-approval routes |
 | NotificationDeliveryService.acknowledge / list_for_agent / get_for_recipient_and_mark_read | roboco/services/notification_delivery.py | api/routes/notifications.py ACK + list endpoints |
 | sweep_expired_notifications | roboco/services/notification_delivery.py | orchestrator periodic loop (orchestrator.py:5780) |
+| TelegramInboundEngine.run_cycle | roboco/services/telegram_inbound.py | orchestrator `_telegram_poll_loop` (default off, `telegram_enabled` AND `telegram_inbound_enabled`) |
 
 ## Config Flags
 - settings.redis_url — Redis URL used by notification_dedup for the SET-NX re-fire guard (derived from ROBOCO_REDIS_HOST/_PORT)
+- `telegram_enabled` (default off) — V1 master switch; `_notify_telegram` no-ops without it AND stored credentials.
+- `telegram_inbound_enabled` (default off, sub-switch on top of `telegram_enabled`) — V2: arms `TelegramInboundEngine.run_cycle` (the poll loop) and makes escalation DMs carry an actionable keyboard; with it off the bot only sends, never listens, and any inline button on an old message is inert.
+- `telegram_poll_interval_seconds` (5.0) / `telegram_poll_timeout_seconds` (25, Bot API long-poll `timeout`) / `telegram_max_updates_per_cycle` (50) / `telegram_pending_reply_ttl_seconds` (300) — V2 poll-loop tuning.
 
 
 ## Gotchas
@@ -5631,7 +5653,9 @@ notification
 - acknowledge publishes NOTIFICATION_ACKED directly to the bus (NOT deferred via after_commit) — unlike deliver. An ACK that is rolled back after publish could emit a phantom ACK event. The ACK path does not use the transactional outbox.
 - list_system_notifications filters pending_ack_only POST-fetch because 'not fully acked' is not SQL-friendly on PostgreSQL array columns. For pending_ack_only=True the SQL `limit` is NOT applied — applying it before the Python filter let a window of newer fully-acked rows mask older unacked ones the operator still needs to act on (correctness bug fixed in 115061f3); the full ack-required set is fetched ordered newest-first, Python-filtered to unacked, then sliced to `limit`. The non-pending branch retains the SQL limit.
 - get_notification_count loads ALL notifications for an agent into memory (no SQL count) to compute total/unread/pending_ack — O(n) per call, no pagination.
-
+- `TelegramInboundEngine._PENDING_REPLIES` (a force_reply prompt awaiting the CEO's free-text reply) is a per-process, in-memory dict keyed by `(chat_id, prompt_message_id)` — not durable. An orchestrator restart drops any in-flight prompt; the CEO just taps the button again.
+- `_authorized_chat` (chat id must equal the stored credentials' chat id) is the ONLY identity check a Telegram update carries — there is no agent/session token — so it stands in for every CEO-gated route's `require_ceo_role`. `_authorized_sender` is defense-in-depth on top of it: when the update carries a `from` user, its id must ALSO equal the chat id.
+- The getUpdates offset cursor reuses the existing `system_settings` KV store (`telegram_last_update_id`) rather than a new table/migration — a restart resumes from the last-committed offset instead of replaying processed updates.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md does not describe the notification_dedup Redis re-fire guard, the transactional-outbox (defer_bus_publish / F107) in notification_delivery, or the DB purpose-dedup in NotificationService — all are real, load-bearing behavior added since the baseline and not reflected in the doc's Services table.
@@ -5648,6 +5672,7 @@ notification
 | 3aff6e04 | Chore: Close gaps (#285) — follow-on gap closure touching notification.py / notification_dedup.py / notification_delivery.py | Refinement of the #283 changes (exact hunks not isolated per-file in this merge commit; consolidated the dedup/outbox behavior above) |
 
 > Post-snapshot updates (since 2026-06-29): 115061f3 fixed list_system_notifications pending_ack_only correctness: SQL limit is now dropped for that branch so newer fully-acked rows can't mask older unacked ones (see Gotcha update above). **Wave 3** (2026-07-17, PR #547): `CreateNotificationParams` gains `requires_ack: bool | None = None`, consulted in `_create_notification` ahead of the `ACK_REQUIRED_BY_TYPE` default; `send_a2a_notification` gains a `requires_ack: bool = False` kwarg (plus an `str | None` `task_id`, for a conversational DM with no task behind it) that threads through — the only caller passing True is `A2AService._maybe_wake_ceo_recipient` (docs/map/a2a-audit-journal-permissions.md), so its wake row is finally visible to the orchestrator's `_dispatch_a2a_work` `pending_ack_only` poll.
+> `3b9fd0e0`+`11915f36` (PR #551, Telegram V2, 2026-07-17): `3b9fd0e0` adds `telegram_inbound.py` (new file, `TelegramInboundEngine`), extends `telegram_client.py` with `get_updates`/`answer_callback_query`/`edit_message_reply_markup`/`edit_message_text`, adds `actionable=True` to `_notify_telegram` (escalation only) so the DM carries an Approve/Reject/Open keyboard, and wires the orchestrator's `_telegram_poll_loop`. `11915f36` closes a live-reproduced approve-after-reject hole reachable via a stale Telegram button (or the pre-existing HTTP routes for X/video): `ReleaseProposalService.approve()` now refuses CANCELLED/COMPLETED proposals, `.reject()` refuses COMPLETED, and `XPostService`/`VideoPostService.approve()` each add a CANCELLED guard. (Note: this section predates the `61e00832` PR #492 `notify_auditor_of_rework` addition documented in the live `docs/map/notification.md`, not backfilled here.)
 
 ## Regression Risks
 
@@ -6942,7 +6967,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/roadmap_service.py` | CEO's per-item approve/reject glue over a held roadmap cycle; approve materializes a BACKLOG task | 211 |
 | `roboco/api/routes/roadmap.py` | CEO-only routes: list open cycles, approve/reject one item | 124 |
 | `roboco/services/x_engine.py` | Dormant "engine 4": drafts X (Twitter) release posts (event hook), mention replies (poll), and — new — feature-spotlight explorations (dormant interval, spawns Head of Marketing), ALL held for CEO approval (default off) | 463 |
-| `roboco/services/x_post_service.py` | CEO's approve/reject over a held X draft; approve posts via a Redis single-flight lock, idempotent | 223 |
+| `roboco/services/x_post_service.py` | CEO's approve/reject over a held X draft; approve posts via a Redis single-flight lock, idempotent on already-posted AND on already-rejected (CANCELLED) | 298 |
 | `roboco/services/x_client.py` | OAuth 1.0a HMAC-SHA1 X API client (`LiveXClient`) + `NullXClient` (no creds, never egresses) + `build_x_client` factory | 318 |
 | `roboco/services/x_credentials.py` | Singleton Fernet-encrypted OAuth 1.0a credential CRUD; decrypts server-side only | 140 |
 | `roboco/api/routes/x.py` | CEO-only routes: list open X posts, approve/reject one draft | 164 |
@@ -7019,8 +7044,8 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `XEngine.run_cycle` | method | x_engine.py:255 | Periodic mentions poll; no-op unless `x_engine_enabled` AND `x_replies_enabled`; filters bot-like/low-engagement mentions, dedupes by mention id (`XSeenMentionTable`) |
 | `XEngine.open_feature_spotlight_exploration` | method | x_engine.py:337 | No-ops unless `x_engine_enabled` AND `x_feature_spotlight_enabled`, no creds, a cycle already open, the open-post cap reached, or project unresolvable; else opens ONE held PENDING exploration task for the Head of Marketing (`source=x_feature_exploration`) carrying a `x_seen_features` marker snapshot |
 | `XEngine.materialize_feature_spotlight` | method | x_engine.py:433 | Called from the `propose_feature_spotlight` do-tool: marks the feature slug seen (`XSeenFeatureTable`), creates the held draft (`source=x_feature`, identical shape to a release/reply draft), completes the exploration task |
-| `XPostService.approve` | method | x_post_service.py:77 | The ONLY caller of `x_client.post_tweet`; Redis single-flight lock, re-reads task under lock, idempotent on an already-posted draft |
-| `XPostService.reject` | method | x_post_service.py:180 | Records the CEO's reason; cancels the held draft |
+| `XPostService.approve` | method | x_post_service.py:92 | The ONLY caller of `x_client.post_tweet`; Redis single-flight lock, re-reads task under lock, idempotent on an already-posted draft (`already_posted`); a CANCELLED draft is refused both pre-lock and re-checked under lock (`already_rejected`) — a stale approve (e.g. a queued Telegram button) can't resurrect a draft the CEO already rejected |
+| `XPostService.reject` | method | x_post_service.py:251 | Records the CEO's reason; cancels the held draft |
 | `XClient` / `NullXClient` / `LiveXClient` | ABC/class | x_client.py:150 / 166 / 186 | `NullXClient.configured` is False (no creds) — drafting still runs (content nobody can post is a no-op upstream), just never originates; `LiveXClient` signs OAuth 1.0a HMAC-SHA1 |
 | `build_x_client` | factory | x_client.py:306 | Returns `LiveXClient` when credentials decrypt, else `NullXClient` |
 | `XCredentialsService.set_credentials` / `.get_decrypted` | method | x_credentials.py:61 / 116 | All-or-nothing Fernet-encrypted singleton credential set/clear; decrypts server-side only, never exposed to agents |
@@ -7263,6 +7288,7 @@ product-strategy-research-pitch
 - **`build_provider` returns `NullProvider` for an unknown provider name (research.py:326- 328).** A typo in `ROBOCO_RESEARCH_PROVIDER` (validated by pydantic pattern, so unlikely) would silently degrade to empty results rather than erroring.
 - **`GitHubProvisioningService.enabled` requires master + token + org (github_provisioning.py:64).** `provisioning_enabled` defaults `True`, so the flag alone is not enough — an operator who toggles the flag without setting token/org still gets `enabled=False` and `approve` raises `ProvisioningDisabledError`.
 - **`PitchService._seed_main_pm_task` requires a `main-pm` agent row (pitch.py:241-243).** If the agent slug is missing it raises `ValidationError` after provisioning has already happened — another partial-failure window (repos + Product created, no seed task).
+- **`XPostService.approve` did NOT check for a CANCELLED (already-rejected) task before Wave 5 (`11915f36`, PR #551).** Before the fix, approving a draft the CEO had already rejected would proceed straight to posting it — reachable via the Telegram inbound bridge's inline Approve button (targets a draft by id regardless of its current status) and equally via a replayed HTTP `POST /api/x/posts/{id}/approve`. The guard now returns `already_rejected` both before acquiring the lock and again after re-reading the task under lock.
 
 ## Drift from CLAUDE.md
 
@@ -7285,6 +7311,7 @@ product-strategy-research-pitch
 > - `c71f9b3b` ([chore] logical-gaps: kanban board column coverage + status-class fixes, 2026-06-30): `kanban.py` — added `_load_subtask_counts` batch query; `_task_to_card` now takes a `subtask_counts` dict and populates real subtask counts (#198). Added "Other" fallback column in `_build_columns` to prevent any task-card from being built-then-discarded. `get_qa_board`: removed `VERIFYING` from QA statuses (dev self-verification, not a QA state). `get_documenter_board`: added `task_type == DOCUMENTATION` filter. `get_main_pm_board_flat`: broadened status filter to include `PENDING`/`CLAIMED`/`COMPLETED` and added proper column routing (incoming/distributed/done). Added "Coordination" column for non-cell-team tasks (#196).
 > - `b3558d4e` ([chore] complexity: split 5 C-rank blocks to <=B, 2026-06-30): `kanban.py` `get_main_pm_board_flat` — refactored if/elif routing to a dict-dispatch (`status_col` + `team_col` maps) for xenon complexity gate; no functional change.
 > - **v0.18.0** (2026-07-04): the X feature-spotlight content in this slice (`XEngine` feature-spotlight methods, `_x_feature_spotlight_loop`/`_dispatch_feature_spotlight_exploration`, migration 061, `x_feature_spotlight_enabled`) was authored directly into this file's Files/Key Symbols/Data Flow/Mermaid/Logical Tree/Entry Points sections at implementation time rather than landing as a dated delta — noted here for changelog continuity; the body text above is current as of this date. (Config Flags is unchanged — the X-engine flags live in deployment-tooling.md's comprehensive list, not here.)
+> - `11915f36` (PR #551, Telegram V2 security follow-up, 2026-07-17): `x_post_service.py` — `XPostService.approve`/`_approve_locked` add a CANCELLED-task guard (pre-lock and re-checked under lock) returning a new `already_rejected` status, closing a live-reproduced approve-after-reject hole reachable via a stale Telegram Approve button (or a replayed HTTP call).
 
 ## Regression Risks
 
@@ -8223,6 +8250,8 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - `x_engine_enabled` — X (Twitter) engine (release-post + mention-reply drafts, all CEO-held)
 - `roadmap_engine_enabled` — board roadmap engine (weekly Product-Owner-authored cycle)
 - `routing_strict` — fail-closed model routing (refuse to silently downgrade to the legacy Anthropic path on a disabled provider)
+- `telegram_enabled` — Telegram CEO-DM bridge (V1, outbound-only; pre-existing, previously missing from this list)
+- `telegram_inbound_enabled` — Telegram V2 sub-switch (on top of `telegram_enabled`): poll for commands/button-taps and make escalation DMs actionable
 
 Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime toggle): `ROBOCO_CLOUD_AUTH_ENABLED` and `ROBOCO_DB_NETWORK_ISOLATED`.
 

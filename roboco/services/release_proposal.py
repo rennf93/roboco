@@ -46,6 +46,10 @@ class ReleaseLockUnavailable(Exception):
     """
 
 
+class TaskAlreadyCompletedError(Exception):
+    """The proposal is already COMPLETED (published) and can't be rejected."""
+
+
 # Redis mutex guarding the ~40min release execute against concurrent
 # approves. The TTL only backstops a crash; a background heartbeat refreshes
 # it while the execute owns the lock, and a fencing token makes the release
@@ -96,6 +100,68 @@ class ReleaseProposalService(BaseService):
         proposals = await get_task_service(self.session).list_open_release_proposals()
         return proposals[0] if proposals else None
 
+    async def _approve_precheck(
+        self, task_id: UUID
+    ) -> tuple[TaskTable | None, ReleaseReadinessReport | None, ReleaseResult | None]:
+        """Resolve the proposal + its stored report, or a canned refusal.
+
+        Returns ``(task, report, refusal)``. ``(None, None, None)`` means
+        ``task_id`` isn't a release proposal with a stored report — the
+        caller returns ``None``. A non-``None`` ``refusal`` means the task
+        + report resolved fine but the proposal is in a terminal state that
+        forbids approving (currently: already rejected/CANCELLED) — the
+        caller returns ``refusal`` without ever touching the lock/executor.
+        Split out of ``approve()`` to keep its own return-statement count
+        bounded as more terminal-state guards are added here over time.
+        """
+        task = await get_task_service(self.session).get(task_id)
+        if task is None or task.source != RELEASE_MANAGER_SOURCE:
+            return None, None, None
+        report_dict = markers.get_release_report(task)
+        if report_dict is None:
+            return None, None, None
+        report = report_from_dict(report_dict)
+        if task.status == TaskStatus.CANCELLED:
+            # The CEO already rejected this proposal (a stale Approve button,
+            # e.g. from Telegram, still targets it by id regardless of
+            # status). Approving now would re-run the fail-closed executor
+            # over a stale report the CEO explicitly declined — refuse.
+            return (
+                task,
+                report,
+                ReleaseResult(
+                    status="already_rejected",
+                    version=report.proposed_version,
+                    files_changed=[],
+                    commit_sha=None,
+                    release_url=None,
+                    detail=(
+                        "This proposal was already rejected by the CEO;"
+                        " approving it now is refused. Wait for a fresh"
+                        " proposal or re-originate one."
+                    ),
+                ),
+            )
+        if task.status == TaskStatus.COMPLETED:
+            # Already approved and published — a stale Approve would re-enter
+            # the executor and could re-fire the post-publish draft hooks.
+            return (
+                task,
+                report,
+                ReleaseResult(
+                    status="already_published",
+                    version=report.proposed_version,
+                    files_changed=[],
+                    commit_sha=None,
+                    release_url=None,
+                    detail=(
+                        "This proposal was already approved and its release"
+                        " published; nothing to do."
+                    ),
+                ),
+            )
+        return task, report, None
+
     async def approve(self, task_id: UUID) -> ReleaseResult | None:
         """Run the fail-closed executor over the proposal's stored report.
 
@@ -115,15 +181,13 @@ class ReleaseProposalService(BaseService):
         the executor. Fail-closed on Redis outage — a release is rare and
         CEO-gated, and the race it prevents corrupts the release.
         """
-        task = await get_task_service(self.session).get(task_id)
-        if task is None or task.source != RELEASE_MANAGER_SOURCE:
+        task, report, refusal = await self._approve_precheck(task_id)
+        if task is None or report is None:
             return None
-        report_dict = markers.get_release_report(task)
-        if report_dict is None:
-            return None
+        if refusal is not None:
+            return refusal
 
         lock_key = f"{_RELEASE_LOCK_PREFIX}{task_id}"
-        report = report_from_dict(report_dict)
         try:
             lock_token = await self._acquire_release_lock(lock_key)
         except ReleaseLockUnavailable as exc:
@@ -354,10 +418,21 @@ class ReleaseProposalService(BaseService):
         ``list_open_release_proposals`` excludes CANCELLED, so the next
         ``run_cycle`` re-assesses and may originate a fresh proposal. The
         ``required_changes`` marker stays on the cancelled row for history.
-        Mirrors the video-post reject (``video_post_service.py``)."""
+        Mirrors the video-post reject (``video_post_service.py``).
+
+        Raises :class:`TaskAlreadyCompletedError` when the proposal already
+        published (COMPLETED) — an approve may have shipped it after a stale
+        reject button/request was queued; cancelling a published release
+        would lie about the release's real, already-public state.
+        """
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source != RELEASE_MANAGER_SOURCE:
             return None
+        if task.status == TaskStatus.COMPLETED:
+            raise TaskAlreadyCompletedError(
+                f"release proposal {task_id} already published (COMPLETED);"
+                " cannot be rejected"
+            )
         markers.set_release_required_changes(task, required_changes)
         task.status = TaskStatus.CANCELLED
         await self.session.flush()

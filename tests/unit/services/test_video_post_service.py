@@ -350,6 +350,69 @@ async def test_approve_is_idempotent_second_call_is_noop(
 
 
 @pytest.mark.asyncio
+async def test_approve_refuses_already_rejected_draft(
+    db_session: AsyncSession,
+) -> None:
+    """The chokepoint guard: approving a CANCELLED (already-rejected) draft
+    refuses and never calls either poster — the reproduced bug (a stale
+    Approve after reject re-posting)."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster()
+    fake_engine = MagicMock()
+    fake_engine.reauthor_from_rejection = AsyncMock(return_value=None)
+    with (
+        _LOCKED[0],
+        _LOCKED[1],
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=fake_engine,
+        ),
+    ):
+        await _svc(db_session, x_poster=x_poster, tiktok_poster=tiktok_poster).reject(
+            _id(task), "not on-brand"
+        )
+        result = await _svc(
+            db_session, x_poster=x_poster, tiktok_poster=tiktok_poster
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert x_poster.calls == []
+    assert tiktok_poster.calls == []
+    await db_session.refresh(task)
+    assert task.status == TS.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_approve_rechecks_cancelled_under_lock_and_never_posts(
+    db_session: AsyncSession,
+) -> None:
+    """TOCTOU parity with the COMPLETED re-check: a concurrent reject cancels
+    the draft after our pre-lock read; the in-lock re-read must see CANCELLED
+    and short-circuit — never posting a rejected draft."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster()
+
+    async def _win_the_race(_self: HeartbeatMutex) -> str:
+        task.status = TS.CANCELLED
+        await db_session.flush()
+        return "tok"
+
+    with (
+        patch.object(HeartbeatMutex, "acquire", _win_the_race),
+        patch.object(HeartbeatMutex, "release", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(
+            db_session, x_poster=x_poster, tiktok_poster=tiktok_poster
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert x_poster.calls == []
+    assert tiktok_poster.calls == []
+
+
+@pytest.mark.asyncio
 async def test_approve_concurrent_lock_held_returns_in_progress(
     db_session: AsyncSession,
 ) -> None:

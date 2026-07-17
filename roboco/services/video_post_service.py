@@ -150,10 +150,10 @@ class VideoPostExecuteResult:
     """The outcome of an approve call.
 
     `status` is one of: posted, posted_partial, post_failed, no_platforms,
-    already_posted, already_in_progress, redis_unavailable, lock_lost.
-    `posted` maps platform -> the id the poster returned, for platforms that
-    succeeded (persisted, so a retry after a partial failure never re-posts
-    an already-succeeded platform).
+    already_posted, already_rejected, already_in_progress, redis_unavailable,
+    lock_lost. `posted` maps platform -> the id the poster returned, for
+    platforms that succeeded (persisted, so a retry after a partial failure
+    never re-posts an already-succeeded platform).
     """
 
     status: str
@@ -218,6 +218,12 @@ class VideoPostService(BaseService):
         if task.status == TaskStatus.COMPLETED:
             draft = dict(markers.get_video_draft(task) or {})
             return self._already_posted_result(draft)
+        if task.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
 
         mutex = HeartbeatMutex(
             f"{_LOCK_PREFIX}{task_id}",
@@ -277,6 +283,12 @@ class VideoPostService(BaseService):
         draft = dict(markers.get_video_draft(locked) or {})
         if locked.status == TaskStatus.COMPLETED:
             return self._already_posted_result(draft)
+        if locked.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
         guarded = await mutex.run_guarded(
             self._post_all_platforms(locked, draft, validated_captions), token
         )

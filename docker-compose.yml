@@ -533,6 +533,11 @@ services:
       # + completion. Config default is OFF; not yet armed here (needs stored
       # bot-token + chat-id credentials regardless of this flag).
       ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
+      # Telegram V2 — inbound commands + actionable approve/reject buttons.
+      # Armed here (sub-switch on top of the still-off ROBOCO_TELEGRAM_ENABLED
+      # above); the whole bridge stays inert until that flag AND credentials
+      # are both set, so arming this alone does nothing yet.
+      ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-true}
       ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
       ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
       ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}

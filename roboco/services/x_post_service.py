@@ -66,8 +66,8 @@ class TaskAlreadyCompletedError(Exception):
 class XPostExecuteResult:
     """The outcome of an approve call.
 
-    `status` is one of: posted, already_posted, already_in_progress,
-    no_credentials, post_failed, redis_unavailable.
+    `status` is one of: posted, already_posted, already_rejected,
+    already_in_progress, no_credentials, post_failed, redis_unavailable.
     """
 
     status: str
@@ -119,6 +119,12 @@ class XPostService(BaseService):
                 tweet_id=markers.get_x_posted_tweet_id(task),
                 detail="this draft was already posted",
             )
+        if task.status == TaskStatus.CANCELLED:
+            return XPostExecuteResult(
+                status="already_rejected",
+                tweet_id=None,
+                detail="this draft was already rejected",
+            )
 
         lock_key = f"{_LOCK_PREFIX}{task_id}"
         try:
@@ -163,6 +169,12 @@ class XPostService(BaseService):
                 status="already_posted",
                 tweet_id=markers.get_x_posted_tweet_id(locked),
                 detail="this draft was already posted",
+            )
+        if locked.status == TaskStatus.CANCELLED:
+            return XPostExecuteResult(
+                status="already_rejected",
+                tweet_id=None,
+                detail="this draft was already rejected",
             )
         if trimmed_body:
             markers.set_x_draft_body(locked, trimmed_body)

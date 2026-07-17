@@ -1544,6 +1544,50 @@ class Settings(BaseSettings):
             ".../tasks/<id8>."
         ),
     )
+    # Telegram V2 — inbound commands (/status, /queue, /task) + actionable
+    # approve/reject callback buttons on escalation DMs. Sub-switch on top of
+    # telegram_enabled: both must be on, AND credentials stored, for the poll
+    # loop to do anything. Never expands what triggers an outbound DM beyond
+    # the V1 escalation/completion senders — this only makes the escalation
+    # send actionable and adds a poll loop that reacts to the CEO's replies.
+    telegram_inbound_enabled: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch for Telegram inbound commands + actionable "
+            "approve/reject buttons. OFF by default: even with "
+            "telegram_enabled on, the bot only sends notifications, never "
+            "polls or reacts. Needs telegram_enabled on AND stored "
+            "credentials to do anything."
+        ),
+    )
+    telegram_poll_interval_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        description=(
+            "Seconds between getUpdates long-poll re-issues. Each call itself "
+            "blocks server-side up to telegram_poll_timeout_seconds, so this "
+            "is a floor between re-issues, not the effective latency."
+        ),
+    )
+    telegram_poll_timeout_seconds: int = Field(
+        default=25,
+        ge=1,
+        le=50,
+        description="Bot API getUpdates long-poll `timeout` param (seconds).",
+    )
+    telegram_max_updates_per_cycle: int = Field(
+        default=50,
+        ge=1,
+        description="Max updates processed in one poll cycle.",
+    )
+    telegram_pending_reply_ttl_seconds: float = Field(
+        default=300.0,
+        ge=30.0,
+        description=(
+            "How long a force_reply prompt (e.g. 'reply with your rejection "
+            "reason') stays live before the pending action expires."
+        ),
+    )
 
     # Gateway coordination thresholds
     # Single source of truth for "claim heartbeat is stale", consumed via
