@@ -20,6 +20,9 @@ The RoboCo video engine: a default-off subsystem that authors bespoke short mark
 | `alembic/versions/062_tiktok_credentials.py` | Migration 062 — the `tiktok_credentials` singleton row (Fernet-encrypted OAuth2 secrets, all-or-nothing set/clear, mirroring the git-token / `x_credentials` pattern). | 44 |
 | `video-renderer/` | The sidecar: `server.js` (HTTP+tarball boundary), `render.js` (`@hyperframes/producer` `createRenderJob` + `executeRenderJob`, system `ffmpeg`, headless Chromium). Credential-free and git-free — reads only what's POSTed. | — |
 | `docker/video-renderer.Dockerfile` | Sidecar image (`roboco-video-renderer`): Node + Chromium + system `ffmpeg`; installs `@hyperframes/producer`. No RoboCo source, no creds. | — |
+| `motion/README.md` `## Design bar` / `## Visual design bar (demo/kit register)` | Authoring craft an assigned UX/UI dev consults before building a composition: color/type/motion/layout dials for the text-card register, plus spacing, beat pacing (`animation-delay`, never `data-start` for beats), `pk-chip`/`pk-pill` semantic-variant discipline, camera+cursor+rhythm, and anti-generic tells for the `kit/` demo register. | 149 (file total) |
+| `motion/skills/references/{house-style,video-composition,beat-direction,motion-principles}.md` | Four upstream HyperFrames craft references (palette/lazy-defaults, video-medium scale/density, per-beat rhythm planning, ease/speed/direction variance) vendored verbatim at pinned commit `9d148d28` (Apache-2.0, header in each file) — back every rule in `motion/README.md`'s design-bar sections; re-vendor when bumping `@hyperframes/producer`. | 462 |
+| `motion/skills/hyperframes-catalog-index.md` | RoboCo-authored index of the public HyperFrames catalog (109 blocks + 24 components, 133 entries) with per-category kit-mapping triage (maps onto an existing `pk-*` piece / a choreography engine / needs a new kit piece); read on demand when planning a beat, not injected into any agent prompt. | 186 |
 
 ## Data Flow
 
@@ -36,6 +39,10 @@ CEO ACT: `GET /api/video/posts` lists held drafts (including `mp4_paths`); `GET 
 - `ROBOCO_VIDEO_RENDER_INTERVAL_SECONDS` / `ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_REQUEST_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_OUTPUT_DIR` — render loop cadence, per-render deadline, sidecar HTTP deadline, MP4 output dir (bind-mounted in all three compose files so renders survive container recreation).
 - `ROBOCO_VIDEO_RENDERER_BASE_URL` — the sidecar endpoint (default `http://roboco-video-renderer:3001`).
 - `ROBOCO_MINIO_*` — MinIO object storage (default-off; `video_renderer_client._save` PUTs each render after the local write; serve route streams via `StreamingResponse` with `FileResponse` fallback).
+
+## Changes Since Baseline
+
+- **2026-07-17** (Wave 6, PR #550): Authoring craft, not engine code — `motion/README.md` gained `## Visual design bar (demo/kit register)` (spacing/hierarchy, beat pacing, `pk-chip`/`pk-pill` semantic discipline, camera+cursor+rhythm, anti-generic tells for the `kit/` register), four upstream HyperFrames craft references vendored verbatim under `motion/skills/references/` (fixing `hyperframes-creative.md`'s previously-dead `references/` pointers), and a new `motion/skills/hyperframes-catalog-index.md` (133-entry HyperFrames catalog vocabulary index, read-on-demand). No service/verb/schema change; the render/post pipeline documented above is untouched.
 
 ## Health
 

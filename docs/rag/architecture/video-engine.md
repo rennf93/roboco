@@ -22,7 +22,7 @@ Even when enabled, distribution requires an explicit per-clip CEO approval — a
 
 **On-demand CEO request** (panel-triggered). `POST /api/video/request` (CEO-role-gated) opens an authoring task directly — the CEO's escape hatch independent of the two automatic triggers.
 
-All three open a normal, **assigned** UX/UI authoring task (balanced across the two ux-devs) rather than a held draft — the dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` (one `<id>/vertical.html` + `<id>/square.html` carrying the HyperFrames render params on `<html>`) and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle.
+All three open a normal, **assigned** UX/UI authoring task (balanced across the two ux-devs) rather than a held draft — the dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` (one `<id>/vertical.html` + `<id>/square.html` carrying the HyperFrames render params on `<html>`) and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle. Authoring craft — design-bar dials for both the text-card and `kit/` demo registers, the vendored upstream HyperFrames craft references, and the read-on-demand `hyperframes-catalog-index.md` vocabulary index — lives in `motion/README.md` and `motion/skills/`, not duplicated here.
 
 ## Artifact verification (request_render)
 
