@@ -83,6 +83,11 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `GitService.sync_task_branch` | method | git.py:3847 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
 | `GitService.is_behind_base` | method | git.py:3889 | `(behind, ahead)` counts for i_am_done submit gate |
 | `GitService.close_pull_request` | method | git.py:3940 | Close superseded PR + optional comment + branch cleanup (idempotent) |
+| `GitService._delete_remote_branch_best_effort` | method | git.py:3608 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches; returns `bool` (issued vs skipped/failed) |
+| `GitService.delete_task_branch` | method | git.py:3671 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
+| `GitService.cleanup_stale_branches` | method | git.py:3711 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
+| `GitService._stale_branch_window` | method | git.py:3777 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
+| `GitService._cleanup_one_stale_branch` | method | git.py:3810 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
 | `GitService.pr_target` | method | git.py:4021 | Return PR base branch (project_id scoped) |
 | `GitService.create_pr` | method | git.py:3418 | Branch-keyed open PR (gateway path; ensures base on remote) |
 | `GitService._record_pr_atomically` | method | git.py:2601 | Atomic pr_number/url write to task |
@@ -203,6 +208,7 @@ roboco/
 │           │            _pr_is_merged / _auto_complete_on_merge / _first_allowed_merge_method
 │           ├── branch cleanup: _delete_remote_branch_best_effort / _delete_pr_branch_best_effort
 │           │            delete_task_branch / _branch_has_open_dependents
+│           │            cleanup_stale_branches / _stale_branch_window / _cleanup_one_stale_branch (sweep)
 │           ├── rebase/sync: rebase_onto_base / rebase_pr_for_task / sync_task_branch / is_behind_base
 │           ├── close: close_pull_request
 │           ├── quality: run_pre_submit_quality_gate / toolchain_status_for_task / _fast_gate_commands
@@ -242,7 +248,7 @@ External:
 
 ## Entry Points
 
-- **HTTP routes** (`roboco/api/routes/git.py`): `get_status`, `log`, `diff`, `commit_for_task`, `push_for_task`, `create_branch_for_task`, `checkout_branch_for_agent`, `create_pr_for_task`, `merge_pr_for_task`, `pull`, `fetch`, `rebase` — all construct via `get_git_service(db)`.
+- **HTTP routes** (`roboco/api/routes/git.py`): `get_status`, `log`, `diff`, `commit_for_task`, `push_for_task`, `create_branch_for_task`, `checkout_branch_for_agent`, `create_pr_for_task`, `merge_pr_for_task`, `pull`, `fetch`, `rebase`, `cleanup_stale_branches` (`POST /git/branches/cleanup`, PM/CEO role-gated like `/rebase`, rate-limit 5/60) — all construct via `get_git_service(db)`.
 - **HTTP routes** (`roboco/api/routes/tasks.py:253`): `get_git_service` for task-scoped git.
 - **Gateway Choreographer** (`roboco/services/gateway/choreographer/`):
   - `_verb_runner._do_pr_merge` → `pr_merge`
@@ -287,6 +293,8 @@ Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_
 - **Conventions validator fails closed** (`could_not_run=True` blocks submit) on resolution error / timeout / non-zero exit; branchless + no-changed-files fail open.
 - **`_assert_on_task_branch` never discards work** — it does `checkout`, not `reset --hard`, to preserve a resumed agent's unpushed commits.
 - **CEO-only master merge**: `pr_merge` refuses `target == default_branch` for agents; only `merge_pr_for_task` (CEO role-gated from `awaiting_ceo_approval`) may merge to master. `default_branch` resolves through the env-ladder head rung (`_project_default_branch` → `head_branch(project)`), not the raw `projects.default_branch` column.
+- **`cleanup_stale_branches` cursor is required, not optional**: task rows never change as a side effect of the sweep (unlike, say, a queue that drains), so a repeat call with no `after_cursor` re-scans the identical first 200-row window forever instead of progressing. `_stale_branch_window` still advances the cursor past ladder-rung rows even though they're excluded from `candidates`, so `truncated` can't false-negative when a rung lands inside the window.
+- **Local branch delete in the sweep is always `force=True`** (`-D`) regardless of completed vs cancelled — a completed task's PR was squash-merged, so its local ref is never an ancestor of base and a "safe" `-d` would refuse every single candidate.
 
 ## Drift from CLAUDE.md
 
@@ -308,6 +316,8 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 | `3aff6e04` (Close gaps) | Same mega-commit (the PR body is identical — #285 is the merge closure of the #283 batch); the in-scope file deltas are the same set of additions. No additional logic change to these files beyond what #283 listed. |
 
 > Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286 — closed regression risks #108 and #109 in this slice: `_merge_with_retry` now falls back to a permitted merge method on 405 via `_first_allowed_merge_method` before raising `MergeConflictError`; `close_pull_request` default flipped to `delete_branch=False`, choreographer caller now passes `delete_branch=True` explicitly). `00513399` ([bug] push_branch — `push_branch(branch_name)` now passes `branch=branch_name` to `self.push()` so the gateway `open_pr` path pushes the actual named task branch rather than the clone root's current checkout; fixes the "No commits between" 422 → `i_am_blocked` wedge observed in the F123 per-worktree model). `2759edf7` ([B-REL] release executor — added `_CiRunQuery` dataclass at git.py:241 to bundle per-project CI-fetch inputs; `get_latest_ci_conclusion` and `_fetch_latest_ci_run` now accept an optional `head_sha` so the release CI gate polls a specific release commit's own run rather than branch-latest; `settings.release_ci_workflow` config flag added). `69071030` ([chore] work-session-routes — added `WorkSessionService.task_team_for_session` helper (route layer PM cell-ownership check for `merge_pr`); route layer now stamps `merged_by` from the authenticated caller rather than the request body — `WorkSessionService.merge_pr` signature is unchanged, but `MergePRRequest` schema dropped `merged_by` field).
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking alongside remote ones: `delete_task_branch` now also skips environment-ladder rungs (previously only the remote-delete's own main/master/develop guard existed) and returns `bool`; new `cleanup_stale_branches` + `_stale_branch_window` + `_cleanup_one_stale_branch` back a PM/CEO-only `POST /git/branches/cleanup` sweep of terminal tasks' remote+local branches, exposed as a confirm-dialog button on the panel Git page. See `docs/map/task-service.md` for the paired per-task reap at cancel/completion and `docs/map/workspace.md` for the new `WorkspaceService.delete_local_branch` primitive both routes share.
 
 ## Regression Risks
 

@@ -2447,7 +2447,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/dashboard.py | CEO/auditor/kanban/metrics/agents/activity dashboards. |
 | roboco/api/routes/tasks.py | Task CRUD + lifecycle transitions (claim/start/verify/qa/complete...). |
 | roboco/api/routes/work_session.py | Work-session list/commit/files/PR/merge/complete/abandon. |
-| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase. |
+| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase/branch-cleanup sweep. |
 | roboco/api/routes/project.py | Project CRUD + workspace/sync/access + conventions. |
 | roboco/api/routes/product.py | Product CRUD. |
 | roboco/api/routes/optimal.py | RAG: kb/search, rag/query, mentor/ask, learnings, decisions, review. |
@@ -2503,6 +2503,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/auth/status (always), /auth/login, /auth/logout (mounted only when `cloud_auth_enabled`) | auth/routes.py | none (status) / FastAPI Users cookie login |
 | GET/POST/PUT/DELETE | /api/projects, /{id}/conventions, /workspace, /sync | project.py | agent context |
+| POST | /api/git/branches/cleanup | git.py | agent context, PM/CEO role-gated like `/rebase`; rate-limit 5/60 — cursor-resumable stale-branch sweep, `GitBranchCleanupRequest`/`Response` (wave 2, open PR #548) |
 | POST | /api/v1/flow/developer/{give_me_work,i_will_work_on,open_pr,i_am_done,unclaim,resume,sync_branch} | flow_dev.py | `require_dev` (role + HMAC) |
 | POST | /api/v1/flow/qa/{claim_review,pass_review,fail_review} | flow_qa.py | `require_qa` |
 | POST | /api/v1/flow/cell_pm/{delegate,submit_up,complete,triage,unblock,reassign} | flow_cell_pm.py | `require_cell_pm` |
@@ -2665,6 +2666,7 @@ roboco/api/
 > - `d1cf6ecb` Wave 1 (#295) — adds `GET /api/tasks/summary?q=` search (`TaskService.search_tasks`), `GET /api/prompter/live/{id}/search-tasks` (intake memory), `GET /api/secretary/tasks?q=` (Secretary task-by-name lookup), and the Secretary `edit` directive action.
 > - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
+> - (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) adds `POST /api/git/branches/cleanup` (PM/CEO role-gated like `/rebase`, rate-limit 5/60) + `GitBranchCleanupRequest`/`GitBranchCleanupResponse` schemas — cursor-resumable sweep of terminal tasks' remote+local branches, backing a confirm-dialog button on the panel Git page.
 
 ## Regression Risks
 
@@ -3604,7 +3606,10 @@ The slice is structurally sound: the SAVEPOINT boundary, intermediate-None INVAL
 | `escalate_to_ceo` | method | task.py:5064 | `awaiting_pm_review→awaiting_ceo_approval`; gained `actor_agent_id: UUID | None = None` param (stamped as `audit_agent_id` so the transition row attributes to the specific PM/Board agent, not just the role). |
 | `ceo_approve` | method | task.py:5146 | CEO merges then approves; `awaiting_ceo_approval→completed`. |
 | `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status). |
-| `_remove_task_worktree_on_terminal` | method | task.py:5601 | Best-effort worktree cleanup on complete/ceo_approve; no-op for branchless. |
+| `_delete_task_branch_best_effort` | method | task.py:6726 | Cancel-path cleanup: remote branch delete + `_remove_task_worktree_best_effort(force_branch_delete=True)`; skipped once branch is unset. |
+| `_remove_task_worktree_best_effort` | method | task.py:6767 | Shared worktree+local-branch+previews cleanup called by both cancel and terminal paths; force-deletes the local branch ref unless it's an environment-ladder rung (`effective_environments`). |
+| `_cleanup_task_previews_best_effort` | method | task.py:6804 | `rmtree` the task's `.previews/{task8}` video-render dir; path-containment-checked against the project workspace dir before deleting. |
+| `_remove_task_worktree_on_terminal` | method | task.py:6829 | Best-effort worktree + local-branch (force `-D`, squash-merge is never an ancestor) + previews cleanup on complete/ceo_approve; no-op for branchless. |
 | `cancel` | method | task.py:5644 | Cascade-cancel descendants through the validator. |
 | `reassign` / `reassign_active_claim` | method | task.py:7657 / 7807 | Reassignment with Board/Main-PM diversion guards. |
 | `pr_pass` / `pr_fail` | method | task.py:8100 / 8137 | In-path PR-review gate verdicts. |
@@ -3644,7 +3649,7 @@ stateDiagram-v2
 - TaskService
   - State core: `_validate_and_set_status`, `_emit_status_transition_audit`, `admin_set_status`, `_restore_block_ownership`, `_emit_admin_override_audit`
   - Create/shape: `create`, `_validate_parent_depth`, `_validate_batch_membership`, `activate`
-  - Branch/worktree: `_ensure_branch_for_task`, `_auto_create_branch`, `_remove_task_worktree*`
+  - Branch/worktree: `_ensure_branch_for_task`, `_auto_create_branch`, `_delete_task_branch_best_effort`, `_remove_task_worktree*`, `_cleanup_task_previews_best_effort`
   - Claim: `claim`, `_finalize_claim`, `_inject_proactive_context`, `acquire_*_lock`
   - Lifecycle verbs: `start`, `block*`, `unblock`, `pause`, `resume`, `submit_for_qa`, `pass_qa`, `fail_qa`, `docs_complete`, `submit_for_pm_review`
   - Completion: `complete`, `_apply_complete_approval_chain`, `ceo_approve`, `ceo_reject`, `cancel`
@@ -3683,6 +3688,7 @@ stateDiagram-v2
 - Branchless/umbrella/external-review tasks are exempt from the branch gate inside `GitContext` (task.py:597-611); umbrella is also exempt from the `awaiting_pm_review→awaiting_ceo_approval` pr_number gate.
 - `complete()` requires PR merged (`_assert_pr_merged_for_complete`) EXCEPT branchless roots; `ceo_approve` separately checks `work_session.pr_status=="merged"` and refuses otherwise.
 - Background indexing/learning/cleanup tasks are tracked on `self._background_tasks` and are best-effort — a failure never blocks the transition.
+- Both cancel and terminal-completion now force-delete (`-D`) the task's LOCAL branch ref in the assignee's clone alongside the worktree — a completed task's PR was squash-merged (its local ref is never an ancestor of base, so a "safe" `-d` refuses unconditionally) and a cancelled task's work is discarded by decision, so the ref is spent either way. Skipped when the branch name coincides with an environment-ladder rung (`effective_environments`), which outlives any one task.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md states ceo_reject "~4779 skips _validate_and_set_status in branchless path". Actual: branchless branch of `ceo_reject` is at task.py:5488 and routes through `admin_set_status` (which DOES emit audit at task.py:2100). The non-branchless branch DOES call `_validate_and_set_status` (task.py:5461). No audit gap — the line reference is stale.
@@ -3695,6 +3701,8 @@ stateDiagram-v2
 - `3aff6e04` Chore: Close gaps (#285) — follow-on gap close (worktree-on-terminal cleanup F123 Phase C, escalation audit emit, rework routing hardening).
 
 > Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution).
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking: `_delete_task_branch_best_effort`/`_remove_task_worktree_on_terminal` now also force-delete the assignee's local branch ref (via new `WorkspaceService.delete_local_branch`) and rmtree the task's `.previews/{task8}` video-preview dir, both skipped for environment-ladder rungs. See the `worksession-git` section for the paired `GitService.cleanup_stale_branches` sweep.
 
 ## Regression Risks
 
@@ -3794,6 +3802,11 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `GitService.sync_task_branch` | method | git.py:3847 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
 | `GitService.is_behind_base` | method | git.py:3889 | `(behind, ahead)` counts for i_am_done submit gate |
 | `GitService.close_pull_request` | method | git.py:3940 | Close superseded PR + optional comment + branch cleanup (idempotent) |
+| `GitService._delete_remote_branch_best_effort` | method | git.py:3608 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches; returns `bool` (issued vs skipped/failed) |
+| `GitService.delete_task_branch` | method | git.py:3671 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
+| `GitService.cleanup_stale_branches` | method | git.py:3711 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
+| `GitService._stale_branch_window` | method | git.py:3777 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
+| `GitService._cleanup_one_stale_branch` | method | git.py:3810 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
 | `GitService.pr_target` | method | git.py:4021 | Return PR base branch (project_id scoped) |
 | `GitService.create_pr` | method | git.py:3418 | Branch-keyed open PR (gateway path; ensures base on remote) |
 | `GitService._record_pr_atomically` | method | git.py:2601 | Atomic pr_number/url write to task |
@@ -3914,6 +3927,7 @@ roboco/
 │           │            _pr_is_merged / _auto_complete_on_merge / _first_allowed_merge_method
 │           ├── branch cleanup: _delete_remote_branch_best_effort / _delete_pr_branch_best_effort
 │           │            delete_task_branch / _branch_has_open_dependents
+│           │            cleanup_stale_branches / _stale_branch_window / _cleanup_one_stale_branch (sweep)
 │           ├── rebase/sync: rebase_onto_base / rebase_pr_for_task / sync_task_branch / is_behind_base
 │           ├── close: close_pull_request
 │           ├── quality: run_pre_submit_quality_gate / toolchain_status_for_task / _fast_gate_commands
@@ -3953,7 +3967,7 @@ External:
 
 ## Entry Points
 
-- **HTTP routes** (`roboco/api/routes/git.py`): `get_status`, `log`, `diff`, `commit_for_task`, `push_for_task`, `create_branch_for_task`, `checkout_branch_for_agent`, `create_pr_for_task`, `merge_pr_for_task`, `pull`, `fetch`, `rebase` — all construct via `get_git_service(db)`.
+- **HTTP routes** (`roboco/api/routes/git.py`): `get_status`, `log`, `diff`, `commit_for_task`, `push_for_task`, `create_branch_for_task`, `checkout_branch_for_agent`, `create_pr_for_task`, `merge_pr_for_task`, `pull`, `fetch`, `rebase`, `cleanup_stale_branches` (`POST /git/branches/cleanup`, PM/CEO role-gated like `/rebase`, rate-limit 5/60) — all construct via `get_git_service(db)`.
 - **HTTP routes** (`roboco/api/routes/tasks.py:253`): `get_git_service` for task-scoped git.
 - **Gateway Choreographer** (`roboco/services/gateway/choreographer/`):
   - `_verb_runner._do_pr_merge` → `pr_merge`
@@ -3998,6 +4012,8 @@ Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_
 - **Conventions validator fails closed** (`could_not_run=True` blocks submit) on resolution error / timeout / non-zero exit; branchless + no-changed-files fail open.
 - **`_assert_on_task_branch` never discards work** — it does `checkout`, not `reset --hard`, to preserve a resumed agent's unpushed commits.
 - **CEO-only master merge**: `pr_merge` refuses `target == default_branch` for agents; only `merge_pr_for_task` (CEO role-gated from `awaiting_ceo_approval`) may merge to master.
+- **`cleanup_stale_branches` cursor is required, not optional**: task rows never change as a side effect of the sweep (unlike, say, a queue that drains), so a repeat call with no `after_cursor` re-scans the identical first 200-row window forever instead of progressing. `_stale_branch_window` still advances the cursor past ladder-rung rows even though they're excluded from `candidates`, so `truncated` can't false-negative when a rung lands inside the window.
+- **Local branch delete in the sweep is always `force=True`** (`-D`) regardless of completed vs cancelled — a completed task's PR was squash-merged, so its local ref is never an ancestor of base and a "safe" `-d` would refuse every single candidate.
 
 ## Drift from CLAUDE.md
 
@@ -4019,6 +4035,8 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 | `3aff6e04` (Close gaps) | Same mega-commit (the PR body is identical — #285 is the merge closure of the #283 batch); the in-scope file deltas are the same set of additions. No additional logic change to these files beyond what #283 listed. |
 
 > Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286 — closed regression risks #108 and #109 in this slice: `_merge_with_retry` now falls back to a permitted merge method on 405 via `_first_allowed_merge_method` before raising `MergeConflictError`; `close_pull_request` default flipped to `delete_branch=False`, choreographer caller now passes `delete_branch=True` explicitly). `00513399` ([bug] push_branch — `push_branch(branch_name)` now passes `branch=branch_name` to `self.push()` so the gateway `open_pr` path pushes the actual named task branch rather than the clone root's current checkout; fixes the "No commits between" 422 → `i_am_blocked` wedge observed in the F123 per-worktree model). `2759edf7` ([B-REL] release executor — added `_CiRunQuery` dataclass at git.py:241 to bundle per-project CI-fetch inputs; `get_latest_ci_conclusion` and `_fetch_latest_ci_run` now accept an optional `head_sha` so the release CI gate polls a specific release commit's own run rather than branch-latest; `settings.release_ci_workflow` config flag added). `69071030` ([chore] work-session-routes — added `WorkSessionService.task_team_for_session` helper (route layer PM cell-ownership check for `merge_pr`); route layer now stamps `merged_by` from the authenticated caller rather than the request body — `WorkSessionService.merge_pr` signature is unchanged, but `MergePRRequest` schema dropped `merged_by` field).
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking alongside remote ones: `delete_task_branch` now also skips environment-ladder rungs (previously only the remote-delete's own main/master/develop guard existed) and returns `bool`; new `cleanup_stale_branches` + `_stale_branch_window` + `_cleanup_one_stale_branch` back a PM/CEO-only `POST /git/branches/cleanup` sweep of terminal tasks' remote+local branches, exposed as a confirm-dialog button on the panel Git page. See the `task-service` section for the paired per-task reap at cancel/completion and the `workspace` section for the new `WorkspaceService.delete_local_branch` primitive both routes share.
 
 ## Regression Risks
 
@@ -4081,6 +4099,7 @@ WorkspaceService manages the per-agent git clone layout under {workspaces_root}/
 | WorkspaceService._fetch_branch_ref | method | roboco/services/workspace.py:613 | Token-aware git fetch origin <branch> into clone_root; best-effort (never raises); used by ensure_worktree_self_heal (536bbb64) |
 | WorkspaceService.ensure_worktree_self_heal | method | roboco/services/workspace.py:671 | Orchestrator spawn-time chokepoint: re-attaches a per-task worktree after clone vanished (redeploy/disk loss); fetches branch ref from origin when the local ref is absent after a re-clone, then delegates to ensure_worktree (536bbb64) |
 | WorkspaceService.remove_worktree | method | roboco/services/workspace.py:733 | Best-effort git worktree remove --force + prune; no-op if gone (cancel/terminal/reaper evict) |
+| WorkspaceService.delete_local_branch | method | roboco/services/workspace.py:787 | Best-effort `git branch -d/-D <branch>` in a clone; never raises; skips main/master/develop/empty (mirrors GitService._delete_remote_branch_best_effort); callers run it AFTER remove_worktree (a still-checked-out branch refuses) |
 | WorkspaceService.resolve_workspace | method | roboco/services/workspace.py:745 | Look up agent (UUID or slug) -> team+slug -> workspace path; default team BACKEND |
 | WorkspaceService._lookup_agent_or_raise | method | roboco/services/workspace.py:787 | Find agent by UUID or slug; raise WorkspaceError if missing |
 | WorkspaceService._is_workspace_healthy | staticmethod | roboco/services/workspace.py:806 | True only if .git exists AND has HEAD + objects/ (rejects stub clones) |
@@ -4177,7 +4196,7 @@ WorkspaceService slice
 +-- WorkspaceError
 +-- WorkspaceService
 |   +-- Path math: get_workspace_path / get_clone_root_path / get_worktree_path
-|   +-- Worktree ops: _clone_root_default_branch / _park_clone_root_off_branch / _worktree_git / _link_shared_venv / ensure_worktree / ensure_worktree_for_resume / _fetch_branch_ref / ensure_worktree_self_heal / remove_worktree
+|   +-- Worktree ops: _clone_root_default_branch / _park_clone_root_off_branch / _worktree_git / _link_shared_venv / ensure_worktree / ensure_worktree_for_resume / _fetch_branch_ref / ensure_worktree_self_heal / remove_worktree / delete_local_branch
 |   +-- Agent lookup: resolve_workspace / _lookup_agent_or_raise
 |   +-- Health + refs: _is_workspace_healthy / _prune_broken_refs / _fetch_origin_best_effort
 |   +-- Token: _resolve_git_token / _read_clone_token
@@ -4202,6 +4221,7 @@ WorkspaceService slice
 | ensure_worktree_for_resume | roboco/services/workspace.py | GitService._ensure_worktree_for_commit (commit/rebase paths) |
 | ensure_worktree_self_heal | roboco/services/workspace.py | orchestrator._ensure_worktree_before_spawn before -w container launch (replaces the former ensure_worktree_for_resume call there; handles vanished clones + missing branch refs) |
 | remove_worktree | roboco/services/workspace.py | TaskService terminal/cancel paths + claim-rollback (mid-claim failure) |
+| delete_local_branch | roboco/services/workspace.py | TaskService terminal/cancel paths (right after remove_worktree) + GitService.cleanup_stale_branches sweep |
 | ensure_read_clone | roboco/services/workspace.py | ConventionsService.scaffold/effective-map reads (project-level conventions metadata) |
 | dry_upgrade_changes_lockfile | roboco/services/workspace.py | DepUpdateEngine periodic probe loop |
 | fetch_branch_for_inspection | roboco/services/workspace.py | gateway content_actions (QA/Documenter/PM need to read a dev branch) |
@@ -4235,6 +4255,7 @@ WorkspaceService slice
 - dry_upgrade_changes_lockfile holds the read-clone lock only for the local clone step, then releases it before the upgrade runs. The tiny gap between ensure_read_clone releasing and the probe re-acquiring is safe only because any concurrent _sync_read_clone completes under the lock first — a future change that interleaves could race.
 - get_workspace_path raises WorkspaceError if team is None rather than producing a literal 'None' segment; resolve_workspace falls back to Team.BACKEND when agent.team is falsy — agents missing a team silently land under backend/.
 - fetch_branch_for_inspection reuses workspace_clone_timeout (300s) for a single-branch fetch, not the shorter refresh timeout — a hung remote blocks the QA/Doc verb for 5 minutes.
+- delete_local_branch only detaches the ref; remove_worktree only detaches the worktree. Callers MUST run remove_worktree first — `git branch -d/-D` refuses a branch still checked out elsewhere in the clone (the worktree). Skipping the order silently no-ops the branch delete (check=False swallows the refusal).
 
 
 ## Drift from CLAUDE.md
@@ -4257,6 +4278,8 @@ WorkspaceService slice
 | 0f7d6929 | [F-fix] gate the worktree .venv symlink on the clone-root venv existing | _link_shared_venv now no-ops when clone_root/.venv does not yet exist (instead of dangling a symlink), so uv no longer errors or silently re-syncs a worktree-local venv in the near-zero gap before install_dev_deps provisions the clone-root venv. A later ensure self-heals the link. |
 
 > Post-snapshot updates (since 2026-06-29): 5 commits touched workspace.py. (1) 9faf2763 [hotfix] strip VIRTUAL_ENV + UV_PROJECT_ENVIRONMENT from _uv_subprocess_env so workspace uv calls stop warning about the image-baked /app/.venv pin. (2) cfe725da [hotfix] worktree: clone root left on the task branch caused fatal "already checked out" on every worktree add re-dispatch — added _clone_root_default_branch + _park_clone_root_off_branch; ensure_worktree and ensure_worktree_for_resume now call _park_clone_root_off_branch before the add to restore the F123 invariant. (3) 536bbb64 (logical-gap sweep PR#286) added _fetch_branch_ref + ensure_worktree_self_heal: the orchestrator's _ensure_worktree_before_spawn now calls ensure_worktree_self_heal instead of bare ensure_worktree_for_resume so a vanished clone (redeploy/disk loss) that left no local branch ref recovers the pushed commits from origin before re-attaching. (4) 3aff6e04 and 15effce0 (gap-fill PRs #285/#283) contributed earlier worktree + dep-probe plumbing (the _clone_local_into / _probe_lockfile_on_clone split already captured in the baseline).
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Added `delete_local_branch` (line 787) so `TaskService`'s cancel/terminal-completion cleanup and `GitService.cleanup_stale_branches` can reap a spent local branch ref, not just the worktree — previously every task an agent ever claimed leaked a permanent `refs/heads/{branch}` in that agent's clone.
 
 ## Regression Risks
 
@@ -8027,6 +8050,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | A2A Live (switchboard + reply) | `app/(dashboard)/a2a/page.tsx` + `components/a2a/*` | CEO watches every agent-to-agent conversation live: default org-chart switchboard (pair cards grouped by cell/PM-chain/board, pulsing on fresh `a2a.message` frames) or the classic conversation list; drill-in shows the transcript + a reply composer that lets the CEO chime into the thread as itself (task-linked conversations only) |
 | Project Settings / Conventions | `components/projects/edit-project-dialog.tsx` + `components/conventions/conventions-tab.tsx` | Per-project `.roboco/conventions.yml` map + health; Save / Restore via PR |
 | Usage Dashboard | `components/dashboard/usage-overview-panel.tsx` + `hooks/use-usage.ts` | Token/cost totals; live WS snapshot with HTTP-polling fallback |
+| Git | `app/(dashboard)/git/page.tsx` | Repository / Work Sessions tabs (business-page tab idiom, `?tab=`); `GitBrowser` (status/branches/log/diff + actions incl. confirm-gated "Clean Up Stale Branches") and `WorkSessionsView` (active sessions, search/status filter kept LOCAL not in URL params); old `/work-sessions` route now redirects to `/git?tab=sessions` |
 | Kanban | `components/kanban/{core,views}/*` | dnd-kit drag board; dev/qa/pm/pr-review views; drag routes through admin status-override with bypass-precondition prompt |
 | Task Detail | `components/tasks/task-detail/*` | Tabbed: overview, plan, progress, commits, sessions, notes, dependencies, AC, action dialogs |
 | AI Providers | `app/(dashboard)/settings/ai-providers/page.tsx` + `components/settings/ai-routing-card.tsx` | Per-slug/role/global model routing |
@@ -8062,6 +8086,11 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `RequiredNotesDialog` | comp | `components/ui/required-notes-dialog.tsx` | Reusable notes-gated confirm; submit disabled on empty/whitespace |
 | `CommandCenter` | comp | `components/dashboard/command-center.tsx` | Overview page body; composes all dashboard cards |
 | `DeliveryTabContent` | comp | `components/metrics/delivery-tab.tsx` | Cycle-time/bottleneck/rework/scorecard panels |
+| `GitActionsPanel` | comp | `components/git/git-actions-panel.tsx` | Commit/push/PR/rebase actions + destructive-confirm "Clean Up Stale Branches" (`AlertDialog`) |
+| `useCleanupBranches` / `handleCleanupBranches` | hook | `hooks/use-git.ts` / `hooks/use-git-browser.ts` | Mutation over `POST /git/branches/cleanup`; the browser hook tracks a per-project cursor ref so a repeat click resumes a truncated sweep instead of re-scanning the first window |
+| `WorkSessionsView` | comp | `components/work-sessions/work-sessions-view.tsx` | Git page's "Work Sessions" tab body; search/status filters are LOCAL `useState`, not URL params |
+| `SessionTrendChart` | comp | `components/work-sessions/session-trend-chart.tsx` | Active-session start-time histogram (hourly/daily bucketing); honestly labeled active-only, no history beyond `GET /work-sessions` |
+| `CostTrendChart` / `SpendTrendChart` | comp | `components/dashboard/cost-trend-chart.tsx` / `components/business/spend-trend-chart.tsx` | Daily-spend area charts off `GET /usage/time-series`; 7d on Overview (`CommandCenter`), 30d on the Business scorecard (`CompanyScorecardCard`) |
 
 ## Data Flow
 Browser → nginx :3000 → (panel Next.js server for pages; `/api/*` and `/ws/*` proxied to `orchestrator:8000`). All client calls use relative URLs: `API_URL="/api"` (axios `baseURL`) and `WS_URL="/ws"` (`getWebSocketUrl`) — no CORS because the browser sees one origin. When cloud auth is armed (`ROBOCO_CLOUD_AUTH_ENABLED`), every navigation to a `(dashboard)` route first runs `proxy.ts` (Next 16's rename of `middleware.ts`), which probes `/auth/status` directly against the docker-internal orchestrator URL (not through nginx) and redirects to `/login` when no `roboco_session` cookie is present; a probe failure/timeout fails OPEN to "cloud auth off" so a slow/unreachable backend never blocks navigation. The login page (`(auth)/login/page.tsx`) posts credentials via `authApi.login` (OAuth2 form body, FastAPI Users' cookie route) and the session cookie rides back on the response. The shared axios client injects `X-Agent-ID=<CEO_AGENT_ID>` + `X-Agent-Role=CEO_ROLE` headers for API authorization. Live events flow: orchestrator `StreamEventBus` → `websocket_bridge` → per-resource `/ws/{agents,notifications,system}` sockets → panel `useWebSocket` hooks → zustand stores / TanStack Query cache. Usage snapshots (`USAGE_SNAPSHOT`) and rate-limit lifecycle (`RATE_LIMIT_HIT/LIFTED`) arrive on the single shared `/ws/system` stream mounted in providers; on any non-`connected` state the usage store clears its snapshot so the panel falls back to HTTP-polling summary until a fresh frame lands. The A2A page's `useA2ALiveStream` is a second, independent consumer of that same shared `/ws/system` connection (not a new socket): every persisted A2A message publishes an `a2a.message` frame, which the page uses purely to invalidate-on-frame (REST via `a2aApi` stays the source of truth for full message bodies, since the frame's excerpt is capped) and to drive the switchboard's 45s pulse fade on the matching pair card.
@@ -8193,6 +8222,7 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 - **A2A page activity is A2A-only by design**: `latestPulseTimestamps` (switchboard-utils) derives pulses purely from `a2a.message` frames on `/ws/system`, never from the verb/flow traffic sharing that same stream — a CEO ruling, not an oversight, so don't "fix" the switchboard to also light up on ordinary gateway verbs.
 - **A2A reply composer is read-only on a task-less conversation**: the backend's `reply_as_ceo` route 400s exactly when the watched conversation has no `task_id` (A2A sends always ride the gateway `send` path, which requires one) — the panel pre-empts that bounce with an explanatory message instead of letting the POST fail. Conversation `status` does NOT gate the composer; the CEO's reply lands in its own direct thread with the participant, not into the watched conversation.
 - **Switchboard "peeked pair" state**: a pair with `conversation_id: null` (never talked) has nothing to select via `?conversation=`, so `page.tsx` tracks it separately (`peekedPair`) and renders its own empty state — don't conflate this with the ordinary `selectedId` empty-state path when touching the drill-in panel.
+- **Every URL param write forks `ScrollRestoration`'s route key and force-scrolls `<main>` to top** — `WorkSessionsView`'s search/status filters learned this the hard way (a per-keystroke `q=` param bounced the page) and moved to local `useState`; the Git page's own `?tab=` switch is fine since it's a deliberate, infrequent navigation, not per-keystroke. Don't route per-keystroke or high-frequency filter state through `router.replace`/`push` on this page.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md says panel lives at `roboco/panel/` inside this repo — confirmed (no longer a separate `roboco-panel` project). No drift.
@@ -8217,6 +8247,7 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 > - `da563487` Wave 2: A2A live view (#297) — new `app/(dashboard)/a2a/page.tsx` (classic list view + transcript + `A2AReplyComposer`), `hooks/use-a2a-live.ts`, `lib/api/a2a.ts` admin client, `useA2ALiveStream` added to `use-websocket.ts`. Backend pairs with `EventType.A2A_MESSAGE_SENT` + `websocket_bridge._handle_a2a_message_event`.
 > - `876e19b3` A2A switchboard (#298) — `page.tsx` gains the switchboard/list view toggle (default switchboard) + `peekedPair` state; new `components/a2a/{a2a-switchboard,a2a-switchboard-utils,a2a-pair-card}.tsx`; `useA2AAdminPairs` added to `use-a2a-live.ts`.
 > - `a7147702` feat(panel): full mobile responsiveness pass — touches the A2A page's single-visible-pane layout (`h-dvh`, back affordance) among other routes.
+> - (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Wave 2 hygiene + charts: `/work-sessions` route now redirects to `/git?tab=sessions` (moved under Git as a "Work Sessions" tab, `git-page.tsx` gains a `Tabs`); `GitActionsPanel` gains a confirm-gated "Clean Up Stale Branches" button (`useCleanupBranches`, cursor-resumable); `WorkSessionsView`'s filters moved from URL params to local state (ScrollRestoration bounce fix); new `SessionTrendChart` / `CostTrendChart` / `SpendTrendChart`.
 
 ## Regression Risks
 
