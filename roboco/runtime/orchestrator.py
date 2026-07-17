@@ -2295,7 +2295,9 @@ class AgentOrchestrator:
         )
 
         await self._ensure_agent_image(agent_id)
-        mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
+        mcp_config_path = await self._generate_mcp_config(
+            agent_id, git_context, task_id=task_id
+        )
 
         from uuid import uuid4
 
@@ -3472,10 +3474,43 @@ class AgentOrchestrator:
             if cache is not None:
                 cache.pop(slug, None)
 
+    async def _is_video_authoring_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A ux_ui developer spawned onto a source=video task — the one
+        non-QA case that gets the playwright MCP, so the author can open the
+        composition HTML in a real browser while iterating instead of
+        shipping the first render blind. Gating-only: the agent-ux image
+        already bakes the browser + wrapper entrypoint. Fail-closed — any
+        lookup error means no browser, never a broken spawn."""
+        if agent_role != "developer" or not task_id:
+            return False
+        if get_agent_team(agent_id) != "ux_ui":
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import VIDEO_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == VIDEO_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "video-authoring spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _generate_mcp_config(
         self,
         agent_id: str,
         git_context: SpawnGitContext | None = None,
+        task_id: str | None = None,
     ) -> Path:
         """Generate MCP config for an agent.
 
@@ -3488,7 +3523,8 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
-        - playwright          browser tools (fe-qa/ux-qa only — see below)
+        - playwright          browser tools (fe-qa/ux-qa, and the ux-dev on
+                              a video-authoring task — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3587,8 +3623,16 @@ class AgentOrchestrator:
             },
         }
 
+        video_authoring = await self._is_video_authoring_spawn(
+            agent_id, agent_role, task_id
+        )
         self._append_role_scoped_mcp_servers(
-            mcp_servers, agent_id, agent_role, agent_uuid, mcp_env
+            mcp_servers,
+            agent_id,
+            agent_role,
+            agent_uuid,
+            mcp_env,
+            video_authoring=video_authoring,
         )
 
         config: dict[str, Any] = {"mcpServers": mcp_servers}
@@ -3619,6 +3663,8 @@ class AgentOrchestrator:
         agent_role: str,
         agent_uuid: str,
         mcp_env: dict[str, str],
+        *,
+        video_authoring: bool = False,
     ) -> None:
         """Register the role-scoped MCP servers (docs, research, playwright).
 
@@ -3674,16 +3720,18 @@ class AgentOrchestrator:
             }
 
         # Playwright MCP — structured browser tools (navigate/click/snapshot/
-        # screenshot) for QA's browser verification, replacing hand-scripted
-        # Bash+Python. Scoped to fe-qa/ux-qa only (role-gated, not
-        # image-gated: ux-dev shares agent-ux's image but never gets this),
-        # per the CEO's round-3 note on the Playwright QA-image work. The
-        # binary + wrapper entrypoint are baked into agent-qa-fe/agent-ux
-        # only (docker/agent-qa-fe.Dockerfile, docker/agent-ux.Dockerfile),
-        # so registering it for any other role would reference a command
-        # that doesn't exist in that role's image.
+        # screenshot). Two cases: fe-qa/ux-qa browser verification, and a
+        # ux-dev authoring a source=video task (``video_authoring``, probed
+        # at spawn) so the composition author can preview their HTML in a
+        # real browser while iterating. Both run images that bake the
+        # binary + wrapper entrypoint (docker/agent-qa-fe.Dockerfile,
+        # docker/agent-ux.Dockerfile); registering it for any other role
+        # would reference a command that doesn't exist in that image.
         playwright_mcp_teams = ("frontend", "ux_ui")
-        if agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams:
+        browser_qa = (
+            agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams
+        )
+        if browser_qa or video_authoring:
             mcp_servers["playwright"] = {
                 "command": "/app/scripts/playwright-mcp-entrypoint.sh",
                 "args": [],
@@ -14293,6 +14341,10 @@ that behaves like a hand (pk-cursor data-waypoints). A locked-off camera,
 a frozen or popping cursor, or metronomic identical beats are automatic
 revision. Clip windows are for structural layers ONLY — drive beats with
 base-hidden delayed CSS animations, or the renderer drops your tail scenes.
+Read the vendored renderer doctrine in motion/skills/ (hyperframes-core,
+-keyframes, -creative) before authoring. You have browser tools (playwright
+MCP) on this task: open your composition HTML (file://.../vertical.html)
+and watch it live while iterating — do not build blind between renders.
 
 i_am_done() refuses without a stamped render preview — a clean self-review of
 the source is not enough; the rendered frames are the evidence.
