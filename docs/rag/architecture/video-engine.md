@@ -39,7 +39,7 @@ The render pass materializes a held `video_post` draft — mirroring the X-post/
 | Endpoint | Effect |
 |----------|--------|
 | `GET /api/video/posts` | List every held video draft awaiting decision. |
-| `POST /api/video/posts/{task_id}/approve` | Post the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload). Idempotent — approving an already-posted draft is a no-op. |
+| `POST /api/video/posts/{task_id}/approve` | Post the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload). Idempotent — approving an already-posted draft is a no-op; approving an already-rejected (CANCELLED) draft is refused outright rather than posting it. |
 | `POST /api/video/posts/{task_id}/reject` | Cancel the draft with a reason — and route the feedback back into the flow: a non-empty reason opens a fresh authoring task (same occasion, brief = the CEO's verbatim feedback + a revise-in-place pointer at the existing composition), so a rejection is a rework loop, not a dead end. |
 | `POST /api/video/request` | Open an on-demand authoring task (CEO-only). |
 

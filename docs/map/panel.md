@@ -206,6 +206,8 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - `x_engine_enabled` — X (Twitter) engine (release-post + mention-reply drafts, all CEO-held)
 - `roadmap_engine_enabled` — board roadmap engine (weekly Product-Owner-authored cycle)
 - `routing_strict` — fail-closed model routing (refuse to silently downgrade to the legacy Anthropic path on a disabled provider)
+- `telegram_enabled` — Telegram CEO-DM bridge (V1, outbound-only; pre-existing, previously missing from this list)
+- `telegram_inbound_enabled` — Telegram V2 sub-switch (on top of `telegram_enabled`): poll for commands/button-taps and make escalation DMs actionable
 
 Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime toggle): `ROBOCO_CLOUD_AUTH_ENABLED` and `ROBOCO_DB_NETWORK_ISOLATED`.
 
