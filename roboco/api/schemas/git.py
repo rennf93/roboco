@@ -340,18 +340,25 @@ class GitRebaseResponse(BaseModel):
 
 
 class GitBranchCleanupRequest(BaseModel):
-    """Request to sweep a project's terminal-task branches."""
+    """Request to sweep a project's terminal-task branches.
+
+    ``after_cursor`` resumes a capped sweep from a prior response's
+    ``next_cursor`` — task rows never change as a sweep side effect, so
+    without it a repeat call re-scans the same first window forever.
+    """
 
     project_slug: str
+    after_cursor: UUID | None = None
 
 
 class GitBranchCleanupResponse(BaseModel):
     """Counts from a stale-branch cleanup sweep.
 
     ``local_deleted`` counts an attempted local delete (assignee/clone
-    resolved), not a confirmed one — the underlying ``git branch -d/-D`` is
+    resolved), not a confirmed one — the underlying ``git branch -D`` is
     itself best-effort. ``truncated`` is True when more terminal-task
-    branches existed than the per-call cap.
+    branches existed than the per-call cap; ``next_cursor`` is then the
+    resume point to pass back as ``after_cursor``.
     """
 
     project_slug: str
@@ -360,6 +367,7 @@ class GitBranchCleanupResponse(BaseModel):
     skipped: int = 0
     errors: int = 0
     truncated: bool = False
+    next_cursor: str | None = None
 
 
 # =============================================================================

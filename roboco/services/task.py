@@ -6830,11 +6830,13 @@ class TaskService(BaseService):
         """Best-effort per-task worktree + local-branch removal on terminal
         completion.
 
-        Mirrors the cancel-path cleanup but with a SAFE local branch delete
-        (``-d``, not ``-D``): the remote branch is already gone via the merge
-        path, and an unmerged local ref refusing to delete is a clean skip,
-        not the data loss a force-delete would risk. A completed/merged task
-        would otherwise leak its worktree + branch ref on disk until the whole
+        Force-deletes the local branch ref (``-D``), same as the cancel path:
+        completion implies the PR already merged remotely (the merge path
+        deleted the remote branch), and the default merge method is SQUASH —
+        the local ref's commits are never ancestors of the base, so a "safe"
+        ``-d`` refuses every time and the ref would leak forever. The ref is
+        spent either way once the task is terminal. A completed task would
+        otherwise leak its worktree + branch ref on disk until the whole
         agent is deleted (F123). Best-effort: never raises, so a cleanup
         failure can't block completion. No-op for branchless tasks (no
         worktree was ever cut). Terminal-only by call site — earlier review
@@ -6850,7 +6852,7 @@ class TaskService(BaseService):
             if not project:
                 return
             await self._remove_task_worktree_best_effort(
-                task, project, force_branch_delete=False
+                task, project, force_branch_delete=True
             )
         except OSError as e:
             # FS/permission failure (stuck mount, perms) — systemic, not

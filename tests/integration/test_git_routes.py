@@ -1011,7 +1011,7 @@ async def test_merge_pr_without_task_id_no_422(git_client: dict) -> None:
 async def test_cleanup_branches_success(pm_git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.cleanup_stale_branches = AsyncMock(return_value=(3, 2, 1, 0, False))
+        svc.cleanup_stale_branches = AsyncMock(return_value=(3, 2, 1, 0, False, None))
         mock_get.return_value = svc
         response = await pm_git_client["client"].post(
             "/api/git/branches/cleanup",
@@ -1027,14 +1027,18 @@ async def test_cleanup_branches_success(pm_git_client: dict) -> None:
         data["errors"],
         data["truncated"],
     ) == (3, 2, 1, 0, False)
-    svc.cleanup_stale_branches.assert_awaited_once_with(pm_git_client["project"].slug)
+    svc.cleanup_stale_branches.assert_awaited_once_with(
+        pm_git_client["project"].slug, after_task_id=None
+    )
 
 
 @pytest.mark.asyncio
 async def test_cleanup_branches_reports_truncation(pm_git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.cleanup_stale_branches = AsyncMock(return_value=(200, 190, 0, 0, True))
+        svc.cleanup_stale_branches = AsyncMock(
+            return_value=(200, 190, 0, 0, True, "0" * 32)
+        )
         mock_get.return_value = svc
         response = await pm_git_client["client"].post(
             "/api/git/branches/cleanup",

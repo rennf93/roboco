@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -136,7 +136,7 @@ async def test_only_terminal_tasks_are_candidates(
     )
 
     # Only the 2 terminal tasks are candidates — pending/in_progress untouched.
-    assert result == (2, 2, 0, 0, False)
+    assert result == (2, 2, 0, 0, False, None)
 
 
 @pytest.mark.asyncio
@@ -158,7 +158,7 @@ async def test_env_ladder_branch_is_excluded(cleanup_setup: dict[str, Any]) -> N
 
     result = await cleanup_setup["svc"].cleanup_stale_branches(project.slug)
 
-    assert result == (1, 1, 0, 0, False)
+    assert result == (1, 1, 0, 0, False, None)
     cleanup_setup["ws_svc"].delete_local_branch.assert_awaited_once()
     call = cleanup_setup["ws_svc"].delete_local_branch.await_args
     assert call is not None
@@ -181,9 +181,11 @@ async def test_cancelled_task_force_deletes_local_branch(
 
 
 @pytest.mark.asyncio
-async def test_completed_task_uses_safe_local_delete(
+async def test_completed_task_also_force_deletes_local_branch(
     cleanup_setup: dict[str, Any],
 ) -> None:
+    # Completed ⇒ the PR already squash-merged, so the local ref is spent but
+    # never an ancestor of the base — a "safe" -d would refuse every time.
     _task(cleanup_setup, branch="feature/backend/x", status=TaskStatus.COMPLETED)
     await cleanup_setup["db"].flush()
 
@@ -192,7 +194,7 @@ async def test_completed_task_uses_safe_local_delete(
     cleanup_setup["ws_svc"].delete_local_branch.assert_awaited_once()
     call = cleanup_setup["ws_svc"].delete_local_branch.await_args
     assert call is not None
-    assert call.kwargs["force"] is False
+    assert call.kwargs["force"] is True
 
 
 @pytest.mark.asyncio
@@ -211,7 +213,7 @@ async def test_no_assignee_skips_local_delete_but_still_attempts_remote(
         cleanup_setup["project"].slug
     )
 
-    assert result == (1, 0, 1, 0, False)
+    assert result == (1, 0, 1, 0, False, None)
     cleanup_setup["ws_svc"].delete_local_branch.assert_not_awaited()
 
 
@@ -232,7 +234,41 @@ async def test_candidate_set_truncated_past_the_cap(
         cleanup_setup["project"].slug
     )
 
-    assert result == (2, 2, 0, 0, True)
+    assert result[:5] == (2, 2, 0, 0, True)
+    assert result[5] is not None  # resume cursor for the next call
+
+
+@pytest.mark.asyncio
+async def test_capped_sweep_progresses_with_cursor(
+    cleanup_setup: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated sweeps must cover NEW branches, not re-scan the same window —
+    task rows never change as a sweep side effect, so only the cursor moves
+    the window forward."""
+    monkeypatch.setattr(GitService, "_CLEANUP_BRANCH_LIMIT", 2)
+    for i in range(5):
+        _task(
+            cleanup_setup,
+            branch=f"feature/backend/task-{i}",
+            status=TaskStatus.COMPLETED,
+        )
+    await cleanup_setup["db"].flush()
+    svc = cleanup_setup["svc"]
+    slug = cleanup_setup["project"].slug
+    ws = cleanup_setup["ws_svc"]
+
+    first = await svc.cleanup_stale_branches(slug)
+    assert first[4] is True and first[5] is not None
+    first_branches = {call.args[1] for call in ws.delete_local_branch.await_args_list}
+    ws.delete_local_branch.reset_mock()
+
+    await svc.cleanup_stale_branches(slug, after_task_id=UUID(first[5]))
+    second_branches = {call.args[1] for call in ws.delete_local_branch.await_args_list}
+
+    assert second_branches, "second sweep processed nothing"
+    assert first_branches.isdisjoint(second_branches), (
+        f"second sweep re-touched {first_branches & second_branches}"
+    )
 
 
 @pytest.mark.asyncio
@@ -240,7 +276,7 @@ async def test_unknown_project_returns_zeroed_result(
     cleanup_setup: dict[str, Any],
 ) -> None:
     result = await cleanup_setup["svc"].cleanup_stale_branches("does-not-exist")
-    assert result == (0, 0, 0, 0, False)
+    assert result == (0, 0, 0, 0, False, None)
 
 
 @pytest.mark.asyncio

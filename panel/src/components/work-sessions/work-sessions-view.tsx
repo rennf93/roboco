@@ -1,7 +1,6 @@
 "use client";
 
-import { useMemo, useCallback, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useMemo, useState, useEffect } from "react";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
 import { WorkSessionStatus } from "@/types";
 import { OfflineState } from "@/components/ui/offline-state";
@@ -12,52 +11,16 @@ import { usePageRefresh } from "@/hooks";
 
 /**
  * Work-sessions content, rendered as the "Work Sessions" tab of /git.
- * Filter state lives in URL params on the /git route (the `tab` param is
- * preserved by copying the current searchParams on every update).
+ * Filter state is LOCAL, deliberately not URL params: every URL write forks
+ * ScrollRestoration's route key and force-scrolls <main> to top, so a
+ * per-keystroke q= param made typing in the search box bounce the page.
  */
 export function WorkSessionsView() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<WorkSessionStatus[]>([]);
 
-  // Read state from URL params
-  const searchQuery = searchParams.get("q") || "";
-  const statusParam = searchParams.get("status");
-  const statusFilter = useMemo(
-    () =>
-      (statusParam?.split(",").filter(Boolean) as WorkSessionStatus[]) || [],
-    [statusParam],
-  );
-
-  // Update URL params
-  const updateParams = useCallback(
-    (updates: Record<string, string | null>) => {
-      const params = new URLSearchParams(searchParams.toString());
-      Object.entries(updates).forEach(([key, value]) => {
-        if (value) {
-          params.set(key, value);
-        } else {
-          params.delete(key);
-        }
-      });
-      const query = params.toString();
-      router.push(query ? `/git?${query}` : "/git", { scroll: false });
-    },
-    [router, searchParams],
-  );
-
-  const handleSearchChange = useCallback(
-    (value: string) => {
-      updateParams({ q: value || null });
-    },
-    [updateParams],
-  );
-
-  const handleStatusChange = useCallback(
-    (value: WorkSessionStatus[]) => {
-      updateParams({ status: value.length > 0 ? value.join(",") : null });
-    },
-    [updateParams],
-  );
+  const handleSearchChange = setSearchQuery;
+  const handleStatusChange = setStatusFilter;
 
   // Fetch work sessions
   const { data: sessions, isLoading, error, refetch } = useWorkSessions();

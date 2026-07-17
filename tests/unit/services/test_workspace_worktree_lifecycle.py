@@ -541,6 +541,28 @@ async def test_delete_local_branch_force_deletes_unmerged(clone: Path) -> None:
     assert not _ref_exists(clone, "refs/heads/feature/unmerged")
 
 
+async def test_delete_local_branch_squash_merged_needs_force(clone: Path) -> None:
+    # RoboCo's default merge method is SQUASH: the branch's commits are never
+    # ancestors of the base afterwards, so `-d` refuses even though the work
+    # fully landed. This is why every terminal-path caller passes force=True —
+    # with -d the completed-task ref would leak forever.
+    svc = _service()
+    _git(clone, "checkout", "-b", "feature/squashed")
+    (clone / "work.txt").write_text("x")
+    _git(clone, "add", "work.txt")
+    _git(clone, "commit", "-m", "feature work")
+    _git(clone, "checkout", "main")
+    _git(clone, "merge", "--squash", "feature/squashed")
+    _git(clone, "commit", "-m", "squash-merge feature")
+    assert (clone / "work.txt").exists()  # the work landed on main
+
+    await svc.delete_local_branch(clone, "feature/squashed", force=False)
+    assert _ref_exists(clone, "refs/heads/feature/squashed")  # -d refused
+
+    await svc.delete_local_branch(clone, "feature/squashed", force=True)
+    assert not _ref_exists(clone, "refs/heads/feature/squashed")
+
+
 async def test_delete_local_branch_missing_branch_is_clean_skip(clone: Path) -> None:
     svc = _service()
     await svc.delete_local_branch(

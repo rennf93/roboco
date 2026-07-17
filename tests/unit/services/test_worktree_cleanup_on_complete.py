@@ -75,7 +75,7 @@ async def test_complete_removes_assignee_worktree_best_effort() -> None:
     result = await svc.complete(task.id)
 
     assert result is task
-    remove.assert_awaited_once_with(task, "roboco-api", force_branch_delete=False)
+    remove.assert_awaited_once_with(task, "roboco-api", force_branch_delete=True)
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
     result = await svc.ceo_approve(task.id)
 
     assert result is task
-    remove.assert_awaited_once_with(task, "roboco-api", force_branch_delete=False)
+    remove.assert_awaited_once_with(task, "roboco-api", force_branch_delete=True)
 
 
 @pytest.mark.asyncio

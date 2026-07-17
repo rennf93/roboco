@@ -806,7 +806,10 @@ async def cleanup_stale_branches(
             skipped,
             errors,
             truncated,
-        ) = await git_service.cleanup_stale_branches(project_slug)
+            next_cursor,
+        ) = await git_service.cleanup_stale_branches(
+            project_slug, after_task_id=data.after_cursor
+        )
     except _TranslatableError as e:
         raise _translate_error(e) from e
 
@@ -817,4 +820,5 @@ async def cleanup_stale_branches(
         skipped=skipped,
         errors=errors,
         truncated=truncated,
+        next_cursor=next_cursor,
     )

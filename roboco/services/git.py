@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         GitCreatePRRequest,
         GitMergePRRequest,
     )
-    from roboco.db.tables import TaskTable
+    from roboco.db.tables import ProjectTable, TaskTable
 from roboco.config import settings
 from roboco.exceptions import (
     GitCommandError,
@@ -3709,52 +3709,45 @@ class GitService(BaseService):
     _CLEANUP_BRANCH_LIMIT = 200
 
     async def cleanup_stale_branches(
-        self, project_slug: str
-    ) -> tuple[int, int, int, int, bool]:
+        self, project_slug: str, after_task_id: UUID | None = None
+    ) -> tuple[int, int, int, int, bool, str | None]:
         """Sweep a project's terminal tasks and delete their spent branches.
 
         Candidates are TERMINAL (completed/cancelled) tasks with a
         ``branch_name`` that isn't an environment-ladder rung (a ladder branch
         outlives any one task — see ``roboco.models.env_branches``). Capped at
-        ``_CLEANUP_BRANCH_LIMIT``; a bigger candidate set is truncated, not
-        rejected. Per branch, best-effort: remote delete (the same guarded
-        ``delete_task_branch`` cancel already uses — main/master/develop and
-        open-dependent-PR branches are skipped there too) and, in the
-        assignee's clone, a local delete (force for a cancelled task's branch,
-        safe ``-d`` for a completed one).
+        ``_CLEANUP_BRANCH_LIMIT`` per call; the window is deterministic
+        (``ORDER BY id``) and cursor-resumable via ``after_task_id`` — task
+        rows never change as a side effect of the sweep, so without a cursor a
+        repeat call would re-scan the identical first window forever instead
+        of progressing past the cap. Ladder-branch rows still advance the
+        cursor (processed-as-excluded), so ``truncated`` can't go false-
+        negative when rungs land inside the window. Per branch, best-effort:
+        remote delete (the same guarded ``delete_task_branch`` cancel already
+        uses — main/master/develop and open-dependent-PR branches are skipped
+        there too) and, in the assignee's clone, a force local delete (a
+        completed task's branch was squash-merged, so a safe ``-d`` would
+        refuse unconditionally; a cancelled one's work is discarded by
+        decision).
 
-        Returns ``(remote_deleted, local_deleted, skipped, errors, truncated)``.
-        ``local_deleted`` counts a local delete as ATTEMPTED (assignee/clone
-        resolved), not confirmed — the underlying ``git branch -d/-D`` is
-        itself best-effort and reports no outcome. ``skipped`` counts branches
-        with no resolvable assignee/clone (nothing to locally clean up, though
-        the remote delete may still have run); ``errors`` counts branches that
-        raised unexpectedly while resolving the assignee's workspace.
+        Returns ``(remote_deleted, local_deleted, skipped, errors, truncated,
+        next_cursor)`` — ``next_cursor`` is the last processed task id when
+        truncated, to pass back as ``after_task_id``. ``local_deleted`` counts
+        a local delete as ATTEMPTED (assignee/clone resolved), not confirmed —
+        the underlying ``git branch -D`` is itself best-effort and reports no
+        outcome. ``skipped`` counts branches with no resolvable assignee/clone
+        (nothing to locally clean up, though the remote delete may still have
+        run); ``errors`` counts branches that raised unexpectedly while
+        resolving the assignee's workspace.
         """
-        from sqlalchemy import select
-
-        from roboco.db.tables import TaskTable
-
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
         if not project:
-            return (0, 0, 0, 0, False)
-        ladder_branches = {rung.branch for rung in effective_environments(project)}
+            return (0, 0, 0, 0, False, None)
 
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(TaskTable.project_id == project.id)
-            .where(TaskTable.branch_name.is_not(None))
-            .where(TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]))
-            .limit(self._CLEANUP_BRANCH_LIMIT + 1)
+        candidates, truncated, next_cursor = await self._stale_branch_window(
+            project, after_task_id
         )
-        candidates = [
-            t
-            for t in result.scalars().all()
-            if str(t.branch_name) not in ladder_branches
-        ]
-        truncated = len(candidates) > self._CLEANUP_BRANCH_LIMIT
-        candidates = candidates[: self._CLEANUP_BRANCH_LIMIT]
 
         remote_deleted = local_deleted = skipped = errors = 0
         workspace_service = get_workspace_service(self.session)
@@ -3779,7 +3772,40 @@ class GitService(BaseService):
             else:
                 skipped += 1
 
-        return (remote_deleted, local_deleted, skipped, errors, truncated)
+        return (remote_deleted, local_deleted, skipped, errors, truncated, next_cursor)
+
+    async def _stale_branch_window(
+        self, project: ProjectTable, after_task_id: UUID | None
+    ) -> tuple[list[TaskTable], bool, str | None]:
+        """Fetch one deterministic, cursor-resumable window of terminal-task
+        branch-cleanup candidates for ``cleanup_stale_branches``.
+
+        Returns ``(candidates, truncated, next_cursor)`` — ladder-branch rows
+        stay in the window (and so still advance the cursor) but are excluded
+        from ``candidates``, matching the caller's docstring.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        ladder_branches = {rung.branch for rung in effective_environments(project)}
+        query = (
+            select(TaskTable)
+            .where(TaskTable.project_id == project.id)
+            .where(TaskTable.branch_name.is_not(None))
+            .where(TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]))
+            .order_by(TaskTable.id)
+            .limit(self._CLEANUP_BRANCH_LIMIT + 1)
+        )
+        if after_task_id is not None:
+            query = query.where(TaskTable.id > after_task_id)
+        result = await self.session.execute(query)
+        window = list(result.scalars().all())
+        truncated = len(window) > self._CLEANUP_BRANCH_LIMIT
+        window = window[: self._CLEANUP_BRANCH_LIMIT]
+        next_cursor = str(window[-1].id) if truncated and window else None
+        candidates = [t for t in window if str(t.branch_name) not in ladder_branches]
+        return candidates, truncated, next_cursor
 
     async def _cleanup_one_stale_branch(
         self,
@@ -3803,9 +3829,11 @@ class GitService(BaseService):
         clone_root = workspace_service.get_clone_root_path(
             project_slug, assignee.team, assignee.slug
         )
-        await workspace_service.delete_local_branch(
-            clone_root, branch, force=task.status == TaskStatus.CANCELLED
-        )
+        # force for every terminal candidate: a completed task's PR was
+        # squash-merged (its local ref is never an ancestor of the base, so
+        # -d refuses unconditionally), a cancelled one's work is discarded
+        # by decision — the ref is spent either way.
+        await workspace_service.delete_local_branch(clone_root, branch, force=True)
         return remote_deleted, True
 
     async def _first_allowed_merge_method(

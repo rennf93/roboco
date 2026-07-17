@@ -375,6 +375,7 @@ export const gitApi = {
         skipped: 0,
         errors: 0,
         truncated: false,
+        next_cursor: null,
       };
     }
     const { data } = await api.post<GitBranchCleanupResponse>(

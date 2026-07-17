@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { useProjects } from "@/hooks/use-projects";
@@ -167,6 +167,9 @@ export function useGitBrowser(): UseGitBrowserResult {
     cleanupBranches,
   } = useGitOperations();
 
+  // Resume point for a capped stale-branch sweep, per project.
+  const cleanupCursorRef = useRef<{ slug: string; cursor: string } | null>(null);
+
   const handleCheckout = useCallback(
     async (branch: string) => {
       try {
@@ -322,10 +325,23 @@ export function useGitBrowser(): UseGitBrowserResult {
 
   const handleCleanupBranches = useCallback(async () => {
     try {
+      // Resume a capped sweep from where the last click stopped — without
+      // the cursor the backend re-scans the identical first window forever.
+      const cursor =
+        cleanupCursorRef.current?.slug === projectSlug
+          ? cleanupCursorRef.current.cursor
+          : undefined;
       const result = await cleanupBranches.mutateAsync({
         project_slug: projectSlug,
+        ...(cursor ? { after_cursor: cursor } : {}),
       });
-      const truncatedNote = result.truncated ? " (more remain — run again)" : "";
+      cleanupCursorRef.current =
+        result.truncated && result.next_cursor
+          ? { slug: projectSlug, cursor: result.next_cursor }
+          : null;
+      const truncatedNote = result.truncated
+        ? " (cap reached — click again to continue where it stopped)"
+        : "";
       toast.success(
         `Cleaned up branches: ${result.remote_deleted} remote, ` +
           `${result.local_deleted} local, ${result.skipped} skipped, ` +

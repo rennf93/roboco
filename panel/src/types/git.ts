@@ -201,6 +201,8 @@ export interface GitRebaseResponse {
 
 export interface GitBranchCleanupRequest {
   project_slug: string;
+  /** Resume point from a prior truncated sweep's next_cursor. */
+  after_cursor?: string;
 }
 
 export interface GitBranchCleanupResponse {
@@ -210,4 +212,5 @@ export interface GitBranchCleanupResponse {
   skipped: number;
   errors: number;
   truncated: boolean;
+  next_cursor: string | null;
 }
