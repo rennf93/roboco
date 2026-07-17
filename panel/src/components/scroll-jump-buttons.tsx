@@ -40,14 +40,27 @@ export function ScrollJumpButtons() {
     // main's own box is pinned by the flex layout, so overflowing content
     // never resizes main itself — watch its children (a page may render a
     // multi-root fragment, so all of them, not just the first). main is
-    // observed too for viewport resizes; re-run on route change since
-    // navigation swaps the content nodes.
+    // observed too for viewport resizes.
     const observer = new ResizeObserver(update);
-    observer.observe(mainElement);
-    Array.from(mainElement.children).forEach((child) => observer.observe(child));
+    const observeContent = () => {
+      observer.disconnect();
+      observer.observe(mainElement);
+      Array.from(mainElement.children).forEach((child) =>
+        observer.observe(child),
+      );
+      update();
+    };
+    observeContent();
+
+    // A Suspense fallback→content swap replaces main's top-level children
+    // after mount — re-observe on childList changes so the ResizeObserver
+    // never ends up watching a detached fallback node.
+    const mutations = new MutationObserver(observeContent);
+    mutations.observe(mainElement, { childList: true });
 
     return () => {
       mainElement.removeEventListener("scroll", update);
+      mutations.disconnect();
       observer.disconnect();
     };
   }, [pathname]);
