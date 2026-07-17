@@ -53,7 +53,7 @@ from roboco.exceptions import (
 from roboco.foundation.policy import lifecycle
 from roboco.foundation.policy.pr_labels import CONVENTIONS_PR_LABELS, derive_pr_labels
 from roboco.models.base import AgentRole, TaskStatus
-from roboco.models.env_branches import head_branch
+from roboco.models.env_branches import effective_environments, head_branch
 from roboco.services.base import (
     BaseService,
     NotFoundError,
@@ -3607,16 +3607,19 @@ class GitService(BaseService):
 
     async def _delete_remote_branch_best_effort(
         self, owner: str, repo: str, branch: str, git_token: str
-    ) -> None:
+    ) -> bool:
         """Best-effort: delete a remote branch by name.
 
         Silently swallows errors — cleanup is not critical. Skips branches that
         look like project defaults (main / master / develop) and any branch that
         still has open dependent PRs (an active integration target — deleting it
-        would strand in-flight child work).
+        would strand in-flight child work). Returns True if the delete request
+        was issued with no transport error, False on any skip/failure — callers
+        that only fire-and-forget can ignore it; the branch-cleanup sweep uses
+        it to report counts.
         """
         if branch in ("main", "master", "develop", ""):
-            return
+            return False
         if await self._branch_has_open_dependents(owner, repo, branch, git_token):
             self.log.info(
                 "branch delete skipped: open dependent PRs target it as base",
@@ -3624,7 +3627,7 @@ class GitService(BaseService):
                 owner=owner,
                 repo=repo,
             )
-            return
+            return False
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.delete(
@@ -3635,8 +3638,9 @@ class GitService(BaseService):
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
                 )
+            return True
         except httpx.HTTPError:
-            return
+            return False
 
     async def _delete_pr_branch_best_effort(
         self, owner: str, repo: str, pr_number: int, git_token: str
@@ -3664,15 +3668,25 @@ class GitService(BaseService):
         except httpx.HTTPError:
             return
 
-    async def delete_task_branch(self, project_slug: str, branch_name: str) -> None:
+    async def delete_task_branch(self, project_slug: str, branch_name: str) -> bool:
         """Delete a remote task branch after cancel/discard. Best-effort.
 
         Called by `TaskService` on cancellation so abandoned task
-        branches don't accumulate on the remote.
+        branches don't accumulate on the remote. Returns whether the delete
+        was actually issued (see ``_delete_remote_branch_best_effort``).
+
+        This is the chokepoint every task-scoped remote-delete call routes
+        through, so the environment-ladder guard lives here rather than only
+        at each caller: ``_delete_remote_branch_best_effort``'s own
+        main/master/develop skip predates the env-ladder model and doesn't
+        know about it (it's a generic branch-delete primitive also used by
+        the merged-PR source-branch cleanup, which never targets a ladder
+        branch by construction) — a task's ``branch_name`` could otherwise
+        coincide with a ladder rung and get deleted out from under it.
         """
         git_token = await self._token_for_project(project_slug)
         if not git_token:
-            return
+            return False
         # Resolve remote from any workspace — branch deletion only needs
         # the owner/repo, not a checkout. Use a service-root probe path
         # if no agent workspace is available.
@@ -3680,13 +3694,119 @@ class GitService(BaseService):
             project_service = get_project_service(self.session)
             project = await project_service.get_by_slug(project_slug)
             if not project or not project.git_url:
-                return
+                return False
+            if branch_name in {r.branch for r in effective_environments(project)}:
+                return False
             owner, repo = self._parse_git_url(project.git_url)
         except Exception:
-            return
-        await self._delete_remote_branch_best_effort(
+            return False
+        return await self._delete_remote_branch_best_effort(
             owner, repo, branch_name, git_token
         )
+
+    # Per-call cap on the stale-branch sweep so one request can't hang on an
+    # unbounded fan-out of remote-delete calls.
+    _CLEANUP_BRANCH_LIMIT = 200
+
+    async def cleanup_stale_branches(
+        self, project_slug: str
+    ) -> tuple[int, int, int, int, bool]:
+        """Sweep a project's terminal tasks and delete their spent branches.
+
+        Candidates are TERMINAL (completed/cancelled) tasks with a
+        ``branch_name`` that isn't an environment-ladder rung (a ladder branch
+        outlives any one task — see ``roboco.models.env_branches``). Capped at
+        ``_CLEANUP_BRANCH_LIMIT``; a bigger candidate set is truncated, not
+        rejected. Per branch, best-effort: remote delete (the same guarded
+        ``delete_task_branch`` cancel already uses — main/master/develop and
+        open-dependent-PR branches are skipped there too) and, in the
+        assignee's clone, a local delete (force for a cancelled task's branch,
+        safe ``-d`` for a completed one).
+
+        Returns ``(remote_deleted, local_deleted, skipped, errors, truncated)``.
+        ``local_deleted`` counts a local delete as ATTEMPTED (assignee/clone
+        resolved), not confirmed — the underlying ``git branch -d/-D`` is
+        itself best-effort and reports no outcome. ``skipped`` counts branches
+        with no resolvable assignee/clone (nothing to locally clean up, though
+        the remote delete may still have run); ``errors`` counts branches that
+        raised unexpectedly while resolving the assignee's workspace.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if not project:
+            return (0, 0, 0, 0, False)
+        ladder_branches = {rung.branch for rung in effective_environments(project)}
+
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.project_id == project.id)
+            .where(TaskTable.branch_name.is_not(None))
+            .where(TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]))
+            .limit(self._CLEANUP_BRANCH_LIMIT + 1)
+        )
+        candidates = [
+            t
+            for t in result.scalars().all()
+            if str(t.branch_name) not in ladder_branches
+        ]
+        truncated = len(candidates) > self._CLEANUP_BRANCH_LIMIT
+        candidates = candidates[: self._CLEANUP_BRANCH_LIMIT]
+
+        remote_deleted = local_deleted = skipped = errors = 0
+        workspace_service = get_workspace_service(self.session)
+        for task in candidates:
+            branch = str(task.branch_name)
+            try:
+                remote_ok, local_attempted = await self._cleanup_one_stale_branch(
+                    project_slug, task, branch, workspace_service
+                )
+            except Exception as e:
+                errors += 1
+                self.log.warning(
+                    "Stale-branch cleanup skipped for branch",
+                    project_slug=project_slug,
+                    branch=branch,
+                    error=str(e),
+                )
+                continue
+            remote_deleted += int(remote_ok)
+            if local_attempted:
+                local_deleted += 1
+            else:
+                skipped += 1
+
+        return (remote_deleted, local_deleted, skipped, errors, truncated)
+
+    async def _cleanup_one_stale_branch(
+        self,
+        project_slug: str,
+        task: TaskTable,
+        branch: str,
+        workspace_service: WorkspaceService,
+    ) -> tuple[bool, bool]:
+        """Delete one candidate's remote + local branch.
+
+        Returns ``(remote_deleted, local_attempted)`` — see
+        ``cleanup_stale_branches`` for what each means. Raises on an
+        unexpected failure so the caller's per-branch try/except counts it.
+        """
+        remote_deleted = await self.delete_task_branch(project_slug, branch)
+
+        assignee = task.assignee
+        if assignee is None or assignee.team is None or assignee.slug is None:
+            return remote_deleted, False
+
+        clone_root = workspace_service.get_clone_root_path(
+            project_slug, assignee.team, assignee.slug
+        )
+        await workspace_service.delete_local_branch(
+            clone_root, branch, force=task.status == TaskStatus.CANCELLED
+        )
+        return remote_deleted, True
 
     async def _first_allowed_merge_method(
         self,

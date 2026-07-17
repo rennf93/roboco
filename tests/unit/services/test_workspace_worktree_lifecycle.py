@@ -485,3 +485,67 @@ async def test_self_heal_recovers_clone_root_left_on_task_branch(clone: Path) ->
     assert (wt / ".git").is_file()
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
     assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+
+
+# ---------------------------------------------------------------------------
+# delete_local_branch — cleans up the branch ref remove_worktree leaves behind
+# (worktree removal never deletes refs/heads/{branch}; every claimed task
+# leaked a permanent local branch ref until this).
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_local_branch_skips_default_branches(clone: Path) -> None:
+    svc = _service()
+    for branch in ("main", "master", "develop", ""):
+        await svc.delete_local_branch(clone, branch, force=True)
+    # "main" is the clone's actual current branch — still checked out, untouched.
+    assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+
+
+async def test_delete_local_branch_removes_merged_branch(clone: Path) -> None:
+    svc = _service()
+    _git(clone, "branch", "feature/merged")  # no new commits -> already merged
+    assert _ref_exists(clone, "refs/heads/feature/merged")
+
+    await svc.delete_local_branch(clone, "feature/merged", force=False)
+
+    assert not _ref_exists(clone, "refs/heads/feature/merged")
+
+
+async def test_delete_local_branch_not_merged_skips_without_force(clone: Path) -> None:
+    svc = _service()
+    _git(clone, "checkout", "-b", "feature/unmerged")
+    (clone / "work.txt").write_text("x")
+    _git(clone, "add", "work.txt")
+    _git(clone, "commit", "-m", "unmerged work")
+    _git(clone, "checkout", "main")
+    assert _ref_exists(clone, "refs/heads/feature/unmerged")
+
+    await svc.delete_local_branch(clone, "feature/unmerged", force=False)
+
+    # `-d` refuses an unmerged branch — a clean skip, not an error, ref stays.
+    assert _ref_exists(clone, "refs/heads/feature/unmerged")
+
+
+async def test_delete_local_branch_force_deletes_unmerged(clone: Path) -> None:
+    svc = _service()
+    _git(clone, "checkout", "-b", "feature/unmerged")
+    (clone / "work.txt").write_text("x")
+    _git(clone, "add", "work.txt")
+    _git(clone, "commit", "-m", "unmerged work")
+    _git(clone, "checkout", "main")
+    assert _ref_exists(clone, "refs/heads/feature/unmerged")
+
+    await svc.delete_local_branch(clone, "feature/unmerged", force=True)
+
+    assert not _ref_exists(clone, "refs/heads/feature/unmerged")
+
+
+async def test_delete_local_branch_missing_branch_is_clean_skip(clone: Path) -> None:
+    svc = _service()
+    await svc.delete_local_branch(
+        clone, "feature/never-existed", force=False
+    )  # no error
+    await svc.delete_local_branch(
+        clone, "feature/never-existed", force=True
+    )  # no error

@@ -335,6 +335,34 @@ class GitRebaseResponse(BaseModel):
 
 
 # =============================================================================
+# BRANCH CLEANUP
+# =============================================================================
+
+
+class GitBranchCleanupRequest(BaseModel):
+    """Request to sweep a project's terminal-task branches."""
+
+    project_slug: str
+
+
+class GitBranchCleanupResponse(BaseModel):
+    """Counts from a stale-branch cleanup sweep.
+
+    ``local_deleted`` counts an attempted local delete (assignee/clone
+    resolved), not a confirmed one — the underlying ``git branch -d/-D`` is
+    itself best-effort. ``truncated`` is True when more terminal-task
+    branches existed than the per-call cap.
+    """
+
+    project_slug: str
+    remote_deleted: int = 0
+    local_deleted: int = 0
+    skipped: int = 0
+    errors: int = 0
+    truncated: bool = False
+
+
+# =============================================================================
 # GATEWAY-LAYER LIGHTWEIGHT SCHEMAS
 #
 # These simpler schemas are used by the MCP gateway layer and services that

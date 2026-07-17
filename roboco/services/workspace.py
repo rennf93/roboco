@@ -784,6 +784,29 @@ class WorkspaceService:
         )
         self._worktree_git(clone_root, ["worktree", "prune"], check=False)
 
+    async def delete_local_branch(
+        self, clone_root: Path, branch: str, *, force: bool
+    ) -> None:
+        """Delete a local branch ref in a clone. Best-effort, never raises.
+
+        ``remove_worktree`` only detaches the worktree — the local
+        ``refs/heads/{branch}`` ref survives, so every task an agent ever
+        claimed leaks a permanent branch ref in that agent's clone. Callers
+        run this right after ``remove_worktree`` (the worktree must be gone
+        first, or ``git branch -d/-D`` refuses a branch still checked out
+        elsewhere in the clone).
+
+        ``force=False`` uses ``-d`` (refuses an unmerged branch — a clean skip,
+        not an error, via ``check=False``); ``force=True`` uses ``-D``. A
+        missing branch is likewise a clean skip. Never touches main/master/
+        develop or an empty branch name — mirrors
+        ``GitService._delete_remote_branch_best_effort``'s default-branch guard.
+        """
+        if branch in ("main", "master", "develop", ""):
+            return
+        flag = "-D" if force else "-d"
+        self._worktree_git(clone_root, ["branch", flag, branch], check=False)
+
     async def resolve_workspace(
         self,
         project_slug: str,
