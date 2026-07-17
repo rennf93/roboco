@@ -81,14 +81,30 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("vault_report_enabled", "Vault weekly org-report note"),
     ("vault_kb_enabled", "Vault KB ingest (CEO notes -> RAG)"),
     ("telegram_enabled", "Telegram notifications bridge (CEO DMs)"),
+    ("telegram_inbound_enabled", "Telegram inbound commands + actionable buttons"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
+
+
+def _validate_update_id(value: str) -> None:
+    try:
+        update_id = int(value)
+    except ValueError as exc:
+        raise SettingValidationError(
+            "telegram_last_update_id must be an integer"
+        ) from exc
+    if update_id < 0:
+        raise SettingValidationError("telegram_last_update_id must be >= 0")
 
 
 # Writable settings: key -> validator. Keys absent here are rejected on write so
 # the panel can only persist values the backend understands.
 _VALIDATORS = {
     "transcript_retention_days": _validate_retention_days,
+    # Telegram inbound's getUpdates offset cursor. Not a feature flag (absent
+    # from FEATURE_FLAGS/the panel card) but reuses this same validated KV
+    # store instead of a dedicated table, so a restart doesn't replay updates.
+    "telegram_last_update_id": _validate_update_id,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

@@ -891,7 +891,9 @@ class NotificationDeliveryService(BaseService):
             escalator_slug=escalator.slug,
         )
 
-    async def _notify_telegram(self, *, task_id: UUID, subject: str) -> None:
+    async def _notify_telegram(
+        self, *, task_id: UUID, subject: str, actionable: bool = False
+    ) -> None:
         """Best-effort Telegram DM to the CEO alongside an in-app notification.
 
         Degrades to a no-op unless ``telegram_enabled`` is armed and credentials
@@ -902,6 +904,13 @@ class NotificationDeliveryService(BaseService):
         Never raises into the caller — a credentials/network failure only
         logs. The message carries a panel deep-link when ``panel_base_url``
         is set.
+
+        ``actionable=True`` (escalation only — V1's completion send never
+        expands beyond link-only, and no new call site is added here) also
+        attaches an Approve/Reject/Open inline keyboard (V2, gated separately
+        by ``telegram_inbound_enabled`` — with it off the buttons render but
+        the bot never polls for the tap, so they're harmlessly inert; the
+        plain-text link still works either way).
         """
         from roboco.config import settings
 
@@ -923,12 +932,17 @@ class NotificationDeliveryService(BaseService):
             link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
             text = f"{subject}\n{link}"
         timeout = settings.telegram_timeout_seconds
+        reply_markup = None
+        if actionable:
+            from roboco.services.telegram_inbound import build_action_keyboard
+
+            reply_markup = build_action_keyboard("task", str(task_id)[:8])
 
         async def _send() -> None:
             client = None
             try:
                 client = build_telegram_client(creds, timeout=timeout)
-                result = await client.send_message(text)
+                result = await client.send_message(text, reply_markup=reply_markup)
                 if not result.sent:
                     _log.warning("telegram_notify_skip", detail=result.detail)
             except Exception as exc:  # best-effort — never break the drain
@@ -970,7 +984,9 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
-        await self._notify_telegram(task_id=task_id, subject=notification.subject)
+        await self._notify_telegram(
+            task_id=task_id, subject=notification.subject, actionable=True
+        )
 
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.

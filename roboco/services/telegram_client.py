@@ -1,18 +1,21 @@
 """Telegram Bot API client — server-side only, agents never touch it.
 
-Thin httpx wrapper for the one operation the V1 bridge needs: send a message
-to a chat. Mirrors ``services/x_client.py``'s ``NullXClient`` shape — a
-``NullTelegramClient`` is returned when credentials are unset, so the
-notification fan-out degrades gracefully (no-op, no exception) exactly like an
-unconfigured X client — never raises into the caller, never makes a network
-call.
+Thin httpx wrapper. V1 needed only ``send_message``; V2 (inbound commands +
+actionable buttons) adds ``get_updates`` (long-poll), ``answer_callback_query``,
+and the two ``edit_message_*`` calls a callback handler uses to clear a
+button row and stamp the outcome. Mirrors ``services/x_client.py``'s
+``NullXClient`` shape — a ``NullTelegramClient`` is returned when credentials
+are unset, so both the notification fan-out and the inbound poll degrade
+gracefully (no-op, no exception) — never raises into the caller, never makes
+a network call.
 """
 
 from __future__ import annotations
 
+import contextlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -24,10 +27,13 @@ _API_BASE = "https://api.telegram.org"
 
 @dataclass(frozen=True)
 class TelegramSendResult:
-    """Outcome of a ``send_message`` call."""
+    """Outcome of a ``send_message`` call. ``message_id`` is the sent
+    message's id — callers that need to edit it back later (the actionable
+    force_reply flow) or key a pending action off it read this."""
 
     sent: bool
     detail: str = ""
+    message_id: int | None = None
 
 
 class TelegramClient(ABC):
@@ -39,7 +45,37 @@ class TelegramClient(ABC):
     def configured(self) -> bool: ...
 
     @abstractmethod
-    async def send_message(self, text: str) -> TelegramSendResult: ...
+    async def send_message(
+        self,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> TelegramSendResult: ...
+
+    @abstractmethod
+    async def get_updates(
+        self, *, offset: int | None, timeout: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Long-poll ``getUpdates``. Best-effort: a network/parse failure
+        returns ``[]`` rather than raising (the poll loop just tries again
+        next cycle)."""
+        ...
+
+    @abstractmethod
+    async def answer_callback_query(
+        self, callback_query_id: str, text: str = ""
+    ) -> None:
+        """Acknowledge a callback_query so the button stops spinning."""
+        ...
+
+    @abstractmethod
+    async def edit_message_reply_markup(
+        self, message_id: int, reply_markup: dict[str, Any] | None
+    ) -> None: ...
+
+    @abstractmethod
+    async def edit_message_text(self, message_id: int, text: str) -> None: ...
 
     @abstractmethod
     async def close(self) -> None:
@@ -56,9 +92,34 @@ class NullTelegramClient(TelegramClient):
     def configured(self) -> bool:
         return False
 
-    async def send_message(self, text: str) -> TelegramSendResult:
-        _ = text
+    async def send_message(
+        self,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> TelegramSendResult:
+        _ = (text, reply_markup, reply_to_message_id)
         return TelegramSendResult(sent=False, detail="no credentials configured")
+
+    async def get_updates(
+        self, *, offset: int | None, timeout: int, limit: int
+    ) -> list[dict[str, Any]]:
+        _ = (offset, timeout, limit)
+        return []
+
+    async def answer_callback_query(
+        self, callback_query_id: str, text: str = ""
+    ) -> None:
+        _ = (callback_query_id, text)
+
+    async def edit_message_reply_markup(
+        self, message_id: int, reply_markup: dict[str, Any] | None
+    ) -> None:
+        _ = (message_id, reply_markup)
+
+    async def edit_message_text(self, message_id: int, text: str) -> None:
+        _ = (message_id, text)
 
 
 class LiveTelegramClient(TelegramClient):
@@ -90,15 +151,22 @@ class LiveTelegramClient(TelegramClient):
             await self._client.aclose()
             self._client = None
 
-    async def send_message(self, text: str) -> TelegramSendResult:
+    async def send_message(
+        self,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> TelegramSendResult:
         url = f"{_API_BASE}/bot{self._creds.bot_token}/sendMessage"
+        payload: dict[str, Any] = {"chat_id": self._creds.chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         client = await self._http()
         try:
-            resp = await client.post(
-                url,
-                json={"chat_id": self._creds.chat_id, "text": text},
-                timeout=self._timeout,
-            )
+            resp = await client.post(url, json=payload, timeout=self._timeout)
         except httpx.HTTPError as exc:
             return TelegramSendResult(sent=False, detail=f"network error: {exc}")
         if not resp.is_success:
@@ -106,7 +174,65 @@ class LiveTelegramClient(TelegramClient):
                 sent=False,
                 detail=f"HTTP {resp.status_code}: {resp.text[:200]}",
             )
-        return TelegramSendResult(sent=True)
+        result = resp.json().get("result")
+        message_id = result.get("message_id") if isinstance(result, dict) else None
+        return TelegramSendResult(sent=True, message_id=message_id)
+
+    async def get_updates(
+        self, *, offset: int | None, timeout: int, limit: int
+    ) -> list[dict[str, Any]]:
+        url = f"{_API_BASE}/bot{self._creds.bot_token}/getUpdates"
+        params: dict[str, Any] = {"timeout": timeout, "limit": limit}
+        if offset is not None:
+            params["offset"] = offset
+        client = await self._http()
+        try:
+            # A modest margin over the server-side long-poll wait so the HTTP
+            # client doesn't time out a call that's legitimately still
+            # blocked inside Telegram's own `timeout` window.
+            resp = await client.get(url, params=params, timeout=timeout + 5)
+        except httpx.HTTPError:
+            return []
+        if not resp.is_success:
+            return []
+        data = resp.json()
+        result = data.get("result") if isinstance(data, dict) else None
+        return result if isinstance(result, list) else []
+
+    async def answer_callback_query(
+        self, callback_query_id: str, text: str = ""
+    ) -> None:
+        url = f"{_API_BASE}/bot{self._creds.bot_token}/answerCallbackQuery"
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        client = await self._http()
+        with contextlib.suppress(httpx.HTTPError):
+            await client.post(url, json=payload, timeout=self._timeout)
+
+    async def edit_message_reply_markup(
+        self, message_id: int, reply_markup: dict[str, Any] | None
+    ) -> None:
+        url = f"{_API_BASE}/bot{self._creds.bot_token}/editMessageReplyMarkup"
+        payload: dict[str, Any] = {
+            "chat_id": self._creds.chat_id,
+            "message_id": message_id,
+            "reply_markup": reply_markup or {},
+        }
+        client = await self._http()
+        with contextlib.suppress(httpx.HTTPError):
+            await client.post(url, json=payload, timeout=self._timeout)
+
+    async def edit_message_text(self, message_id: int, text: str) -> None:
+        url = f"{_API_BASE}/bot{self._creds.bot_token}/editMessageText"
+        payload: dict[str, Any] = {
+            "chat_id": self._creds.chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        client = await self._http()
+        with contextlib.suppress(httpx.HTTPError):
+            await client.post(url, json=payload, timeout=self._timeout)
 
 
 def build_telegram_client(

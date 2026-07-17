@@ -97,6 +97,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Index your own vault notes (default RoboCo/Notes/) into the knowledge base so the fleet can retrieve what you write — every note is screened for injection attempts before it's indexed. Needs the Obsidian vault projection on.",
   telegram_enabled:
     "Best-effort Telegram DMs to you alongside in-app notifications when a task is escalated for your approval or completes. Server-side fan-out — never blocks the in-app notification. Stays inert until you set bot-token + chat-id credentials in the Telegram card below.",
+  telegram_inbound_enabled:
+    "Also poll Telegram for your commands (/status, /queue, /task) and reply-button taps — approve/reject queued items straight from the chat, with the same locks and audit trail as the panel. Needs telegram_enabled on and credentials set; without this the bot only sends notifications, it never listens.",
 };
 
 // Short hover tips for the label of each flag row — a terser companion to
@@ -160,6 +162,7 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   vault_kb_enabled:
     "Embeds the CEO's own vault notes into RAG for agent retrieval.",
   telegram_enabled: "Sends CEO notification DMs over Telegram.",
+  telegram_inbound_enabled: "Lets you reply/tap buttons in Telegram to act.",
 };
 
 export function FeatureFlagsCard() {

@@ -284,7 +284,14 @@ async def test_notify_telegram_send_deferred_to_after_commit(
     sent: list[str] = []
 
     class _FakeTelegramClient:
-        async def send_message(self, text: str) -> TelegramSendResult:
+        async def send_message(
+            self,
+            text: str,
+            *,
+            reply_markup: dict | None = None,
+            reply_to_message_id: int | None = None,
+        ) -> TelegramSendResult:
+            _ = (reply_markup, reply_to_message_id)
             sent.append(text)
             return TelegramSendResult(sent=True)
 
@@ -331,7 +338,14 @@ async def test_notify_telegram_rollback_drops_send(
     sent: list[str] = []
 
     class _FakeTelegramClient:
-        async def send_message(self, text: str) -> TelegramSendResult:
+        async def send_message(
+            self,
+            text: str,
+            *,
+            reply_markup: dict | None = None,
+            reply_to_message_id: int | None = None,
+        ) -> TelegramSendResult:
+            _ = (reply_markup, reply_to_message_id)
             sent.append(text)
             return TelegramSendResult(sent=True)
 
