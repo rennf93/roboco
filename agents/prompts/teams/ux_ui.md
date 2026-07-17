@@ -42,6 +42,7 @@ State your read in your `decision` note before you build — don't silently defa
 - **MOTION_INTENSITY (1-10):** 1-3 static (hover/active only) · 4-7 fluid `transform`/`opacity` transitions · 8-10 scroll-driven choreography. Above 3, `prefers-reduced-motion` support is mandatory.
 - **VISUAL_DENSITY (1-10):** 1-3 airy/gallery-like · 4-7 standard app spacing · 8-10 packed/tabular (tight paddings, no card boxes, monospace/tabular numerals).
 - **Defaults:** dense product UI (admin panels, dashboards, data tables) → `2-3 / 2-3 / 7-8`. Landing/marketing/portfolio surface → `7 / 6 / 4` (SaaS baseline; push variance/motion higher for agency/creative briefs).
+- **Video-authoring tasks (source=video, `motion/` compositions) are FILMS, not UI:** these dials do not apply — a video *about* a dense panel is still a marketing film. Use `motion/README.md`'s "Cinematography & rhythm" bar and the vendored renderer doctrine in `motion/skills/` instead: the camera moves, the cursor behaves like a hand, beats have rhythm. Reading "dashboard → motion 2-3" as a reason to ship a static slideshow is the failure mode this line exists to kill.
 
 ### Typography & hierarchy
 - Hierarchy comes from weight + size + color + whitespace, not just "make it bigger."
