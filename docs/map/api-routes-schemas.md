@@ -38,7 +38,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
 | roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
-| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount). |
+| roboco/api/routes/telegram.py | Telegram credentials CRUD (CEO-only, write-only) + `webapp_auth_router` — a separate public, pre-auth `POST /webapp-auth` mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both armed (`mount_telegram_miniapp_auth`); validates a Mini App's `initData` and mints the cloud-auth session cookie; adds its own unconditional `LoginRateLimiter`. |
+| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount), `login_limit.py` (`LoginRateLimiter` — per-IP POST rate limit, path-keyed via a `paths: tuple[str, ...]` set so `/login` and `telegram.py`'s `/webapp-auth` get independent buckets). |
 | roboco/api/routes/v1/_role_dep.py | Per-role HMAC guards + `envelope_to_response` helper. |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
@@ -73,6 +74,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
+| GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
+| POST | /api/telegram/webapp-auth | telegram.py | public, pre-auth — Telegram `initData` HMAC validation; mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` |
 | GET/POST | /api/auth/status (always), /auth/login, /auth/logout (mounted only when `cloud_auth_enabled`) | auth/routes.py | none (status) / FastAPI Users cookie login |
 | GET/POST/PUT/DELETE | /api/projects, /{id}/conventions, /workspace, /sync | project.py | agent context |
 | POST | /api/git/branches/cleanup | git.py | agent context, PM/CEO role-gated like `/rebase`; rate-limit 5/60 — cursor-resumable stale-branch sweep, `GitBranchCleanupRequest`/`Response` (wave 2, open PR #548) |
@@ -167,6 +170,7 @@ roboco/api/
 │   │   ├── pitch.py             pitch approve/reject
 │   │   ├── x.py                 X engine post queue approve/reject + credentials
 │   │   ├── roadmap.py           board roadmap cycle item approve/reject
+│   │   ├── telegram.py          credentials CRUD + webapp-auth (Mini App initData → session cookie)
 │   │   ├── a2a.py               agent-to-agent + SSE
 │   │   ├── prompter_live.py     live Intake chat
 │   │   ├── secretary.py         company state + directives
@@ -188,7 +192,8 @@ roboco/api/
 │   ├── manager.py                UserManager + get_user_db/get_user_manager DI chain
 │   ├── session.py               resolve_session_user (shared HTTP + WS cookie validation)
 │   ├── seed.py                  ensure_seed_user / ensure_seed_user_startup (single CEO row)
-│   └── routes.py                always-public /status + conditional login/logout mount
+│   ├── routes.py                always-public /status + conditional login/logout mount
+│   └── login_limit.py           LoginRateLimiter (per-IP POST limit; path-keyed, shared with telegram.py webapp-auth)
 └── schemas/
     ├── *.py                     per-domain Pydantic models
     └── v1/
@@ -213,6 +218,7 @@ roboco/api/
 ## Config Flags
 - Auth-gate mode: `_auth_required()` (env-driven; HMAC mandatory in prod-ish, optional in dev) — `api/deps.py`.
 - Feature-flag routes are inert when their backing engine is off: `release.py` (ROBOCO_RELEASE_MANAGER_ENABLED), `prompter_live.py` MegaTask batch, `optimal.py` learnings (ROBOCO_ORG_MEMORY_ENABLED), `research.py` (ROBOCO_RESEARCH_ENABLED), `provider.py` grok/self-hosted (ROBOCO_GROK / self-hosted), CI-watch/dep-update originate elsewhere but surface via orchestrator/tasks.
+- `telegram.py`'s `webapp_auth_router` doesn't merely no-op off — the route doesn't exist at all unless `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both true (`mount_telegram_miniapp_auth`, called from `app.py`, mirrors `mount_cloud_auth`'s conditional mount).
 
 ## Gotchas
 - `do` + `a2a` routers are token-only (any authenticated role), not role-asserted — any signed agent can call any content verb; service-layer scope is the only gate.
@@ -241,6 +247,7 @@ roboco/api/
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
 > - `637c75dc` (2026-07-17, PR #546, "wave-1 quick wins") fix(api): normalize agent UUID to slug at the orchestrator route boundary — `_validated_agent_id` now also calls `_resolve_to_slug` after its path-injection checks, so a caller-supplied DB UUID (e.g. from the panel) resolves to the canonical slug before spawn/stop/status/resolve-wait/mark-waiting address the runtime, fixing UUID-named containers and registry misses.
 > - (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) adds `POST /api/git/branches/cleanup` (PM/CEO role-gated like `/rebase`, rate-limit 5/60) + `GitBranchCleanupRequest`/`GitBranchCleanupResponse` schemas — cursor-resumable sweep of terminal tasks' remote+local branches, backing a confirm-dialog button on the panel Git page.
+> - `82642bea`+`e16fb634`+`8d727785` (2026-07-18, PR #554, Telegram V3 Mini App) adds `POST /api/telegram/webapp-auth` (`webapp_auth_router`, mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` via `mount_telegram_miniapp_auth`) + `TelegramWebAppAuthRequest` schema, exchanging a validated Telegram `initData` payload for the same cloud-auth session cookie `/api/auth/login` mints (binds to the CEO's stored `chat_id`, audits `telegram.webapp.login`); generalizes `LoginRateLimiter` from a single `prefix` to a `paths: tuple[str, ...]` set (`roboco/api/auth/login_limit.py`) so `/webapp-auth` gets its own unconditional per-IP bucket, independent of the guard middleware's `rate_limit` decorator; the fix commit also rejects a far-future `initData.auth_date` (only ±60s clock-skew tolerated) and anchors the panel's `/tg` matcher exclusion.
 
 ## Regression Risks
 
