@@ -20,12 +20,14 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 import roboco.api.routes.orchestrator as orch_route
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
+from roboco.agents_config import AGENT_UUIDS
 from roboco.api.deps import _ServiceHolder, set_orchestrator
 from roboco.api.routes.orchestrator import (
     _build_manual_spawn_prompt,
     _resolve_manual_spawn_prompt,
+    _validated_agent_id,
 )
 from roboco.api.routes.orchestrator import (
     router as orch_router,
@@ -275,3 +277,76 @@ async def test_spawn_offline_agent_not_flagged_already_running(
     )
     assert response.status_code == HTTPStatus.CREATED
     assert response.json()["already_running"] is False
+
+
+# ---------------------------------------------------------------------------
+# _validated_agent_id — UUID -> slug normalization (root fix: a caller that
+# addresses a runtime container/instance by an agent's DB UUID instead of its
+# slug, e.g. the panel spawn button, must resolve to the same canonical slug
+# the orchestrator's instance registry and container names use).
+# ---------------------------------------------------------------------------
+
+
+def test_validated_agent_id_resolves_known_uuid_to_slug() -> None:
+    uuid_str = AGENT_UUIDS["head-marketing"]
+    assert _validated_agent_id(uuid_str) == "head-marketing"
+
+
+def test_validated_agent_id_passes_through_slug_unchanged() -> None:
+    assert _validated_agent_id("head-marketing") == "head-marketing"
+
+
+def test_validated_agent_id_passes_through_unknown_uuid_unchanged() -> None:
+    # A uuid4 is never a seeded agent UUID (the seeds are deterministic,
+    # low-cardinality values) — genuinely absent from the UUID -> slug map.
+    unknown_uuid = str(uuid4())
+    assert unknown_uuid not in AGENT_UUIDS.values()
+    assert _validated_agent_id(unknown_uuid) == unknown_uuid
+
+
+def test_validated_agent_id_still_rejects_traversal() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _validated_agent_id("../etc/passwd")
+    assert exc_info.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_spawn_by_uuid_reaches_orchestrator_by_slug(
+    orch_client: tuple[AsyncClient, MagicMock],
+) -> None:
+    """The panel (or any caller) posting the agent's DB UUID as the path
+    param must not produce a container/instance keyed by that UUID — the
+    orchestrator only ever sees the canonical slug."""
+    client, orch = orch_client
+    orch.get_instance = MagicMock(return_value=None)
+    instance = SimpleNamespace(
+        id=uuid4(),
+        agent_id="head-marketing",
+        state=AgentState.STARTING,
+        current_task_id=None,
+        error_count=0,
+        started_at=datetime.now(UTC),
+    )
+    orch.spawn_agent = AsyncMock(return_value=instance)
+    uuid_str = AGENT_UUIDS["head-marketing"]
+    response = await client.post(
+        f"/api/orchestrator/agents/{uuid_str}/spawn", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.CREATED
+    orch.spawn_agent.assert_awaited_once()
+    assert orch.spawn_agent.await_args.kwargs["agent_id"] == "head-marketing"
+
+
+@pytest.mark.asyncio
+async def test_stop_by_uuid_reaches_orchestrator_by_slug(
+    orch_client: tuple[AsyncClient, MagicMock],
+) -> None:
+    client, orch = orch_client
+    orch.stop_agent = AsyncMock(return_value=None)
+    uuid_str = AGENT_UUIDS["be-dev-1"]
+    response = await client.post(
+        f"/api/orchestrator/agents/{uuid_str}/stop", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.NO_CONTENT
+    orch.stop_agent.assert_awaited_once()
+    assert orch.stop_agent.await_args.args[0] == "be-dev-1"

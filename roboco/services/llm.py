@@ -444,17 +444,20 @@ class ModelRoutingService(BaseService):
     ) -> None:
         """Apply a routing "mode" in a single transactional call.
 
+        All modes below preserve AGENT_SLUG pins — only ROLE/GLOBAL rows are
+        replaced, so a per-agent override survives a mode switch (mixed-provider
+        routing is already a supported state; see "mix").
+
         Modes:
-          - "anthropic":   wipe all assignments so every spawn falls through
-            to the legacy ROLE_MODEL_MAP + mounted ~/.claude path.
-          - "ollama":      wipe role/agent overrides, set GLOBAL to the given
-            Ollama model (default: OLLAMA_DEFAULT_MODEL). CEO-type pins can be
-            layered back manually if the user wants them.
-          - "self_hosted": wipe all assignments, enable the LOCAL provider,
-            and set the GLOBAL default to `default_model` (a self-hosted
-            model name — not validated against the static catalog).
-          - "grok":        wipe all assignments, set the GLOBAL default to a
-            Grok (xAI) model (default grok-build-0.1). Requires the xAI key.
+          - "anthropic":   wipe role/global assignments so every spawn falls
+            through to the legacy ROLE_MODEL_MAP + mounted ~/.claude path.
+          - "ollama":      wipe role/global assignments, set GLOBAL to the given
+            Ollama model (default: OLLAMA_DEFAULT_MODEL).
+          - "self_hosted": wipe role/global assignments, enable the LOCAL
+            provider, and set the GLOBAL default to `default_model` (a
+            self-hosted model name — not validated against the static catalog).
+          - "grok":        wipe role/global assignments, set the GLOBAL default
+            to a Grok (xAI) model (default grok-build-0.1). Requires the xAI key.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -477,10 +480,16 @@ class ModelRoutingService(BaseService):
             )
 
     async def _apply_anthropic(self) -> None:
-        """Wipe all assignments so every spawn uses the legacy Anthropic path."""
-        await self.session.execute(sa_delete(ModelAssignmentTable))
+        """Wipe role/global assignments so every spawn uses the legacy Anthropic
+        path. AGENT_SLUG pins are preserved — mixed-provider routing is a
+        supported state (see `_apply_mix`)."""
+        await self.session.execute(
+            sa_delete(ModelAssignmentTable).where(
+                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
+            )
+        )
         await self.session.flush()
-        self.log.info("Mode applied: anthropic (all assignments cleared)")
+        self.log.info("Mode applied: anthropic (role/global assignments cleared)")
 
     async def _apply_grok(self, default_model: str | None) -> None:
         """Wipe assignments, set the GLOBAL default to a Grok (xAI) model.
@@ -490,9 +499,13 @@ class ModelRoutingService(BaseService):
         must be enabled here for resolve_for_agent() to route to it, mirroring
         self_hosted enabling LOCAL. Without it the seeded GROK row stays
         disabled (no key set) and agents fall back to Anthropic at spawn even
-        in grok mode.
+        in grok mode. AGENT_SLUG pins are preserved (see `_apply_mix`).
         """
-        await self.session.execute(sa_delete(ModelAssignmentTable))
+        await self.session.execute(
+            sa_delete(ModelAssignmentTable).where(
+                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
+            )
+        )
         await self.session.flush()
         grok = await self._get_seeded_provider(ModelProvider.GROK)
         provider_svc = ProviderService(self.session)
@@ -509,8 +522,14 @@ class ModelRoutingService(BaseService):
         self.log.info("Mode applied: grok", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
-        """Wipe assignments, set the GLOBAL default to an Ollama Cloud model."""
-        await self.session.execute(sa_delete(ModelAssignmentTable))
+        """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.
+
+        AGENT_SLUG pins are preserved (see `_apply_mix`)."""
+        await self.session.execute(
+            sa_delete(ModelAssignmentTable).where(
+                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
+            )
+        )
         await self.session.flush()
         model_name = default_model or OLLAMA_DEFAULT_MODEL
         await self.upsert_assignment(
@@ -521,12 +540,17 @@ class ModelRoutingService(BaseService):
         self.log.info("Mode applied: ollama", default_model=model_name)
 
     async def _apply_self_hosted(self, default_model: str | None) -> None:
-        """Wipe assignments, enable the LOCAL provider, point GLOBAL at it."""
+        """Wipe role/global assignments, enable the LOCAL provider, point GLOBAL
+        at it. AGENT_SLUG pins are preserved (see `_apply_mix`)."""
         if not default_model:
             raise ValueError(
                 "self_hosted mode requires a default_model (self-hosted model name)"
             )
-        await self.session.execute(sa_delete(ModelAssignmentTable))
+        await self.session.execute(
+            sa_delete(ModelAssignmentTable).where(
+                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
+            )
+        )
         await self.session.flush()
         # Enable the LOCAL provider row so resolve_for_agent() will use it.
         local = await self._find_local_provider()
