@@ -5,7 +5,7 @@ This slice implements RoboCo's formal-notification backbone: NotificationService
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 574 |
+| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 943 |
 | roboco/services/notification_dedup.py | Bounded Redis SET-NX re-fire guard for loop-prone notification types (TASK_ASSIGNMENT/REVIEW_REQUEST/DOCUMENTATION_REQUEST/BROADCAST); 60s TTL, fail-open | 91 |
 | roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD | 1034 |
 
@@ -52,7 +52,7 @@ notification
 │   ├── _resolve_agent_uuid (slug/UUID → UUID; 'system' seed)
 │   ├── send_blocker / send_stuck_agent / send_qa_ready / send_docs_ready
 │   ├── send_handoff / send_qa_failed / send_board_review_complete
-│   ├── send_external_pr_reviewed / send_ack / send_a2a (tristate priority)
+│   ├── send_external_pr_reviewed / send_ack / send_a2a (tristate priority; `requires_ack` kwarg overrides the A2A_REQUEST type default of False — only the A2A CEO-DM wake path sets it True)
 │   ├── _notification_type_label / _resolve_recipients
 │   └── _create_notification (own DB context, re-fire guard, DB dedup, requires_ack, commit)
 ├── notification_dedup.py
@@ -106,7 +106,7 @@ notification
 - notification_dedup fail-open: a Redis error returns False (never suppress) — correct for not dropping notifications, but a sustained Redis outage re-opens the per-tick re-fire storm the guard was added to stop.
 - notification_dedup.all_recipients_recently_notified has a side effect: it SET-NX-marks recipients NOT yet notified, so the FIRST call for a fresh recipient returns False (delivers) but acquires the key; a concurrent second call within 60s for the same recipient then returns True (suppresses). The marking happens even on the call that decides to deliver — so a suppressed 'all already held' verdict requires every recipient to have been marked by a prior call. Partial-fresh mixed-recipient calls deliver and mark the fresh ones.
 - NotificationService._create_notification opens its OWN get_db_context and commits (line 568), while NotificationDeliveryService._persist_and_deliver operates in the CALLER's transaction and does NOT commit. Mixing the two in one outer transaction would double-commit / cross-session.
-- requires_ack is set from ACK_REQUIRED_BY_TYPE (notification.py L555) rather than the column default True; MENTION/KNOWLEDGE_SHARE/BROADCAST etc. are False.
+- requires_ack is set from ACK_REQUIRED_BY_TYPE (notification.py L555) rather than the column default True; MENTION/KNOWLEDGE_SHARE/BROADCAST etc. are False. `CreateNotificationParams.requires_ack` (default None) wins over the type default when a caller sets it — today only `send_a2a_notification`'s `requires_ack` kwarg (default False, `A2AService`'s CEO-DM wake path passes True) threads through to it; every other typed `send_*` helper leaves it unset and gets the type-default behavior unchanged.
 - DB purpose-dedup query uses NotificationTable.to_agents.overlap(to_agents_uuids) AND ~acked_by.contains(to_agents_uuids) — overlap matches ANY recipient; a notification to [A,B] with A acked but B not is NOT suppressed for a new send to [A,B] because acked_by does not contain [A,B] (contains is element-wise). The dedup is per-(sender,type,task) not per-recipient, so a third recipient C added on resend goes through.
 - defer_bus_publish registers after_commit/after_rollback listeners keyed on session.info[_DRAIN_REGISTERED_KEY]; listeners are bound to sync_session and accumulate only once per AsyncSession instance. A session reused across multiple commit cycles will re-register only once (guard), but the pending queue is popped each commit — if a second deliver happens after the first commit in the same session, the listeners are already registered and the new events append and fire on the next commit.
 - acknowledge publishes NOTIFICATION_ACKED directly to the bus (NOT deferred via after_commit) — unlike deliver. An ACK that is rolled back after publish could emit a phantom ACK event. The ACK path does not use the transactional outbox.
@@ -128,7 +128,7 @@ notification
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — added requires_ack from ACK_REQUIRED_BY_TYPE, DB purpose-dedup gated to ack-required types, re-fire guard + notification_dedup.py (new file), transactional-outbox defer_bus_publish in notification_delivery | Major hardening: notifications no longer flood inboxes (Redis re-fire + DB dedup scoped), phantom WebSocket pushes eliminated (deferred bus publish), MENTION/BROADCAST no longer inflate unacked sets (requires_ack=False) |
 | 3aff6e04 | Chore: Close gaps (#285) — follow-on gap closure touching notification.py / notification_dedup.py / notification_delivery.py | Refinement of the #283 changes (exact hunks not isolated per-file in this merge commit; consolidated the dedup/outbox behavior above) |
 
-> Post-snapshot updates (since 2026-06-29): 115061f3 fixed list_system_notifications pending_ack_only correctness: SQL limit is now dropped for that branch so newer fully-acked rows can't mask older unacked ones (see Gotcha update above). `61e00832` (PR #492) added `notify_auditor_of_rework()` and `_get_auditor_agent()` to power the reactive auditor dispatch path: HIGH-priority ALERT notifications addressed to the auditor agent are emitted when a task enters `needs_revision` via QA/PR/PM rework chokepoints.
+> Post-snapshot updates (since 2026-06-29): 115061f3 fixed list_system_notifications pending_ack_only correctness: SQL limit is now dropped for that branch so newer fully-acked rows can't mask older unacked ones (see Gotcha update above). `61e00832` (PR #492) added `notify_auditor_of_rework()` and `_get_auditor_agent()` to power the reactive auditor dispatch path: HIGH-priority ALERT notifications addressed to the auditor agent are emitted when a task enters `needs_revision` via QA/PR/PM rework chokepoints. **Wave 3** (2026-07-17, PR #547): `CreateNotificationParams` gains `requires_ack: bool | None = None`, consulted in `_create_notification` ahead of the `ACK_REQUIRED_BY_TYPE` default; `send_a2a_notification` gains a `requires_ack: bool = False` kwarg (plus an `str | None` `task_id`, for a conversational DM with no task behind it) that threads through — the only caller passing True is `A2AService._maybe_wake_ceo_recipient` (docs/map/a2a-audit-journal-permissions.md), so its wake row is finally visible to the orchestrator's `_dispatch_a2a_work` `pending_ack_only` poll.
 
 ## Regression Risks
 

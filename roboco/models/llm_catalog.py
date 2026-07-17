@@ -96,35 +96,6 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
     return entry.provider_type if entry else None
 
 
-# Defaults per role when the user flips to "pure Ollama" mode.
-# Assignments reflect the 2026-04 public benchmarks for each cloud tag:
-#   Kimi K2.6 — HLE 44.9%, AIME 95.6%, Agent Swarm (100 parallel sub-agents),
-#     200-300 sequential tool calls. Best at reasoning, orchestration, tool use.
-#   MiniMax M3 — SWE-Bench 73.8%, SWE-Pro 56.2%, 10B active params (fastest,
-#     cheapest). Explicitly "built for Max coding & agentic workflows".
-#   GLM 5.2 — SWE-Bench 77.8% (highest of the three, 94.6% of Claude Opus 4.6),
-#     self-correcting across hundreds of iterations, strong creative writing.
-OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
-    # High-volume agentic coding — M3 is purpose-built for this.
-    "developer": "kimi-k2.7-code:cloud",
-    # Deep code review — GLM 5.2 has the highest SWE-Bench and iterates thoroughly.
-    "qa": "glm-5.2:cloud",
-    # Orchestration + tool coordination — Kimi K2.6's Agent Swarm is the exact fit.
-    "cell_pm": "kimi-k2.7-code:cloud",
-    "main_pm": "kimi-k2.7-code:cloud",
-    # Quality reasoning — Kimi K2.6 leads HLE by a wide margin.
-    "auditor": "kimi-k2.7-code:cloud",
-    # Product reasoning — same profile as PM work.
-    "product_owner": "glm-5.2:cloud",
-    # Writing with code-context — GLM 5.2's creative writing + SWE-Bench combo.
-    "documenter": "kimi-k2.7-code:cloud",
-    # Stylistic writing — GLM 5.2's creative-writing strength.
-    "head_marketing": "glm-5.2:cloud",
-    # CEO is human-in-the-loop; keep an entry in case someone forces
-    # a route to it, but the Settings UI intentionally excludes it.
-    "ceo": "glm-5.2:cloud",
-}
-
 # The Ollama model picked for "pure Ollama" mode's GLOBAL row when the
 # caller doesn't override. Minimax M3 wins as the generalist because it has
 # the strongest reasoning/tool-use profile and can fall back to coding/writing

@@ -26,6 +26,17 @@ vi.mock("@/lib/api/cockpit", () => ({
   },
 }));
 
+// The spend trend chart pulls its own series via useUsageTimeSeries — a
+// hook-level mock (not the raw react-query one above, which only controls
+// the single cockpit-summary useQuery call) so SpendTrendChart never sees
+// the mocked CockpitSummary object where it expects an array.
+vi.mock("@/hooks/use-usage", () => ({
+  useUsageTimeSeries: () => ({
+    data: [],
+    isLoading: false,
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Import component AFTER mocks are set up
 // ---------------------------------------------------------------------------
@@ -158,6 +169,17 @@ describe("CompanyScorecardCard", () => {
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.getByText("Awaiting CEO")).toBeInTheDocument();
     expect(screen.getByText("Done (30 d)")).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // The spend-trend chart is wired into the Spend section
+  // -------------------------------------------------------------------------
+  it("renders the daily spend trend chart alongside the spend summary", () => {
+    setQueryState({ data: buildSummary() });
+
+    render(<CompanyScorecardCard />);
+
+    expect(screen.getByText("Daily Spend (30d)")).toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------

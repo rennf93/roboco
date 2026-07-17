@@ -3,6 +3,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { BottomTabBar } from "@/components/layout/bottom-tab-bar";
 import { ScrollRestoration } from "@/components/scroll-restoration";
+import { ScrollJumpButtons } from "@/components/scroll-jump-buttons";
 import { RateLimitBanner } from "@/components/rate-limit/rate-limit-banner";
 import { AutoRefreshDriver } from "@/components/providers/auto-refresh-driver";
 
@@ -27,6 +28,10 @@ export default function DashboardLayout({
           </Suspense>
           {children}
         </main>
+        {/* Sibling of <main>, not a child — fixed positioning overlays it
+            regardless, and staying out keeps ScrollJumpButtons' own DOM node
+            from being mistaken for the page content root it measures. */}
+        <ScrollJumpButtons />
       </div>
       <BottomTabBar />
     </div>

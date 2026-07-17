@@ -48,6 +48,7 @@ function GitBrowserContent() {
     handlePull,
     handleFetch,
     handleRebase,
+    handleCleanupBranches,
     isCommitting,
     isPushing,
     isCreatingPR,
@@ -57,6 +58,7 @@ function GitBrowserContent() {
     isRebasing,
     isCheckingOut,
     isCreatingBranch,
+    isCleaningUpBranches,
   } = useGitBrowser();
 
   if (isOffline) {
@@ -139,6 +141,7 @@ function GitBrowserContent() {
               onPull={handlePull}
               onFetch={handleFetch}
               onRebase={handleRebase}
+              onCleanupBranches={handleCleanupBranches}
               isCommitting={isCommitting}
               isPushing={isPushing}
               isCreatingPR={isCreatingPR}
@@ -146,6 +149,7 @@ function GitBrowserContent() {
               isPulling={isPulling}
               isFetching={isFetching}
               isRebasing={isRebasing}
+              isCleaningUpBranches={isCleaningUpBranches}
             />
           </div>
 

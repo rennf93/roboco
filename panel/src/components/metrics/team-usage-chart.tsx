@@ -61,6 +61,10 @@ export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
       <CardContent>
         {isLoading ? (
           <Skeleton className="h-52 w-full" />
+        ) : tableRows.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-16 text-center">
+            No usage recorded in this window yet.
+          </p>
         ) : view === "table" ? (
           <div className="max-h-52 overflow-y-auto">
             <table className="w-full text-sm">

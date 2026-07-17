@@ -18,15 +18,9 @@ dm(
 - The recipient sees it in their notify inbox when offline.
 - **Active-claim required (explicit `task_id`):** when you pass an explicit `task_id`, `dm` checks that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer `dm` about a former task; if you see `not_authorized`, re-`claim` the task first (or drop the explicit `task_id`).
 
-## Messaging the CEO — `dm(recipient="ceo", ...)`
+## The CEO
 
-The CEO is a special recipient with an asymmetric rule (`_enforce_ceo_reply_budget` in `roboco/services/a2a.py`), so a `dm` to `ceo` can be refused for reasons that have nothing to do with cell membership:
-
-- **You can never open a CEO conversation.** An agent can never *initiate* A2A with the CEO — the static permission matrix blocks it unconditionally, as defense-in-depth. Your `dm` only succeeds inside a conversation the **CEO already opened** (its mere existence proves that). If none exists yet, the call is refused with "CEO is human. You may only reply inside a conversation the CEO opened — use notify() otherwise." — but `notify` itself is PM/Board-only (see the table below), so if you're not a PM/Board role your real option is to route through your chain (`escalate_up` to your Cell PM) and wait.
-- **Reply budget: at most one message per CEO message, per conversation.** Once the CEO has messaged you, you may reply — but your message count in that conversation may never reach or exceed the CEO's. Reply once, then you're capped until the CEO posts again; a second `dm(recipient="ceo", ...)` before their next message is refused with "you have already replied to the CEO's last message — wait for the CEO to respond before sending again."
-- **CEO → agent is unrestricted.** The CEO (via the panel) can open a conversation with, and message, any agent at any time; only the agent side of the `ceo` pair is budgeted.
-
-Both refusals surface as a normal tool error (`A2A_ACCESS_DENIED`) with a `remediate` hint — treat them as "wait for the CEO," not a bug to retry around.
+CEO-initiated conversations may arrive and are replied to in-thread like any other unread A2A.
 
 ## Discover who to message
 
