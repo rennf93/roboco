@@ -2521,6 +2521,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
 | `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | routes/orchestrator.py:37 | Router-level CEO-HMAC guard on orchestrator control routes. |
+| `_validated_agent_id` | fn | routes/orchestrator.py:99 | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
 | `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
 | `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
@@ -2664,6 +2665,7 @@ roboco/api/
 > - `d1cf6ecb` Wave 1 (#295) — adds `GET /api/tasks/summary?q=` search (`TaskService.search_tasks`), `GET /api/prompter/live/{id}/search-tasks` (intake memory), `GET /api/secretary/tasks?q=` (Secretary task-by-name lookup), and the Secretary `edit` directive action.
 > - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
+> - `637c75dc` (2026-07-17, PR #546, "wave-1 quick wins") fix(api): normalize agent UUID to slug at the orchestrator route boundary — `_validated_agent_id` now also calls `_resolve_to_slug` after its path-injection checks, so a caller-supplied DB UUID (e.g. from the panel) resolves to the canonical slug before spawn/stop/status/resolve-wait/mark-waiting address the runtime, fixing UUID-named containers and registry misses.
 
 ## Regression Risks
 
@@ -4338,7 +4340,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `resolve_for_agent` | method | `services/llm.py:124` | Precedence ladder agent>role>global; never raises — downgrades to legacy Anthropic path |
 | `probe_ollama_tags` | func | `services/llm.py:63` | `{base_url}/api/tags` probe; never raises, returns `([], error)` |
 | `upsert_assignment` | method | `services/llm.py:241` | Insert-or-update by `(scope, scope_value)`; routes non-catalog names to LOCAL; auto-enables LOCAL provider |
-| `apply_mode` | method | `services/llm.py:418` | Wipe + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
+| `apply_mode` | method | `services/llm.py:418` | Wipe role/global rows (AGENT_SLUG pins preserved) + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
 | `derive_mode` | method | `services/llm.py:314` | Settings UI label from current assignments |
 | `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:340,360` | Encrypt+enable / clear+disable on the seeded provider row |
 | `ProactiveKnowledgeService` | class | `services/proactive.py:90` | Builds `ContextPackage` from multiple RAG indexes on claim/session |
@@ -4581,11 +4583,12 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441`. Range `fd10cc86..HEAD` (3a
 
 No logic-touching commits to list — IMPACT: none.
 
-> Post-snapshot updates (since 2026-06-29): four commits touched this slice after the baseline was cut.
+> Post-snapshot updates (since 2026-06-29): five commits touched this slice after the baseline was cut.
 > - `e4ed970f` [chore] stream-bus: poison-pill ACK + dead-letter (`DEAD_LETTER_STREAM`, `_dead_letter`), periodic `_reclaim_loop` spawned alongside `_listen_loop`, `_run_handler_guarded` catches `BaseException` for cancelled-handler marker cleanup (3 gaps).
 > - `6b441e42` [chore] converters: `InvalidIdentifierError(ValueError)` introduced; `require_uuid` now raises it for both None and unparseable input; `repo_key` git-URL normalizer added; orchestrator reaper now logs the typed error instead of silently swallowing it.
 > - `321e68d7` [sweep] proactive: `_find_code_patterns` method, its call, summary line, and count removed; `ContextPackage.code_patterns` field retained (always-empty, back-compat).
 > - `536bbb64` Chore/all/logical-gaps-sweep (#286) — merge commit pulling the above into the branch.
+> - `d83104e9` (2026-07-17, PR #546, "wave-1 quick wins") fix(llm): provider mode switches preserve per-agent model pins — `_apply_anthropic`/`_apply_grok`/`_apply_ollama`/`_apply_self_hosted` now delete only ROLE/GLOBAL `model_assignments` rows (`scope != AGENT_SLUG`) instead of wiping the whole table, so an AGENT_SLUG pin survives a mode switch; `OLLAMA_ROLE_DEFAULTS` removed from `llm_catalog.py` as dead code (it was never consulted by routing — see `models.md`).
 
 ## Regression Risks
 
@@ -8216,6 +8219,10 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 > - `da563487` Wave 2: A2A live view (#297) — new `app/(dashboard)/a2a/page.tsx` (classic list view + transcript + `A2AReplyComposer`), `hooks/use-a2a-live.ts`, `lib/api/a2a.ts` admin client, `useA2ALiveStream` added to `use-websocket.ts`. Backend pairs with `EventType.A2A_MESSAGE_SENT` + `websocket_bridge._handle_a2a_message_event`.
 > - `876e19b3` A2A switchboard (#298) — `page.tsx` gains the switchboard/list view toggle (default switchboard) + `peekedPair` state; new `components/a2a/{a2a-switchboard,a2a-switchboard-utils,a2a-pair-card}.tsx`; `useA2AAdminPairs` added to `use-a2a-live.ts`.
 > - `a7147702` feat(panel): full mobile responsiveness pass — touches the A2A page's single-visible-pane layout (`h-dvh`, back affordance) among other routes.
+> - (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: new `tab-findings.tsx` (7th task-detail tab, `useTaskFindings` → `GET /tasks/{id}/findings`), a `bounced xN` chip on `task-header.tsx` (`revision_count`), and "PM rejects"/"CEO rejects" columns on `delivery-tab.tsx`'s rework table. See `docs/map/review-findings.md`.
+> - `abf4b35f` (2026-07-17, PR #546, "wave-1 quick wins") — notifications page resolves `from_agent` via `getAgentDisplayName` (was `notification.from_agent.slice(0, 8)`, a raw UUID prefix); metrics charts (usage time-series, agent/team usage, model donut) gained a "no data" empty state alongside the existing loading skeleton.
+> - `ca07c83f` + `40b1a586` (2026-07-17, PR #546) — scroll-bounce fix: `scroll-restoration.tsx`'s route key now strips UI-only params before comparing (`UI_ONLY_PARAMS=["expanded"]`, exported `buildRouteKey`) so a tasks-page row expand/collapse no longer forks/resets the saved scroll position; new floating `ScrollJumpButtons` (`components/scroll-jump-buttons.tsx`, mounted as a `<main>` sibling in `(dashboard)/layout.tsx`) re-observes `<main>`'s children via `MutationObserver` across a Suspense fallback→content swap so the `ResizeObserver` never watches a detached fallback node; the dead, unfiltered duplicate `hooks/use-scroll-restoration.ts` was deleted; `agent-utils.ts` `AGENT_NAMES` gains `system: "System"` for backend-authored notifications/events.
+> - `d83104e9` + `9a08cb3e` (2026-07-17, PR #546) — `ai-routing-card.tsx` confirm/toast copy now reads "Role/global routing now on … — per-agent pins kept" (was "All agents now on … Clears any overrides"), matching the backend fix that mode switches no longer wipe the whole `model_assignments` table — see `docs/map/support-services.md`.
 
 ## Regression Risks
 

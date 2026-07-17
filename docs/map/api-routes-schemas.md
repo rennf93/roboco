@@ -94,6 +94,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_panel_token` | dep | api/deps.py:251 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
 | `CurrentAgentContext` | dep | api/deps.py:376 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | routes/orchestrator.py:37 | Router-level CEO-HMAC guard on orchestrator control routes. |
+| `_validated_agent_id` | fn | routes/orchestrator.py:99 | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
 | `request_validation_handler` | fn | api/middleware.py:407 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
 | `_scrub_secrets` | fn | api/middleware.py:389 | Deep-redact known secret fields from logged 422 bodies. |
@@ -237,6 +238,7 @@ roboco/api/
 > - `d1cf6ecb` Wave 1 (#295) — adds `GET /api/tasks/summary?q=` search (`TaskService.search_tasks`), `GET /api/prompter/live/{id}/search-tasks` (intake memory), `GET /api/secretary/tasks?q=` (Secretary task-by-name lookup), and the Secretary `edit` directive action.
 > - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
+> - `637c75dc` (2026-07-17, PR #546, "wave-1 quick wins") fix(api): normalize agent UUID to slug at the orchestrator route boundary — `_validated_agent_id` now also calls `_resolve_to_slug` after its path-injection checks, so a caller-supplied DB UUID (e.g. from the panel) resolves to the canonical slug before spawn/stop/status/resolve-wait/mark-waiting address the runtime, fixing UUID-named containers and registry misses.
 
 ## Regression Risks
 
