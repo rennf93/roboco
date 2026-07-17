@@ -7987,7 +7987,8 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `panel/src/app/(dashboard)/prompter/page.tsx` | Intake chat (single + MegaTask batch scope) |
 | `panel/src/app/(dashboard)/a2a/page.tsx` | A2A Live: org-wide switchboard/list + transcript + CEO reply composer, live via `/ws/system` `a2a.message` frames |
 | `panel/src/app/(dashboard)/settings/page.tsx` + `settings/ai-providers/page.tsx` | Settings: feature flags, AI routing, transcript retention, self-hosted |
-| `panel/src/app/(dashboard)/{agents,projects,products,business,journals,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx` | Per-domain pages |
+| `panel/src/app/(dashboard)/workstation/page.tsx` | Workstation: Products + Projects merged as URL-param tabs (`?tab=products\|projects`, Products first); `products/page.tsx` and `projects/page.tsx` are now server-component redirects to it |
+| `panel/src/app/(dashboard)/{agents,business,journals,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx` | Per-domain pages |
 | `panel/src/app/(auth)/login/page.tsx` | Cloud-auth login form (email/password → `useLogin` → `/auth/login`); only reachable/relevant once `proxy.ts` starts gating the `(dashboard)` group |
 | `panel/src/proxy.ts` | Next 16's rename of `middleware.ts`: probes `/auth/status` (docker-internal orchestrator URL, fails open to "off" on any error/timeout) and redirects to `/login` when cloud auth is on and no session cookie is present |
 | `panel/src/components/dashboard/` | Overview cards: command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity, `x-post-queue.tsx`, `roadmap-review-queue.tsx` |
@@ -7998,7 +7999,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `panel/src/components/tasks/` + `tasks/task-detail/` | task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector, task-detail tabs (overview/plan/progress/commits/sessions/notes/dependencies) |
 | `panel/src/components/settings/` | feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, `x-credentials-card.tsx` (write-only OAuth 1.0a secrets, mounted in `settings/page.tsx`) |
 | `panel/src/components/conventions/conventions-tab.tsx` | Per-project architecture map + health (in edit-project dialog) |
-| `panel/src/components/projects/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups; `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown) |
+| `panel/src/components/projects/`, `products/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups (`projects/` and `products/` each export a `*-view.tsx` consumed by `workstation/page.tsx`); `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown) |
 | `panel/src/hooks/use-websocket.ts` | Shared `useWebSocket<T>(path, handlers?, isSystem?)` hook (auto-reconnect, heartbeat) |
 | `panel/src/hooks/use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts` | TanStack Query + zustand data hooks |
 | `panel/src/hooks/use-a2a-live.ts` | `useA2AConversations` / `useA2AAdminPairs` / `useA2AMessages` (TanStack Query over `a2aApi`) + `useReplyAsCeo` mutation; `a2aLiveKeys` query-key namespace |
@@ -8025,6 +8026,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | Feature Flags | `components/settings/feature-flags-card.tsx` | Toggles persisted to settings store; takes effect on next backend restart |
 | Intake / MegaTask | `app/(dashboard)/prompter/page.tsx` + `components/prompter/*` | Live SSE chat with spawned Claude/Grok intake agent; single-project, product, or multi-project (`project_ids`) MegaTask → `propose_batch` → `confirm-batch` |
 | A2A Live (switchboard + reply) | `app/(dashboard)/a2a/page.tsx` + `components/a2a/*` | CEO watches every agent-to-agent conversation live: default org-chart switchboard (pair cards grouped by cell/PM-chain/board, pulsing on fresh `a2a.message` frames) or the classic conversation list; drill-in shows the transcript + a reply composer that lets the CEO chime into the thread as itself (task-linked conversations only) |
+| Workstation | `app/(dashboard)/workstation/page.tsx` + `components/{products,projects}/*-view.tsx` | Products + Projects as one sidebar entry, tab-switched via `?tab=`; Projects' q/cell/inactive filters are local `useState`, not URL params (scroll-bounce prevention) |
 | Project Settings / Conventions | `components/projects/edit-project-dialog.tsx` + `components/conventions/conventions-tab.tsx` | Per-project `.roboco/conventions.yml` map + health; Save / Restore via PR |
 | Usage Dashboard | `components/dashboard/usage-overview-panel.tsx` + `hooks/use-usage.ts` | Token/cost totals; live WS snapshot with HTTP-polling fallback |
 | Kanban | `components/kanban/{core,views}/*` | dnd-kit drag board; dev/qa/pm/pr-review views; drag routes through admin status-override with bypass-precondition prompt |
@@ -8078,7 +8080,8 @@ graph TD
   Routes --> Prompter["prompter (single + MegaTask)"]
   Routes --> A2ALive["a2a (switchboard + reply)"]
   Routes --> Settings["settings + ai-providers"]
-  Routes --> Domain["agents/projects/products/business/journals/git/kb/auditor/work-sessions/notifications"]
+  Routes --> Workstation["workstation (Products + Projects tabs)"]
+  Routes --> Domain["agents/business/journals/git/kb/auditor/work-sessions/notifications"]
   Overview --> Dash["components/dashboard/*"]
   Dash --> Release["ReleaseProposalCard"]
   Dash --> Playbook["PlaybookReviewQueue"]
@@ -8111,7 +8114,8 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │       ├── prompter/page.tsx               (intake chat: single + MegaTask batch)
 │       ├── a2a/page.tsx                    (A2A Live: switchboard/list + transcript + CEO reply)
 │       ├── settings/page.tsx + settings/ai-providers/page.tsx
-│       └── {agents,projects,products,business,journals,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx
+│       ├── workstation/page.tsx            (Products + Projects tabs; projects/, products/ page.tsx now redirect here)
+│       └── {agents,business,journals,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx
 ├── src/components/
 │   ├── dashboard/                          (command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, x-post-queue, roadmap-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity)
 │   ├── metrics/                            (delivery-tab, usage-time-series-chart, agent/team-usage-chart, model-usage-donut, sessions-table)
@@ -8124,7 +8128,8 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │   ├── tasks/ + tasks/task-detail/         (task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector; detail tabs: overview/plan/progress/commits/sessions/notes/dependencies)
 │   ├── settings/                           (feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, x-credentials-card)
 │   ├── conventions/conventions-tab.tsx     (per-project architecture map + health)
-│   ├── projects/ agents/ business/ auditor/ knowledge-base/ git/ journals/ work-sessions/ notifications/ rate-limit/ layout/
+│   ├── projects/projects-view.tsx, products/products-view.tsx (Workstation tab panes)
+│   ├── projects/ products/ agents/ business/ auditor/ knowledge-base/ git/ journals/ work-sessions/ notifications/ rate-limit/ layout/
 │   └── ui/                                 (Radix-based primitives: dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown)
 ├── src/hooks/
 │   ├── use-websocket.ts                    (shared useWebSocket<T>: auto-reconnect, heartbeat)
@@ -8193,6 +8198,7 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 - **A2A page activity is A2A-only by design**: `latestPulseTimestamps` (switchboard-utils) derives pulses purely from `a2a.message` frames on `/ws/system`, never from the verb/flow traffic sharing that same stream — a CEO ruling, not an oversight, so don't "fix" the switchboard to also light up on ordinary gateway verbs.
 - **A2A reply composer is read-only on a task-less conversation**: the backend's `reply_as_ceo` route 400s exactly when the watched conversation has no `task_id` (A2A sends always ride the gateway `send` path, which requires one) — the panel pre-empts that bounce with an explanatory message instead of letting the POST fail. Conversation `status` does NOT gate the composer; the CEO's reply lands in its own direct thread with the participant, not into the watched conversation.
 - **Switchboard "peeked pair" state**: a pair with `conversation_id: null` (never talked) has nothing to select via `?conversation=`, so `page.tsx` tracks it separately (`peekedPair`) and renders its own empty state — don't conflate this with the ordinary `selectedId` empty-state path when touching the drill-in panel.
+- **Workstation's `ProjectsView` filters (q/cell/inactive) are local `useState`, not URL params** — deliberate: any URL write forks `ScrollRestoration`'s route key and force-scrolls `<main>` to top. Trade-off disclosed: a filtered Projects view is no longer a shareable/bookmarkable link (only `?tab=` rides the URL). `/products` and `/projects` are now redirect shims to `/workstation?tab=...`, so old bookmarks/links still resolve.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md says panel lives at `roboco/panel/` inside this repo — confirmed (no longer a separate `roboco-panel` project). No drift.
@@ -8217,6 +8223,7 @@ Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime tog
 > - `da563487` Wave 2: A2A live view (#297) — new `app/(dashboard)/a2a/page.tsx` (classic list view + transcript + `A2AReplyComposer`), `hooks/use-a2a-live.ts`, `lib/api/a2a.ts` admin client, `useA2ALiveStream` added to `use-websocket.ts`. Backend pairs with `EventType.A2A_MESSAGE_SENT` + `websocket_bridge._handle_a2a_message_event`.
 > - `876e19b3` A2A switchboard (#298) — `page.tsx` gains the switchboard/list view toggle (default switchboard) + `peekedPair` state; new `components/a2a/{a2a-switchboard,a2a-switchboard-utils,a2a-pair-card}.tsx`; `useA2AAdminPairs` added to `use-a2a-live.ts`.
 > - `a7147702` feat(panel): full mobile responsiveness pass — touches the A2A page's single-visible-pane layout (`h-dvh`, back affordance) among other routes.
+> - `dd4cb7f1` Wave 4: Workstation page (PR #549, 2026-07-17) — Products + Projects merged into one `/workstation?tab=` page (Products first); content extracted byte-faithfully into `components/products/products-view.tsx` + `components/projects/projects-view.tsx`; `products/page.tsx` + `projects/page.tsx` become redirect shims; the two sidebar entries collapse into one "Workstation" entry (`Briefcase` icon); `task-metadata.tsx`'s project-card link retargets to `/workstation?tab=projects`; `ProjectsView`'s q/cell/inactive filters move from URL params to local `useState` (scroll-bounce prevention, trades away shareable filtered-view links).
 
 ## Regression Risks
 
