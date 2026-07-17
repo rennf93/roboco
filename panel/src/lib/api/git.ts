@@ -30,6 +30,8 @@ import type {
   GitFetchResponse,
   GitRebaseRequest,
   GitRebaseResponse,
+  GitBranchCleanupRequest,
+  GitBranchCleanupResponse,
 } from "@/types/git";
 
 // =============================================================================
@@ -356,6 +358,29 @@ export const gitApi = {
       };
     }
     const { data } = await api.post<GitRebaseResponse>("/git/rebase", request);
+    return data;
+  },
+
+  /**
+   * Sweep a project's terminal-task branches (remote + local, PM/CEO only)
+   */
+  cleanupBranches: async (
+    request: GitBranchCleanupRequest,
+  ): Promise<GitBranchCleanupResponse> => {
+    if (isMockMode()) {
+      return {
+        project_slug: request.project_slug,
+        remote_deleted: 3,
+        local_deleted: 3,
+        skipped: 0,
+        errors: 0,
+        truncated: false,
+      };
+    }
+    const { data } = await api.post<GitBranchCleanupResponse>(
+      "/git/branches/cleanup",
+      request,
+    );
     return data;
   },
 };

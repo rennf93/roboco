@@ -73,6 +73,7 @@ function buildMutations(overrides: Record<string, unknown> = {}) {
     pull: { mutateAsync: vi.fn(), isPending: false },
     fetch: { mutateAsync: vi.fn(), isPending: false },
     rebase: { mutateAsync: vi.fn(), isPending: false },
+    cleanupBranches: { mutateAsync: vi.fn(), isPending: false },
     ...overrides,
   };
 }
@@ -311,5 +312,42 @@ describe("useGitBrowser", () => {
     const { result } = renderHook(() => useGitBrowser());
     expect(result.current.isCommitting).toBe(true);
     expect(result.current.isPushing).toBe(false);
+  });
+
+  it("cleans up branches for the current project and shows a count toast", async () => {
+    const mutateAsync = vi.fn(() =>
+      Promise.resolve({
+        remote_deleted: 3,
+        local_deleted: 2,
+        skipped: 1,
+        errors: 0,
+        truncated: false,
+      }),
+    );
+    mockUseGitOperations.mockReturnValue(
+      buildMutations({ cleanupBranches: { mutateAsync, isPending: false } }),
+    );
+
+    const { result } = renderHook(() => useGitBrowser());
+    await result.current.handleCleanupBranches();
+
+    await waitFor(() =>
+      expect(mutateAsync).toHaveBeenCalledWith({ project_slug: "roboco" }),
+    );
+    expect(mockToastSuccess).toHaveBeenCalledWith(
+      "Cleaned up branches: 3 remote, 2 local, 1 skipped, 0 errors",
+    );
+  });
+
+  it("shows an error toast when branch cleanup fails", async () => {
+    const mutateAsync = vi.fn(() => Promise.reject(new Error("boom")));
+    mockUseGitOperations.mockReturnValue(
+      buildMutations({ cleanupBranches: { mutateAsync, isPending: false } }),
+    );
+
+    const { result } = renderHook(() => useGitBrowser());
+    await result.current.handleCleanupBranches();
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("boom"));
   });
 });

@@ -45,6 +45,7 @@ export interface UseGitBrowserResult {
   handlePull: () => Promise<void>;
   handleFetch: () => Promise<void>;
   handleRebase: (targetBranch: string) => Promise<void>;
+  handleCleanupBranches: () => Promise<void>;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
@@ -54,6 +55,7 @@ export interface UseGitBrowserResult {
   isRebasing: boolean;
   isCheckingOut: boolean;
   isCreatingBranch: boolean;
+  isCleaningUpBranches: boolean;
 }
 
 /**
@@ -162,6 +164,7 @@ export function useGitBrowser(): UseGitBrowserResult {
     pull,
     fetch,
     rebase,
+    cleanupBranches,
   } = useGitOperations();
 
   const handleCheckout = useCallback(
@@ -317,6 +320,22 @@ export function useGitBrowser(): UseGitBrowserResult {
     [projectSlug, taskId, rebase],
   );
 
+  const handleCleanupBranches = useCallback(async () => {
+    try {
+      const result = await cleanupBranches.mutateAsync({
+        project_slug: projectSlug,
+      });
+      const truncatedNote = result.truncated ? " (more remain — run again)" : "";
+      toast.success(
+        `Cleaned up branches: ${result.remote_deleted} remote, ` +
+          `${result.local_deleted} local, ${result.skipped} skipped, ` +
+          `${result.errors} errors${truncatedNote}`,
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }, [projectSlug, cleanupBranches]);
+
   const isOffline =
     !!projectsError &&
     (projectsError.message?.includes("Network Error") ||
@@ -349,6 +368,7 @@ export function useGitBrowser(): UseGitBrowserResult {
     handlePull,
     handleFetch,
     handleRebase,
+    handleCleanupBranches,
     isCommitting: commit.isPending,
     isPushing: push.isPending,
     isCreatingPR: createPR.isPending,
@@ -358,5 +378,6 @@ export function useGitBrowser(): UseGitBrowserResult {
     isRebasing: rebase.isPending,
     isCheckingOut: checkout.isPending,
     isCreatingBranch: createBranch.isPending,
+    isCleaningUpBranches: cleanupBranches.isPending,
   };
 }
