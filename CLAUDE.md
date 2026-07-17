@@ -120,6 +120,8 @@ On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain 
 
 Because the clone is shared across a dev's tasks, a **fresh claim** git-resets the workspace to a clean tree (`git reset --hard`) before checking out the new task's branch — discarding abandoned uncommitted cruft from a finished task while preserving all commits and the gitignored `.venv`. A resume short-circuits before this, so committed work is never reset.
 
+Terminal completion and cancellation also force-delete the task's local branch ref and its `.previews/` video-render dir in the assignee's clone (alongside the existing worktree removal), skipping any branch that coincides with an environment-ladder rung; a PM/CEO can additionally sweep older backlog branches project-wide via `POST /git/branches/cleanup` or the Git page's "Clean Up Stale Branches" button.
+
 ## Git Workflow
 
 ### Branch Naming Convention
@@ -315,7 +317,7 @@ commits: list[CommitRef] # All commits made for this task
 
 ## Communication Model
 
-Agents coordinate via **task state + task detail fields**, not a channel/session backbone. Two comms primitives sit alongside that: **A2A** (`dm` + `read_a2a`, direct peer-to-peer, same-cell only — see `docs/rag/tools/a2a-tools.md`) for informal contact, and **Notifications** (`notify`, ack-required, sent by PMs/Board only) for formal signals.
+Agents coordinate via **task state + task detail fields**, not a channel/session backbone. Two comms primitives sit alongside that: **A2A** (`dm` + `read_a2a`, direct peer-to-peer, same-cell only — see `docs/rag/tools/a2a-tools.md`) for informal contact, and **Notifications** (`notify`, ack-required, sent by PMs/Board only) for formal signals. The CEO is the one asymmetric participant: from the panel it can open a direct 1:1 A2A conversation with any DM-capable agent at any time, but an agent can never initiate to the CEO — only reply in-thread once the CEO has opened one. A CEO-authored DM wakes an offline recipient via the `a2a_request` notification dispatch path, a wake same-cell `dm` never triggers.
 
 Agent learnings (`note` scope='learning') broadcast as knowledge-share notifications only to other **agents** — the human / human-driven roles (CEO, prompter, secretary) are excluded, since agent knowledge-sharing is noise in a human's inbox.
 

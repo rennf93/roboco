@@ -36,6 +36,7 @@ import {
   Download,
   RefreshCcw,
   GitGraph,
+  Trash2,
 } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
 
@@ -51,6 +52,7 @@ interface GitActionsPanelProps {
   onPull: () => void;
   onFetch: () => void;
   onRebase: (targetBranch: string) => void;
+  onCleanupBranches: () => void;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
@@ -58,6 +60,7 @@ interface GitActionsPanelProps {
   isPulling: boolean;
   isFetching: boolean;
   isRebasing: boolean;
+  isCleaningUpBranches: boolean;
 }
 
 export function GitActionsPanel({
@@ -72,6 +75,7 @@ export function GitActionsPanel({
   onPull,
   onFetch,
   onRebase,
+  onCleanupBranches,
   isCommitting,
   isPushing,
   isCreatingPR,
@@ -79,6 +83,7 @@ export function GitActionsPanel({
   isPulling,
   isFetching,
   isRebasing,
+  isCleaningUpBranches,
 }: GitActionsPanelProps) {
   void _agentId; // Reserved for future use
   const [showCommitDialog, setShowCommitDialog] = useState(false);
@@ -508,6 +513,48 @@ export function GitActionsPanel({
                 }}
               >
                 Rebase
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Cleanup Stale Branches — destructive, requires confirmation */}
+        <AlertDialog>
+          <HelpTip label="Deletes the remote + local branch of every completed/cancelled task in this project. Never touches the default branch or an environment-ladder rung (head/qa/stag/prod).">
+            <span className="block w-full">
+              <AlertDialogTrigger asChild>
+                <Button
+                  className="w-full justify-start"
+                  variant="outline"
+                  disabled={isCleaningUpBranches}
+                >
+                  {isCleaningUpBranches ? (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4 mr-2" />
+                  )}
+                  Clean Up Stale Branches
+                </Button>
+              </AlertDialogTrigger>
+            </span>
+          </HelpTip>
+          <AlertDialogContent className="border-destructive bg-destructive/5">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Clean up stale branches?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Deletes the remote + local branch of every completed or
+                cancelled task in <strong>{projectSlug}</strong>. The default
+                branch and every environment-ladder rung are always skipped.
+                This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={onCleanupBranches}
+              >
+                Clean Up
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

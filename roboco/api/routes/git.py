@@ -31,6 +31,8 @@ from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.git import (
     BranchInfo,
     CommitInfo,
+    GitBranchCleanupRequest,
+    GitBranchCleanupResponse,
     GitBranchListResponse,
     GitCheckoutRequest,
     GitCheckoutResponse,
@@ -762,4 +764,61 @@ async def rebase_branch(
         project_slug=project_slug,
         conflict=conflict,
         conflicted_files=conflicted_files,
+    )
+
+
+@router.post("/branches/cleanup", response_model=GitBranchCleanupResponse)
+@guard_deco.rate_limit(requests=5, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+async def cleanup_stale_branches(
+    data: GitBranchCleanupRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitBranchCleanupResponse:
+    """Sweep a project's terminal-task branches (PM/CEO only).
+
+    Deletes the remote + local branch of every completed/cancelled task in
+    the project (capped per call — see ``GitService.cleanup_stale_branches``),
+    skipping the default branch and any environment-ladder rung so a live
+    integration/prod branch is never touched. Role-gated identically to
+    ``/rebase`` — a history-affecting bulk operation shouldn't be open to
+    developers either. Purely a read + external-git-op endpoint: no task rows
+    are mutated, so there's nothing for this request to commit.
+    """
+    if agent.role not in _REBASE_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"BRANCH_CLEANUP_ROLE_RESTRICTED: Role '{agent.role}' is not "
+                "permitted to sweep branches. Only CEO and PM roles (cell_pm, "
+                "main_pm) may use this endpoint."
+            ),
+        )
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        (
+            remote_deleted,
+            local_deleted,
+            skipped,
+            errors,
+            truncated,
+            next_cursor,
+        ) = await git_service.cleanup_stale_branches(
+            project_slug, after_task_id=data.after_cursor
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitBranchCleanupResponse(
+        project_slug=project_slug,
+        remote_deleted=remote_deleted,
+        local_deleted=local_deleted,
+        skipped=skipped,
+        errors=errors,
+        truncated=truncated,
+        next_cursor=next_cursor,
     )

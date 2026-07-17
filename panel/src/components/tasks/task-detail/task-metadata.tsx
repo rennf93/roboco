@@ -560,7 +560,7 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <HelpTip label="Opens the Projects list (not a deep link to this specific project)">
               <Link
                 prefetch={false}
-                href={`/projects`}
+                href={`/workstation?tab=projects`}
                 className="font-medium text-blue-600 hover:underline dark:text-blue-400"
               >
                 {project.name}

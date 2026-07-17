@@ -224,6 +224,28 @@ async def test_apply_mode_anthropic_clears_all(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_anthropic_preserves_agent_pin(llm_setup: dict) -> None:
+    """A mode switch must not wipe per-agent pins — only role/global rows."""
+    svc = llm_setup["svc"]
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=ollama_model,
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=anthropic_model
+    )
+    await svc.apply_mode(mode="anthropic")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1  # GLOBAL row cleared, AGENT_SLUG pin survives.
+    assert assignments[0].scope == AssignmentScope.AGENT_SLUG
+    assert assignments[0].scope_value == "be-dev-1"
+    assert assignments[0].model_name == ollama_model
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_ollama_sets_global(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
@@ -231,6 +253,26 @@ async def test_apply_mode_ollama_sets_global(llm_setup: dict) -> None:
     assignments = await svc.list_assignments()
     assert len(assignments) == 1
     assert assignments[0].scope == AssignmentScope.GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_ollama_preserves_agent_pin(llm_setup: dict) -> None:
+    """The Ollama mode-switch button must not wipe per-agent model pins."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=anthropic_model,
+    )
+    await svc.apply_mode(mode="ollama", default_model=ollama_model)
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    by_scope = {a.scope: a for a in assignments}
+    assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
+    assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
+    assert by_scope[AssignmentScope.GLOBAL].model_name == ollama_model
 
 
 @pytest.mark.asyncio
@@ -479,7 +521,8 @@ async def test_apply_mode_self_hosted_requires_default_model(
 async def test_apply_mode_self_hosted_clears_prior_assignments(
     llm_setup_with_local: dict,
 ) -> None:
-    """apply_mode('self_hosted') clears ALL prior assignments."""
+    """apply_mode('self_hosted') clears role/global assignments but preserves
+    AGENT_SLUG pins (mixed-provider routing is a supported state)."""
     svc = llm_setup_with_local["svc"]
     anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
     await svc.upsert_assignment(
@@ -495,8 +538,11 @@ async def test_apply_mode_self_hosted_clears_prior_assignments(
     assert len(await svc.list_assignments()) == 2  # noqa: PLR2004
     await svc.apply_mode(mode="self_hosted", default_model="gemma2:9b")
     assignments = await svc.list_assignments()
-    assert len(assignments) == 1  # Only the new GLOBAL row.
-    assert assignments[0].provider.type == ModelProvider.LOCAL
+    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    by_scope = {a.scope: a for a in assignments}
+    assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
+    assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
+    assert by_scope[AssignmentScope.GLOBAL].provider.type == ModelProvider.LOCAL
 
 
 @pytest.mark.asyncio

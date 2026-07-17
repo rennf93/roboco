@@ -42,6 +42,15 @@ vi.mock("@/hooks/use-a2a-live", () => ({
   useA2AMessages,
   useA2AAdminPairs,
   useReplyAsCeo: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateCeoConversation: () => ({ mutate: vi.fn(), isPending: false }),
+  useSendCeoMessage: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+// AgentSelector (inside A2ANewDmDialog) pulls in useAgentDefinitions + Radix
+// Select — irrelevant to this suite, stub it out like create-task-dialog's
+// suite does for the same component.
+vi.mock("@/components/agents/agent-selector", () => ({
+  AgentSelector: () => null,
 }));
 
 vi.mock("@/hooks/use-websocket", () => ({
@@ -394,6 +403,39 @@ describe("A2APage", () => {
 
     expect(screen.queryByText("QA handoff")).not.toBeInTheDocument();
     expect(screen.getByText("Design review")).toBeInTheDocument();
+  });
+
+  it("renders the New DM trigger in the header", () => {
+    render(withPageRefresh(<A2APage />));
+    expect(
+      screen.getByRole("button", { name: /new dm/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("uses the direct composer (no task required) for a CEO-owned conversation", () => {
+    // A CEO-initiated DM has no task link and no picker — it must render
+    // A2ADirectComposer, not the task-gated A2AReplyComposer.
+    useA2AConversations.mockReturnValue({
+      data: {
+        items: [
+          buildConversation({
+            agent_a: "ceo",
+            agent_b: "be-dev-1",
+            task_id: null,
+          }),
+        ],
+        total: 1,
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(withPageRefresh(<A2APage />));
+    expect(screen.getByPlaceholderText(/message\.\.\./i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/chime in/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/no linked task, so a reply can't be sent/i),
+    ).not.toBeInTheDocument();
   });
 
   it("narrows the classic list's conversations by task id fragment", async () => {
