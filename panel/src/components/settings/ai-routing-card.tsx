@@ -223,7 +223,11 @@ export function AIRoutingCard() {
 
   // --- Mode toggle handlers ---
   const flipToAnthropic = async () => {
-    if (!confirm("Switch every agent to Anthropic? Clears any overrides."))
+    if (
+      !confirm(
+        "Switch every agent to Anthropic? Per-agent pins are kept; role/global assignments are replaced.",
+      )
+    )
       return;
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
@@ -238,7 +242,12 @@ export function AIRoutingCard() {
       toast.error("Save the Grok (xAI) API key first");
       return;
     }
-    if (!confirm("Switch every agent to Grok? Clears any overrides.")) return;
+    if (
+      !confirm(
+        "Switch every agent to Grok? Per-agent pins are kept; role/global assignments are replaced.",
+      )
+    )
+      return;
     try {
       await applyMode.mutateAsync({ mode: "grok" });
       toast.success("All agents now on Grok");
@@ -252,7 +261,12 @@ export function AIRoutingCard() {
       toast.error("Save an Ollama API key first");
       return;
     }
-    if (!confirm("Switch every agent to Ollama? Clears any overrides.")) return;
+    if (
+      !confirm(
+        "Switch every agent to Ollama? Per-agent pins are kept; role/global assignments are replaced.",
+      )
+    )
+      return;
     try {
       await applyMode.mutateAsync({ mode: "ollama" });
       toast.success("All agents now on Ollama");
@@ -268,7 +282,7 @@ export function AIRoutingCard() {
     }
     if (
       !confirm(
-        "Switch every agent to the self-hosted LLM? Clears any overrides.",
+        "Switch every agent to the self-hosted LLM? Per-agent pins are kept; role/global assignments are replaced.",
       )
     )
       return;
