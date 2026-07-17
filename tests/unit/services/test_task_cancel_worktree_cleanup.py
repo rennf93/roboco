@@ -50,7 +50,17 @@ def _task(*, branch: str | None, assignee: MagicMock | None) -> MagicMock:
 
 def _project_result(slug: str | None) -> MagicMock:
     result = MagicMock()
-    result.scalar_one_or_none.return_value = slug
+    # `_delete_task_branch_best_effort` now fetches the full project row (not
+    # just the slug column) so it can resolve the environment ladder before
+    # deleting a local branch. `environments=None` degenerates to a
+    # single-branch ladder off `default_branch` (never equal to a task branch
+    # in these tests, so the ladder-exclusion guard is a no-op here).
+    project = (
+        MagicMock(slug=slug, environments=None, default_branch="master")
+        if slug
+        else None
+    )
+    result.scalar_one_or_none.return_value = project
     return result
 
 
@@ -71,6 +81,7 @@ async def test_cancel_removes_worktree_for_assignee() -> None:
     ws_svc = MagicMock()
     ws_svc.get_clone_root_path = MagicMock(return_value=clone)
     ws_svc.remove_worktree = AsyncMock()
+    ws_svc.delete_local_branch = AsyncMock()
 
     with (
         patch(
@@ -96,6 +107,10 @@ async def test_cancel_removes_worktree_for_assignee() -> None:
     assert args[1] == clone / ".worktrees" / short, (
         f"remove must target the task worktree {clone}/.worktrees/{short}; "
         f"got {args[1]}"
+    )
+    # Cancel force-deletes the local branch ref (-D) — the work is discarded.
+    ws_svc.delete_local_branch.assert_awaited_once_with(
+        clone, "feature/backend/abc12345", force=True
     )
 
 

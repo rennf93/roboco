@@ -64,7 +64,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `resolve_for_agent` | method | `services/llm.py:124` | Precedence ladder agent>role>global; never raises — downgrades to legacy Anthropic path |
 | `probe_ollama_tags` | func | `services/llm.py:63` | `{base_url}/api/tags` probe; never raises, returns `([], error)` |
 | `upsert_assignment` | method | `services/llm.py:241` | Insert-or-update by `(scope, scope_value)`; routes non-catalog names to LOCAL; auto-enables LOCAL provider |
-| `apply_mode` | method | `services/llm.py:418` | Wipe + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
+| `apply_mode` | method | `services/llm.py:418` | Wipe role/global rows (AGENT_SLUG pins preserved) + set GLOBAL for anthropic/grok/ollama/self_hosted; per-agent map for mix |
 | `derive_mode` | method | `services/llm.py:314` | Settings UI label from current assignments |
 | `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:340,360` | Encrypt+enable / clear+disable on the seeded provider row |
 | `ProactiveKnowledgeService` | class | `services/proactive.py:90` | Builds `ContextPackage` from multiple RAG indexes on claim/session |
@@ -308,11 +308,12 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441`. Range `fd10cc86..HEAD` (3a
 
 No logic-touching commits to list — IMPACT: none.
 
-> Post-snapshot updates (since 2026-06-29): four commits touched this slice after the baseline was cut.
+> Post-snapshot updates (since 2026-06-29): five commits touched this slice after the baseline was cut.
 > - `e4ed970f` [chore] stream-bus: poison-pill ACK + dead-letter (`DEAD_LETTER_STREAM`, `_dead_letter`), periodic `_reclaim_loop` spawned alongside `_listen_loop`, `_run_handler_guarded` catches `BaseException` for cancelled-handler marker cleanup (3 gaps).
 > - `6b441e42` [chore] converters: `InvalidIdentifierError(ValueError)` introduced; `require_uuid` now raises it for both None and unparseable input; `repo_key` git-URL normalizer added; orchestrator reaper now logs the typed error instead of silently swallowing it.
 > - `321e68d7` [sweep] proactive: `_find_code_patterns` method, its call, summary line, and count removed; `ContextPackage.code_patterns` field retained (always-empty, back-compat).
 > - `536bbb64` Chore/all/logical-gaps-sweep (#286) — merge commit pulling the above into the branch.
+> - `d83104e9` (2026-07-17, PR #546, "wave-1 quick wins") fix(llm): provider mode switches preserve per-agent model pins — `_apply_anthropic`/`_apply_grok`/`_apply_ollama`/`_apply_self_hosted` now delete only ROLE/GLOBAL `model_assignments` rows (`scope != AGENT_SLUG`) instead of wiping the whole table, so an AGENT_SLUG pin survives a mode switch; `OLLAMA_ROLE_DEFAULTS` removed from `llm_catalog.py` as dead code (it was never consulted by routing — see `models.md`).
 
 ## Regression Risks
 

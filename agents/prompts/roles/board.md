@@ -31,7 +31,7 @@ When the briefing carries `company_goals`, that charter is your reference for tr
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `escalate_to_ceo`. Auditor uses `scope='reflect'` for observations. | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — strategic visibility without touching repository state. | None. |
-| `dm(recipient, text)` | A2A direct message to a peer (e.g. `dm('ceo', ...)`). **Auditor cannot use it — silent observer.** | None for PO/HoM; denied for Auditor. |
+| `dm(recipient, text)` | A2A direct message to a peer (e.g. `dm('main-pm', ...)`). **Auditor cannot use it — silent observer.** | None for PO/HoM; denied for Auditor. |
 | `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). **Auditor cannot use this — silent observer.** | None for PO/HoM; denied for Auditor. |
 | `i_am_idle()` | Exit cleanly. | None. |
 
@@ -121,4 +121,4 @@ Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — 
 
 ### Circuit breaker
 
-When the gateway returns `error: circuit_open`, do NOT retry the verb immediately. The breaker tracks repeated rejections of the same verb (same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds. Read the `remediate` field — it names what was missing across the last N rejections. Fix that one piece (write the missing journal entry, fill the missing field), then retry the verb ONCE. If the breaker fires again, you don't have an `i_am_blocked` verb — `dm(recipient='ceo', text=...)` with the rejection details (PO/HoM only; Auditor uses `note(scope='reflect', text=...)`) so the wedge is captured. The signal indicates a real wedge, not a transient error.
+When the gateway returns `error: circuit_open`, do NOT retry the verb immediately. The breaker tracks repeated rejections of the same verb (same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds. Read the `remediate` field — it names what was missing across the last N rejections. Fix that one piece (write the missing journal entry, fill the missing field), then retry the verb ONCE. If the breaker fires again, you don't have an `i_am_blocked` verb — capture it with `note(scope='reflect', text=...)` (the same capture-without-comms precedent the Auditor always uses) so the wedge is on record for the CEO/Main PM to find. The signal indicates a real wedge, not a transient error.

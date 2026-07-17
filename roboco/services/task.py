@@ -6,6 +6,7 @@ Handles status transitions, assignments, and queries.
 """
 
 import asyncio
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,7 +61,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
-from roboco.models.env_branches import head_branch
+from roboco.models.env_branches import effective_environments, head_branch
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
@@ -6723,30 +6724,36 @@ class TaskService(BaseService):
         await ws_service.abandon(require_uuid(task.work_session_id), reason=reason)
 
     async def _delete_task_branch_best_effort(self, task: TaskTable) -> None:
-        """Delete the task's remote branch + per-task worktree on cancel.
+        """Delete the task's remote + local branch and per-task worktree on
+        cancel.
 
         Best-effort, never raises. Skipped for tasks that didn't make it to a
         branch yet, or whose PR already merged (merge path deletes the source
         branch). The worktree at ``{clone_root}/.worktrees/{task-short}/`` is
         removed from the assignee's clone so cancelled tasks don't leak full
-        working trees on disk (F123). The stale-claim reaper must NOT call this
-        — it routes to ``pending`` for a re-claim that reuses the worktree.
+        working trees on disk (F123); the local branch ref (force-deleted —
+        cancelled work is discarded on purpose) and the task's video-preview
+        dir are cleaned up alongside it. The stale-claim reaper must NOT call
+        this — it routes to ``pending`` for a re-claim that reuses the
+        worktree.
         """
         branch = task.branch_name
         if not branch:
             return
         try:
             project_result = await self.session.execute(
-                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+                select(ProjectTable).where(ProjectTable.id == task.project_id)
             )
-            project_slug = project_result.scalar_one_or_none()
-            if not project_slug:
+            project = project_result.scalar_one_or_none()
+            if not project:
                 return
             from roboco.services.git import get_git_service
 
             git_service = get_git_service(self.session)
-            await git_service.delete_task_branch(project_slug, str(branch))
-            await self._remove_task_worktree_best_effort(task, project_slug)
+            await git_service.delete_task_branch(project.slug, str(branch))
+            await self._remove_task_worktree_best_effort(
+                task, project, force_branch_delete=True
+            )
         except Exception as e:
             # Cleanup is best-effort — don't fail the cancel if the
             # remote is unreachable or the branch is already gone.
@@ -6758,46 +6765,95 @@ class TaskService(BaseService):
             )
 
     async def _remove_task_worktree_best_effort(
-        self, task: TaskTable, project_slug: str
+        self, task: TaskTable, project: ProjectTable, *, force_branch_delete: bool
     ) -> None:
-        """Remove the per-task worktree from the assignee's clone. Never raises.
+        """Remove the per-task worktree + local branch ref, and rmtree the
+        task's video-preview dir. Never raises.
 
-        No-op when the task has no resolvable assignee (pooled/unassigned at
-        cancel) or the assignee carries no team (can't form a clone path).
+        The worktree/local-branch step no-ops when the task has no resolvable
+        assignee (pooled/unassigned at cancel) or the assignee carries no team
+        (can't form a clone path); previews cleanup still runs regardless
+        (project-scoped, not clone-scoped). The local branch is skipped
+        entirely when it's still an environment-ladder rung — a ladder branch
+        outlives any one task.
         """
         assignee = task.assignee
-        if assignee is None or assignee.team is None or assignee.slug is None:
-            return
-        from roboco.services.workspace import get_workspace_service
+        if (
+            assignee is not None
+            and assignee.team is not None
+            and assignee.slug is not None
+        ):
+            from roboco.services.workspace import get_workspace_service
 
-        ws_service = get_workspace_service(self.session)
-        clone_root = ws_service.get_clone_root_path(
-            project_slug, assignee.team, assignee.slug
-        )
-        worktree = clone_root / ".worktrees" / str(task.id)[:8]
-        await ws_service.remove_worktree(clone_root, worktree)
+            ws_service = get_workspace_service(self.session)
+            clone_root = ws_service.get_clone_root_path(
+                project.slug, assignee.team, assignee.slug
+            )
+            worktree = clone_root / ".worktrees" / str(task.id)[:8]
+            await ws_service.remove_worktree(clone_root, worktree)
+
+            branch = task.branch_name
+            ladder_branches = {r.branch for r in effective_environments(project)}
+            if branch and str(branch) not in ladder_branches:
+                await ws_service.delete_local_branch(
+                    clone_root, str(branch), force=force_branch_delete
+                )
+
+        self._cleanup_task_previews_best_effort(task, project.slug)
+
+    def _cleanup_task_previews_best_effort(
+        self, task: TaskTable, project_slug: str
+    ) -> None:
+        """Best-effort rmtree of the task's video-render preview dir.
+
+        Nothing else prunes it (``_render_extract_frames`` writes frames but
+        no cleanup runs on task end), so a video-authoring task's previews
+        would otherwise leak on disk forever. Guards the resolved path stays
+        under the project's workspace dir before deleting anything.
+        """
+        from roboco.config import settings
+
+        project_dir = Path(settings.workspaces_root) / project_slug
+        previews_dir = project_dir / ".previews" / str(task.id)[:8]
+        try:
+            if not previews_dir.exists():
+                return
+            if not previews_dir.resolve().is_relative_to(project_dir.resolve()):
+                return
+            shutil.rmtree(previews_dir)
+        except Exception as e:
+            self.log.warning(
+                "Preview cleanup skipped", task_id=str(task.id), error=str(e)
+            )
 
     async def _remove_task_worktree_on_terminal(self, task: TaskTable) -> None:
-        """Best-effort per-task worktree removal on terminal completion.
+        """Best-effort per-task worktree + local-branch removal on terminal
+        completion.
 
-        Mirrors the cancel-path cleanup but WITHOUT deleting the remote branch
-        (the merge path already deleted it). A completed/merged task would
-        otherwise leak its worktree on disk until the whole agent is deleted
-        (F123). Best-effort: never raises, so a cleanup failure can't block
-        completion. No-op for branchless tasks (no worktree was ever cut).
-        Terminal-only by call site — earlier review states may bounce
-        ``needs_revision`` and need the worktree back.
+        Force-deletes the local branch ref (``-D``), same as the cancel path:
+        completion implies the PR already merged remotely (the merge path
+        deleted the remote branch), and the default merge method is SQUASH —
+        the local ref's commits are never ancestors of the base, so a "safe"
+        ``-d`` refuses every time and the ref would leak forever. The ref is
+        spent either way once the task is terminal. A completed task would
+        otherwise leak its worktree + branch ref on disk until the whole
+        agent is deleted (F123). Best-effort: never raises, so a cleanup
+        failure can't block completion. No-op for branchless tasks (no
+        worktree was ever cut). Terminal-only by call site — earlier review
+        states may bounce ``needs_revision`` and need the worktree back.
         """
         if not task.branch_name:
             return
         try:
             result = await self.session.execute(
-                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+                select(ProjectTable).where(ProjectTable.id == task.project_id)
             )
-            project_slug = result.scalar_one_or_none()
-            if not project_slug:
+            project = result.scalar_one_or_none()
+            if not project:
                 return
-            await self._remove_task_worktree_best_effort(task, project_slug)
+            await self._remove_task_worktree_best_effort(
+                task, project, force_branch_delete=True
+            )
         except OSError as e:
             # FS/permission failure (stuck mount, perms) — systemic, not
             # task-specific. Track the streak and escalate a CEO alert once

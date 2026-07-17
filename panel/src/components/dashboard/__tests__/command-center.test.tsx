@@ -32,6 +32,13 @@ vi.mock("@/hooks/use-tasks", () => ({
     refetch: vi.fn(),
   }),
 }));
+vi.mock("@/hooks/use-usage", () => ({
+  useUsageTimeSeries: () => ({
+    data: undefined,
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
+}));
 
 vi.mock("../team-health-cards", () => ({
   TeamHealthCards: () => <div>TeamHealthCardsStub</div>,
@@ -87,6 +94,9 @@ vi.mock("../usage-overview-panel", () => ({
 vi.mock("../scorecard-overview-panel", () => ({
   ScorecardOverviewPanel: () => <div>ScorecardOverviewPanelStub</div>,
 }));
+vi.mock("../cost-trend-chart", () => ({
+  CostTrendChart: () => <div>CostTrendChartStub</div>,
+}));
 
 import { CommandCenter } from "../command-center";
 
@@ -106,6 +116,7 @@ describe("CommandCenter", () => {
       "AuditorAlertsPanelStub",
       "UsageOverviewPanelStub",
       "ScorecardOverviewPanelStub",
+      "CostTrendChartStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
       "StrategySignalsPanelStub",

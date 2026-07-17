@@ -23,6 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePageRefresh } from "@/hooks";
+import { getAgentDisplayName } from "@/lib/agent-utils";
 import {
   Bell,
   Check,
@@ -163,7 +164,7 @@ function NotificationCard({
               <div className="text-xs text-muted-foreground">
                 From:{" "}
                 <HelpTip label={notification.from_agent}>
-                  <span>{notification.from_agent.slice(0, 8)}</span>
+                  <span>{getAgentDisplayName(notification.from_agent)}</span>
                 </HelpTip>{" "}
                 • {formatDistanceToNow(new Date(notification.timestamp))} ago
               </div>

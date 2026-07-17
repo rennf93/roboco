@@ -22,6 +22,8 @@ import { A2AConversationList } from "@/components/a2a/a2a-conversation-list";
 import { A2ASwitchboard } from "@/components/a2a/a2a-switchboard";
 import { A2ATranscript } from "@/components/a2a/a2a-transcript";
 import { A2AReplyComposer } from "@/components/a2a/a2a-reply-composer";
+import { A2ADirectComposer } from "@/components/a2a/a2a-direct-composer";
+import { A2ANewDmDialog } from "@/components/a2a/a2a-new-dm-dialog";
 import { A2AFilterBar } from "@/components/a2a/a2a-filter-bar";
 import { A2AContextPane } from "@/components/a2a/a2a-context-pane";
 import {
@@ -45,7 +47,7 @@ import { OfflineState } from "@/components/ui/offline-state";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useUIStore } from "@/store";
 import { getAgentDisplayName } from "@/lib/agent-utils";
-import { lastSenderOf } from "@/components/a2a/a2a-utils";
+import { CEO_SLUG, lastSenderOf } from "@/components/a2a/a2a-utils";
 import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -272,6 +274,7 @@ function A2APageContent() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          <A2ANewDmDialog onCreated={handleSelect} />
           <A2AConnectionBadge state={connectionState} />
           {/* Context pane never appears below xl — its toggle is hidden
               there too, matching the switchboard/list toggle's placement
@@ -470,16 +473,31 @@ function A2APageContent() {
                         onRetry={() => void refetchMessages()}
                       />
                     </div>
-                    {/* Reply composer. The backend's reply route rejects with
-                      400 exactly when the watched conversation has no task
-                      link (replies ride the gateway send path, which requires
-                      one), so a task-less conversation is read-only — say why
-                      instead of letting the send bounce. Status does NOT gate
-                      the composer: the CEO's reply lands in their own direct
-                      thread with the participant, not in this conversation. */}
+                    {/* Composer: a conversation the CEO itself owns (opened
+                      via "New DM") always gets the direct composer — it's
+                      the CEO's own thread, not something being watched, so
+                      no task link is required. Otherwise this is a watched
+                      agent<->agent conversation: the backend's reply route
+                      rejects with 400 exactly when it has no task link
+                      (replies ride the gateway send path, which requires
+                      one), so a task-less one is read-only — say why instead
+                      of letting the send bounce. Status does NOT gate either
+                      composer: a reply lands in the CEO's own direct thread
+                      with the participant, not in the watched conversation. */}
                     {selected && (
                       <div className="shrink-0 border-t -mx-3">
-                        {selected.task_id ? (
+                        {selected.agent_a === CEO_SLUG ||
+                        selected.agent_b === CEO_SLUG ? (
+                          <A2ADirectComposer
+                            key={selected.id}
+                            conversationId={selected.id}
+                            otherAgent={
+                              selected.agent_a === CEO_SLUG
+                                ? selected.agent_b
+                                : selected.agent_a
+                            }
+                          />
+                        ) : selected.task_id ? (
                           <A2AReplyComposer
                             key={selected.id}
                             conversationId={selected.id}

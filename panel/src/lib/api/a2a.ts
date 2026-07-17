@@ -132,6 +132,27 @@ export interface AdminMessageListResponse {
   has_more: boolean;
 }
 
+/** Request to open (or fetch) the CEO's own 1:1 with an agent. */
+export interface CreateCeoConversationRequest {
+  target_agent: string;
+  initial_message: string;
+}
+
+/** The conversation POST /a2a/chat/conversations returns — mirrors the
+ * backend's ConversationResponse, trimmed to what the panel renders. */
+export interface CeoConversation {
+  id: string;
+  agent_a: string;
+  agent_b: string;
+  topic: string | null;
+  task_id: string | null;
+  status: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+}
+
 // =============================================================================
 // API Client
 // =============================================================================
@@ -299,8 +320,23 @@ export const a2aApi = {
             created_at: now,
             updated_at: now,
           },
+          // A CEO-initiated DM (from the "New DM" composer) — demonstrates
+          // the CEO rendering as a first-class participant in the list.
+          {
+            id: "mock-conversation-ceo",
+            agent_a: "ceo",
+            agent_b: "main-pm",
+            topic: null,
+            task_id: null,
+            status: "active",
+            message_count: 1,
+            last_message_at: now,
+            last_message_preview: "Quick heads up on Q3 priorities.",
+            created_at: now,
+            updated_at: now,
+          },
         ],
-        total: 1,
+        total: 2,
       };
     }
     const { data } = await api.get<AdminConversationListResponse>(
@@ -413,6 +449,79 @@ export const a2aApi = {
     const { data } = await api.post<A2AChatMessage>(
       `/a2a/chat/admin/conversations/${conversationId}/reply`,
       request,
+    );
+    return data;
+  },
+
+  // ===========================================================================
+  // CEO-INITIATED DMs — a fresh 1:1 the CEO itself starts (not a reply into
+  // a watched conversation). Both calls override X-Agent-ID to the literal
+  // "ceo" slug: the default header carries the CEO's UUID, and these routes'
+  // CurrentAgentSlug dependency returns it VERBATIM (no DB resolution) — the
+  // UUID would otherwise persist as agent_a/from_agent, breaking every
+  // downstream "ceo"-string check (the reply-budget gate, the reply
+  // composer's recipient exclusion, admin pairing).
+  // ===========================================================================
+
+  /**
+   * CEO opens (or reopens) a 1:1 with an agent and sends the first message —
+   * POST /a2a/chat/conversations, backed by ConversationCreateRequest.
+   */
+  createConversation: async (
+    request: CreateCeoConversationRequest,
+  ): Promise<CeoConversation> => {
+    if (isMockMode()) {
+      const now = new Date().toISOString();
+      return {
+        id: `mock-ceo-conv-${Date.now()}`,
+        agent_a: "ceo",
+        agent_b: request.target_agent,
+        topic: null,
+        task_id: null,
+        status: "active",
+        message_count: 1,
+        created_at: now,
+        updated_at: now,
+        last_message_at: now,
+      };
+    }
+    const { data } = await api.post<CeoConversation>(
+      "/a2a/chat/conversations",
+      request,
+      { headers: { "X-Agent-ID": "ceo" } },
+    );
+    return data;
+  },
+
+  /**
+   * CEO sends a follow-up message in a conversation it owns (agent_a or
+   * agent_b === "ceo") via the plain per-conversation send route — NOT the
+   * admin interject-as-ceo route (`replyAsCeo`), which requires a task link
+   * this kind of conversation rarely has and is for chiming into OTHER
+   * agents' threads, not the CEO's own.
+   */
+  sendCeoMessage: async (
+    conversationId: string,
+    content: string,
+  ): Promise<A2AChatMessage> => {
+    if (isMockMode()) {
+      return {
+        id: `mock-ceo-msg-${Date.now()}`,
+        conversation_id: conversationId,
+        from_agent: "ceo",
+        content,
+        message_kind: "text",
+        response_to_id: null,
+        requires_response: false,
+        read_at: null,
+        created_at: new Date().toISOString(),
+        edited_at: null,
+      };
+    }
+    const { data } = await api.post<A2AChatMessage>(
+      `/a2a/chat/conversations/${conversationId}/messages`,
+      { content },
+      { headers: { "X-Agent-ID": "ceo" } },
     );
     return data;
   },

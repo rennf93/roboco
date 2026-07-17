@@ -39,6 +39,7 @@ WorkspaceService manages the per-agent git clone layout under {workspaces_root}/
 | WorkspaceService._fetch_branch_ref | method | roboco/services/workspace.py:613 | Token-aware git fetch origin <branch> into clone_root; best-effort (never raises); used by ensure_worktree_self_heal (536bbb64) |
 | WorkspaceService.ensure_worktree_self_heal | method | roboco/services/workspace.py:671 | Orchestrator spawn-time chokepoint: re-attaches a per-task worktree after clone vanished (redeploy/disk loss); fetches branch ref from origin when the local ref is absent after a re-clone, then delegates to ensure_worktree (536bbb64) |
 | WorkspaceService.remove_worktree | method | roboco/services/workspace.py:733 | Best-effort git worktree remove --force + prune; no-op if gone (cancel/terminal/reaper evict) |
+| WorkspaceService.delete_local_branch | method | roboco/services/workspace.py:787 | Best-effort `git branch -d/-D <branch>` in a clone; never raises; skips main/master/develop/empty (mirrors GitService._delete_remote_branch_best_effort); callers run it AFTER remove_worktree (a still-checked-out branch refuses) |
 | WorkspaceService.resolve_workspace | method | roboco/services/workspace.py:745 | Look up agent (UUID or slug) -> team+slug -> workspace path; default team BACKEND |
 | WorkspaceService._lookup_agent_or_raise | method | roboco/services/workspace.py:787 | Find agent by UUID or slug; raise WorkspaceError if missing |
 | WorkspaceService._is_workspace_healthy | staticmethod | roboco/services/workspace.py:806 | True only if .git exists AND has HEAD + objects/ (rejects stub clones) |
@@ -135,7 +136,7 @@ WorkspaceService slice
 +-- WorkspaceError
 +-- WorkspaceService
 |   +-- Path math: get_workspace_path / get_clone_root_path / get_worktree_path
-|   +-- Worktree ops: _clone_root_default_branch / _park_clone_root_off_branch / _worktree_git / _link_shared_venv / ensure_worktree / ensure_worktree_for_resume / _fetch_branch_ref / ensure_worktree_self_heal / remove_worktree
+|   +-- Worktree ops: _clone_root_default_branch / _park_clone_root_off_branch / _worktree_git / _link_shared_venv / ensure_worktree / ensure_worktree_for_resume / _fetch_branch_ref / ensure_worktree_self_heal / remove_worktree / delete_local_branch
 |   +-- Agent lookup: resolve_workspace / _lookup_agent_or_raise
 |   +-- Health + refs: _is_workspace_healthy / _prune_broken_refs / _fetch_origin_best_effort
 |   +-- Token: _resolve_git_token / _read_clone_token
@@ -160,6 +161,7 @@ WorkspaceService slice
 | ensure_worktree_for_resume | roboco/services/workspace.py | GitService._ensure_worktree_for_commit (commit/rebase paths) |
 | ensure_worktree_self_heal | roboco/services/workspace.py | orchestrator._ensure_worktree_before_spawn before -w container launch (replaces the former ensure_worktree_for_resume call there; handles vanished clones + missing branch refs) |
 | remove_worktree | roboco/services/workspace.py | TaskService terminal/cancel paths + claim-rollback (mid-claim failure) |
+| delete_local_branch | roboco/services/workspace.py | TaskService terminal/cancel paths (right after remove_worktree) + GitService.cleanup_stale_branches sweep |
 | ensure_read_clone | roboco/services/workspace.py | ConventionsService.scaffold/effective-map reads (project-level conventions metadata) |
 | dry_upgrade_changes_lockfile | roboco/services/workspace.py | DepUpdateEngine periodic probe loop |
 | fetch_branch_for_inspection | roboco/services/workspace.py | gateway content_actions (QA/Documenter/PM need to read a dev branch) |
@@ -193,6 +195,7 @@ WorkspaceService slice
 - dry_upgrade_changes_lockfile holds the read-clone lock only for the local clone step, then releases it before the upgrade runs. The tiny gap between ensure_read_clone releasing and the probe re-acquiring is safe only because any concurrent _sync_read_clone completes under the lock first — a future change that interleaves could race.
 - get_workspace_path raises WorkspaceError if team is None rather than producing a literal 'None' segment; resolve_workspace falls back to Team.BACKEND when agent.team is falsy — agents missing a team silently land under backend/.
 - fetch_branch_for_inspection reuses workspace_clone_timeout (300s) for a single-branch fetch, not the shorter refresh timeout — a hung remote blocks the QA/Doc verb for 5 minutes.
+- delete_local_branch only detaches the ref; remove_worktree only detaches the worktree. Callers MUST run remove_worktree first — `git branch -d/-D` refuses a branch still checked out elsewhere in the clone (the worktree). Skipping the order silently no-ops the branch delete (check=False swallows the refusal).
 
 
 ## Drift from CLAUDE.md
@@ -217,6 +220,8 @@ WorkspaceService slice
 > Post-snapshot updates (since 2026-06-29): 5 commits touched workspace.py. (1) 9faf2763 [hotfix] strip VIRTUAL_ENV + UV_PROJECT_ENVIRONMENT from _uv_subprocess_env so workspace uv calls stop warning about the image-baked /app/.venv pin. (2) cfe725da [hotfix] worktree: clone root left on the task branch caused fatal "already checked out" on every worktree add re-dispatch — added _clone_root_default_branch + _park_clone_root_off_branch; ensure_worktree and ensure_worktree_for_resume now call _park_clone_root_off_branch before the add to restore the F123 invariant. (3) 536bbb64 (logical-gap sweep PR#286) added _fetch_branch_ref + ensure_worktree_self_heal: the orchestrator's _ensure_worktree_before_spawn now calls ensure_worktree_self_heal instead of bare ensure_worktree_for_resume so a vanished clone (redeploy/disk loss) that left no local branch ref recovers the pushed commits from origin before re-attaching. (4) 3aff6e04 and 15effce0 (gap-fill PRs #285/#283) contributed earlier worktree + dep-probe plumbing (the _clone_local_into / _probe_lockfile_on_clone split already captured in the baseline).
 >
 > Further post-snapshot update (#534, env-branches ladder): `ensure_workspace`'s fresh-clone branch and `ensure_read_clone` both resolve their target branch via `roboco.models.env_branches.head_branch(project)` — the env-ladder's head rung — instead of reading `project.default_branch` directly. A project with no declared ladder resolves to the identical `default_branch` value via the read-time shim, so this is behavior-preserving until the CEO declares a real ladder in the panel.
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Added `delete_local_branch` (line 787) so `TaskService`'s cancel/terminal-completion cleanup and `GitService.cleanup_stale_branches` can reap a spent local branch ref, not just the worktree — previously every task an agent ever claimed leaked a permanent `refs/heads/{branch}` in that agent's clone.
 
 ## Regression Risks
 
