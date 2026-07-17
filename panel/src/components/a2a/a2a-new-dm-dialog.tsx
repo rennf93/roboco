@@ -22,7 +22,16 @@ import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import { useCreateCeoConversation } from "@/hooks/use-a2a-live";
 
-const EXCLUDE_CEO = [AgentRole.CEO];
+// Self, plus every role that can't actually read/answer a DM: auditor and
+// pr_reviewer carry no read_a2a on their manifests, prompter and secretary
+// are human-only note/evidence roles — a DM to any of them is a black hole.
+const EXCLUDE_NON_DM_ROLES = [
+  AgentRole.CEO,
+  AgentRole.AUDITOR,
+  AgentRole.PR_REVIEWER,
+  AgentRole.PROMPTER,
+  AgentRole.SECRETARY,
+];
 
 interface A2ANewDmDialogProps {
   /** Called with the new (or reopened) conversation's id once the CEO's
@@ -107,7 +116,7 @@ export function A2ANewDmDialog({ onCreated }: A2ANewDmDialogProps) {
             <AgentSelector
               value={targetAgent}
               onChange={setTargetAgent}
-              excludeRoles={EXCLUDE_CEO}
+              excludeRoles={EXCLUDE_NON_DM_ROLES}
               placeholder="Select an agent..."
               allowClear={false}
             />
