@@ -25,7 +25,9 @@ import { useCreateCeoConversation } from "@/hooks/use-a2a-live";
 // Self, plus every role that can't actually read/answer a DM: auditor and
 // pr_reviewer carry no read_a2a on their manifests, prompter and secretary
 // are human-only note/evidence roles — a DM to any of them is a black hole.
-const EXCLUDE_NON_DM_ROLES = [
+// Exported so other "start a fresh 1:1" surfaces (the /tg Mini App chat tab)
+// share the exact same exclusion list instead of drifting out of sync.
+export const EXCLUDE_NON_DM_ROLES = [
   AgentRole.CEO,
   AgentRole.AUDITOR,
   AgentRole.PR_REVIEWER,

@@ -38,12 +38,19 @@ export function useA2AAdminPairs() {
 
 // Transcript for one conversation. WS frames for the selected conversation
 // invalidate this key; full bodies always come from REST (excerpts are capped).
-export function useA2AMessages(conversationId: string | null) {
+// `refetchInterval` defaults to off (the desktop A2A page relies on WS
+// invalidation instead) — the /tg Mini App chat tab has no WS wiring, so it
+// passes a ~10s interval to poll the thread it's actively viewing.
+export function useA2AMessages(
+  conversationId: string | null,
+  options?: { refetchInterval?: number | false },
+) {
   return useQuery({
     queryKey: a2aLiveKeys.messages(conversationId || ""),
     queryFn: () => a2aApi.listAdminMessages(conversationId!),
     enabled: !!conversationId,
     staleTime: 30_000,
+    refetchInterval: options?.refetchInterval ?? false,
   });
 }
 
