@@ -5,12 +5,14 @@ monkeypatched module-level — no DB, no network."""
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.models.base import TaskStatus
 from roboco.services import telegram_inbound as ti
 from roboco.services.roadmap_service import RoadmapItemResult
 from roboco.services.telegram_credentials import TelegramCredentialsData
@@ -110,6 +112,151 @@ async def test_unauthorized_chat_callback_answers_not_authorized() -> None:
 
     client.answer_callback_query.assert_awaited_once_with("cq1", "Not authorized")
     client.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# sender identity — defense-in-depth on top of chat-id authorization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_message_with_mismatched_sender_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The right chat, but a `from.id` that disagrees with it (would only
+    happen if the "private" chat somehow carried a second poster) — dropped
+    silently, same as an unauthorized chat."""
+    engine = _engine()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(engine, "_dispatch_command", dispatch)
+    client = AsyncMock()
+
+    await engine._handle_message(
+        {"chat": {"id": 777}, "from": {"id": 999}, "text": "/status"}, CREDS, client
+    )
+
+    dispatch.assert_not_called()
+    client.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_message_with_matching_sender_dispatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(engine, "_dispatch_command", dispatch)
+    client = AsyncMock()
+
+    await engine._handle_message(
+        {"chat": {"id": 777}, "from": {"id": 777}, "text": "/status"}, CREDS, client
+    )
+
+    dispatch.assert_awaited_once_with("status", "", client)
+
+
+@pytest.mark.asyncio
+async def test_message_without_from_keeps_prior_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No `from` on the update at all — the pre-Fix-2 behavior (chat-id-only)
+    is unchanged."""
+    engine = _engine()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(engine, "_dispatch_command", dispatch)
+    client = AsyncMock()
+
+    await engine._handle_message(
+        {"chat": {"id": 777}, "text": "/status"}, CREDS, client
+    )
+
+    dispatch.assert_awaited_once_with("status", "", client)
+
+
+@pytest.mark.asyncio
+async def test_callback_with_mismatched_sender_answers_not_authorized() -> None:
+    engine = _engine()
+    client = AsyncMock()
+
+    await engine._handle_callback(
+        {
+            "id": "cq1",
+            "data": "apv:xpost:a1b2c3d4",
+            "from": {"id": 999},
+            "message": {"chat": {"id": 777}, "message_id": 5},
+        },
+        CREDS,
+        client,
+    )
+
+    client.answer_callback_query.assert_awaited_once_with("cq1", "Not authorized")
+    client.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_callback_with_matching_sender_proceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    client = AsyncMock()
+    dispatch = AsyncMock(return_value=(True, "ok"))
+    monkeypatch.setattr(engine, "_dispatch_approve", dispatch)
+
+    await engine._handle_callback(
+        {
+            "id": "cq1",
+            "data": "apv:xpost:a1b2c3d4",
+            "from": {"id": 777},
+            "message": {"chat": {"id": 777}, "message_id": 5},
+        },
+        CREDS,
+        client,
+    )
+
+    dispatch.assert_awaited_once()
+    client.answer_callback_query.assert_any_await("cq1", "Working...")
+
+
+# ---------------------------------------------------------------------------
+# expired force-reply prompt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expired_reply_prompt_sends_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A popped-but-expired pending prompt must tell the CEO instead of
+    silently doing nothing (the CEO otherwise has no idea why their reply had
+    no effect)."""
+    engine = _engine()
+    client = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(engine, "_dispatch_command", dispatch)
+    ti._PENDING_REPLIES[("777", 42)] = ti._PendingAction(
+        kind="xpost",
+        id8="a1b2c3d4",
+        extra="",
+        action="reject",
+        origin_message_id=10,
+        expires_at=time.monotonic() - 1,  # already expired
+    )
+
+    await engine._handle_message(
+        {
+            "chat": {"id": 777},
+            "text": "some reason",
+            "reply_to_message": {"message_id": 42},
+        },
+        CREDS,
+        client,
+    )
+
+    client.send_message.assert_awaited_once_with(
+        "That prompt expired — tap the button again."
+    )
+    dispatch.assert_not_called()
+    assert ("777", 42) not in ti._PENDING_REPLIES
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +375,9 @@ async def test_resolve_task_exact_prefix_match(monkeypatch: pytest.MonkeyPatch) 
 
     resolved = await engine._resolve_task("a1b2c3d4")
 
+    # Widened from 10 -> 50: a real id-prefix hit can otherwise be pushed out
+    # of a small window by title/description ILIKE hits on newer rows.
+    task_svc.search_tasks.assert_awaited_once_with("a1b2c3d4", limit=50)
     assert resolved is task
 
 
@@ -342,6 +492,57 @@ async def test_dispatch_approve_release_dispatches_background(
     dispatch_mock.assert_called_once_with(task.id, factory)
     assert ok is True
     assert "background" in text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_approve_release_refuses_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dispatch_approve fires the release execute in the background with no
+    result to inspect, so a stale Approve on an already-rejected (CANCELLED)
+    proposal must be caught HERE, before dispatch — else the CEO sees a false
+    "dispatched" success while the service-level guard silently no-ops."""
+    engine = _engine()
+    task = _fake_task()
+    task.status = TaskStatus.CANCELLED
+    _stub_resolve(monkeypatch, engine, task)
+    dispatch_mock = MagicMock()
+    monkeypatch.setattr(ti, "dispatch_approve", dispatch_mock)
+
+    ok, text = await engine._dispatch_approve("release", "a1b2c3d4", "", notes=None)
+
+    dispatch_mock.assert_not_called()
+    assert ok is False
+    assert "already rejected" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reject_release_surfaces_already_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reject-after-approve mirror guard: the service raises when the
+    proposal already published; the handler must map that to (False, ...)
+    instead of an uncaught exception (which `run_cycle`'s broad except would
+    swallow, leaving the CEO with no response at all)."""
+    engine = _engine()
+    task = _fake_task()
+    _stub_resolve(monkeypatch, engine, task)
+    release_svc = AsyncMock()
+    release_svc.reject = AsyncMock(
+        side_effect=ti._ReleaseDone(
+            "release proposal already published (COMPLETED); cannot be rejected"
+        )
+    )
+    monkeypatch.setattr(
+        ti, "get_release_proposal_service", lambda _session: release_svc
+    )
+
+    ok, text = await engine._dispatch_reject(
+        "release", "a1b2c3d4", "", "needs another migration check"
+    )
+
+    assert ok is False
+    assert "already published" in text
 
 
 @pytest.mark.asyncio

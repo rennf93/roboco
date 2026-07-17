@@ -38,9 +38,10 @@ from roboco.db.base import get_session_factory
 from roboco.db.tables import AgentTable, AuditLogTable
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.models.base import AgentStatus
+from roboco.models.base import AgentStatus, TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import BaseService, ValidationError
+from roboco.services.release_proposal import TaskAlreadyCompletedError as _ReleaseDone
 from roboco.services.release_proposal import (
     dispatch_approve,
     get_release_proposal_service,
@@ -196,6 +197,22 @@ def _authorized_chat(chat_id: str, creds_chat_id: str) -> bool:
     return bool(chat_id) and str(chat_id) == str(creds_chat_id)
 
 
+def _authorized_sender(sender: dict[str, Any] | None, chat_id: str) -> bool:
+    """Defense-in-depth on top of ``_authorized_chat``: when the update
+    carries a ``from`` user, its id must ALSO equal the (already
+    chat-id-verified) credentialed chat id — the supported deployment is a
+    private 1:1 chat where ``from.id == chat.id == the CEO``. A present but
+    mismatched ``from.id`` (e.g. another member somehow posting into what's
+    assumed to be a private chat) is refused. Absent ``from`` keeps the prior
+    chat-id-only behavior."""
+    if not sender:
+        return True
+    sender_id = sender.get("id")
+    if sender_id is None:
+        return True
+    return str(sender_id) == str(chat_id)
+
+
 @dataclass
 class _PendingAction:
     """A force_reply prompt awaiting the CEO's free-text reply."""
@@ -299,13 +316,21 @@ class TelegramInboundEngine(BaseService):
                 "telegram message from unauthorized chat dropped", chat_id=chat_id
             )
             return
+        if not _authorized_sender(message.get("from"), chat_id):
+            self.log.debug(
+                "telegram message from mismatched sender dropped", chat_id=chat_id
+            )
+            return
         text = str(message.get("text") or "")
         reply_to = message.get("reply_to_message") or {}
         reply_to_id = reply_to.get("message_id")
         if reply_to_id is not None:
             pending = _PENDING_REPLIES.pop((chat_id, int(reply_to_id)), None)
-            if pending is not None and pending.expires_at > time.monotonic():
-                await self._consume_reply(pending, text, client)
+            if pending is not None:
+                if pending.expires_at > time.monotonic():
+                    await self._consume_reply(pending, text, client)
+                    return
+                await client.send_message("That prompt expired — tap the button again.")
                 return
         cmd, args = parse_command(text)
         if not cmd:
@@ -425,8 +450,14 @@ class TelegramInboundEngine(BaseService):
         """Exact id-prefix resolution — ``search_tasks`` also OR-matches
         title/description substrings, so filter back down to only rows whose
         id genuinely starts with ``id8``. None on zero or ambiguous (>1)
-        matches; downstream callers surface that as "no such item"."""
-        candidates = await get_task_service(self.session).search_tasks(id8, limit=10)
+        matches; downstream callers surface that as "no such item".
+
+        A generous (but still bounded) limit: a real id-prefix hit could
+        otherwise be pushed out of a small window by title/description ILIKE
+        hits on newer rows, making a genuine single match look ambiguous or
+        vanish entirely.
+        """
+        candidates = await get_task_service(self.session).search_tasks(id8, limit=50)
         exact = [t for t in candidates if str(t.id).startswith(id8)]
         return exact[0] if len(exact) == 1 else None
 
@@ -487,6 +518,9 @@ class TelegramInboundEngine(BaseService):
         chat_id = str(chat.get("id", ""))
         cq_id = str(cq.get("id", ""))
         if not _authorized_chat(chat_id, creds.chat_id):
+            await client.answer_callback_query(cq_id, "Not authorized")
+            return
+        if not _authorized_sender(cq.get("from"), chat_id):
             await client.answer_callback_query(cq_id, "Not authorized")
             return
         parsed = parse_callback(str(cq.get("data") or ""))
@@ -655,6 +689,16 @@ class TelegramInboundEngine(BaseService):
     async def _approve_release(
         self, task: TaskTable, id8: str, _extra: str, _notes: str | None
     ) -> tuple[bool, str]:
+        # dispatch_approve fires the ~40min execute in the background and
+        # returns immediately with no result to inspect — so a refusal (e.g.
+        # a stale Approve button on a proposal the CEO already rejected) has
+        # to be checked HERE, before dispatch, or the CEO would see a false
+        # "dispatched" success while the background task silently no-ops on
+        # the service's own CANCELLED guard.
+        if task.status == TaskStatus.CANCELLED:
+            return False, "This release proposal was already rejected."
+        if task.status == TaskStatus.COMPLETED:
+            return False, "This release was already approved and published."
         task_id = cast("UUID", task.id)
         dispatch_approve(task_id, get_session_factory())
         self._mark_audit("release", task_id, "approve")
@@ -752,9 +796,12 @@ class TelegramInboundEngine(BaseService):
         self, task: TaskTable, id8: str, _extra: str, reason: str
     ) -> tuple[bool, str]:
         task_id = cast("UUID", task.id)
-        result = await get_release_proposal_service(self.session).reject(
-            task_id, reason
-        )
+        try:
+            result = await get_release_proposal_service(self.session).reject(
+                task_id, reason
+            )
+        except _ReleaseDone as exc:
+            return False, str(exc)
         if result is None:
             return False, f"No such open release proposal: {id8}"
         self._mark_audit("release", task_id, "reject")
