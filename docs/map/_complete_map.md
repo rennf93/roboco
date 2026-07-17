@@ -1,6 +1,6 @@
 # RoboCo — The Complete Map (2026-06-29)
 
-> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 32 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
+> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 35 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
 >
 > Verified range figures: `git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD` returns **2 commits** on `master` (`15effce0` "Chore: 141 Gaps fill-in (#283)" and `3aff6e04` "Chore: Close gaps (#285)"), but the bundled diff is enormous — **577 files changed, +36,653/-4,214 lines** (verified via `git diff --stat`). The two PRs squash months of per-fix work (F0xx audit gaps, F123 worktrees, sequencing, pr_fail loop-closers, model rename, etc.) into two merge commits, so the effective change surface is far larger than the commit count implies. Earlier per-fix commits (e202ce39, 250be5c2, a957e4fa, 82541077, cf7603f3, e52fd05d, 919aa7e2, 12621a36, 9927d248, c03e76c4, 2f322286, c34e978f, 3a4a3fe5, 53d60da3) are ancestors of `15effce0` and are the substance of the gap-fill.
 
@@ -19,36 +19,39 @@
 
 1. foundation-lifecycle
 2. foundation-batch-sequencing
-3. foundation-policy-misc
-4. foundation-conventions-identity
+3. foundation-conventions-identity
+4. foundation-policy-misc
 5. models
 6. db-migrations
-7. task-service
-8. worksession-git
-9. workspace
-10. choreographer
-11. pr-gate-review
-12. gateway-support
-13. orchestrator
-14. runtime-providers
-15. engines-heal-ciwatch-depupdate
-16. release-manager
-17. video-engine
-18. org-memory-playbooks
+7. api-core-websocket
+8. api-routes-schemas
+9. gateway-support
+10. mcp-servers
+11. choreographer
+12. task-service
+13. worksession-git
+14. workspace
+15. support-services
+16. orchestrator
+17. runtime-providers
+18. prompts-roles-taxonomy
 19. notification
 20. a2a-audit-journal-permissions
-21. conventions-service-validator
-22. intake-secretary
-23. product-strategy-research-pitch
-24. metrics-observability
-25. support-services
-26. mcp-servers
-27. api-core-websocket
-28. api-routes-schemas
-29. panel
-30. deployment-tooling
-31. tests
-32. prompts-roles-taxonomy
+21. pr-gate-review
+22. review-findings
+23. metrics-observability
+24. conventions-service-validator
+25. intake-secretary
+26. product-strategy-research-pitch
+27. engines-heal-ciwatch-depupdate
+28. release-manager
+29. engine-docs-sync
+30. video-engine
+31. org-memory-playbooks
+32. vault
+33. panel
+34. deployment-tooling
+35. tests
 
 ---
 
@@ -1510,8 +1513,8 @@ foundation/policy (misc slice)
 | markers accessors | roboco/foundation/policy/content/markers.py | Called by task.py, orchestrator, self_heal_engine, release_proposal, release_manager_engine whenever reading/writing orchestration_markers |
 
 ## Config Flags
-- ROBOCO_AGENT_TOOL_CALL_WARN (consumed by agent_sdk, defaults from BudgetPolicy.tool_call_warn_at=50)
-- ROBOCO_AGENT_TOOL_CALL_HALT (defaults tool_call_halt_at=150)
+- ROBOCO_AGENT_TOOL_CALL_WARN (consumed by agent_sdk, defaults from BudgetPolicy.tool_call_warn_at=100)
+- ROBOCO_AGENT_TOOL_CALL_HALT (defaults tool_call_halt_at=300; raised from 150 — the prior cap repeatedly halted legitimate multi-file work mid-task)
 - ROBOCO_AGENT_LOOP_THRESHOLD (defaults loop_threshold=3)
 - ROBOCO_AGENT_LOOP_WINDOW (defaults loop_window=10)
 - ROBOCO_AGENT_LOOP_ACTION (defaults loop_action='halt')
@@ -1950,6 +1953,9 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 059 | 059_x_credentials.py | `x_credentials` (singleton Fernet-encrypted OAuth 1.0a secrets) + `x_seen_mentions` (mentions-poll dedup ledger) — the X (Twitter) engine (`ROBOCO_X_ENGINE_ENABLED`, default off). |
 | 060 | 060_drop_messaging.py | Drops the channels/groups/sessions/session_tasks/messages subsystem (comms teardown — A2A is now the sole directed-message channel): `journal_entries.session_id` column, the 5 tables, and 4 enum types (`messagetype`/`sessionstatus`/`sessionscope`/`channeltype`); one-way (`downgrade()` raises `NotImplementedError`). |
 | 061 | 061_x_feature_spotlight.py | `x_seen_features` (feature-spotlight dedup ledger, keyed by feature slug) + `company_goals.brand_voice` (Text, CEO-authored brand-voice sample, feeds `_voice_guide`) — X feature-spotlight (`ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, default off, sub-switch of `x_engine_enabled`). |
+| 062-072 | *(not yet reflected in this table — pre-existing gap, out of scope for this pass)* | Vault V1/V2, revision-findings ledger, sandbox extensions, and other slices landed migrations in this range; see `alembic/versions/` directly until this table is backfilled. |
+| 073 | 073_project_environments.py | `projects.environments` (nullable JSONB) — the per-project ordered environment ladder (`list[{name, branch}]`, index 0 = head rung, index -1 = prod rung) that replaces `default_branch` as the source of truth for a project's PR target and release target. Additive: a null value falls back to a degenerate single-branch ladder synthesized from `default_branch` at read time (`roboco/models/env_branches.py`), so existing projects are unaffected until the CEO declares a real ladder. |
+| 074 | 074_telegram_credentials.py | `telegram_credentials` (singleton Fernet-encrypted `bot_token_encrypted` + `chat_id_encrypted`, mirrors `x_credentials`) — the Telegram notifications bridge (`ROBOCO_TELEGRAM_ENABLED`, default off). |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.
@@ -2107,7 +2113,7 @@ Migration chain 001..059
 
 > Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286) — adds migration 053 (`playbooks.archived_by`/`archived_at`), two new columns on `PlaybookTable`; `d8a5bb48` ([chore] a2a hierarchy gate + skill persist) — adds migration 054 (`a2a_messages.skill`), one new column on `A2AMessageTable`, wired through `send_chat_message` and the A2AChatMessage model.
 >
-> Delta 2026-07-03 (v0.17.0, 5 features): `055_spawn_session_turns_tool_calls` (`agent_spawn_sessions.turns`/`.tool_calls`) + `056_member_perf_daily` (`member_performance_daily`) predate this wave but were never appended to this doc; `057_project_sandbox_services` adds `projects.sandbox_services` (sandboxed dev DB/Redis/Mongo, `ROBOCO_SANDBOX_DB_ENABLED`); `058_cloud_auth_users` adds `users` (`UserTable`, cloud auth, `ROBOCO_CLOUD_AUTH_ENABLED`); `059_x_credentials` adds `x_credentials` (`XCredentialsTable`) + `x_seen_mentions` (`XSeenMentionTable`) (X engine, `ROBOCO_X_ENGINE_ENABLED`). Chain head is now 059.
+> Delta 2026-07-03 (v0.17.0, 5 features): `055_spawn_session_turns_tool_calls` (`agent_spawn_sessions.turns`/`.tool_calls`) + `056_member_perf_daily` (`member_performance_daily`) predate this wave but were never appended to this doc; `057_project_sandbox_services` adds `projects.sandbox_services` (sandboxed dev DB/Redis/Mongo, `ROBOCO_SANDBOX_DB_ENABLED`); `058_cloud_auth_users` adds `users` (`UserTable`, cloud auth, `ROBOCO_CLOUD_AUTH_ENABLED`); `059_x_credentials` adds `x_credentials` (`XCredentialsTable`) + `x_seen_mentions` (`XSeenMentionTable`) (X engine, `ROBOCO_X_ENGINE_ENABLED`). Chain head is now 059. Mongo rides existing 057 (no new migration) — it's just another entry in the `SANDBOX_ENGINES` registry.
 >
 > Delta 2026-07-04 (v0.18.0): `060_drop_messaging` (the comms-teardown migration — drops `messages`/`session_tasks`/`sessions`/`groups`/`channels` + 4 enum types + `journal_entries.session_id`; A2A is now the sole directed-message channel; one-way, `downgrade()` raises `NotImplementedError`) had already landed on master but was never appended to this doc; `061_x_feature_spotlight` adds `x_seen_features` (`XSeenFeatureTable`) + `company_goals.brand_voice` (X feature-spotlight, `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, sub-switch of `x_engine_enabled`). Chain head is now 061. ORM table count is now 38 (verified via `grep -c '^class .*Table' roboco/db/tables.py`), up from this doc's previously-stated 37 (that figure predates 055-061 and was never recomputed).
 
@@ -2796,7 +2802,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | branch_depth | function | roboco/services/gateway/merge_chain.py:27 | Number of --separated hierarchy segments; master=0; raises on invalid branch. |
 | parent_branch_for | function | roboco/services/gateway/merge_chain.py:37 | Merge target by string surgery (same-team only); root->master. |
 | resolve_parent_branch | coroutine | roboco/services/gateway/merge_chain.py:62 | Cross-team-safe base/target: parent task's real branch_name; branchless parent falls back to project default branch. |
-| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:95 | Resolve task's project default branch via TaskService resolver or task.project.default_branch. |
+| _project_default_branch | coroutine | roboco/services/gateway/merge_chain.py:97 | Resolve task's project head rung via a TaskService resolver when present, else `roboco.models.env_branches.head_branch(task.project)` (the env-ladder head rung, shimmed from `default_branch` when no ladder is declared); None when unresolvable so the caller falls back to string derivation. |
 | GateResult | dataclass | roboco/services/gateway/quality_gate.py:27 | passed/skipped/failures/output + summary + output_excerpt properties. |
 | run_quality_commands | coroutine | roboco/services/gateway/quality_gate.py:50 | Run each (name,command) in workspace, aggregate; runs all (no short-circuit). |
 | _run_one | coroutine | roboco/services/gateway/quality_gate.py:75 | Run one command via shell; timeout kills+reaps zombie, returns 124; None returncode fails closed (1). |
@@ -3406,7 +3412,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `ChoreographerDeps` | dataclass | `_impl.py:207` | Dependency injection container (task, work_session, git, a2a, journal, audit, evidence_repo, messaging, product, orchestrator, stream_bus). |
 | `_COORDINATOR_ROLES` | ClassVar | `_impl.py:914` | `{main_pm, cell_pm}` — exempt from `already_active`/`paused` claim guards + advisory lock. |
 | `give_me_work` | async verb | `_impl.py:766` | Picks next task for agent + builds briefing (institutional memory injected here). |
-| `_briefing_for` | async helper | `_impl.py:820` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). AC coverage stays independent of `full`. |
+| `_briefing_for` | async helper | `_impl.py:813` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). `include_company_goals=True` is a narrower, cheap-only opt-in (`_resolve_company_goals`) that fetches just the company_goals singleton without the rest of `full`'s heavy sections — used by `board_triage`'s idle branch so the CEO's charter (brand_voice/north_star) still reaches the Product Owner's roadmap-exploration / Head of Marketing's feature-spotlight-exploration one-shot spawns, whose directly-assigned exploration task is never itself a strategic root awaiting PM review (so the `full=True` branch never fires for it). AC coverage stays independent of `full`. |
 | `_run_claim_guards` | async helper | `_impl.py:916` | already_active / paused / unmet_dependency (with re-check race narrowing) + `_lane_claim_guard`; `skip_dev_guards=False` param skips dev-only guards for pr_reviewer gate claims (claim_gate_review). |
 | `_lane_claim_guard` | async helper | `_impl.py:977` | Out-of-order-start barrier: refuse code leaf behind an earlier open same-assignee sibling. Fail-closed on lookup error. |
 | `_claim_plan_start_gate` | async helper | `_impl.py:1179` | spec gate → advisory claim lock (non-PM) → behavioral guards. |
@@ -3579,8 +3585,13 @@ The slice is structurally sound: the SAVEPOINT boundary, intermediate-None INVAL
 |------|------|-----------|----------------|
 | `_validate_and_set_status` | method | task.py:548 | Single chokepoint: validate transition + git requirements, set status, poke dispatcher, emit audit. |
 | `_emit_status_transition_audit` | method | task.py:652 | Write `task.<status>` audit row in caller session; bump `revision_count` on entry into `needs_revision`. |
-| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment. |
+| `_alert_auditor_of_rework` | method | task.py:1019 | Best-effort helper that asks `NotificationDeliveryService` to send a HIGH `ALERT` to the auditor when a task enters `needs_revision`. Called from `fail_qa`, `pr_fail`, and `request_changes` immediately after `await self.session.flush()` so the transition row is visible before the alert is dispatched. |
+| `create` | method | task.py:864 | New task; depth/batch/AC validation; branchless/umbrella flags; baseline constraints attachment; (V2) vault materialize-on-create. |
 | `_attach_baseline_constraints` | method | task.py:971 | Append conventions baseline constraints to task prompt (gated `conventions_enabled`). |
+| `_materialize_vault_note` | method | task.py:910 | V2: best-effort vault seam called from `create` — assembles + writes a deterministic task note (narrative placeholder) so a task is visible in the vault from the moment it exists, not just at Auditor curation/rebuild. Gated `obsidian_vault_enabled`; swallows + logs any failure. |
+| `list_updated_since` | method | task.py:7101 | V2: tasks touched (`COALESCE(updated_at, created_at)`) since a timestamp, ascending, paged — the vault janitor's changed-task re-projection set. |
+| `list_archive_candidates` | method | task.py:7124 | V2: terminal tasks whose terminal timestamp falls in `[after, before)`, ascending, paged — the vault janitor's archival-pass candidate window (watermark-bounded so a sweep never rescans the whole archive). |
+| `sample_stale_tasks` | method | task.py:7154 | V2: random sample of tasks last touched before a cutoff — the vault janitor's drift-verification sample. |
 | `activate` | method | task.py:1577 | `backlog→pending` (PM only); batch-shape guard. |
 | `_ensure_branch_for_task` | method | task.py:1675 | Branch resolution for claim; `""` for branchless/umbrella. |
 | `_auto_create_branch` | method | task.py:1833 | Cut hierarchical branch + per-task worktree add (F123). |
@@ -3588,32 +3599,40 @@ The slice is structurally sound: the SAVEPOINT boundary, intermediate-None INVAL
 | `admin_set_status` | method | task.py:2060 | Privileged override (bypass validator); restores pre-block owner; still emits audit. Post-#2176: the blocked→pending/in_progress restore path now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (`forced=False, restore=True`) independent of the `force` flag. |
 | `_restore_block_ownership` | method | task.py:8526 | Factored out of `_apply_pre_block_restore` (b3558d4e complexity split): applies snapshotted status/owner restore (branchless in_progress→pending divert), returns `(pre_status, restored_status, restored_owner)`. |
 | `_emit_admin_override_audit` | method | task.py:8555 | Factored out of `_apply_pre_block_restore`: writes `task.admin_override` audit row for admin-triggered blocked restores (`forced=False, restore=True`). |
-| `claim` | method | task.py:2469 | Lock + preconditions + finalize; calls `_validate_and_set_status(claimed)`. |
-| `_finalize_claim` | method | task.py:2282 | Work-session create/inherit, branch cut, proactive-context injection. |
-| `_inject_proactive_context` | method | task.py:2511 | Briefing injection at claim (institutional memory when `org_memory_enabled`). |
+| `claim` | method | task.py:3112 | `FOR UPDATE` lock + `_validate_claim_preconditions` + `_finalize_claim`; calls `_validate_and_set_status(claimed)`. |
+| `_validate_claim_preconditions` | method | task.py:2883 | Per-claim validator chain: status, `_claim_blocked_by_sequencing` (dependency + sequence), team, pre-assignment theft, self-review. |
+| `_claim_blocked_by_sequence` | method | task.py:2805 | Strict sibling-sequence gate: a PENDING/`needs_revision` task with parent + effective `sequence` (`COALESCE(sequence, 0)`) N is held while any same-parent sibling with a strictly lower effective sequence is non-terminal — assignee-blind, independent of `dependency_ids`. Ties run parallel; cancelled siblings never block. |
+| `_claim_blocked_by_dependencies` | method | task.py:2781 | `unmet_dependency` TIMING gate: refuses claim while any `dependency_ids` entry is non-terminal. |
+| `is_pending_claim_blocked` | method | task.py:2864 | Read-only wrapper over `_claim_blocked_by_sequencing` (dependency OR sequence) so the orchestrator dispatcher can filter a doomed claim before attempting it (`_pending_claim_blocked` in orchestrator.py). |
+| `stamp_wave_sequence` | method | task.py:7452 | Stamps a freshly delegated subtask's `sequence` as `1 + max(sequence of each same-parent dependency target)`, or `0` when independent — so independent siblings tie (parallel under the sequence gate) while colliding/ordered work ascends. Runs POST-wiring (after the collision DAG / cross-cell edges land); PM-authored sequences are never rewritten. |
+| `_apply_dependency_lineage` / `_merge_one_dependency` | method | task.py:2308 / 2337 | Claim-time content assist (not a gate): merges each same-repo dependency's landed work into a freshly cut branch when it lies outside the branch's own ancestor chain (`GitService.merge_dependency_lineage`); a real conflict aborts the merge and stamps a `dependency_lineage_conflict` transition note instead of failing the claim. |
+| `_finalize_claim` | method | task.py:2925 | Work-session create/inherit, branch cut, proactive-context injection. |
+| `_inject_proactive_context` | method | task.py:3154 | Briefing injection at claim (institutional memory when `org_memory_enabled`). |
 | `_completion_learnings_for` | method | task.py:2798 | Distill one lesson (ON) vs legacy raw capture (OFF). |
 | `_extract_completion_learnings` | method | task.py:2837 | Fire-and-forget learning record + RAG indexing. |
 | `start` | method | task.py:3354 | `claimed→in_progress`. |
 | `unclaim_for_agent` / `_force_unclaim_to_pending` | method | task.py:3579 / 3507 | Release claim to pool; abandon stale work session. |
 | `block` / `soft_block` / `unblock` | method | task.py:3760 / 3823 / 3897 | Snapshot pre-block owner; restore on unblock. |
 | `submit_for_qa` | method | task.py:4065 | `verifying→awaiting_qa`; clears claimed_by (passes explicit audit_agent_id). |
-| `pass_qa` / `fail_qa` | method | task.py:4112 / 4187 | QA verdict; `fail_qa` routes back to original dev (marker → work-session fallback). |
+| `pass_qa` / `fail_qa` | method | task.py:4112 / 4187 | QA verdict; `fail_qa` routes back to original dev (marker → work-session fallback), then calls `_alert_auditor_of_rework` after flush to emit a best-effort auditor rework ALERT. |
 | `_resolve_revision_dev` | method | task.py:4301 | Work-session fallback when `original_developer` marker missing. |
 | `docs_complete` | method | task.py:4336 | `awaiting_documentation→awaiting_pm_review` (parallel completion). |
+| `request_changes` | method | task.py:9975 | PM merge-review request-changes path; transitions to `needs_revision`, then calls `_alert_auditor_of_rework` after flush to emit a best-effort auditor rework ALERT. |
 | `submit_for_pm_review` / `complete` | method | task.py:4690 / 4882 | PM review submit + completion / CEO escalation chain. |
 | `_apply_complete_approval_chain` | method | task.py:4811 | Leaf→completed vs root→awaiting_ceo_approval. |
 | `_assert_pr_merged_for_complete` | method | task.py:4845 | PR-merged gate before `complete`. |
 | `apply_escalation` | method | task.py:4942 | `in_progress→blocked` direct status set + audit emit (bypasses validator by design). |
 | `escalate_to_ceo` | method | task.py:5064 | `awaiting_pm_review→awaiting_ceo_approval`; gained `actor_agent_id: UUID | None = None` param (stamped as `audit_agent_id` so the transition row attributes to the specific PM/Board agent, not just the role). |
 | `ceo_approve` | method | task.py:5146 | CEO merges then approves; `awaiting_ceo_approval→completed`. |
-| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status). |
+| `ceo_reject` | method | task.py:5414 | Reject → `needs_revision` (dev) or `pending` (branchless root via admin_set_status); now validates `reason` (`reject_trivial` — previously an uncaught Pydantic error could 500 on empty/trivial input) and inserts one `origin=ceo` Finding onto the revision-findings ledger; the branchless-root path manually bumps `revision_count` + emits `task.ceo_reject` since it skips `_emit_status_transition_audit`. See `docs/map/review-findings.md`. |
 | `_delete_task_branch_best_effort` | method | task.py:6726 | Cancel-path cleanup: remote branch delete + `_remove_task_worktree_best_effort(force_branch_delete=True)`; skipped once branch is unset. |
 | `_remove_task_worktree_best_effort` | method | task.py:6767 | Shared worktree+local-branch+previews cleanup called by both cancel and terminal paths; force-deletes the local branch ref unless it's an environment-ladder rung (`effective_environments`). |
 | `_cleanup_task_previews_best_effort` | method | task.py:6804 | `rmtree` the task's `.previews/{task8}` video-render dir; path-containment-checked against the project workspace dir before deleting. |
 | `_remove_task_worktree_on_terminal` | method | task.py:6829 | Best-effort worktree + local-branch (force `-D`, squash-merge is never an ancestor) + previews cleanup on complete/ceo_approve; no-op for branchless. |
 | `cancel` | method | task.py:5644 | Cascade-cancel descendants through the validator. |
 | `reassign` / `reassign_active_claim` | method | task.py:7657 / 7807 | Reassignment with Board/Main-PM diversion guards. |
-| `pr_pass` / `pr_fail` | method | task.py:8100 / 8137 | In-path PR-review gate verdicts. |
+| `pr_pass` / `pr_fail` | method | task.py:8100 / 8137 | In-path PR-review gate verdicts; `pr_fail` transitions to `needs_revision`, then calls `_alert_auditor_of_rework` after flush to emit a best-effort auditor rework ALERT. |
+| `list_open_docs_sync_tasks` | method | task.py:1580 | Returns open `source=docs_sync` tasks, optionally scoped to one release version via the `docs_sync_release_version` marker. The version predicate is applied in SQL so dedupe/cap checks do not haul every open row into Python. |
 
 ## Data Flow
 Request → `TaskService` loads `TaskTable` (`get`/`_load_task_or_raise`) → validates role/transition (`validate_task_transition`) + git reqs (`validate_git_requirements`, branchless/umbrella/external-review exempt) → mutates columns → `_emit_status_transition_audit` writes `AuditLogTable` row + bumps `revision_count` in the same session → pokes orchestrator `trigger_dispatch()` → fires fire-and-forget background tasks (RAG indexing, learning distillation, worktree cleanup, work-session close). Terminal states trigger `_unblock_dependents` to revive waiting tasks.
@@ -3651,7 +3670,7 @@ stateDiagram-v2
   - State core: `_validate_and_set_status`, `_emit_status_transition_audit`, `admin_set_status`, `_restore_block_ownership`, `_emit_admin_override_audit`
   - Create/shape: `create`, `_validate_parent_depth`, `_validate_batch_membership`, `activate`
   - Branch/worktree: `_ensure_branch_for_task`, `_auto_create_branch`, `_delete_task_branch_best_effort`, `_remove_task_worktree*`, `_cleanup_task_previews_best_effort`
-  - Claim: `claim`, `_finalize_claim`, `_inject_proactive_context`, `acquire_*_lock`
+  - Claim: `claim`, `_validate_claim_preconditions`, `_claim_blocked_by_sequence`, `_claim_blocked_by_dependencies`, `_finalize_claim`, `_apply_dependency_lineage`, `_inject_proactive_context`, `acquire_*_lock`
   - Lifecycle verbs: `start`, `block*`, `unblock`, `pause`, `resume`, `submit_for_qa`, `pass_qa`, `fail_qa`, `docs_complete`, `submit_for_pm_review`
   - Completion: `complete`, `_apply_complete_approval_chain`, `ceo_approve`, `ceo_reject`, `cancel`
   - Rework routing: `fail_qa`, `_resolve_revision_dev`, `ceo_reject`
@@ -3689,6 +3708,9 @@ stateDiagram-v2
 - Branchless/umbrella/external-review tasks are exempt from the branch gate inside `GitContext` (task.py:597-611); umbrella is also exempt from the `awaiting_pm_review→awaiting_ceo_approval` pr_number gate.
 - `complete()` requires PR merged (`_assert_pr_merged_for_complete`) EXCEPT branchless roots; `ceo_approve` separately checks `work_session.pr_status=="merged"` and refuses otherwise.
 - Background indexing/learning/cleanup tasks are tracked on `self._background_tasks` and are best-effort — a failure never blocks the transition.
+- The sequence gate (`_claim_blocked_by_sequence`) is enforced ONLY in `_validate_claim_preconditions`, i.e. inside `claim` itself — both the gateway claim verbs AND the orchestrator's raw dispatch claim cross it because they both funnel through `TaskService.claim`, unlike the pre-#382 dependency gate which briefly lived only on the gateway side. Any future claim path that bypasses `TaskService.claim` (a raw `admin_set_status`, for instance) does NOT get sequence enforcement.
+- `_apply_dependency_lineage` is scoped to SAME-REPO dependencies only (`dep_task.project_id != ctx.project.id` short-circuits) — a cross-repo dependency edge (e.g. a MegaTask root-subtask in another project) has no shared git history to merge and is silently skipped; the dependency TIMING gate still holds the claim regardless of repo.
+- `TaskTable.orchestration_markers` is generic `JSON`, not `JSONB`. Any SQL predicate on a marker key must use `.as_string()` (or the JSON dialect's generic comparator), not `.astext`, which is JSONB-only and raises `AttributeError` at compile time. `list_open_docs_sync_tasks(version=...)` at task.py:1596 is the current example; the inline comment records the rationale.
 - Both cancel and terminal-completion now force-delete (`-D`) the task's LOCAL branch ref in the assignee's clone alongside the worktree — a completed task's PR was squash-merged (its local ref is never an ancestor of base, so a "safe" `-d` refuses unconditionally) and a cancelled task's work is discarded by decision, so the ref is spent either way. Skipped when the branch name coincides with an environment-ladder rung (`effective_environments`), which outlives any one task.
 
 ## Drift from CLAUDE.md
@@ -3701,9 +3723,11 @@ stateDiagram-v2
 - `15effce0` Chore: 141 Gaps fill-in (#283) — bulk gap closure; transition audit chokepoint + `revision_count` centralization (task.py:685-706), branchless/umbrella git-context exemptions, fail_qa work-session fallback, ceo_reject branchless routing.
 - `3aff6e04` Chore: Close gaps (#285) — follow-on gap close (worktree-on-terminal cleanup F123 Phase C, escalation audit emit, rework routing hardening).
 
-> Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution).
+> Post-snapshot updates (since 2026-06-29): `20f1f9ba` admin_set_status: thread actor_id/actor_role into `_apply_pre_block_restore`; blocked→pending/in_progress restore now attributes the audit row to the admin actor (not the restored owner) and emits a `task.admin_override` row (forced=False, restore=True) independent of the force flag. `b3558d4e` complexity: extract `_restore_block_ownership` (line 8526) + `_emit_admin_override_audit` (line 8555) from `_apply_pre_block_restore` — no behavior change, splits a C-rank block for the xenon gate. `0e7674af` escalate_to_ceo gains `actor_agent_id: UUID | None = None` param stamped as audit_agent_id; push_branch / create_pr / create_root_pr / escalate_to_ceo side-effect handlers in the verb runner now forward actor_agent_id (was dropped, causing wrong workspace or role-only audit attribution). `8f3f4236` (#452) "sequence is the bar" — adds `_claim_blocked_by_sequence` + `_validate_claim_preconditions` wiring, `stamp_wave_sequence` (replacing a raw per-sibling delegation ordinal), and migration 069 (`tasks.parent_task_id` index, the sibling probe's hot path). `f2834cf5` (#466) adds `_apply_dependency_lineage`/`_merge_one_dependency`, called from `_create_branch_in_project` right after a fresh branch cut. `61e00832` (PR #492) added `_alert_auditor_of_rework()` and invoked it from `fail_qa`, `pr_fail`, and `request_changes` after each transition to `needs_revision`, wiring the reactive auditor ALERT path. `f6c75237` (PR #509) restored those `_alert_auditor_of_rework()` calls after they were accidentally deleted by the docs-sync PR: all three call sites now dispatch the alert immediately after `await self.session.flush()` so the `needs_revision` transition row is committed before the auditor notification is created. The same commit also changed the descendant-traversal casts in `_supersede_replacement_landed` and `get_all_descendants`, but it used `cast(UUID, child.id)` with a scoped `# noqa: TC006` and `child.id` with a `# type: ignore[arg-type]`, respectively. `e4b7dd0f` / PR #511 reverted those two cast regressions to the preferred string-literal form `cast('UUID', child.id)` with no lint or type suppression, leaving `DOCS_SYNC_SOURCE` and `list_open_docs_sync_tasks` untouched.
 >
-> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking: `_delete_task_branch_best_effort`/`_remove_task_worktree_on_terminal` now also force-delete the assignee's local branch ref (via new `WorkspaceService.delete_local_branch`) and rmtree the task's `.previews/{task8}` video-preview dir, both skipped for environment-ladder rungs. See the `worksession-git` section for the paired `GitService.cleanup_stale_branches` sweep.
+> (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: `_audit_events_for` (task.py:997) gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`; `ceo_reject` gains reason validation + a ledger `Finding` insert (see above); `qa_fail` and `request_changes` drop their raw `dev_notes` appends (the mirror-column data-loss bug) in favor of the ledger + a structured note. Full detail: `docs/map/review-findings.md`.
+>
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking: `_delete_task_branch_best_effort`/`_remove_task_worktree_on_terminal` now also force-delete the assignee's local branch ref (via new `WorkspaceService.delete_local_branch`) and rmtree the task's `.previews/{task8}` video-preview dir, both skipped for environment-ladder rungs. See `docs/map/worksession-git.md` for the paired `GitService.cleanup_stale_branches` sweep.
 
 ## Regression Risks
 
@@ -3789,6 +3813,11 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `GitService.update_pr_for_task` | method | git.py:2506 | Patch PR title/body; 404→typed GitError |
 | `GitService.get_pr_head_sha` | method | git.py:2451 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
 | `GitService.get_latest_ci_conclusion` | method | git.py:1929 | Per-project CI signal (unknown never false-green) |
+| `GitService.get_pr_ci_status` | method | git.py:2662 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
+| `GitService._ci_status_prereqs` | method | git.py:2698 | Resolve (owner, repo, auth headers, head_sha) for CI-status lookup or None on any gap |
+| `GitService._fetch_check_runs` | method | git.py:2730 | GET check-runs for head_sha; None on any API failure |
+| `GitService._classify_check_runs` | method | git.py:2770 | State classification: success/failure/pending from check-run conclusions list |
+| `GitService._classify_zero_check_runs` | method | git.py:2790 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
 | `GitService.list_open_prs` | method | git.py:1844 | Normalized open-PR list |
 | `GitService.post_pr_review` | method | git.py:2329 | Post reviewer comments via GitHub API |
 | `GitService.merge_pull_request` | method | git.py:2914 | GitHub merge API + method fallback + already-merged disambiguation |
@@ -3836,7 +3865,7 @@ The agent commits via the `commit` content verb → `GitService.commit` (or `com
 
 `open_pr` → `create_pr` resolves the task by branch name, ensures the parent branch exists on origin, POSTs the PR via GitHub REST, and atomically records `pr_number`/`pr_url` on the task (`_record_pr_atomically`) and work session (`create_pr`). PR title/body come from `task.title`/`task.description` for gateway PRs; the rich `build_pr_body_root`/`_internal` templates are used by the older `create_pull_request` path.
 
-Merge: a cell PM `complete`/`submit_up` → `pr_merge` (gateway) scopes the task lookup by `project_id` (cross-repo PR-number collision guard), takes a `SELECT FOR UPDATE` lock on the parent task, calls `_merge_with_retry` (squash; on 409 re-syncs target + retries once; on 405 disambiguates already-merged vs real conflict → `MergeConflictError`), deletes the PR branch, syncs the local target, and records the merge on the work session (`merge_pr`, idempotent). The CEO-only root→master merge goes through `merge_pr_for_task` (role-gated, recorded-PR verification) → `merge_pull_request`. The CEO-merge never targets the default branch via `pr_merge` (the `target == default_branch` guard refuses it).
+Merge: a cell PM `complete`/`submit_up` → `pr_merge` (gateway) scopes the task lookup by `project_id` (cross-repo PR-number collision guard), takes a `SELECT FOR UPDATE` lock on the parent task, calls `_merge_with_retry` (squash; on 409 re-syncs target + retries once; on 405 disambiguates already-merged vs real conflict → `MergeConflictError`), deletes the PR branch, syncs the local target, and records the merge on the work session (`merge_pr`, idempotent). The CEO-only root→master merge goes through `merge_pr_for_task` (role-gated, recorded-PR verification) → `merge_pull_request`. The CEO-merge never targets the default branch via `pr_merge` (the `target == default_branch` guard refuses it) — `default_branch` here is `_project_default_branch`, which now resolves via `roboco.models.env_branches.head_branch(project)` (the env-ladder head rung) rather than reading `project.default_branch` directly; a project with no declared ladder resolves to the same value via the read-time shim.
 
 Behind-base recovery: `is_behind_base` feeds the `i_am_done` submit gate; on a non-zero behind, the dev calls `sync_branch` → `sync_task_branch` → `rebase_onto_base` (rebased/superseded/conflicts). On a merge conflict, the choreographer calls `rebase_pr_for_task`, then either re-merges or `close_pull_request`s a superseded PR. `get_pr_head_sha` feeds the `submit_root` re-submit loop guard.
 
@@ -4012,7 +4041,7 @@ Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_
 - **`is_behind_base` raises on git failure**; the i_am_done gate fail-opens on the raised error so a flaky fetch can't strand the task.
 - **Conventions validator fails closed** (`could_not_run=True` blocks submit) on resolution error / timeout / non-zero exit; branchless + no-changed-files fail open.
 - **`_assert_on_task_branch` never discards work** — it does `checkout`, not `reset --hard`, to preserve a resumed agent's unpushed commits.
-- **CEO-only master merge**: `pr_merge` refuses `target == default_branch` for agents; only `merge_pr_for_task` (CEO role-gated from `awaiting_ceo_approval`) may merge to master.
+- **CEO-only master merge**: `pr_merge` refuses `target == default_branch` for agents; only `merge_pr_for_task` (CEO role-gated from `awaiting_ceo_approval`) may merge to master. `default_branch` resolves through the env-ladder head rung (`_project_default_branch` → `head_branch(project)`), not the raw `projects.default_branch` column.
 - **`cleanup_stale_branches` cursor is required, not optional**: task rows never change as a side effect of the sweep (unlike, say, a queue that drains), so a repeat call with no `after_cursor` re-scans the identical first 200-row window forever instead of progressing. `_stale_branch_window` still advances the cursor past ladder-rung rows even though they're excluded from `candidates`, so `truncated` can't false-negative when a rung lands inside the window.
 - **Local branch delete in the sweep is always `force=True`** (`-D`) regardless of completed vs cancelled — a completed task's PR was squash-merged, so its local ref is never an ancestor of base and a "safe" `-d` would refuse every single candidate.
 
@@ -4037,14 +4066,14 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 
 > Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286 — closed regression risks #108 and #109 in this slice: `_merge_with_retry` now falls back to a permitted merge method on 405 via `_first_allowed_merge_method` before raising `MergeConflictError`; `close_pull_request` default flipped to `delete_branch=False`, choreographer caller now passes `delete_branch=True` explicitly). `00513399` ([bug] push_branch — `push_branch(branch_name)` now passes `branch=branch_name` to `self.push()` so the gateway `open_pr` path pushes the actual named task branch rather than the clone root's current checkout; fixes the "No commits between" 422 → `i_am_blocked` wedge observed in the F123 per-worktree model). `2759edf7` ([B-REL] release executor — added `_CiRunQuery` dataclass at git.py:241 to bundle per-project CI-fetch inputs; `get_latest_ci_conclusion` and `_fetch_latest_ci_run` now accept an optional `head_sha` so the release CI gate polls a specific release commit's own run rather than branch-latest; `settings.release_ci_workflow` config flag added). `69071030` ([chore] work-session-routes — added `WorkSessionService.task_team_for_session` helper (route layer PM cell-ownership check for `merge_pr`); route layer now stamps `merged_by` from the authenticated caller rather than the request body — `WorkSessionService.merge_pr` signature is unchanged, but `MergePRRequest` schema dropped `merged_by` field).
 >
-> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking alongside remote ones: `delete_task_branch` now also skips environment-ladder rungs (previously only the remote-delete's own main/master/develop guard existed) and returns `bool`; new `cleanup_stale_branches` + `_stale_branch_window` + `_cleanup_one_stale_branch` back a PM/CEO-only `POST /git/branches/cleanup` sweep of terminal tasks' remote+local branches, exposed as a confirm-dialog button on the panel Git page. See the `task-service` section for the paired per-task reap at cancel/completion and the `workspace` section for the new `WorkspaceService.delete_local_branch` primitive both routes share.
+> (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Local branch refs stop leaking alongside remote ones: `delete_task_branch` now also skips environment-ladder rungs (previously only the remote-delete's own main/master/develop guard existed) and returns `bool`; new `cleanup_stale_branches` + `_stale_branch_window` + `_cleanup_one_stale_branch` back a PM/CEO-only `POST /git/branches/cleanup` sweep of terminal tasks' remote+local branches, exposed as a confirm-dialog button on the panel Git page. See `docs/map/task-service.md` for the paired per-task reap at cancel/completion and `docs/map/workspace.md` for the new `WorkspaceService.delete_local_branch` primitive both routes share.
 
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
 |-------|-----------|-------|----------|
 | `merge_pr` idempotent guard silently drops retried merge attribution | work_session.py:517 | A retried merge after a successful-but-unconfirmed GitHub merge returns the *existing* COMPLETED row unchanged, so the retry's `merged_by`/`pr_merged_at` are NOT updated. Correct for audit-trail integrity, but a caller that relied on `merge_pr` returning a freshly-updated row (e.g. reading `pr_merged_at` as "now") now gets the original timestamp. Low risk but a behavior change worth a regression test. | low |
-| `pr_merge` CEO-only guard refuses default-branch target | git.py:3671 | If a non-root PR's target legitimately resolves to the repo default branch (e.g. a mis-configured `default_branch` or a single-branch repo), `pr_merge` now hard-fails with `UnauthorizedError`. Any cell that previously merged a leaf PR into master via this path (shouldn't happen per policy, but the route existed) is now blocked. | medium |
+| `pr_merge` CEO-only guard refuses default-branch target | git.py:3671 | If a non-root PR's target legitimately resolves to the repo default branch (e.g. a mis-configured `default_branch` or a single-branch repo), `pr_merge` now hard-fails with `UnauthorizedError`. Any cell that previously merged a leaf PR into master via this path (shouldn't happen per policy, but the route existed) is now blocked. Since the env-branches ladder (#534) the comparison target is the env-ladder **head** rung (`_project_default_branch` → `head_branch(project)`), not necessarily prod — a project that declares head != prod has this guard protect the head rung, not the CEO's actual prod branch. | medium |
 | `pr_merge` parent-row `SELECT FOR UPDATE` can deadlock | git.py:3503/3683 | Two PMs merging sibling subtasks of *different* parents that share an ancestor, under并发 lock ordering, could deadlock if lock acquisition order diverges. Lock is only on the immediate parent, so risk is bounded, but a deadlock surfaces as a rollback (not a clean 409 retry). | medium |
 | `create_branch` `reset --hard` on zero-commit branch inside worktree | git.py:1104 | If `rev-list --count {base_ref}..{branch_name}` returns `0` for a branch that actually carries work (e.g. base_ref mis-resolved to a ref that already contains the work), the worktree is hard-reset and uncommitted work in the worktree is lost. The `unique==0` check is the only guard; a stale `base_ref` could trip it. | medium |
 | F123 worktree routing — commit/conventions/rebase run in worktree, merge sync runs in clone root | git.py:3696/3785 | `pr_merge` calls `_sync_target_branch_best_effort(workspace,...)` with the clone-root workspace (from `get_workspace`), not the per-task worktree. If the target branch is checked out in a worktree, the sync's `checkout` of target in the clone root fails ("already checked out"). Best-effort swallows it, but the local target ref may stay stale for the next sibling merge. | medium |
@@ -4109,7 +4138,7 @@ WorkspaceService manages the per-agent git clone layout under {workspaces_root}/
 | WorkspaceService._resolve_git_token | staticmethod | roboco/services/workspace.py:947 | Decrypt project git token; raise WorkspaceError on decrypt failure or HTTPS-with-no-token |
 | WorkspaceService.ensure_workspace | method | roboco/services/workspace.py:969 | Idempotent ensure: healthy short-circuit (own+fetch+install_deps) or rmtree partial then clone+scaffold; per (project,agent) lock |
 | WorkspaceService._maybe_scaffold_conventions | method | roboco/services/workspace.py:1101 | Flag-gated once-per-process scaffold of .roboco/conventions.yml on a project's first clone; swallows all failures |
-| WorkspaceService.ensure_read_clone | method | roboco/services/workspace.py:1133 | Ensure project-level read clone at {root}/{project}/_meta/conventions, hard-reset to origin default; 30s TTL fetch |
+| WorkspaceService.ensure_read_clone | method | roboco/services/workspace.py:1133 | Ensure project-level read clone at {root}/{project}/_meta/conventions, hard-reset to `origin/<head_branch>` (the env-ladder head rung via `roboco.models.env_branches.head_branch`, shimmed from `default_branch` when no ladder is declared); 30s TTL fetch |
 | WorkspaceService._read_clone_token | staticmethod | roboco/services/workspace.py:1184 | Decrypt project token for read-clone refresh; return None on failure (public repos ok) |
 | WorkspaceService._sync_read_clone | staticmethod | roboco/services/workspace.py:1200 | Token-authed fetch + checkout + reset --hard FETCH_HEAD on the read clone; best-effort |
 | WorkspaceService._clone_repo | method | roboco/services/workspace.py:1239 | git clone --branch --no-tags (no --single-branch) + configure identity/fileMode + scrub PAT + leak-check + chown + install_dev_deps; rmtree on any failure |
@@ -4131,7 +4160,7 @@ WorkspaceService manages the per-agent git clone layout under {workspaces_root}/
 | get_workspace_service | function | roboco/services/workspace.py:1930 | Factory: WorkspaceService(session) |
 
 ## Data Flow
-Inputs: an AsyncSession, a project_slug, an agent_id (UUID or slug), optionally a git_url/default_branch/force. The orchestrator, GitService, TaskService, conventions service, dep_update_engine, and gateway content_actions all obtain a WorkspaceService via get_workspace_service(session) (or WorkspaceService(db) directly in the spawn path). Control flow on ensure_workspace: _lookup_agent_or_raise -> get_workspace_path -> acquire per-(project,agent) asyncio.Lock -> if _is_workspace_healthy (.git+HEAD+objects): _ensure_agent_owned (to_thread), prune broken refs, scoped _fetch_origin_best_effort (30s TTL, force override), re-chown, install_dev_deps (digest-cache hit short-circuits), return. Else: rmtree any partial/stub dir, ProjectService.get_by_slug, _resolve_git_token (decrypt PAT; raise on HTTPS-with-no-token), _clone_repo (git clone --branch --no-tags, configure identity/fileMode, scrub PAT from remote URL, _assert_no_pat_leak scanning .git/** for ghp_/github_pat_/x-access-token, chown, install_dev_deps), _maybe_scaffold_conventions (once-per-process, flag-gated). Per-task worktree path: get_clone_root_path + get_worktree_path (.worktrees/{task_short_id}); ensure_worktree runs git worktree add -b <branch> <base> (or reuses an existing branch ref), _link_shared_venv (symlink to clone-root .venv only if it exists), chowns both worktree and clone root. GitService.create_branch calls ensure_worktree; commit/rebase paths call ensure_worktree_for_resume via GitService._ensure_worktree_for_commit; the orchestrator's _ensure_worktree_before_spawn calls ensure_worktree_self_heal (post-536bbb64) which first fetches the branch ref from origin if the local ref is absent after a re-clone, then delegates to ensure_worktree; TaskService.complete/cancel call remove_worktree. ensure_read_clone is called by ConventionsService for the project-level read clone at _meta/conventions, hard-reset to origin/default. dry_upgrade_changes_lockfile (dep_update_engine) clones the read clone --local --no-hardlinks into a throwaway under the read-clone lock, runs dep_update_command, and checks git status --porcelain on lockfile paths. Outputs: workspace Path (and side effects: on-disk clone/worktree, .venv symlink, .git/.roboco-dep-install + .git/.roboco-toolchain markers, root-owned refs re-chowned to agent uid). All git/subprocess work runs via asyncio.to_thread; tokens are injected only transiently into argv (never written to .git/config) and scrubbed post-clone.
+Inputs: an AsyncSession, a project_slug, an agent_id (UUID or slug), optionally a git_url/default_branch/force. The orchestrator, GitService, TaskService, conventions service, dep_update_engine, and gateway content_actions all obtain a WorkspaceService via get_workspace_service(session) (or WorkspaceService(db) directly in the spawn path). Control flow on ensure_workspace: _lookup_agent_or_raise -> get_workspace_path -> acquire per-(project,agent) asyncio.Lock -> if _is_workspace_healthy (.git+HEAD+objects): _ensure_agent_owned (to_thread), prune broken refs, scoped _fetch_origin_best_effort (30s TTL, force override), re-chown, install_dev_deps (digest-cache hit short-circuits), return. Else: rmtree any partial/stub dir, ProjectService.get_by_slug, resolve the clone target branch via `head_branch(project)` (the env-ladder head rung — `roboco.models.env_branches`, shimmed from `default_branch` when no ladder is declared), _resolve_git_token (decrypt PAT; raise on HTTPS-with-no-token), _clone_repo (git clone --branch --no-tags, configure identity/fileMode, scrub PAT from remote URL, _assert_no_pat_leak scanning .git/** for ghp_/github_pat_/x-access-token, chown, install_dev_deps), _maybe_scaffold_conventions (once-per-process, flag-gated). Per-task worktree path: get_clone_root_path + get_worktree_path (.worktrees/{task_short_id}); ensure_worktree runs git worktree add -b <branch> <base> (or reuses an existing branch ref), _link_shared_venv (symlink to clone-root .venv only if it exists), chowns both worktree and clone root. GitService.create_branch calls ensure_worktree; commit/rebase paths call ensure_worktree_for_resume via GitService._ensure_worktree_for_commit; the orchestrator's _ensure_worktree_before_spawn calls ensure_worktree_self_heal (post-536bbb64) which first fetches the branch ref from origin if the local ref is absent after a re-clone, then delegates to ensure_worktree; TaskService.complete/cancel call remove_worktree. ensure_read_clone is called by ConventionsService for the project-level read clone at _meta/conventions, hard-reset to origin/default. dry_upgrade_changes_lockfile (dep_update_engine) clones the read clone --local --no-hardlinks into a throwaway under the read-clone lock, runs dep_update_command, and checks git status --porcelain on lockfile paths. Outputs: workspace Path (and side effects: on-disk clone/worktree, .venv symlink, .git/.roboco-dep-install + .git/.roboco-toolchain markers, root-owned refs re-chowned to agent uid). All git/subprocess work runs via asyncio.to_thread; tokens are injected only transiently into argv (never written to .git/config) and scrubbed post-clone.
 
 ## Mermaid
 ```mermaid
@@ -4210,7 +4239,7 @@ WorkspaceService slice
 ```
 
 ## Dependencies
-- Internal: roboco.config.settings, roboco.db.tables.AgentTable, roboco.db.tables.TaskTable, roboco.logging.get_logger, roboco.models.base.Team, roboco.services.toolchain.resolve_target_python, roboco.services.project.get_project_service / ProjectService, roboco.services.conventions.get_conventions_service / ConventionsService, roboco.utils.crypto.EncryptionError, roboco.db.base.get_db_context (orchestrator spawn path)
+- Internal: roboco.config.settings, roboco.db.tables.AgentTable, roboco.db.tables.TaskTable, roboco.logging.get_logger, roboco.models.base.Team, roboco.models.env_branches.head_branch (env-ladder head-rung resolver backing the clone target in ensure_workspace and ensure_read_clone), roboco.services.toolchain.resolve_target_python, roboco.services.project.get_project_service / ProjectService, roboco.services.conventions.get_conventions_service / ConventionsService, roboco.utils.crypto.EncryptionError, roboco.db.base.get_db_context (orchestrator spawn path)
 - External: asyncio, contextlib, json, math, os, re, shlex, shutil, subprocess, tempfile, time, pathlib.Path, uuid.UUID, collections.abc.Iterator, sqlalchemy.ext.asyncio.AsyncSession, sqlalchemy.select, hashlib (lazy in _lockfile_digest), stat (lazy in _make_owner_and_group_rw), base64 (lazy in fetch_branch_for_inspection)
 
 ## Entry Points
@@ -4279,6 +4308,8 @@ WorkspaceService slice
 | 0f7d6929 | [F-fix] gate the worktree .venv symlink on the clone-root venv existing | _link_shared_venv now no-ops when clone_root/.venv does not yet exist (instead of dangling a symlink), so uv no longer errors or silently re-syncs a worktree-local venv in the near-zero gap before install_dev_deps provisions the clone-root venv. A later ensure self-heals the link. |
 
 > Post-snapshot updates (since 2026-06-29): 5 commits touched workspace.py. (1) 9faf2763 [hotfix] strip VIRTUAL_ENV + UV_PROJECT_ENVIRONMENT from _uv_subprocess_env so workspace uv calls stop warning about the image-baked /app/.venv pin. (2) cfe725da [hotfix] worktree: clone root left on the task branch caused fatal "already checked out" on every worktree add re-dispatch — added _clone_root_default_branch + _park_clone_root_off_branch; ensure_worktree and ensure_worktree_for_resume now call _park_clone_root_off_branch before the add to restore the F123 invariant. (3) 536bbb64 (logical-gap sweep PR#286) added _fetch_branch_ref + ensure_worktree_self_heal: the orchestrator's _ensure_worktree_before_spawn now calls ensure_worktree_self_heal instead of bare ensure_worktree_for_resume so a vanished clone (redeploy/disk loss) that left no local branch ref recovers the pushed commits from origin before re-attaching. (4) 3aff6e04 and 15effce0 (gap-fill PRs #285/#283) contributed earlier worktree + dep-probe plumbing (the _clone_local_into / _probe_lockfile_on_clone split already captured in the baseline).
+>
+> Further post-snapshot update (#534, env-branches ladder): `ensure_workspace`'s fresh-clone branch and `ensure_read_clone` both resolve their target branch via `roboco.models.env_branches.head_branch(project)` — the env-ladder's head rung — instead of reading `project.default_branch` directly. A project with no declared ladder resolves to the identical `default_branch` value via the read-time shim, so this is behavior-preserving until the CEO declares a real ladder in the panel.
 >
 > (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) Added `delete_local_branch` (line 787) so `TaskService`'s cancel/terminal-completion cleanup and `GitService.cleanup_stale_branches` can reap a spent local branch ref, not just the worktree — previously every task an agent ever claimed leaked a permanent `refs/heads/{branch}` in that agent's clone.
 
@@ -4564,6 +4595,7 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 | `ci_watch_enabled` | Multi-repo CI-watch | `ROBOCO_CI_WATCH_ENABLED` |
 | `dep_update_enabled` | Dependency-update bot | `ROBOCO_DEP_UPDATE_ENABLED` |
 | `release_manager_enabled` | Gated release manager | `ROBOCO_RELEASE_MANAGER_ENABLED` |
+| `docs_sync_enabled` | Docs-divergence sync (release → docs-update task) | `ROBOCO_DOCS_SYNC_ENABLED` |
 | `org_memory_enabled` | Organizational memory loop | `ROBOCO_ORG_MEMORY_ENABLED` |
 | `sandbox_db_enabled` | Sandboxed per-agent test DB/Redis/Mongo (engine registry) | `ROBOCO_SANDBOX_DB_ENABLED` |
 | `x_engine_enabled` | X (Twitter) engine | `ROBOCO_X_ENGINE_ENABLED` |
@@ -4634,7 +4666,7 @@ No files in this slice changed between `fd10cc86` and `HEAD`, so there are no *r
 This slice is a mature, mostly-stable support layer: the service-base/error hierarchy and crypto/UUID helpers are well-factored and widely reused; the Redis-Streams event bus is correctly durable (consumer groups, ACK-on-success, pending recovery) with the one real caveat that handler idempotency is the caller's job. Post-snapshot commits improved the bus (poison-pill dead-letter + periodic reclaim loop + `BaseException` marker cleanup), typed the UUID error surface (`InvalidIdentifierError`), and removed the vestigial `_find_code_patterns` call from `ProactiveKnowledgeService`. `TranscriptionService` (sync-callback + unbounded-buffer risks) remains the softest spot. Model routing's fail-safe-quietly design is intentional (a stalled spawn is worse than a wrong provider) but shifts diagnosis to logs. Overall integrity: solid, with `TranscriptionService` the one service worth either finishing or marking clearly as legacy.
 
 ## Purpose
-The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Docker container lifecycle, the per-tick dispatcher that matches tasks to agents, the stale-claim reaper, the provider rate-limit/overload park-and-probe recovery loop, and the default-off background engines (self-heal, CI-watch, dep-update, release-manager, strategy, external-PR poll, X-engine mentions poll, board roadmap engine). It claims tasks on behalf of agents before spawning, injects briefings/manifests/git context at spawn time, provisions a per-spawn sandbox (postgres/redis/mongo via the engine registry) when opted in, captures per-session token usage, and persists durable runtime state (WaitingRecord, respawn_tracker) across restarts.
+The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Docker container lifecycle, the per-tick dispatcher that matches tasks to agents, the stale-claim reaper, the provider rate-limit/overload park-and-probe recovery loop, and the default-off background engines (self-heal, CI-watch, dep-update, release-manager, strategy, external-PR poll, X-engine mentions poll, board roadmap engine, video render loop). It claims tasks on behalf of agents before spawning, injects briefings/manifests/git context at spawn time, provisions a per-spawn sandbox (postgres/redis/mongo via the engine registry) when opted in, captures per-session token usage, and persists durable runtime state (WaitingRecord, respawn_tracker) across restarts.
 
 ## Files
 
@@ -4655,7 +4687,8 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | gateway_pre_spawn_check | function | roboco/runtime/orchestrator.py:687 | Consult trigger_filter spawn-cooldown + provider rate-limit tracker; returns spawn/queue/drop, degrades to spawn on any error. |
 | AgentReadinessError | class | roboco/runtime/orchestrator.py:796 | Raised when spawn_agent refuses (task not ready / human role / worktree fatal); caller logs and moves on. |
 | _SpawnAbortedDuringShutdown | class | roboco/runtime/orchestrator.py:804 | Signals a non-blocking intake/secretary spawn completed docker run after shutdown began; raiser already removed the container. |
-| AgentOrchestrator.__init__ | method | roboco/runtime/orchestrator.py:830 | Initialize instance/waiting/bg-task registries, locks (dispatch, supersede, intake/secretary spawn, respawn-persist), TTLs from settings, grok backoff state. |
+| AgentOrchestrator.__new__ | method | roboco/runtime/orchestrator.py:909 | Pre-initialize `_instances = {}`, `_last_audit_spawn_at = None`, and `_notification_spawn_at = {}` so tests/helpers that construct an orchestrator via bare `AgentOrchestrator.__new__(...)` to bypass `__init__` do not crash when `_is_agent_active`, `_dispatch_audit_work`, or notification-cooldown paths read those attributes. `__init__` still re-initializes `_instances` for normal construction. |
+| AgentOrchestrator.__init__ | method | roboco/runtime/orchestrator.py:920 | Initialize instance/waiting/bg-task registries, locks (dispatch, supersede, intake/secretary spawn, respawn-persist), TTLs from settings, grok backoff state. |
 | AgentOrchestrator.start | method | roboco/runtime/orchestrator.py:972 | Ensure agent image, restore WaitingRecord + respawn_tracker, reconcile orphan claims, readopt running containers, launch all background loops. |
 | AgentOrchestrator.stop | method | roboco/runtime/orchestrator.py:1057 | Idempotent shutdown: cancel loops, stop agents (release_claim=True, skip provider-parked), drain bg writes, set _stopped. |
 | AgentOrchestrator._drain_bg_tasks | method | roboco/runtime/orchestrator.py:1031 | Bounded wait for fire-and-forget bg writes to commit before exit; cancels past _SHUTDOWN_DRAIN_TIMEOUT_SECONDS. |
@@ -4669,7 +4702,9 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator.spawn_agent | method | roboco/runtime/orchestrator.py:2141 | Chokepoint spawn entry: validate path-segment, refuse human-only roles, readiness gate, resolve git context, provider-park pre-check, TOCTOU re-check, prepare + launch. |
 | AgentOrchestrator._resolve_host_paths | method | roboco/runtime/orchestrator.py:2297 | Compute host bind-mount paths for containerized vs host runtime (docs/workspaces/claude/mcp/grok-usage/prompt/settings/briefing). |
 | AgentOrchestrator._spawn_container | method | roboco/runtime/orchestrator.py:2664 | Run the Claude Code SDK container via docker with all mounts/env/manifest/cwd args; returns container id. |
-| AgentOrchestrator._generate_mcp_config | method | roboco/runtime/orchestrator.py:2779 | Write the per-agent MCP servers config (flow/do/git-readonly/optimal/docs) to disk and return the path. |
+| AgentOrchestrator._generate_mcp_config | method | roboco/runtime/orchestrator.py:2779 | Write the per-agent MCP servers config (flow/do/git-readonly/optimal/docs) to disk and return the path; delegates the role-scoped extras to `_append_role_scoped_mcp_servers`. |
+| AgentOrchestrator._append_role_scoped_mcp_servers | method | roboco/runtime/orchestrator.py:3662 | Registers `roboco-docs` (documenter/PM/board roles), `roboco-search` (Board+PM roles, `research_enabled`), and `playwright` — role-gated via `agent_role == "qa"` + team in `{frontend, ux_ui}` (`fe-qa`/`ux-qa`), OR a `video_authoring=True` caller flag (a ux-dev spawned onto a `source=video` task, probed by `_is_video_authoring_spawn`) — `command: /app/scripts/playwright-mcp-entrypoint.sh`, no args (the wrapper resolves the image's own baked `chromium-headless-shell`). Not image-gated either way: `agent-ux`'s image bakes the binary for both the QA and the video-authoring-dev cases, but an ordinary (non-video) `ux-dev` still never sees it. Split out of `_generate_mcp_config` to keep it under the xenon complexity budget. |
+| AgentOrchestrator._is_video_authoring_spawn | method | roboco/runtime/orchestrator.py:3480 | Fail-closed spawn-time probe (`fd621f0d`, PR #544): true only when `agent_role == "developer"`, `get_agent_team(agent_id) == "ux_ui"`, and the spawning task's `source == VIDEO_SOURCE`; any lookup error is caught and logged, returning `False` (no browser, never a broken spawn). Feeds `_append_role_scoped_mcp_servers`'s `video_authoring` flag via `_generate_mcp_config`'s new `task_id` param. |
 | AgentOrchestrator._generate_composed_prompt | method | roboco/runtime/orchestrator.py:2946 | Compose the spawn prompt (identity + task briefing + ambient conventions block + tool-load block) via compose_prompt. |
 | AgentOrchestrator._resolve_conventions_ambient | method | roboco/runtime/orchestrator.py:2998 | Resolve the in-scope projects for the ambient architectural-conventions block (single repo / product / ad-hoc cell map). |
 | AgentOrchestrator._readiness_gate | method | roboco/runtime/orchestrator.py:3104 | Pre-flight refusal: missing project/cell-map, missing AC, role/status mismatch, missing git token, bad task shape, unmet dependencies. |
@@ -4728,7 +4763,15 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._dispatch_roadmap_exploration | method | roboco/runtime/orchestrator.py:10284 | One-shot Product-Owner spawn to author a themed roadmap cycle; bypasses the two-reviewer board-review-pair machinery (PO-solo in v1). |
 | AgentOrchestrator._dispatch_feature_spotlight_exploration | method | roboco/runtime/orchestrator.py:10424 | One-shot Head-of-Marketing spawn to investigate + call `propose_feature_spotlight` once; `_dispatch_pm_work` routes `source=x_feature_exploration` to it before the generic board-review check, mirroring the roadmap source's own early branch. |
 | AgentOrchestrator._build_feature_spotlight_prompt | method | roboco/runtime/orchestrator.py:12827 | Render the one-shot feature-spotlight exploration prompt (investigate CHANGELOG/flags/docs/charter/KB, call `propose_feature_spotlight` once, then `i_am_idle`). |
-| AgentOrchestrator._dispatch_all_work | method | roboco/runtime/orchestrator.py:8814 | Reset tick-handled set, reap stale claims, enforce grok budget, run all 17 dispatchers under one httpx client with per-dispatcher isolation. |
+| AgentOrchestrator._dispatch_all_work | method | roboco/runtime/orchestrator.py:10906 | Reset tick-handled set, reap stale claims, enforce grok budget, run all 18 dispatchers (added `vault_curation_work`) under one httpx client with per-dispatcher isolation. |
+| AgentOrchestrator._dispatch_vault_curation_work | method | roboco/runtime/orchestrator.py:12057 | Obsidian-vault root-completion hook (`obsidian_vault_enabled`): reads `TaskService.list_completed_roots_pending_vault_curation` and spawns the Auditor once per candidate via `_maybe_spawn_vault_curation`. Owns only this trigger — distinct from `_dispatch_audit_work`'s scheduled sweeps. |
+| AgentOrchestrator._maybe_spawn_vault_curation | method | roboco/runtime/orchestrator.py:12080 | One-shot Auditor spawn for one completed root: `_board_dispatched` in-memory one-shot guard + a durable `vault_curation_dispatched` marker (survives a restart) before spawning WITHOUT a bound task_id (mirrors `_dispatch_audit_work`'s alert spawn — the root is already `completed`, binding would trip the readiness gate) — the task id is named in the prompt, `curate_vault` takes it as an explicit argument. |
+| AgentOrchestrator._vault_intake_loop | method | roboco/runtime/orchestrator.py:8106 | Default-off tick loop (BOTH `obsidian_vault_enabled` AND `vault_intake_enabled`); calls `_run_vault_intake_cycle` → `VaultIntakeEngine.run_cycle()` every `vault_intake_interval_seconds`. |
+| AgentOrchestrator._vault_janitor_loop | method | roboco/runtime/orchestrator.py:8142 | V2: gated on `obsidian_vault_enabled` alone; ticks hourly (`JANITOR_LOOP_INTERVAL_SECONDS`, no config knob) calling `_run_vault_janitor_cycle` → `VaultJanitor.run_cycle()`, which itself only does real work when a `RoboCo/_meta/.janitor_state.json` state file says a sweep/report is actually due. |
+| AgentOrchestrator._vault_kb_loop | method | roboco/runtime/orchestrator.py:8174 | V2: gated on BOTH `obsidian_vault_enabled` AND `vault_kb_enabled`; ticks every `vault_kb_interval_seconds` (default 900) calling `_run_vault_kb_cycle` → `VaultKBEngine.run_cycle()`, embedding changed `RoboCo/Notes` notes into `IndexType.VAULT_NOTES`. |
+| AgentOrchestrator._telegram_poll_loop | method | roboco/runtime/orchestrator.py:8451 | Telegram V2: gated on BOTH `telegram_enabled` AND `telegram_inbound_enabled`; sleeps `telegram_poll_interval_seconds` (a floor between long-poll re-issues, not the effective latency — each `getUpdates` call itself blocks server-side up to `telegram_poll_timeout_seconds`) then calls `_run_telegram_poll_cycle` → `TelegramInboundEngine.run_cycle()`. |
+| AgentOrchestrator._run_telegram_poll_cycle | method | roboco/runtime/orchestrator.py:8476 | One Telegram poll pass: `get_telegram_inbound_engine(db).run_cycle()` + commit; testable without the sleep. |
+| AgentOrchestrator._pending_claim_blocked | method | roboco/runtime/orchestrator.py:11586 | Dispatch-time probe reusing `TaskService.is_pending_claim_blocked` (the exact claim-gate predicate — dependency OR sequence) so `_route_unassigned_pm_task` (called from `_dispatch_pm_work` per PENDING coordination-root task) can filter a doomed later-wave/sequence-held task before attempting the raw claim, instead of one failed claim per tick. Fails open (False) on any lookup error — the claim attempt itself is the safety net. |
 | AgentOrchestrator._pm_respawn_should_gate | method | roboco/runtime/orchestrator.py:8915 | Per-(slug,task) respawn circuit breaker; tracing_gap rule-following resets (bounded) + durable persist; CEO notify once when tripped. |
 | AgentOrchestrator._handle_pm_assigned_task | method | roboco/runtime/orchestrator.py:9084 | Spawn/respawn the PM for an assigned coordination root subject to the respawn gate. |
 | AgentOrchestrator._AUTO_SUBMIT_VERB_BY_ROLE | ClassVar[dict] | roboco/runtime/orchestrator.py:10650 | Wave-1 PR-gate turn cut: maps cell_pm -> (cell_pm, submit_up) and main_pm -> (main_pm, submit_root), the flow route+verb that assembles the parent's PR for each coordinator role. |
@@ -4743,6 +4786,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._blocked_by_earlier_lane_sibling | method | roboco/runtime/orchestrator.py:10234 | Per-dev LANE barrier: hold a dev's higher-sequence code leaf until its own lower-sequence code siblings under the same parent are terminal. |
 | AgentOrchestrator._dispatch_pm_review_work | method | roboco/runtime/orchestrator.py:10299 | Dispatch awaiting_pm_review to cell/main PM; applies _blocked_by_earlier_sibling; human-role skip + respawn gate. |
 | AgentOrchestrator._dispatch_a2a_work | method | roboco/runtime/orchestrator.py:10904 | Spawn targets of unacknowledged a2a_request notifications; skips human-only roles (CEO/prompter/secretary). |
+| AgentOrchestrator._dispatch_audit_work | method | roboco/runtime/orchestrator.py:12948 | Spawn the auditor on reactive HIGH-priority ALERT notifications or on a scheduled sweep when `ROBOCO_AUDIT_INTERVAL_SECONDS` has elapsed and recent delivery activity exists. |
 | AgentOrchestrator._build_dev_prompt | method | roboco/runtime/orchestrator.py:11053 | Render the dev spawn prompt with workflow state + instructions. |
 | is_unattributed_delivery_spawn | function | roboco/runtime/orchestrator.py:415 | True when a delivery-role (developer/qa/documenter) spawn carries no task_id; warns on unattributed usage without noise from intentionally taskless roles. |
 | AgentOrchestrator._flush_respawn_tracker | method | roboco/runtime/orchestrator.py:1105 | Unbounded flush of the full in-memory PM-respawn snapshot called after `_drain_bg_tasks` in `stop()` so a deadline-cancelled fire-and-forget persist can't leave the durable count lagging. |
@@ -4799,7 +4843,7 @@ stateDiagram-v2
 ## Logical Tree
 - AgentOrchestrator
   - Startup (`start`): restore WaitingRecord + respawn_tracker → reconcile orphan claims → `_readopt_running_agents` → launch background loops
-  - Dispatch: `_dispatch_all_work` (reap → grok budget → 17 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`)
+  - Dispatch: `_dispatch_all_work` (reap → grok budget → 17 dispatchers under one httpx client) ticked by `_dispatcher_loop` (30s or `_dispatch_wake.set()`); includes `_dispatch_audit_work` for reactive auditor ALERTs and scheduled sweeps
   - Spawn: `spawn_agent` chokepoint → `_readiness_gate` → provider-park pre-check → `_prepare_agent_spawn` (worktree/permissions/briefing/MCP/manifest) → `_safe_spawn` → `_spawn_container` or GrokCliProvider
   - Health/reaper: `_check_health` (docker inspect) → `_maybe_park_for_exit_error` | `_crash_retry_or_escalate` | `_handle_stopped_container`; `_reap_stale_claims` via `_should_skip_live_reap` + `_maybe_recover_broken_gateway`
   - Rate-limit/overload park-and-probe: `_park_provider_unavailable` (+ grok 75/78 variants) → `_rate_limit_probe_loop` (30s) → `_on_probe_success`/`_on_probe_failure` → `resolve_wait`
@@ -4817,7 +4861,7 @@ stateDiagram-v2
 ## Entry Points
 - FastAPI lifespan start → `AgentOrchestrator.start()` (bootstrap constructs singleton).
 - FastAPI lifespan shutdown → `stop()` (idempotent; bootstrap `finally` re-calls as safety net).
-- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`).
+- `_dispatcher_loop` tick (30s or `_dispatch_wake.set()` from API `trigger_dispatch`), including `_dispatch_audit_work` for reactive auditor ALERTs and scheduled sweeps.
 - `_health_loop` (per-instance inspect), `_sweeper_loop` (superseded PRs, dangling images, transcript retention, grok budget), `_rate_limit_probe_loop` (30s).
 - Default-off loop ticks: self-heal / ci-watch / dep-update / release-manager / strategy / external-PR poll.
 - API routes: `spawn_agent`, `stop_agent`, `start_intake_session`, `spawn_secretary_session`, `supersede_external_pr`, `get_status_summary`.
@@ -4832,6 +4876,7 @@ stateDiagram-v2
 - `ROBOCO_STRATEGY_ENGINE_ENABLED`, `ROBOCO_RESEARCH_ENABLED`, `ROBOCO_EXTERNAL_PR_REVIEW_ENABLED` / `ROBOCO_INTERNAL_PR_REVIEW_ENABLED` — strategy / research / external-PR poll.
 - `ROBOCO_GROK_MAX_COST_USD` — grok budget kill-switch; `_GROK_RATE_LIMIT_EXIT_CODE=75`, `_GROK_AUTH_EXIT_CODE=78`, `_PROBE_GIVE_UP_THRESHOLD=30`.
 - `ROBOCO_CLAUDE_STUCK_KILL_SECONDS` (default 3600, min 600) — heartbeat-stale kill threshold for non-GROK agents; controls `_maybe_kill_stuck_claude`.
+- `ROBOCO_AUDIT_INTERVAL_SECONDS` (default 21600) — cadence for scheduled auditor sweeps; `0` disables. Controls `_dispatch_audit_work` scheduled path.
 - `ROBOCO_DISPATCHER_INTERVAL_SECONDS` (30), `ROBOCO_INTERACTIVE_IDLE_REAP_SECONDS`, `ROBOCO_GROK_*` backoff constants.
 - `ROBOCO_SANDBOX_DB_ENABLED` (default off) — master switch for the sandboxed per-agent test DB/Redis/Mongo. On-demand model (2026-07-08): nothing is provisioned at spawn — `_sandbox_available_services` only probes+names the project's opted-in set (marker env), and `ensure_sandbox` provisions idempotently when an agent calls the `request_sandbox` do-verb (`ContentActions.request_sandbox`, gateway/content_actions.py). Teardown (`_sandbox_janitor_sweep` + every container-removal path) is unchanged. A project participates only when its `sandbox_services` column is also set. The service set is the `SANDBOX_ENGINES` registry (postgres / redis / mongo); adding an engine needs no orchestrator or env-emitter change.
 - `ROBOCO_DB_NETWORK_ISOLATED` (default off; set by the compose topology that carries the `roboco_data` network) — suppresses the legacy `_append_gate_env` prod-creds injection when postgres/redis are unreachable from the agent mesh.
@@ -4841,7 +4886,9 @@ stateDiagram-v2
 - `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED` (+ `_interval_seconds` default 259200/3d, default off, sub-switch of `x_engine_enabled`) — gates `_x_feature_spotlight_loop`.
 - `ROBOCO_FABLE_MODE_ENABLED` (default off) — gates `_fable_hook_groups` (Claude-path hook install) and, via `roboco/agents/factories/_base.py`, the `fable_doctrine_layer` prompt layer; off = byte-for-byte unchanged spawn path.
 - No flag — the PR-gate turn cut is unconditional: when every child of an assembled parent is terminal, `_try_auto_submit` always runs the owning PM's submit_up/submit_root gate system-side instead of spawning the PM for that turn; a gate rejection (freshness/integrity/AC-coverage/race) falls back to the classic PM closure spawn (the sole safety net), with the reason threaded into the PM's closure prompt. The `pr_gate_auto_submit_enabled` kill-switch that gated this through 0.19.0 has been removed.
-- `ROBOCO_TELEGRAM_ENABLED` (default off) — V1 master switch; `telegram_inbound_enabled` is a sub-switch on top of it, so both plus stored credentials are required before `_telegram_poll_loop` does anything. `ROBOCO_TELEGRAM_INBOUND_ENABLED` (default off, NAS compose arms it `true`) — gates `_telegram_poll_loop`; also makes escalation DMs carry an actionable Approve/Reject/Open keyboard.
+- `ROBOCO_OBSIDIAN_VAULT_ENABLED` (default off; both compose files set `true`) — gates `_dispatch_vault_curation_work` (the vault-curation Auditor-spawn trigger), `_vault_intake_loop`'s outer check, and (V2) `_vault_janitor_loop`'s sole gate. `ROBOCO_VAULT_INTAKE_ENABLED` (default off; both compose files set `true`) — the `_vault_intake_loop`'s own switch, consulted only when the vault master switch is also on. V2: `ROBOCO_VAULT_ARCHIVE_DAYS` (default 30) / `ROBOCO_VAULT_REPORT_ENABLED` (default true) tune the janitor's archival pass and weekly report, both folded into `_vault_janitor_loop` with no separate loop. `ROBOCO_VAULT_KB_ENABLED` (+ `_KB_DIRS` default `RoboCo/Notes` / `_KB_INTERVAL_SECONDS` default 900, default off; NAS compose sets it `true`, registry compose leaves it `false`) — the second, independent switch `_vault_kb_loop` checks alongside the vault master switch.
+- No flag — `_pending_claim_blocked` (the dependency/sequence claim-gate prefilter) is unconditional, mirroring `TaskService.claim`'s own always-on sequence gate; it is a pure dispatch-time optimization (fails open on lookup error) with no behavior change vs. attempting and failing the claim.
+- `ROBOCO_TELEGRAM_ENABLED` (default off) — V1 master switch; `telegram_inbound_enabled` is a sub-switch on top of it, so both plus stored credentials are required before `_telegram_poll_loop` does anything. `ROBOCO_TELEGRAM_INBOUND_ENABLED` (default off, NAS compose arms it `true`) — gates `_telegram_poll_loop`; also makes escalation DMs (not completion DMs) carry an actionable Approve/Reject/Open keyboard. `ROBOCO_TELEGRAM_POLL_INTERVAL_SECONDS` (5.0) / `_POLL_TIMEOUT_SECONDS` (25) / `_MAX_UPDATES_PER_CYCLE` (50) / `_PENDING_REPLY_TTL_SECONDS` (300) tune the poll cadence and the force_reply prompt lifetime.
 
 ## Gotchas
 - Respawn-tracker rows are restored at startup and re-stamped to live values; terminal/missing-task rows are evicted, so a stale row can't gate a fresh task. The upsert is race-free but fire-and-forget persists are ordered by `_respawn_persist_lock` acquisition (= schedule order); a stale persist resolving after a fresh one would otherwise re-burn the strike threshold on restart.
@@ -4853,7 +4900,7 @@ stateDiagram-v2
 - Fire-and-forget `_bg_tasks` (respawn_tracker upserts, audit rows) are drained at shutdown under `_SHUTDOWN_DRAIN_TIMEOUT_SECONDS`; past the deadline they're cancelled, so a cancelled persist degrades to in-memory-only (can only suppress a spawn, never manufacture one).
 - Budget-kill (`_enforce_grok_cost_budget`) finalizes the spawn session BEFORE popping the instance so captured usage/cost isn't lost; the reaper then releases the freed claim.
 - `_should_skip_live_reap` short-circuits like the original `and`: when not live, none of the three kill checks is awaited. The three kill paths are: `_maybe_kill_wedged_grok` (grok idle TTL), `_maybe_kill_stuck_claude` (non-GROK agent stuck past `claude_stuck_kill_seconds`, default 3600s), and `_maybe_recover_broken_gateway`. A Claude agent stuck in a genuine verb loop (still firing gateway verbs, so heartbeat advances) remains spared — the stuck-claude TTL only catches heartbeat-stale containers.
-- `_try_auto_submit` posts to the internal flow API AS the owning PM (`X-Agent-ID`/`X-Agent-Role` headers set to the PM's own identity) — it is not a privilege escalation since the PM already owns that verb, but it means an `auto_submitted` gate action is indistinguishable in the PM's own audit trail from one it issued itself; the `task.auto_submitted` audit event (fired only from `_try_auto_submit`) is the sole marker that the PM turn was skipped.
+- Tests/helpers that construct `AgentOrchestrator` via `AgentOrchestrator.__new__(AgentOrchestrator)` to bypass `__init__` rely on `__new__` pre-initializing `_instances`, `_last_audit_spawn_at`, and `_notification_spawn_at`. Any refactor that moves those initializations out of `__new__` or adds new instance attributes read by `_dispatch_audit_work`/`_is_agent_active`/notification-cooldown paths without also pre-initializing them will re-break those helpers. `__init__` must continue to re-initialize `_instances` so normal construction is unaffected.
 - `_auto_submit_target` requires BOTH `branch_name` and `project_id` on the parent — a MegaTask umbrella (branchless coordination) always fails this check and falls through to the classic PM closure spawn, which is correct (an umbrella assembles no PR) but means the turn cut never applies to the top of a MegaTask tree, only its root-subtasks.
 
 ## Drift from CLAUDE.md
@@ -4871,7 +4918,10 @@ stateDiagram-v2
 > - `6b441e42` Converters: `InvalidIdentifierError` now caught explicitly in `_release_stopped_agent_claim` with a structured warning log instead of a silent broad-except return.
 > - `d1cf6ecb` Wave 1: PR-gate turn cut, task search, trace timestamps, Secretary edits + e2e scenarios 2–3 (#295) — adds `config.pr_gate_auto_submit_enabled` (default True) + `_AUTO_SUBMIT_VERB_BY_ROLE` / `_auto_submit_target` / `_try_auto_submit` / `_closure_handled_without_pm`, wired into `_maybe_spawn_pm_closure` so an assembled, all-children-terminal parent is submitted to the PR gate system-side instead of always spawning the PM for that turn; fires a new `task.auto_submitted` audit event.
 > - **v0.18.0** (2026-07-04): Fable mode — `_fable_hook_groups` (orchestrator.py:1414) appends 5 vendored hook scripts after RoboCo's own inside `_generate_agent_settings`, gated by `fable_mode_enabled` (default off). X feature-spotlight — `_x_feature_spotlight_loop`/`_run_x_feature_spotlight_cycle` (mirrors `_x_mentions_poll_loop`'s shape) + `_dispatch_feature_spotlight_exploration`/`_build_feature_spotlight_prompt` (mirrors the roadmap engine's one-shot board-solo dispatch) open a held Head-of-Marketing exploration task every `x_feature_spotlight_interval_seconds`, gated by `x_feature_spotlight_enabled` (sub-switch of `x_engine_enabled`, both default off).
-> - `3b9fd0e0` (PR #551, Telegram V2, 2026-07-17): adds `_telegram_poll_task` + `_telegram_poll_loop`/`_run_telegram_poll_cycle` (mirrors the `_x_mentions_poll_loop` shape: gated on BOTH `telegram_enabled` AND `telegram_inbound_enabled`, started in `start()`, cancelled in `stop()`) driving the new `TelegramInboundEngine` (`roboco/services/telegram_inbound.py`) — long-polls Telegram `getUpdates` and dispatches `/status` `/queue` `/task` commands plus Approve/Reject button callbacks to the SAME CEO-gated service methods the HTTP routes call. (Note: this section has not been kept current with every intervening orchestrator change since v0.18.0 — e.g. the vault V2 loops and PR #502/#504 `__new__` hardening are documented in the live `docs/map/orchestrator.md` but not mirrored here; not backfilled by this sweep.)
+> - `89b68786` (PR #502, 2026-07-13): Added `AgentOrchestrator.__new__` to pre-initialize `_instances` for `__init__`-bypass construction used by e2e helpers. Fixes `AttributeError` in `_dispatch_audit_work` when the reactive/scheduled auditor dispatch path calls `_is_agent_active` on a bare-`__new__` orchestrator. `__init__` still re-initializes `_instances`, so normal construction is unchanged.
+> - `49b93248` (PR #504, 2026-07-13): Extended `AgentOrchestrator.__new__` to also pre-initialize `_last_audit_spawn_at` and `_notification_spawn_at`. Hardens the `__init__`-bypass construction path against `AttributeError` when the auditor-dispatch and notification-cooldown paths read those attributes; the existing `_fresh_orchestrator` helper's explicit initialization is now defensive rather than required. `__init__` still re-initializes the registries for normal construction.
+> - `fd621f0d` (PR #544, 2026-07-17): adds `_is_video_authoring_spawn` (a fail-closed role/team/task-source probe) and threads a new `task_id` param through `_generate_mcp_config` so `_append_role_scoped_mcp_servers` can register the `playwright` MCP for a ux-dev spawned onto a `source=video` task, alongside its existing fe-qa/ux-qa grant — see `docs/map/video-engine.md` for the composition-authoring side of this wire.
+> - `3b9fd0e0` (PR #551, Telegram V2, 2026-07-17): adds `_telegram_poll_task` + `_telegram_poll_loop`/`_run_telegram_poll_cycle` (mirrors the `_x_mentions_poll_loop` shape: gated on BOTH `telegram_enabled` AND `telegram_inbound_enabled`, started in `start()`, cancelled in `stop()`) driving the new `TelegramInboundEngine` (`roboco/services/telegram_inbound.py`) — long-polls Telegram `getUpdates` and dispatches `/status` `/queue` `/task` commands plus Approve/Reject button callbacks to the SAME CEO-gated service methods the HTTP routes call.
 
 ## Regression Risks
 
@@ -4903,6 +4953,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/runtime/streaming.py | Global reasoning-stream callback holder+setter for live UI streaming | 53 |
 | roboco/runtime/transcript_retention.py | Pure selector of agent-owned old Claude transcripts to prune (never operator dirs) | 74 |
 | roboco/runtime/sandbox.py | `SandboxProvisioner` — throwaway per-agent-spawn engine sibling containers (postgres/redis/mongo via the `SANDBOX_ENGINES` registry in `roboco/models/sandbox.py`, orchestrator-side, never docker-in-agent); generic `_provision_engine` per engine, provision/teardown/janitor_sweep, standalone + unit-testable via an injected `DockerRunner` | 344 |
+| roboco/models/sandbox.py | Pure engine registry — `SandboxEngine` ABC + `_PostgresEngine` (`postgres:16-alpine`) / `_RedisEngine` (`redis:8-alpine`) / `_MongoEngine` (`mongo:8`, mongosh readiness probe, auth db `admin`); `SandboxConnection` / `SandboxInfo` (with `emit_env`); `SANDBOX_ENGINES` + `VALID_SANDBOX_SERVICES` (derived). Adding an engine = one class + one registry line — no provisioner or env-emitter branch. Lives in the models layer so `roboco/models/project.py` can derive the allowlist without importing the runtime layer. | 232 |
 | roboco/llm/__init__.py | Re-exports ToonAdapter/ToonMetrics singletons | 17 |
 | roboco/llm/metrics.py | Singleton holder for TOON token-savings metrics | 21 |
 | roboco/llm/toon_adapter.py | TOON serialization adapter for token-efficient LLM communication (JSON fallback) | 188 |
@@ -5234,18 +5285,20 @@ runtime-providers
 This slice is coherent and well-factored: the provider ABC + registry cleanly isolates the Grok backend while the Anthropic/Ollama/LOCAL paths stay on the built-in spawn (additive seam, no destabilization), and the agent_sdk sidecar centralizes budget/loop/verb-circuit/token state that hooks share. The single baseline-to-HEAD commit (15effce0) landed three genuine hardening fixes — the F006 refresh_token-loss guard with direct-write fallback, the JWT-exp decode so a refreshed token isn't forever rejected, and the /usage/sync path-traversal guard — plus the grok directory-mount fix that resolves the inode-pinning hang. The main integrity concerns are operational rather than structural: the grok directory mount widens RO exposure to host grok state, the 6h expires_at default can burn the single-use refresh_token on the rare double-miss, the in-process SDK state is lost on every container restart (by design, but means verb-circuit/budget counters reset), and ClaudeCodeProvider is dead reference code whose 'default' label in CLAUDE.md is misleading. Interactive intake/secretary parity between Claude and Grok is real (shared IntakeDriver, only the SessionFactory differs). No obviously broken logic was introduced; the regression risks are edge-case behavior shifts, not holes. Recommend re-running the grok auth refresh test against a token that omits expires_in to confirm the JWT-exp path, and a /usage/sync test with a symlinked transcript to confirm the new guard fails loud where appropriate.
 
 ## Purpose
-This slice is the prompt-composition pipeline and the role/team/permission taxonomy that feeds it. At agent spawn the orchestrator resolves an agent's role+team from the canonical foundation-derived maps in agents_config.py, then compose_prompt layers (in order) a tool-load directive, the autogenerated lifecycle verb surface, the universal base rules, an optional fable-mode doctrine layer (`fable_mode_enabled`), the role prompt, the autogenerated per-role verb-signature table, the team prompt, the agent identity, and an optional architectural-conventions ambient block — writing the result to a per-agent .md file the runtime mounts. A separate prompt-injection guard (prompt_guard.py) denies poisoned incoming turns at the interactive input boundary for both Claude-SDK and Grok sessions, mirroring the bash UserPromptSubmit hook. agents_config.py is also the MCP-layer permission taxonomy (HMAC agent tokens, role/team helpers, escalation chain, A2A routing) that gates tool visibility and identity-binding at spawn.
+This slice is the prompt-composition pipeline and the role/team/permission taxonomy that feeds it. At agent spawn the orchestrator resolves an agent's role+team from the canonical foundation-derived maps in agents_config.py, then compose_prompt layers (in order) a tool-load directive, the autogenerated lifecycle verb surface, the universal base rules, an optional fable-mode doctrine layer (`fable_mode_enabled`), an optional ponytail build-laziness doctrine layer (bundled with Fable, role-scoped — developers get the full ladder, other roles get the ethos-only cut), the role prompt, the autogenerated per-role verb-signature table, the team prompt, the agent identity, and an optional architectural-conventions ambient block — writing the result to a per-agent .md file the runtime mounts. A separate prompt-injection guard (prompt_guard.py) denies poisoned incoming turns at the interactive input boundary for both Claude-SDK and Grok sessions, mirroring the bash UserPromptSubmit hook. agents_config.py is also the MCP-layer permission taxonomy (HMAC agent tokens, role/team helpers, escalation chain, A2A routing) that gates tool visibility and identity-binding at spawn.
 
 ## Files
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/agents/factories/_base.py | Layered prompt composer: loads/concatenates tool-directive + lifecycle + base + an optional fable-mode doctrine + role + autogen-verbs + team + identity + ambient layers; exports PROMPTS_BASE_PATH, role/team/builtin-tool maps, compose_prompt, fable_doctrine_layer, conventions_ambient_layer, make_slug | 298 |
+| roboco/agents/factories/_base.py | Layered prompt composer: loads/concatenates tool-directive + lifecycle + base + an optional fable-mode doctrine + an optional ponytail build-laziness doctrine + role + autogen-verbs + team + identity + ambient layers; exports PROMPTS_BASE_PATH, role/team/builtin-tool maps, compose_prompt, fable_doctrine_layer, ponytail_doctrine_layer, conventions_ambient_layer, make_slug | 298 |
 | roboco/agents/factories/__init__.py | One-line re-export shim pointing to _base | 1 |
 | roboco/agents_config.py | 691-line MCP-layer permission/taxonomy module: HMAC agent-token issue/verify, role+team+cell maps derived from foundation, escalation chain, ROLE_PERMISSION_LEVELS, ROLE_SKILLS, A2A routing helpers | 691 |
 | roboco/agent_sdk/prompt_guard.py | Reusable Python port of the bash injection guard: _PATTERNS regex list, detect_injection, refusal_message, CLI main (exit 1 on injection) for the grok entrypoint | 93 |
 | agents/prompts/base.md | Universal base layer: identity separation, gateway-verb-only action, envelope shapes, missing-key cheatsheet, resume-from-briefing, charter alignment, todo rules, ground rules | 93 |
 | agents/prompts/doctrine/fable.md | Vendored Fable-5 behavioral doctrine (from `github.com/rennf93/opus-fable-playbook`, MIT, YAML frontmatter stripped): communication/turn-discipline/autonomy-calibration/honesty/code-discipline/delegation/precedence sections; loaded only when `fable_mode_enabled`, injected right after base.md via `fable_doctrine_layer()` | 47 |
+| agents/prompts/doctrine/ponytail.md | Vendored Ponytail build-laziness doctrine for developers (from the ponytail plugin, MIT, Copyright (c) 2026 DietrichGebert, trimmed, YAML frontmatter stripped): the ladder (YAGNI → reuse-in-this-codebase → stdlib → native-platform → installed-dep → one-line → minimal), the rules, the Intensity table (lite/full/ultra), a 5-point RoboCo preamble that makes the ladder yield to placement / coverage gate / design bar / task hygiene / reviewer feedback, and the `ponytail:` comment convention; loaded only when `fable_mode_enabled`, injected right after the Fable doctrine via `ponytail_doctrine_layer()` for `AgentRole.DEVELOPER` only, with a trailing `**Operative intensity: {ponytail_intensity}.**` directive | 88 |
+| agents/prompts/doctrine/ponytail-ethos.md | Vendored Ponytail ethos-only doctrine for non-developer roles (same source/attribution, trimmed): the ethos rules and the RoboCo preamble (the 6th point guards free-text field obligations), with the code-mechanics rungs (the ladder) and the Intensity table removed so they can't leak into prose artifacts; loaded by `ponytail_doctrine_layer()` for every role except `DEVELOPER`; no intensity directive (ethos runs a fixed restrained stance) | 40 |
 | agents/prompts/roles/developer.md | Developer role prompt: implement-only identity, verb table (give_me_work/i_will_work_on/commit/open_pr/i_am_done/sync_branch/...), workspace path, behind-base -> sync_branch guidance, conventions waiver path, a pointer scoping frontend/ux_ui's `## Design bar` to those teams only | 25176 |
 | agents/prompts/roles/qa.md | QA role prompt: review-only identity, claim_review/pass/fail/i_am_blocked verbs, ac_verdicts per criterion, circuit-breaker guidance | 13355 |
 | agents/prompts/roles/documenter.md | Documenter role prompt: docs-on-same-branch identity, claim_doc_task/commit/i_documented/i_am_blocked verbs, circuit-breaker guidance | 10739 |
@@ -5257,7 +5310,7 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | agents/prompts/roles/secretary.md | Secretary role prompt: CEO chief-of-staff, gated-action confirm protocol, reading-free/prepare-direct/high-impact-bounce discipline | 4338 |
 | agents/prompts/teams/backend.md | Backend team layer: Python/FastAPI/Postgres stack, teammates, uv quality commands | 983 |
 | agents/prompts/teams/frontend.md | Frontend team layer: TS/Next.js stack, pnpm quality commands, `## Design bar` section (taste-skill-distilled layout/typography/motion/spacing rules + 3 tuning dials + an "AI tells to avoid" list) | 976 |
-| agents/prompts/teams/ux_ui.md | UX/UI team layer: design-system focus areas, teammates, `## Design bar` section (same taste-skill basis as frontend.md, plus a design-artifact-to-code handoff bullet) | 1009 |
+| agents/prompts/teams/ux_ui.md | UX/UI team layer: design-system focus areas, teammates, `## Design bar` section (same taste-skill basis as frontend.md, plus a design-artifact-to-code handoff bullet), plus a video-mode override line: video-authoring (`source=video`) tasks are FILMS not UI, so the section's web dials (DESIGN_VARIANCE/MOTION_INTENSITY/VISUAL_DENSITY) do not apply — use `motion/README.md`'s cinematography bar and the vendored `motion/skills/` doctrine instead | 1009 |
 | agents/prompts/identities/ | 19 per-agent identity files (be-dev-1/2, fe-dev-1/2, ux-dev-1/2, be/fe/ux -qa/-doc/-pm, main-pm, product-owner, head-marketing, auditor): YAML id/name/role/team/cell/reports_to + scope blurb; loaded by slug | 0 |
 | agents/prompts/_generated/lifecycle-developer.md | Autogenerated lifecycle verb list for developer (regenerated from lifecycle spec by make lifecycle); lists sync_branch etc. | 1498 |
 | agents/prompts/_generated/lifecycle-main_pm.md | Autogenerated lifecycle verbs for main_pm; submit_root now branch-keyed not task_type-keyed | 2034 |
@@ -5301,6 +5354,7 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | _tool_load_directive_layer | function | roboco/agents/factories/_base.py:149 | Build top-of-prompt 'your tools are ready' block; steers away from ToolSearch and shell-redirect rewrites |
 | _lifecycle_layer | function | roboco/agents/factories/_base.py:187 | Load _generated/lifecycle-<role>.md canonical verb-surface fragment (from lifecycle spec, CI-gated) |
 | fable_doctrine_layer | function | roboco/agents/factories/_base.py:203 | Return the vendored `doctrine/fable.md` doctrine text, or None when `fable_mode_enabled` is off / the file is missing; only caller is compose_prompt, inserted right after base.md |
+| ponytail_doctrine_layer | function | roboco/agents/factories/_base.py | Return the vendored Ponytail build-laziness doctrine, role-scoped and gated on the same `fable_mode_enabled` flag (no separate flag — ponytail is Fable's complementary build-doctrine). Developers → `doctrine/ponytail.md` (full ladder) with a trailing `**Operative intensity: {settings.ponytail_intensity}.**` directive; every other role → `doctrine/ponytail-ethos.md` (ethos-only, no dial). None when the flag is off / the file is missing; only caller is compose_prompt, inserted immediately after the Fable doctrine layer |
 | compose_prompt | function | roboco/agents/factories/_base.py:203 | Compose the full system prompt by concatenating tool-directive, lifecycle, base, role, autogen-verbs, team, identity, ambient layers with '---' separators, skipping empty layers |
 | _AMBIENT_TOTAL_CAP | constant | roboco/agents/factories/_base.py:256 | 3000-char cap on the concatenated conventions ambient block |
 | conventions_ambient_layer | async function | roboco/agents/factories/_base.py:259 | Render per-project architectural-standard ambient block(s), multi-project headed, capped; None when conventions off / no projects |
@@ -5364,7 +5418,7 @@ Identity binding at spawn: agents_config.issue_agent_token(agent_id, role, team)
 
 Injection guard (runtime, per turn): IntakeDriver.send_turn calls detect_injection(text) before sending to the model; on a match it emits an error chunk with refusal_message(reason) and returns without forwarding. The grok one-shot entrypoint runs `python -m roboco.agent_sdk.prompt_guard <text>` and refuses start (exit 1) on a match. The same five patterns run in docker/scripts/user-prompt-hook.sh for non-SDK Claude sessions.
 
-Callers: orchestrator.py:2971 (compose_prompt), orchestrator.py:3018/3029 (conventions_ambient_layer), intake_driver.py:374-377 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
+Callers: orchestrator.py:3238 (compose_prompt), orchestrator.py:3265/3299 (conventions_ambient_layer), intake_driver.py:379-382 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
 
 ## Mermaid
 ```mermaid
@@ -5456,9 +5510,9 @@ prompts-roles-taxonomy slice
 
 | Name | File | Trigger |
 |---|---|---|
-| orchestrator._generate_prompt | roboco/runtime/orchestrator.py | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt (line 2971) |
-| orchestrator._resolve_conventions_ambient | roboco/runtime/orchestrator.py | Async, called from the spawn path before _generate_prompt to resolve the optional ambient block; calls conventions_ambient_layer (line 3029) |
-| IntakeDriver.send_turn | roboco/agent_sdk/intake_driver.py | Per interactive turn (Intake/Secretary Claude-SDK and Grok sessions); calls detect_injection before forwarding to the model (line 374) |
+| orchestrator._generate_prompt | roboco/runtime/orchestrator.py | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt (line 3238) |
+| orchestrator._resolve_conventions_ambient | roboco/runtime/orchestrator.py | Async, called from the spawn path before _generate_prompt to resolve the optional ambient block; calls conventions_ambient_layer (line 3299) |
+| IntakeDriver.send_turn | roboco/agent_sdk/intake_driver.py | Per interactive turn (Intake/Secretary Claude-SDK and Grok sessions); calls detect_injection before forwarding to the model (line 379) |
 | python -m roboco.agent_sdk.prompt_guard | roboco/agent_sdk/prompt_guard.py | CLI invoked by the grok one-shot entrypoint on ROBOCO_INITIAL_PROMPT; exit 1 denies start |
 | make lifecycle | scripts/build_lifecycle_artifacts.py | Developer/CI target regenerating _generated/lifecycle-*.md; CI gates on git diff --exit-code |
 | scripts/regenerate_verb_tables.py | scripts/regenerate_verb_tables.py | Developer target regenerating _generated/<role>.md + verbs.md after role_config/schema changes |
@@ -5466,14 +5520,15 @@ prompts-roles-taxonomy slice
 ## Config Flags
 - ROBOCO_AGENT_AUTH_SECRET (env) — HMAC signing secret for agent/panel tokens; unset => verify_agent_token fail-closes (rejects every token), issue_*_token returns UNSIGNED
 - ROBOCO_CONVENTIONS_ENABLED — gates whether conventions_ambient_layer resolves + injects the architectural-standard ambient block; off => compose_prompt omits the ambient layer entirely
-- ROBOCO_FABLE_MODE_ENABLED (default off) — gates fable_doctrine_layer; off => compose_prompt omits the doctrine layer entirely (byte-for-byte unchanged prompt)
+- ROBOCO_FABLE_MODE_ENABLED (default off) — gates fable_doctrine_layer AND ponytail_doctrine_layer (bundled — no separate ponytail flag); off => compose_prompt omits both doctrine layers entirely (byte-for-byte unchanged prompt)
+- ROBOCO_PONYTAIL_INTENSITY (default full) — string value (lite/full/ultra), NOT a feature flag; selects the operative intensity the developer ponytail doctrine runs at (appended as a `**Operative intensity: ...**` directive for developers only; non-developers run a fixed restrained ethos regardless). `roboco/config.py` `ponytail_intensity`, validated as `Literal["lite","full","ultra"]` at Settings instantiation
 - ROBOCO_SDK_URL (env, default http://localhost:9000) — used by the bash user-prompt-hook.sh (sister guard), not prompt_guard.py directly
 - ROBOCO_INITIAL_PROMPT (env) — the one-shot prompt the grok entrypoint hands to prompt_guard CLI main
 - PROJECT_HOST_PATH (orchestrator) — selects container (/app/prompts-generated) vs host ($TMPDIR/roboco-prompts) output dir for composed prompts
 
 
 ## Gotchas
-- Layer ORDER matters and is load-bearing: tool-directive FIRST, then lifecycle, then base, then an optional fable-mode doctrine layer (`fable_mode_enabled`, `agents/prompts/doctrine/fable.md`), then role, then autogen-verbs, then team, then identity, then ambient. The lifecycle fragment is intentionally before base so the agent reads its allowed verb surface before any other instruction. Reordering would change model attention priority.
+- Layer ORDER matters and is load-bearing: tool-directive FIRST, then lifecycle, then base, then an optional fable-mode doctrine layer (`fable_mode_enabled`, `agents/prompts/doctrine/fable.md`), then an optional ponytail build-laziness doctrine layer (`fable_mode_enabled`, `agents/prompts/doctrine/ponytail.md` for developers / `ponytail-ethos.md` for other roles — bundled with Fable, no separate flag, role-scoped), then role, then autogen-verbs, then team, then identity, then ambient. The lifecycle fragment is intentionally before base so the agent reads its allowed verb surface before any other instruction. Reordering would change model attention priority.
 - Empty/missing layers are silently dropped (compose_prompt skips falsy layers). An unknown role yields _role_layer=None AND _autogen_verbs_layer=None AND _lifecycle_layer=None — the agent would still spawn with just tool-directive + base + identity + ambient, missing its entire role+verb surface. The orchestrator guards upstream (raises ValueError on unknown role), but a typo in _ROLE_LAYER_MAP silently degrades to a roleless prompt rather than failing.
 - _ROLE_LAYER_MAP maps all three board roles (product_owner/head_marketing/auditor) to the SAME board.md file. The per-role distinction (PO vs HoM vs Auditor) comes only from the identity file + the _generated/<role>.md verb table, not from the role layer. A board role missing its identity file would lose its role-specific scope.
 - verbs.md is the aggregate reference doc but is NOT injected at spawn — _base.py loads the per-role _generated/<role>.md file instead. Editing verbs.md has zero prompt effect; it is a documentation/CI artifact only. The per-role files are the load-bearing ones.
@@ -5491,7 +5546,7 @@ prompts-roles-taxonomy slice
 - CLAUDE.md Project Overview states '25 AI agents + 1 human CEO', but agents/prompts/base.md line 3 says '22 AI agents + 1 human CEO'. The base prompt agent count is stale relative to CLAUDE.md (memory notes a 20->22 update on 2026-06-16; CLAUDE.md later moved to 25). A spawned agent reads '22' in its system prompt while the org chart it sees has 25.
 - CLAUDE.md's verb-surface table lists `i_am_blocked` for the qa and documenter roles. The role prompts qa.md and documenter.md ONLY added the i_am_blocked verb row in commit 15effce0 (this slice's baseline diff) — before that the role prompts omitted it even though the gateway accepted it. The prompts are now aligned, but the documenter.md circuit-breaker section previously explicitly said 'you don't have an i_am_blocked verb', which was false vs the gateway and vs CLAUDE.md. Fixed in 15effce0.
 - CLAUDE.md says the lifecycle is defined in roboco/foundation/policy/lifecycle.py with a shim at roboco/enforcement/task_lifecycle.py. _base.py:_lifecycle_layer (line 187-200) docstring says the lifecycle fragment is regenerated from `roboco/lifecycle/spec.py` by `make lifecycle`. The actual source path the regenerator uses is roboco/lifecycle/spec.py (per the docstring), which is not mentioned in CLAUDE.md's lifecycle section — minor doc-path drift, not behavioral.
-- CLAUDE.md describes the prompt composition as 'base + role + team + identity prompts' and an ambient 'Architectural Standard' block at spawn. The actual compose_prompt order (line 239-248) is tool-directive + lifecycle + base + role + autogen-verbs + team + identity + ambient — i.e. THREE additional layers (tool-directive, lifecycle, autogen-verbs) not named in CLAUDE.md's composition description. CLAUDE.md undersells the actual layer stack.
+- CLAUDE.md describes the prompt composition as 'base + role + team + identity prompts' and an ambient 'Architectural Standard' block at spawn. The actual compose_prompt order (line 295-306) is tool-directive + lifecycle + base + fable + ponytail + role + autogen-verbs + team + identity + ambient — i.e. FIVE additional layers (tool-directive, lifecycle, fable, ponytail, autogen-verbs) not named in CLAUDE.md's composition description. CLAUDE.md undersells the actual layer stack.
 - Identity files declare `role: pm` / `role: board` (e.g. identities/main-pm.md, identities/product-owner.md) which do not match the canonical AgentRole enum values (main_pm, cell_pm, product_owner, head_marketing, auditor) that CLAUDE.md and agents_config use. The pipeline ignores this label so it is cosmetic, but it is inconsistent with the canonical taxonomy CLAUDE.md documents.
 
 
@@ -5504,6 +5559,10 @@ prompts-roles-taxonomy slice
 > Post-snapshot updates (since 2026-06-29): **536bbb64** (Chore/all/logical gaps sweep #286) — (a) agents_config.py: `_TEAM_SCOPED_ROLES` deduped: was inline-defined, now re-exported as `_comms.TEAM_SCOPED_ROLES` from `foundation.policy.communications` (values unchanged: dev/qa/doc/cell_pm); (b) _generated/cell_pm.md, main_pm.md, qa.md, verbs.md: BeforeValidator repr cleaned from delegate/pass_review signatures — now renders `list[str] | None = None` instead of the memory-address-bearing BeforeValidator literal; (c) lifecycle spec: `PRECONDITION_ROOT_NOT_CODE` added to `submit_root` extra_preconditions, backing the branch-keyed / planning-typed claim the prompt asserts. **aba57359** ([chore] lifecycle artifacts regenerate, foundation-check) — lifecycle-cell_pm.md, lifecycle-developer.md, lifecycle-documenter.md, lifecycle-main_pm.md, lifecycle-qa.md: `unclaim` description expanded with "A PR reviewer who claimed an external/gate review and cannot finish releases the claim here rather than wedging the lane"; lifecycle-cell_pm.md + lifecycle-main_pm.md: `complete` description clarified "The merge runs BEFORE the complete transition" ordering.
 >
 > **v0.18.0** (2026-07-04): Fable mode adds a 9th conditional compose_prompt layer — `fable_doctrine_layer()` (_base.py:203) injects `agents/prompts/doctrine/fable.md` right after base.md, gated by `fable_mode_enabled` (default off; off = byte-for-byte unchanged prompt). FE/UX-UI design bar: `## Design bar` sections added to `teams/frontend.md` + `teams/ux_ui.md` (taste-skill-distilled dials + rules), plus a scoping pointer in `roles/developer.md` — doc-only, no flag, no compose_prompt change (team/role layers already existed; only their file contents grew).
+>
+> **v0.19.0** (2026-07-05): Ponytail build-laziness doctrine bundled with Fable — `ponytail_doctrine_layer(prompts_path, role)` in `roboco/agents/factories/_base.py`, gated on the same `fable_mode_enabled` flag (no separate flag — ponytail is Fable's complementary build-doctrine), slotted into compose_prompt immediately after `fable_doctrine_layer`. Role-scoped: developers (`AgentRole.DEVELOPER`) → `agents/prompts/doctrine/ponytail.md` (the full ladder: YAGNI → reuse-in-this-codebase → stdlib → native-platform → installed-dep → one-line → minimal, the rules, the Intensity table, the `ponytail:` comment convention) plus a trailing `**Operative intensity: {settings.ponytail_intensity}.**` directive; every other role → `agents/prompts/doctrine/ponytail-ethos.md` (ethos-only — the code-mechanics rungs and the Intensity table are dropped so they can't leak into prose artifacts like task plans / review notes / docs). Both files vendored from the ponytail plugin (MIT, Copyright (c) 2026 DietrichGebert), trimmed, YAML frontmatter stripped, and carry a 5-point RoboCo preamble that makes the ladder yield to the Architectural Conventions Standard (placement), the 80% coverage gate + QA review + self-verification, the per-team design bar, task hygiene, and reviewer feedback — overlap mitigated by scoping, not deletion. `ROBOCO_PONYTAIL_INTENSITY` (lite/full/ultra, default full; `roboco/config.py` `ponytail_intensity`, a string value — NOT a feature flag) selects the developer's operative intensity; non-developers get no dial. Prompt-only — no hooks, no grok-path changes; a flag-off spawn is byte-for-byte unchanged.
+>
+> **PR #544** (2026-07-17, `fd621f0d`): The design bar's web dials (`DESIGN_VARIANCE`/`MOTION_INTENSITY`/`VISUAL_DENSITY`) were silently steering a `source=video` authoring task toward "dense product UI → motion 2-3" — wrong for a marketing film. `agents/prompts/teams/ux_ui.md` gains a one-line video-mode override (see Files above) telling the dev the web dials do not apply to a video-authoring task and pointing it at `motion/README.md`'s cinematography bar + the vendored `motion/skills/` doctrine instead. Doc-only within this slice — the runtime half of the same PR (playwright MCP registered for the video-authoring ux-dev spawn, `_is_video_authoring_spawn`) is documented in `docs/map/video-engine.md` and `docs/map/orchestrator.md`.
 
 ## Regression Risks
 
@@ -5597,13 +5656,14 @@ notification
     ├── sweep_expired_notifications (log stale unacked)
     ├── get_pending_for_agent / get_unacknowledged_for_agent / get_notification_count
     ├── acknowledge / mark_read / bulk_acknowledge / get_ack_status / get_delivery_summary
-    ├── Task-handoff notifications
+    ├── Task-handoff / audit-bridge notifications
     │   ├── notify_pm_of_block / notify_pm_of_docs_complete / notify_pm_of_review_submission
     │   ├── notify_assignee_of_unblock / notify_assignee_of_ceo_rejection
     │   ├── escalate_and_notify (EscalationError/EscalationOutcome)
     │   ├── notify_ceo_of_escalation
+    │   ├── notify_auditor_of_rework (ALERT to the auditor agent on needs_revision)
     │   └── _persist_and_deliver (re-fire guard only, caller commits)
-    ├── Recipient helpers: _resolve_team_pm / _resolve_pm_for_agent_or_team / _get_agent_by_id/slug / _get_ceo_agent
+    ├── Recipient helpers: _resolve_team_pm / _resolve_pm_for_agent_or_team / _get_agent_by_id/slug / _get_ceo_agent / _get_auditor_agent
     ├── API-facing: list_system_notifications / list_for_agent / get_for_recipient_and_mark_read / acknowledge_for_recipient / mark_read_for_recipient
     └── _notify_telegram (best-effort CEO DM; actionable=True on escalation attaches build_action_keyboard)
 telegram_client.py (TelegramClient ABC / NullTelegramClient / LiveTelegramClient)
@@ -5621,8 +5681,8 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 
 ## Dependencies
 - Internal: roboco.config.settings (redis_url), roboco.db.tables (NotificationTable, AgentTable, TaskTable), roboco.db.base.get_db_context, roboco.events (Event, EventType, get_event_bus), roboco.foundation.policy.communications.ACK_REQUIRED_BY_TYPE, roboco.models.base (NotificationPriority, NotificationType, AgentRole), roboco.models.notification.CreateNotificationParams, roboco.services.base (BaseService, ConflictError, NotFoundError), roboco.services.permissions.has_privileged_access, roboco.services.repositories.get_agent_slug, roboco.agents_config (get_escalation_target, get_pm_for_agent, get_pm_for_team), roboco.utils.converters (require_uuid, to_python_uuid)
-- telegram_inbound.py additionally imports: roboco.services.release_proposal (dispatch_approve, get_release_proposal_service, TaskAlreadyCompletedError), roboco.services.roadmap_service, roboco.services.task.get_task_service, roboco.services.telegram_credentials, roboco.services.tiktok_client/tiktok_credentials, roboco.services.video_post_service (VideoPostService, TaskAlreadyCompletedError, VideoCaptionTooLongError), roboco.services.x_credentials, roboco.services.x_post_service (TaskAlreadyCompletedError, XPostBodyTooLongError), roboco.services.x_video_client, roboco.foundation.policy.content.validators.reject_trivial, roboco.seeds.initial_data.AGENT_UUIDS
 - External: sqlalchemy (select, and_, or_, func, event, joinedload, selectinload, with_for_update, IntegrityError, AsyncSession), redis.asyncio (from_url, set NX EX, aclose), asyncio (create_task, get_running_loop), structlog, datetime (UTC, datetime, timedelta), uuid.UUID, dataclasses
+- telegram_inbound.py additionally imports: roboco.services.release_proposal (dispatch_approve, get_release_proposal_service, TaskAlreadyCompletedError), roboco.services.roadmap_service, roboco.services.task.get_task_service, roboco.services.telegram_credentials, roboco.services.tiktok_client/tiktok_credentials, roboco.services.video_post_service (VideoPostService, TaskAlreadyCompletedError, VideoCaptionTooLongError), roboco.services.x_credentials, roboco.services.x_post_service (TaskAlreadyCompletedError, XPostBodyTooLongError), roboco.services.x_video_client, roboco.foundation.policy.content.validators.reject_trivial, roboco.seeds.initial_data.AGENT_UUIDS
 
 ## Entry Points
 
@@ -5630,7 +5690,7 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 |---|---|---|
 | NotificationService.send_*_notification | roboco/services/notification.py | TaskService / orchestrator lifecycle transitions (blocker, qa-ready, docs, a2a, board-review) |
 | NotificationService.send_ack_notification | roboco/services/notification.py | gateway `notify` content verb (PM/Board only) |
-| NotificationDeliveryService.notify_pm_of_block / escalate_and_notify / notify_ceo_of_escalation | roboco/services/notification_delivery.py | api/routes/tasks.py i_am_blocked / escalate / ceo-approval routes |
+| NotificationDeliveryService.notify_pm_of_block / escalate_and_notify / notify_ceo_of_escalation / notify_auditor_of_rework | roboco/services/notification_delivery.py | api/routes/tasks.py i_am_blocked / escalate / ceo-approval routes; TaskService._alert_auditor_of_rework at QA-fail / rework chokepoints |
 | NotificationDeliveryService.acknowledge / list_for_agent / get_for_recipient_and_mark_read | roboco/services/notification_delivery.py | api/routes/notifications.py ACK + list endpoints |
 | sweep_expired_notifications | roboco/services/notification_delivery.py | orchestrator periodic loop (orchestrator.py:5780) |
 | TelegramInboundEngine.run_cycle | roboco/services/telegram_inbound.py | orchestrator `_telegram_poll_loop` (default off, `telegram_enabled` AND `telegram_inbound_enabled`) |
@@ -5653,9 +5713,11 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 - acknowledge publishes NOTIFICATION_ACKED directly to the bus (NOT deferred via after_commit) — unlike deliver. An ACK that is rolled back after publish could emit a phantom ACK event. The ACK path does not use the transactional outbox.
 - list_system_notifications filters pending_ack_only POST-fetch because 'not fully acked' is not SQL-friendly on PostgreSQL array columns. For pending_ack_only=True the SQL `limit` is NOT applied — applying it before the Python filter let a window of newer fully-acked rows mask older unacked ones the operator still needs to act on (correctness bug fixed in 115061f3); the full ack-required set is fetched ordered newest-first, Python-filtered to unacked, then sliced to `limit`. The non-pending branch retains the SQL limit.
 - get_notification_count loads ALL notifications for an agent into memory (no SQL count) to compute total/unread/pending_ack — O(n) per call, no pagination.
-- `TelegramInboundEngine._PENDING_REPLIES` (a force_reply prompt awaiting the CEO's free-text reply) is a per-process, in-memory dict keyed by `(chat_id, prompt_message_id)` — not durable. An orchestrator restart drops any in-flight prompt; the CEO just taps the button again.
-- `_authorized_chat` (chat id must equal the stored credentials' chat id) is the ONLY identity check a Telegram update carries — there is no agent/session token — so it stands in for every CEO-gated route's `require_ceo_role`. `_authorized_sender` is defense-in-depth on top of it: when the update carries a `from` user, its id must ALSO equal the chat id.
-- The getUpdates offset cursor reuses the existing `system_settings` KV store (`telegram_last_update_id`) rather than a new table/migration — a restart resumes from the last-committed offset instead of replaying processed updates.
+- `TelegramInboundEngine._PENDING_REPLIES` (a force_reply prompt awaiting the CEO's free-text reply) is a per-process, in-memory dict keyed by `(chat_id, prompt_message_id)` — not durable. An orchestrator restart drops any in-flight prompt; the CEO just taps the button again. TTL-swept both lazily (on the next prompt) and on expiry at consume-time.
+- `_authorized_chat` (chat id must equal the stored credentials' chat id) is the ONLY identity check a Telegram update carries — there is no agent/session token — so it stands in for every CEO-gated route's `require_ceo_role`. `_authorized_sender` (added in the same wave that added `_authorized_chat`'s callers) is defense-in-depth on top of it: when the update carries a `from` user, its id must ALSO equal the chat id (the supported deployment is a private 1:1 chat); a present-but-mismatched sender is refused, an absent one keeps chat-id-only behavior.
+- The getUpdates offset cursor reuses the existing `system_settings` KV store (`telegram_last_update_id`, validated as a non-negative int) rather than a new table/migration — a restart resumes from the last-committed offset instead of replaying processed updates.
+- `_dispatch_approve`'s `_approve_release` handler must pre-check the proposal's terminal state itself before calling `dispatch_approve` — that function fires the ~40min release execute as a background task and returns immediately with nothing to inspect, so a stale Approve on an already-rejected/published proposal would otherwise report a false "dispatched" success while the service's own guard silently no-ops it.
+
 
 ## Drift from CLAUDE.md
 - CLAUDE.md does not describe the notification_dedup Redis re-fire guard, the transactional-outbox (defer_bus_publish / F107) in notification_delivery, or the DB purpose-dedup in NotificationService — all are real, load-bearing behavior added since the baseline and not reflected in the doc's Services table.
@@ -5671,8 +5733,8 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — added requires_ack from ACK_REQUIRED_BY_TYPE, DB purpose-dedup gated to ack-required types, re-fire guard + notification_dedup.py (new file), transactional-outbox defer_bus_publish in notification_delivery | Major hardening: notifications no longer flood inboxes (Redis re-fire + DB dedup scoped), phantom WebSocket pushes eliminated (deferred bus publish), MENTION/BROADCAST no longer inflate unacked sets (requires_ack=False) |
 | 3aff6e04 | Chore: Close gaps (#285) — follow-on gap closure touching notification.py / notification_dedup.py / notification_delivery.py | Refinement of the #283 changes (exact hunks not isolated per-file in this merge commit; consolidated the dedup/outbox behavior above) |
 
-> Post-snapshot updates (since 2026-06-29): 115061f3 fixed list_system_notifications pending_ack_only correctness: SQL limit is now dropped for that branch so newer fully-acked rows can't mask older unacked ones (see Gotcha update above). **Wave 3** (2026-07-17, PR #547): `CreateNotificationParams` gains `requires_ack: bool | None = None`, consulted in `_create_notification` ahead of the `ACK_REQUIRED_BY_TYPE` default; `send_a2a_notification` gains a `requires_ack: bool = False` kwarg (plus an `str | None` `task_id`, for a conversational DM with no task behind it) that threads through — the only caller passing True is `A2AService._maybe_wake_ceo_recipient` (docs/map/a2a-audit-journal-permissions.md), so its wake row is finally visible to the orchestrator's `_dispatch_a2a_work` `pending_ack_only` poll.
-> `3b9fd0e0`+`11915f36` (PR #551, Telegram V2, 2026-07-17): `3b9fd0e0` adds `telegram_inbound.py` (new file, `TelegramInboundEngine`), extends `telegram_client.py` with `get_updates`/`answer_callback_query`/`edit_message_reply_markup`/`edit_message_text`, adds `actionable=True` to `_notify_telegram` (escalation only) so the DM carries an Approve/Reject/Open keyboard, and wires the orchestrator's `_telegram_poll_loop`. `11915f36` closes a live-reproduced approve-after-reject hole reachable via a stale Telegram button (or the pre-existing HTTP routes for X/video): `ReleaseProposalService.approve()` now refuses CANCELLED/COMPLETED proposals, `.reject()` refuses COMPLETED, and `XPostService`/`VideoPostService.approve()` each add a CANCELLED guard. (Note: this section predates the `61e00832` PR #492 `notify_auditor_of_rework` addition documented in the live `docs/map/notification.md`, not backfilled here.)
+> Post-snapshot updates (since 2026-06-29): 115061f3 fixed list_system_notifications pending_ack_only correctness: SQL limit is now dropped for that branch so newer fully-acked rows can't mask older unacked ones (see Gotcha update above). `61e00832` (PR #492) added `notify_auditor_of_rework()` and `_get_auditor_agent()` to power the reactive auditor dispatch path: HIGH-priority ALERT notifications addressed to the auditor agent are emitted when a task enters `needs_revision` via QA/PR/PM rework chokepoints. **Wave 3** (2026-07-17, PR #547): `CreateNotificationParams` gains `requires_ack: bool | None = None`, consulted in `_create_notification` ahead of the `ACK_REQUIRED_BY_TYPE` default; `send_a2a_notification` gains a `requires_ack: bool = False` kwarg (plus an `str | None` `task_id`, for a conversational DM with no task behind it) that threads through — the only caller passing True is `A2AService._maybe_wake_ceo_recipient` (docs/map/a2a-audit-journal-permissions.md), so its wake row is finally visible to the orchestrator's `_dispatch_a2a_work` `pending_ack_only` poll.
+> `3b9fd0e0`+`11915f36` (PR #551, Telegram V2): `3b9fd0e0` adds `telegram_inbound.py` (new file, `TelegramInboundEngine`), extends `telegram_client.py` with `get_updates`/`answer_callback_query`/`edit_message_reply_markup`/`edit_message_text`, adds `actionable=True` to `_notify_telegram` (escalation only) so the DM carries an Approve/Reject/Open keyboard, and wires the orchestrator's `_telegram_poll_loop`. `11915f36` closes a live-reproduced approve-after-reject hole reachable via a stale Telegram button (or the pre-existing HTTP routes for X/video): `ReleaseProposalService.approve()` now refuses CANCELLED (`already_rejected`) and COMPLETED (`already_published`) proposals via a new `_approve_precheck`, `.reject()` refuses COMPLETED by raising a new `TaskAlreadyCompletedError`, and `XPostService`/`VideoPostService.approve()` each add a CANCELLED pre-lock-and-under-lock guard returning `already_rejected`. Also adds `_authorized_sender` (chat-id auth is defense-in-depth'd with a sender-id check) and widens `_resolve_task`'s search limit 10→50 so a genuine id-prefix hit can't be pushed out by newer title/description matches.
 
 ## Regression Risks
 
@@ -5684,6 +5746,7 @@ telegram_inbound.py (TelegramInboundEngine, V2)
 | all_recipients_recently_notified marks recipients as a side effect on the deciding call | roboco/services/notification_dedup.py:78 | The function SET-NX-marks each fresh recipient while computing the verdict, so the call that DECIDES TO DELIVER also acquires keys for the fresh recipients. A subsequent resend within 60s then sees all-held and suppresses — intended — but it means the very first notification in a window consumes the TTL for recipients who genuinely received it, and a legit follow-up to a subset within 60s is suppressed if all of that subset were marked by the prior send. For BROADCAST this can drop a legitimately re-targeted broadcast within the window. | low |
 | get_notification_count loads all agent notifications into memory | roboco/services/notification_delivery.py:379 | base_query selects all NotificationTable rows where to_agents contains agent_id with no limit, then counts in Python. For a long-running agent this row count grows unbounded; called via get_delivery_summary on the panel it is an O(n) DB read per dashboard load. Not a correctness regression from the baseline but the slice's new dedup reduces new-row growth, masking the unbounded-scan risk. | low |
 | defer_bus_publish listener registration tied to session.info on the AsyncSession — session reuse hazard | roboco/services/notification_delivery.py:116 | _DRAIN_REGISTERED_KEY is set once per AsyncSession and the SQLAlchemy event.listens_for(sync_session, ...) is bound to sync_session. If an AsyncSession is reused for multiple independent transactions (connection-pool recycling), the listener stays registered and fires _schedule_pending_publishes on every subsequent commit even when no new events were deferred — _schedule_pending_publishes pops an empty queue and no-ops, so it is benign, but the listener is never removed and accumulates on the sync_session for the session's lifetime. A long-lived sync_session with many AsyncSession wraps could accumulate listeners. | low |
+| `notify_auditor_of_rework` is best-effort and not deduplicated beyond the Redis re-fire guard | roboco/services/notification_delivery.py:937 | Delivery failures are swallowed and logged by the TaskService caller so the needs_revision transition never blocks. ALERT is ack-required, so each unacked rework event persists until the auditor acks it; repeated QA/PR/PM rejects on the same task emit one ALERT per transition. | low |
 
 ## Health
 This slice is substantially hardened since the baseline: the transactional-outbox for delivery (F107), the Redis re-fire guard, and the ACK_REQUIRED_BY_TYPE-driven requires_ack are all real, well-documented fixes that close prior meltdowns. The main integrity gap is dedup-path fragmentation: NotificationService._create_notification runs two dedup layers (Redis + DB purpose-dedup) while NotificationDeliveryService._persist_and_deliver runs only the Redis layer, so the task-handoff notifications (blocker/escalation/ceo-rejection) are not protected by DB purpose-dedup past the 60s Redis window — a retried i_am_blocked or escalate beyond 60s can re-create an unacked duplicate, the exact inbox-inflation + i_am_idle soft-block the DB dedup was added to prevent. A secondary consistency gap is that acknowledge publishes NOTIFICATION_ACKED directly to the bus instead of through the deferred outbox, leaving the same phantom-event class F107 fixed for deliver. Neither is a crash bug; both are correctness drift between two paths that should behave identically. Code quality is high (terse comments, clear docstrings, explicit race handling), and the slice is well-covered by the orchestrator sweeper integration and route-level callers.
@@ -5989,14 +6052,16 @@ The two choreographer mixins that implement the PR-reviewer's two distinct surfa
 | PRGateMixin | class | roboco/services/gateway/choreographer/pr_gate.py:40 | Mixin: in-path assembled-PR gate verbs (claim_gate_review/pr_pass/pr_fail) + helpers; inherits ChoreographerHelpers only under TYPE_CHECKING |
 | PRGateMixin.claim_gate_review | method | roboco/services/gateway/choreographer/pr_gate.py:43 | Reviewer claims an awaiting_pr_review task without transitioning it (status stays awaiting_pr_review); returns assembled PR diff inline as evidence |
 | PRGateMixin.pr_pass | method | roboco/services/gateway/choreographer/pr_gate.py:115 | Pass the assembled PR: awaiting_pr_review → awaiting_pm_review; delegates to _gate_decision |
-| PRGateMixin.pr_fail | method | roboco/services/gateway/choreographer/pr_gate.py:123 | Fail the assembled PR with concrete issues → needs_revision; rejects empty issues list, formats issues into notes, delegates to _gate_decision |
+| PRGateMixin.pr_fail | method | roboco/services/gateway/choreographer/pr_gate.py:123 | Fail the assembled PR with structured `findings` (the deprecated `issues=[str]` shim still works this release) → needs_revision; validates + count-guards (nudge 5 / hard-cap 10) via `choreographer/findings.py`, inserts one append-only ledger row per finding BEFORE `_record_gate_verdict_for` so the verdict note carries real ids, delegates to `_gate_decision`. See `docs/map/review-findings.md`. |
 | PRGateMixin._gate_preflight | method | roboco/services/gateway/choreographer/pr_gate.py:148 | Ownership + role + spec gate (with self_review_block via actor_slug/original_developer_slug) + free-text soup guard for pr_pass/pr_fail; returns rejection Envelope or (t,agent,role_str,briefing,spec_ctx) |
-| PRGateMixin._record_gate_verdict_for | method | roboco/services/gateway/choreographer/pr_gate.py:229 | Author the canonical pr_review verdict note before the transition; on pr_fail also capture the assembled PR head SHA for the unchanged-PR gate |
+| PRGateMixin._record_gate_verdict_for | method | roboco/services/gateway/choreographer/pr_gate.py:229 | Author the canonical pr_review verdict note before the transition; on pr_fail also capture the assembled PR head SHA for the unchanged-PR gate; on pr_pass with ci_note, stamp the ci_status field into the verdict with evidence the CI guard ran |
 | PRGateMixin._post_gate_review | method | roboco/services/gateway/choreographer/pr_gate.py:245 | Post the gate verdict to the PR itself (best-effort, after the DB transition); resolves reviewer slug |
 | PRGateMixin._deliver_pr_fail_to_owner | method | roboco/services/gateway/choreographer/pr_gate.py:253 | a2a the pr_fail change-requests to the owning PM (best-effort) with a Main-PM-root steer to re-delegate not re-submit; closes the blind re-submit loop |
 | PRGateMixin._gate_decision | method | roboco/services/gateway/choreographer/pr_gate.py:292 | Shared body for pr_pass/pr_fail: preflight + tracing + pr_pass blocked guards + record verdict + run_intent + None-guard for concurrent transition + post-PR + a2a on fail |
-| PRGateMixin._pr_pass_blocked | method | roboco/services/gateway/choreographer/pr_gate.py:373 | Refuse pr_pass on a broken toolchain or block-level convention violation; pr_fail stays available; both guards inert when their flag is off |
-| PRGateMixin._record_gate_verdict | method | roboco/services/gateway/choreographer/pr_gate.py:403 | Persist the gate verdict as the canonical pr_review structured note (passed/failed), with issues slot for pr_fail and head_sha stamp; best-effort (ContentValidationError logged not raised) |
+| PRGateMixin._pr_pass_blocked | method | roboco/services/gateway/choreographer/pr_gate.py:373 | Refuse pr_pass on a broken toolchain, block-level convention violation, or non-green CI on the assembled PR's head commit; returns (rejection_envelope, ci_note). Both toolchain and conventions guards inert when their flags are off; CI guard fails open on configuration gaps |
+| PRGateMixin._ci_status_guard | method | roboco/services/gateway/choreographer/pr_gate.py:520 | Refuse pr_pass unless CI on the assembled PR's head commit is green. Failing/pending/unscheduled CI blocks with reviewer-aware remediation pointing at pr_fail; configuration gaps, unreachable/nonexistent repos, or real API failures on reachable repos each pass through with distinct classifications (no_ci_configured vs error) via git.get_pr_ci_status |
+| PRGateMixin._resolve_ci_status | method | roboco/services/gateway/choreographer/pr_gate.py:480 | Thin wrapper: calls git.get_pr_ci_status, interprets the returned dict (no_ci_configured/pending/failure/error/success), and composes a rejection Envelope if CI must block pr_pass |
+| PRGateMixin._record_gate_verdict | method | roboco/services/gateway/choreographer/pr_gate.py:403 | Persist the gate verdict as the canonical pr_review structured note (passed/failed), with issues slot for pr_fail, head_sha stamp for pr_fail, and ci_status evidence on pr_pass; best-effort (ContentValidationError logged not raised) |
 | PRGateMixin._capture_pr_head_sha | method | roboco/services/gateway/choreographer/pr_gate.py:468 | Best-effort capture of the assembled PR head SHA at pr_fail time via _project_slug_for + git.get_pr_head_sha; returns None on any failure (fail-open) |
 | PRGateMixin._post_gate_review_to_pr | method | roboco/services/gateway/choreographer/pr_gate.py:502 | Post APPROVE/REQUEST_CHANGES on cell→root PRs; always COMMENT on root→master (only CEO merges master); best-effort |
 | PRGateMixin._gate_role_or_rejection | method | roboco/services/gateway/choreographer/pr_gate.py:545 | Parse the role enum from role_str or return a not_authorized rejection Envelope |
@@ -6005,6 +6070,7 @@ The two choreographer mixins that implement the PR-reviewer's two distinct surfa
 | PRGateMixin._gate_review_event_verdict | staticmethod | roboco/services/gateway/choreographer/pr_gate.py:555 | Map gate verb → (review event, verdict label): pr_pass → APPROVE/PASSED, pr_fail → REQUEST_CHANGES/CHANGES REQUESTED — both downgraded to COMMENT on root→master (is_root) |
 | PRGateMixin._gate_review_body | staticmethod | roboco/services/gateway/choreographer/pr_gate.py:568 | Render the gate-review comment body posted to the assembled PR (includes CEO-only footer for root→master PRs) |
 | PRGateMixin._build_gate_review_evidence | method | roboco/services/gateway/choreographer/pr_gate.py:697 | Inline evidence for claim_gate_review: assembled branch diff + pr_number/pr_url + acceptance_criteria + is_assembled_pr |
+| PRGateMixin._gate_diff_parent | method | roboco/services/gateway/choreographer/pr_gate.py:920 | The assembled task's REAL parent branch (via `resolve_parent_branch`, reading the parent TASK's own `branch_name`) or None for a branchless task; threaded as `preferred_parent` into `git.diff` (claim_gate_review evidence) and the conventions guard. Replaces the string-derived `parent_branch_for`, which reused the child branch's own team segment and was wrong across every cross-team hop (e.g. a frontend child of a main_pm root). Fail-open on a lookup error (falls back to the derived-base default), like every other `resolve_parent_branch` call site. |
 | PRReviewerMixin | class | roboco/services/gateway/choreographer/pr_review.py:44 | Mixin: inbound external/fork PR review verbs (claim_pr_review/post_pr_review) + helpers; read-only, never checks out contributor code |
 | PRReviewerMixin.claim_pr_review | method | roboco/services/gateway/choreographer/pr_review.py:47 | Reviewer claims an external-PR review task (pending→in_progress via task.pr_review_claim, branch-gate exempt); returns contributor diff inline read-only |
 | PRReviewerMixin._build_pr_review_content | staticmethod | roboco/services/gateway/choreographer/pr_review.py:124 | Validate summary+findings+event into a PrReviewContent via validate_content, or return an invalid_state Envelope |
@@ -6059,8 +6125,10 @@ pr-gate-review slice
 │       ├── _gate_decision — shared body (preflight→tracing→blocked→record→run_intent→None-guard→post→a2a)
 │       ├── _gate_preflight — ownership/role/spec-gate (self_review_block) + soup guard
 │       ├── _gate_tracing — journal:learning + pr_reviewer_notes min chars
-│       ├── _pr_pass_blocked — toolchain-broken + conventions block guards
-│       ├── _record_gate_verdict_for / _record_gate_verdict — structured pr_review note (+ issues + head_sha)
+│       ├── _pr_pass_blocked — toolchain-broken + conventions block + CI-status guards (returns rejection, ci_note)
+│       ├── _ci_status_guard — refuse pr_pass on failing/pending/unscheduled CI; config gaps + unreachable repos pass through with evidence stamp; real API failures stay fail-closed
+│       ├── _resolve_ci_status — thin wrapper calling git.get_pr_ci_status, interprets result dict, returns rejection Envelope if CI must block
+│       ├── _record_gate_verdict_for / _record_gate_verdict — structured pr_review note (+ issues + head_sha + ci_status)
 │       ├── _re_stamp_pr_fail_head_sha_if_advanced — re-capture head SHA post-transition and re-stamp verdict note if advanced (#189)
 │       ├── _capture_pr_head_sha — best-effort PR head SHA for unchanged-PR gate
 │       ├── _post_gate_review / _post_gate_review_to_pr — PR review post (COMMENT on root→master or MegaTask root-subtask)
@@ -6099,6 +6167,7 @@ pr-gate-review slice
 - ROBOCO_TOOLCHAIN_MATCH_ENABLED (gates _toolchain_broken_guard in _pr_pass_blocked — inert when off)
 - ROBOCO_CONVENTIONS_ENABLED (gates _conventions_guard in _pr_pass_blocked — inert when off)
 - ROBOCO_PR_REVIEWER_NOTES_MIN_CHARS / settings.pr_reviewer_notes_min_chars (tracing gate substantive-note threshold for pr_pass/pr_fail/post_pr_review)
+- CI-status guard is always armed when the toolchain can reach get_pr_ci_status via git service. Configuration gaps (missing project/git_url/token) and unreachable/nonexistent repos (404 or network error) classify as no_ci_configured and pass through with evidence stamp. Genuine API failures on reachable repos classify as error and stay fail-closed (retryable). A project with no CI configured at all also passes through cleanly (no_ci_configured). The guard never blocks pr_pass on a misconfigured project.
 
 
 ## Gotchas
@@ -6109,9 +6178,11 @@ pr-gate-review slice
 - resolve_task_project_slug cell_projects branch sorts by m.team.value — assumes every cell_map mapping has a non-None team with a .value; a malformed mapping would raise AttributeError (uncaught) and bubble out of the slug resolver (which callers tolerate as best-effort None only if wrapped — _capture_pr_head_sha wraps it, _post_gate_review_to_pr does NOT wrap the slug call).
 - _is_hand_formatted_verdict (UPDATED in 536bbb64 #188): previously a plain lower-case substring match that would false-refuse a body quoting a PR's own ## headers (e.g. `> ## Summary`); now uses a regex anchored to line-start (`^[ \t]*## ...`, re.MULTILINE) so a quoted/indented header or a mid-prose mention does not trip the guard. The remaining false-positive window: a reviewer deliberately writing `## Summary` at the start of a line in their free-text body (with findings=[]) — intentionally refused, steering them to the structured-findings path.
 - _record_gate_verdict for pr_fail with issues now writes a templated summary ('In-path PR-review gate requested changes - N issue(s) listed below.') instead of the full notes into the structured note's summary field; the full issues text lives in the issues slot. The GitHub PR post and a2a still use the raw notes string. Readers of notes_structured.pr_review.summary no longer get the verbatim issues.
+- (Revision-findings ledger, uncommitted branch `feature/findings-ledger`) `PrReviewContent.findings` was previously hardcoded to `[]` on every `_gate_verdict_payload` write — it now carries the real validated `Finding` list on a findings-driven `pr_fail`, the first time this slot is ever non-empty. `claim_gate_review`'s evidence (`_build_gate_review_evidence`) additionally carries `revision_findings` (open) and, on a round ≥2 review, `prior_findings` (the full ledger) so a re-reviewing reviewer checks prior findings instead of re-deriving them. `pr_pass` now bulk-verifies (`addressed→verified`) every `origin=pr_gate` finding in the same transaction via `_stamp_gate_findings_verified_or_rejection` — a stamp failure rejects the pass outright, it is NOT best-effort. Full detail: `docs/map/review-findings.md`.
 - claim_gate_review does NOT transition the task (status stays awaiting_pr_review) — this is intentional so pr_pass/pr_fail's source-status still matches. A reviewer who claims but never decides leaves the task assigned but still awaiting_pr_review; the stale-claim reaper path is the recovery.
 - PRReviewerMixin.post_pr_review runs content gates BEFORE _resolve_post_body, but _resolve_post_body itself can return an Envelope (malformed findings) which is then handled — the verdict_consistency_gate already ran on the (event, findings) pair, so a malformed-findings Envelope is a distinct later failure.
 - resolve_task_project_slug was extracted to module-level specifically so _impl.py's _LegacyChoreographer (which does NOT inherit ChoreographerHelpers) can reach it; the mixin method _project_slug_for is now a one-line delegate. Changing the resolver signature would break both the mixin and the _impl.py unchanged-PR gate.
+- Before `_gate_diff_parent` (#444/#454), the gate's evidence diff and the conventions guard derived their base via `parent_branch_for` string surgery on the child's OWN branch name — correct for a same-team hop (cell dev → cell PM) but wrong for a cross-team hop (a frontend child of a main_pm root derives a ref that never existed) and silently fell back to the repo default branch, so the reviewer judged inherited base-branch content as the task's own work. `_gate_diff_parent` is now consulted only when no explicit `base` is given, so the pinned literal-base contract (`base="HEAD~1"`) and every other diff caller (QA/doc/content) are untouched; it is skipped entirely while `conventions_enabled` is off since only the conventions guard consumes it in `_pr_pass_blocked`.
 
 
 ## Drift from CLAUDE.md
@@ -6137,10 +6208,15 @@ pr-gate-review slice
 > Post-snapshot updates (since 2026-06-29): two commits touched this slice.
 > - **536bbb64** (Chore/all/logical gaps sweep #286, 2026-06-30): pr_gate.py — (a) `_post_gate_review_to_pr` wraps slug-resolution in try/except so a malformed cell_map mapping can no longer 500 the reviewer after a committed gate transition (#82 FIXED); (b) `_is_hand_formatted_verdict` regex anchored to line-start so quoted/indented PR headers no longer false-refuse post_pr_review (#188 FIXED); (c) `_re_stamp_pr_fail_head_sha_if_advanced` new method — re-captures head SHA after the transition commits and re-stamps the verdict note only if it advanced, closing the stale-SHA false-allow window (#189 FIXED); (d) `claim_gate_review` passes `skip_dev_guards=True` to `_run_claim_guards` so already_active/paused/lane guards never block a pr_reviewer from claiming a gate review (#192 FIXED); (e) two new static helpers extracted from `_post_gate_review_to_pr`: `_gate_review_event_verdict` and `_gate_review_body`. The unchanged-PR guard's fail-open slug/git error now logs a warning so a regression cannot silently disable the loop-stopper (#5/#222).
 > - **f90565ea** ([sweep] pr_gate: classify MegaTask root-subtask as root #608, 2026-06-30): `_post_gate_review_to_pr` now uses `is_batch_root_subtask` (imported from `roboco.foundation.policy.batch`) in addition to `parent_task_id is None` to identify root→master PRs. A MegaTask root-subtask (parent=umbrella, batch_id set) opens its own root→master PR but previously got APPROVE/REQUEST_CHANGES instead of COMMENT — fix prevents a single-approval branch-protection rule from allowing a non-CEO merge.
+> - **7ff70ab5** (fix(gateway): gate review diffs against the task's real parent branch #444/#454, 2026-07-10): new `_gate_diff_parent` + `preferred_parent` param threaded through `git.diff` / `list_changed_files` / `conventions_check_for_task`, resolving the assembled task's real parent branch from the parent TASK's own `branch_name` instead of string surgery on the child branch name — fixes a live cross-team false-fail (bounced a goals-tab fix three times) where the gate attributed inherited base-branch content to the task under review.
+> - (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: `pr_fail` gains structured `findings` (validated + count-guarded + inserted to the ledger before the verdict note), `pr_pass` gains a same-transaction verify-stamp, and gate evidence gains `revision_findings`/`prior_findings`. See `docs/map/review-findings.md`.
 
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
+|---|---|---|---|
+| CI-status guard reads GitHub check-runs only, not legacy commit-status API | roboco/services/gateway/choreographer/pr_gate.py:520 | _ci_status_guard and get_pr_ci_status read only the check-runs API endpoint. A repo whose only CI signal is the legacy commit-status API would show zero check-runs and be classified as no_ci_configured (passes through). Noted as ponytail-comment in git.py with the upgrade path if a project ever needs it. | low |
+| CI-status classification: config gaps and unreachable repos now explicitly no_ci_configured | roboco/services/git.py:_resolve_ci_head_sha | Missing project/git_url/git-token, or unreachable/nonexistent repo (404 on PR head lookup or network error), all classify as no_ci_configured → pr_pass passes through with evidence stamp. Only genuine GitHub API failures on reachable repos classify as error → pr_pass stays fail-closed (retryable). By design: configuration gaps should not block the gate, but real API failures should fail-closed to avoid false-green verdicts. A deliberately misconfigured project's CI is silently not enforced, with clear evidence in the verdict note. | low |
 |---|---|---|---|
 | self_review_block could fire if a reviewer is also the original developer | roboco/services/gateway/choreographer/pr_gate.py:202 | actor_slug=str(reviewer_agent_id) + original_developer_slug=markers.get_original_developer(t). The comment asserts dormancy because the marker is never set on assembled coordination tasks. If a future change sets the marker on an assembled task (or a reviewer UUID coincides with the recorded dev UUID), pr_pass/pr_fail would be refused as self-review with no remediate path. The defense is correctly wired but unguarded by a test asserting dormancy. | low |
 | ~~resolve_task_project_slug cell_projects branch can raise AttributeError on malformed mapping~~ **FIXED 536bbb64 #82** | roboco/services/gateway/choreographer/pr_review.py:594 | ~~sorted(cell_map, key=lambda m: m.team.value) assumes every mapping has a non-None team with .value. _capture_pr_head_sha wraps the slug call in try/except (fail-open), but _post_gate_review_to_pr calls self._project_slug_for(t) WITHOUT a try/except — a malformed cell_map mapping would raise and abort the verdict PR post (best-effort but the exception escapes the helper, caught only by the outer try in _post_gate_review_to_pr's git.post_pr_review call, NOT the slug resolution).~~ _post_gate_review_to_pr now wraps the slug-resolve call in its own try/except (mirrors _capture_pr_head_sha) — a malformed mapping logs and returns, no longer 500s the reviewer after the committed gate transition. The underlying AttributeError possibility in resolve_task_project_slug remains but is contained. | medium |
@@ -6152,6 +6228,188 @@ pr-gate-review slice
 
 ## Health
 The slice is well-structured and defensively hardened. Both mixins follow the established choreographer pattern (TYPE_CHECKING-only base, spec gate + tracing gate + verb runner, best-effort side-effects after the DB transition, standardized Envelopes). The 15effce0 changes are coherent: the pr_fail loop is closed at three layers (head_sha capture + submit_root hard-block, a2a to owning PM, Main-PM-root steer), the concurrent-transition None-guard plugs a real crash, and the external-PR hand-format guard addresses an observed live defect. Post-snapshot (536bbb64 + f90565ea) hardening: the slug-resolution AttributeError in _post_gate_review_to_pr is now contained by try/except (#82 FIXED), the hand-format guard is now regex-anchored-to-line-start instead of substring (#188 FIXED), the stale-SHA false-allow window is closed by the post-transition re-stamp (#189 FIXED), the pr_reviewer active-task guard is skipped for claim_gate_review (#192 FIXED), and MegaTask root-subtasks correctly get COMMENT on their root→master PR. The main remaining latent concern is the self_review_block dormancy (correctly wired, no test asserting dormancy — low, no known path to activate). Coverage and tracing parity with QA's pass_review/fail_review is maintained.
+
+# RoboCo Map — `review-findings` slice
+
+## Purpose
+
+The revision-findings ledger: the structured replacement for prose-only QA/PR-gate/PM/CEO bounce feedback. Before this slice, a rejection was an `issues: list[str]` flattened into free text (or, for `request_changes`/`ceo_reject`, not even that — a raw `dev_notes` append the next developer handoff note silently overwrote). Now all four failure producers (`fail_review`, `pr_fail`, `request_changes`, `ceo_reject`) validate structured `Finding`s, persist one append-only row per finding to `task_review_findings` (migration 071), render a deterministic per-finding summary into the existing note-mirror columns (`qa_notes`/`pr_reviewer_notes`/the new `pm_notes`), and deliver the open ledger to every downstream consumer — the bounced dev's `evidence()`, a round-2+ reviewer's `claim_review`/`claim_gate_review`, the orchestrator's respawn prompts, the panel's Findings tab, metrics, and vault task notes. Always-on — no feature flag, this is core delivery lifecycle.
+
+## Files
+
+| Path | Role | LOC |
+|---|---|---|
+| `alembic/versions/071_review_findings.py` | Migration: `task_review_findings` table + `tasks.pm_notes` column | 81 |
+| `roboco/db/tables.py` | `TaskReviewFindingTable` ORM class + `TaskTable.pm_notes` column | (slice ~60 lines within a shared file) |
+| `roboco/services/repositories/review_findings.py` | `ReviewFindingsRepository` — insert/list/aggregate/mark_addressed/mark_verified/mark_waived | 164 |
+| `roboco/foundation/policy/content/enums.py` | `Severity` StrEnum (`blocker`/`major`/`minor`/`nit`) | 35 |
+| `roboco/foundation/policy/content/models.py` | `Finding` (extended: `fix`/`evidence`, caps, repo-relative `file`), `QaNote.findings`, new `PmReviewContent` ("pm_review"), `validate_findings` | 614 (whole content-model file) |
+| `roboco/services/content_notes.py` | `_MIRROR_COLUMN["pm_review"] = "pm_notes"` | (1-line addition within a shared file) |
+| `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 256 |
+| `roboco/services/gateway/choreographer/qa.py` | `fail_review` — QA-origin producer | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/_impl.py` | `request_changes` — pm-origin producer; `i_am_done`/`submit_up`/`submit_root` — `resolved_findings` resolution; `complete` — verify-stamp | (slice within a shared file) |
+| `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
+| `roboco/foundation/policy/tracing.py` | `Requirement.FINDINGS_ADDRESSED`, `GateContext.open_finding_ids`, `_check_findings_addressed` | (slice within a shared file) |
+| `roboco/services/gateway/evidence_builder.py` | `EvidencePayload.revision_findings`/`.prior_findings`, `build_task_handoff` findings, `render_findings`, `_extract_qa_review`/`_extract_pm_review` | 393 |
+| `roboco/services/gateway/remediation.py` | `hint_for_open_findings` | 111 |
+| `roboco/runtime/orchestrator.py` | `REVISION_REQUIRED` prompt findings block, PM triage "bounced" block, `_open_findings_prompt_block`/`_revision_bounced_block` | (slice within a shared file) |
+| `roboco/mcp/flow_server.py` | MCP param wiring: `findings`/`resolved_findings` on the 6 affected tools | (slice within a shared file) |
+| `roboco/api/schemas/v1/flow.py` | `ResolvedFindingInput`; `findings`/`resolved_findings` fields on the flow request schemas | (slice within a shared file) |
+| `roboco/api/routes/tasks.py` | `GET /{task_id}/findings` route | (slice within a shared file) |
+| `roboco/api/schemas/tasks.py` | `TaskFindingResponse`/`TaskFindingsSummaryRow`/`TaskFindingsResponse`; `TaskResponse.revision_count`/`.pm_notes` | 1035 (whole schema file) |
+| `roboco/services/metrics.py` | `_REWORK_EVENT_TYPES`/`_REWORK_EVENT_TO_FIELD`, `pm_rejects`/`ceo_rejects` on `AgentReworkRate`, `findings_open`/`findings_total` on `get_task_metrics` | (slice within a shared file) |
+| `roboco/models/metrics.py` | `AgentReworkRate`/`TaskMetrics` gain `pm_rejects`/`ceo_rejects`(/`findings_open`/`findings_total`) | (slice within a shared file) |
+| `roboco/services/vault_assembly.py` | `_resolve_findings` — fail-open findings fetch for `TaskNoteData` | (slice within a shared file) |
+| `roboco/services/vault_writer.py` | `FindingRow`, `_FINDINGS_CAP=20`, `_findings_section` — task note `## Findings` | (slice within a shared file) |
+| `panel/src/components/tasks/task-detail/tab-findings.tsx` | `TabFindings` — per-round findings view | 169 |
+| `panel/src/components/tasks/task-detail/task-header.tsx` | `bounced xN` chip (`revision_count`) | (slice within a shared file) |
+| `panel/src/components/tasks/task-detail/task-tabs.tsx` | "Findings" tab wiring | (slice within a shared file) |
+| `panel/src/hooks/use-tasks.ts` / `panel/src/lib/api/tasks.ts` | `useTaskFindings` / `tasksApi.getFindings` | (slice within shared files) |
+| `panel/src/components/metrics/delivery-tab.tsx` | "PM rejects"/"CEO rejects" rework columns | (slice within a shared file) |
+
+## Key Symbols
+
+| Name | Kind | File:Line | Responsibility |
+|---|---|---|---|
+| `TaskReviewFindingTable` | ORM class | `roboco/db/tables.py` | The append-only ledger row: `task_id`, `origin`, `round`, `author_slug`, `file`/`line`/`severity`/`criterion`/`expected`/`actual`/`fix`/`evidence`, `status`, `addressed_by_commit`, `resolution_note`. `origin`/`severity`/`status` are plain `String` columns, not a native Postgres enum. |
+| `Finding` | Pydantic model | `roboco/foundation/policy/content/models.py:92` | One structured finding, shared by `post_pr_review` (external PRs) and the four internal producers. Caps: `file` ≤300 (repo-relative, no `..`), `line` ≥1, `expected`/`actual` ≤300, `fix` ≤500, `evidence` ≤2000. `criterion` has **no Pydantic `max_length`** despite the DB column being `String(500)` — see Regression Risks. |
+| `PmReviewContent` | Pydantic model | `roboco/foundation/policy/content/models.py` | New content type `"pm_review"` (`summary` + `findings`, no separate `verdict` — the transition to `needs_revision` IS the verdict); mirrors to the new `tasks.pm_notes` column via `_MIRROR_COLUMN`. |
+| `ReviewFindingsRepository` | class | `roboco/services/repositories/review_findings.py:32` | `insert_many` (append rows, one flush, no independent commit), `list_for_task` (default cap 500, newest round first), `status_counts_for_task` (SQL `GROUP BY (origin, status)`, whole ledger — independent of the 500 cap), `mark_addressed` (8-char-prefix match against OPEN rows, no-op on 0 or >1 matches, never raises), `mark_verified` (bulk, by full id), `mark_waived` (exists, unwired — no verb calls it). |
+| `findings_count_guard` / `findings_count_hint` | functions | `roboco/services/gateway/choreographer/findings.py:98,115` | Hard-reject `Envelope` above `FINDINGS_HARD_CAP=10`; non-blocking hint above `FINDINGS_NUDGE_COUNT=5`. |
+| `issues_to_findings` / `merge_findings_and_issues` | functions | `roboco/services/gateway/choreographer/findings.py:57,81` | Legacy `issues: list[str]` shim → file-less `severity=major` findings (deprecation-logged); merges with any `findings` sent in the same call rather than one silently dropping the other. |
+| `next_round` | function | `roboco/services/gateway/choreographer/findings.py:43` | `(task.revision_count or 0) + 1`, read BEFORE the transition — the round a finding written during this call belongs to. |
+| `unknown_finding_criteria` / `criterion_mismatch_rejection` | functions | `roboco/services/gateway/choreographer/findings.py:127,147` | A supplied `criterion` must match an `acceptance_criteria_ids` entry or exact AC text, or the call is rejected. |
+| `insert_and_render` / `render_findings_summary` / `render_finding_line` | functions | `roboco/services/gateway/choreographer/findings.py:186,176,163` | Ledger insert chokepoint (all 3 choreographer producers share it) + the deterministic `[F-id8] file:line (severity) — expected → actual → fix` rendering used for both the structured note's `summary` and the A2A body. |
+| `stamp_addressed_verified` | function | `roboco/services/gateway/choreographer/findings.py:243` | Bulk-promotes `addressed→verified` for one `origin` on a task; not best-effort except at the `ceo_approve` call site. |
+| `fail_review` | async verb | `roboco/services/gateway/choreographer/qa.py` | QA-origin producer: `(qa_agent_id, task_id, issues=None, findings=None)`. |
+| `pr_fail` | async verb | `roboco/services/gateway/choreographer/pr_gate.py` | pr_gate-origin producer, same shape; findings insert happens before `_record_gate_verdict_for` so the verdict note reads real ledger ids. |
+| `request_changes` | async verb | `roboco/services/gateway/choreographer/_impl.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |
+| `ceo_reject` | method | `roboco/services/task.py` | ceo-origin producer — NOT a choreographer verb (no gateway wrapper; the CEO-approval route calls `TaskService.ceo_reject` directly). Validates `reason` via `reject_trivial` (previously an uncaught Pydantic `ValidationError` → 500 on empty/trivial input) and converts it into one `severity=blocker` Finding. |
+| `_bump_coordination_ceo_reject` | method | `roboco/services/task.py` | Manually bumps `revision_count` + inserts a `task.ceo_reject` audit row for a branchless-coordination reject, since that path routes to `PENDING` via `admin_set_status` and never reaches the normal `_emit_status_transition_audit` chokepoint. |
+| `_audit_events_for` | staticmethod | `roboco/services/task.py:997` | Gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`. |
+| `Requirement.FINDINGS_ADDRESSED` / `_check_findings_addressed` | enum + checker | `roboco/foundation/policy/tracing.py` | `VERB_REQUIREMENTS["i_am_done"/"submit_up"/"submit_root"]` gain this — every still-OPEN finding id (computed by the choreographer AFTER applying this call's `resolved_findings`) must be resolved or the call rejects. |
+| `EvidencePayload.revision_findings` / `.prior_findings` | fields | `roboco/services/gateway/evidence_builder.py` | Open findings (any consumer) vs the FULL ledger (`claim_review`/`claim_gate_review` only, for round-2+ review). Both omitted from `as_dict()` when empty. |
+| `build_task_handoff` / `_extract_qa_review` / `_extract_pm_review` | functions | `roboco/services/gateway/evidence_builder.py` | `open_findings` param renders into `handoff["revision_findings"]`; `_extract_qa_review`/`_extract_pm_review` are new siblings of `_extract_pr_review`, each surfacing `{findings_count, verdict?, summary?}` from `notes_structured`. |
+| `hint_for_open_findings` | function | `roboco/services/gateway/remediation.py:36` | Builds the `i_am_done(resolved_findings=[...])` remediation string naming every still-open `[F-id8]`. |
+| `_open_findings_prompt_block` / `_revision_bounced_block` | functions | `roboco/runtime/orchestrator.py` | Capped-10 open-findings render for the `REVISION_REQUIRED` dev prompt and the PM triage "bounced" block; fails open to `""` on any DB error. |
+| `GET /{task_id}/findings` | route | `roboco/api/routes/tasks.py` | `list_for_task` (cap 500) + `status_counts_for_task` (SQL aggregate, whole ledger) → `TaskFindingsResponse{findings, summary, total, truncated}`. No role restriction beyond an authenticated agent context. |
+| `TabFindings` | React component | `panel/src/components/tasks/task-detail/tab-findings.tsx` | Per-round grouping, origin summary badges, severity/status badges, file:line, collapsible evidence, truncation footer. |
+
+## Data Flow
+
+**Producing a finding.** A reviewer/PM/CEO calls their fail verb with `findings: list[dict]` (or the deprecated `issues: list[str]` shim). The verb validates the merged list against `Finding` (`validate_findings`), runs the count guard (hard-reject >10, hint >5) and the criterion-match check, computes `round = revision_count + 1`, inserts one row per finding via `ReviewFindingsRepository.insert_many` (same transaction, no independent commit), renders the deterministic summary, writes the origin's structured note (`QaNote`/`PrReviewContent`/`PmReviewContent`) which mirrors into `qa_notes`/`pr_reviewer_notes`/`pm_notes`, then runs the normal transition to `needs_revision` — which is where `_emit_status_transition_audit` bumps `revision_count` for real and emits the rejector-attributed audit event (`task.qa_fail`/`task.pr_fail`/`task.request_changes`/`task.ceo_reject`). `ceo_reject` on a branchless coordination root is the one path that bypasses this chokepoint (routes via `admin_set_status`), so it manually mirrors the bump + audit emit.
+
+**Resolving a finding.** The bounced dev/PM calls `i_am_done`/`submit_up`/`submit_root` with `resolved_findings: list[{finding_id, commit?, note?}]`. Each entry is applied via `ReviewFindingsRepository.mark_addressed` (8-char-prefix match against currently-OPEN rows, no-op on zero/ambiguous match) BEFORE the tracing gate re-reads still-open ids (write-then-gate) — any id left open rejects the call, naming it. A subsequent same-origin pass (`pass_review`/`pr_pass`/`complete`) bulk-verifies (`addressed→verified`) every `addressed` row of its own origin in the same transaction (not best-effort — a stamp failure fails the verb); `ceo_approve` does the equivalent for `origin=ceo`, but best-effort.
+
+**Delivery.** Every read path that already existed grew a findings slot: the generic `evidence()` do-tool and `i_am_done`'s pre-transition evidence both carry `revision_findings` (open only); `claim_review`/`claim_gate_review` additionally carry `prior_findings` (the full ledger, so a round-2+ reviewer checks prior findings instead of re-deriving them). The orchestrator's respawn path renders open findings inline into the `REVISION_REQUIRED` dev prompt and a "bounced" block prepended to PM triage prompts. The panel's `GET /{task_id}/findings` route backs a dedicated Findings tab plus a `bounced xN` header chip. `MetricsService` extends its rework-by-agent aggregation to the two new audit events and adds a second, separate query for per-task findings counts. Vault task notes render a capped `## Findings` section, fail-open on any fetch error.
+
+## Mermaid
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Produce: fail_review / pr_fail / request_changes / ceo_reject
+    Produce --> Ledger: insert_many (origin, round=revision_count+1, status=open)
+    Produce --> Note: structured note (summary = rendering) -> qa_notes/pr_reviewer_notes/pm_notes
+    Produce --> Transition: needs_revision (audit: task.qa_fail/pr_fail/request_changes/ceo_reject)
+
+    Transition --> Deliver: evidence()/build_task_handoff (revision_findings=open)
+    Deliver --> Resolve: i_am_done/submit_up/submit_root(resolved_findings=[...])
+    Resolve --> Ledger2: mark_addressed (open->addressed)
+    Resolve --> Gate: FINDINGS_ADDRESSED (reject if any still open)
+    Gate --> Reviewed: pass_review/pr_pass/complete
+    Reviewed --> Ledger3: stamp_addressed_verified (addressed->verified, own origin)
+    Reviewed --> RoundN1: claim_review/claim_gate_review (prior_findings=full ledger)
+```
+
+## Logical Tree
+
+```
+review-findings slice
+├── Data model
+│   ├── task_review_findings (migration 071) + tasks.pm_notes
+│   ├── TaskReviewFindingTable (db/tables.py)
+│   └── Finding (extended: fix/evidence/caps) + QaNote.findings + PmReviewContent ("pm_review") + validate_findings
+├── Repository
+│   └── ReviewFindingsRepository (insert_many/list_for_task/status_counts_for_task/mark_addressed/mark_verified/mark_waived[unwired])
+├── Shared producer helpers (choreographer/findings.py)
+│   ├── issues_to_findings / merge_findings_and_issues (shim)
+│   ├── findings_count_guard (hard cap 10) / findings_count_hint (nudge 5)
+│   ├── unknown_finding_criteria / criterion_mismatch_rejection
+│   ├── next_round / insert_and_render / render_findings_summary / render_finding_line
+│   └── open_findings_for_task / full_ledger_for_task / stamp_addressed_verified
+├── Producers
+│   ├── fail_review (qa.py, origin=qa)
+│   ├── pr_fail (pr_gate.py, origin=pr_gate)
+│   ├── request_changes (_impl.py, origin=pm) -> pm_notes
+│   └── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
+├── Resolution
+│   ├── i_am_done / submit_up / submit_root (resolved_findings)
+│   ├── Requirement.FINDINGS_ADDRESSED (tracing.py)
+│   └── pass_review / pr_pass / complete (verify-stamp own origin) + ceo_approve (best-effort)
+├── Delivery
+│   ├── evidence() / build_task_handoff (revision_findings)
+│   ├── claim_review / claim_gate_review (prior_findings)
+│   ├── orchestrator REVISION_REQUIRED + PM triage bounced block
+│   ├── A2A fail bodies (shared rendering)
+│   ├── GET /api/tasks/{id}/findings -> panel Findings tab + bounced xN chip
+│   ├── MetricsService (pm_rejects/ceo_rejects + findings_open/findings_total)
+│   └── vault task note ## Findings section (capped 20, fail-open)
+```
+
+## Dependencies
+
+- `roboco.foundation.policy.content` — `Finding`, `Severity`, `QaNote`, `PrReviewContent`, `PmReviewContent`, `validate_findings`, `CONTENT_MODELS`
+- `roboco.services.content_notes` — `apply_structured_note` + `_MIRROR_COLUMN`
+- `roboco.services.repositories.base` — `BaseRepository`
+- `roboco.foundation.policy.tracing` — `Requirement`, `GateContext`, `VERB_REQUIREMENTS`
+- `roboco.services.gateway.envelope` — `Envelope`
+- `roboco.services.gateway.evidence_builder` — `BRIEFING_LIST_CAP`
+- `roboco.db.tables` — `TaskReviewFindingTable`, `TaskTable.pm_notes`
+- Consumed by: `roboco.services.metrics` (`MetricsService`), `roboco.services.vault_assembly`/`vault_writer`, `roboco.runtime.orchestrator`, `roboco.mcp.flow_server`, `roboco.api.routes.tasks`/`v1.flow_*`, the panel's `task-detail`/`metrics` components
+
+## Entry Points
+
+| Name | File | Trigger |
+|---|---|---|
+| `fail_review` | `choreographer/qa.py` | QA calls `fail(task_id, findings=[...])` via `roboco-flow` MCP / HTTP |
+| `pr_fail` | `choreographer/pr_gate.py` | PR reviewer calls `pr_fail(task_id, findings=[...])` on a claimed gate review |
+| `request_changes` | `choreographer/_impl.py` | Cell/Main PM calls `request_changes(task_id, findings=[...])` on an `awaiting_pm_review` task |
+| `ceo_reject` (`TaskService` method, no verb) | `roboco/services/task.py` | CEO-approval-chain route on `awaiting_ceo_approval` |
+| `i_am_done` / `submit_up` / `submit_root` | `choreographer/_impl.py` | Dev/PM resolves findings via `resolved_findings=[...]` on resubmit |
+| `GET /api/tasks/{id}/findings` | `roboco/api/routes/tasks.py` | Panel's `useTaskFindings` hook, any authenticated agent context |
+
+## Config Flags
+
+None — always-on, core lifecycle (no `ROBOCO_*` gate). The only tunables are compile-time constants: `FINDINGS_NUDGE_COUNT=5` / `FINDINGS_HARD_CAP=10` (`choreographer/findings.py`), the per-field char caps on `Finding` (`content/models.py`), and `_FINDINGS_CAP=20` (vault section, `vault_writer.py`).
+
+## Gotchas
+
+- `Finding.criterion` has **no Pydantic `max_length`** despite the DB column being `String(500)` — a criterion string over 500 chars passes model validation and only fails (or silently truncates, depending on the driver) at the DB layer, not as a clean `ContentValidationError`. Every other Finding field's cap is enforced at both layers; this one isn't.
+- `mark_waived` is a fully-implemented repository method with no caller anywhere in the tree — the `waived` status is unreachable through any verb or route today. A deliberate release-scoped gap (per the design spec), not an oversight, but worth remembering before assuming a finding can ever leave `open`/`addressed`/`verified` in production.
+- The `issues=[...]` shim and `findings=[...]` are **merged**, not mutually exclusive — a caller sending both gets every concern from both lists (subject to the same combined count guard), not one silently dropping the other (an explicit fix over the naive "prefer findings" approach).
+- `round` is computed as `revision_count + 1` and read BEFORE the transition, because `_emit_status_transition_audit` only bumps `revision_count` on ENTRY into `needs_revision` — computing it after the transition would read the wrong (already-bumped) value on a second bounce. `ceo_reject`'s branchless-coordination path computes this manually since it never crosses that chokepoint.
+- `ceo_reject` is not a choreographer verb — it has no `roboco-flow` MCP wrapper; it's called directly by the CEO-approval-chain route against `TaskService`. Searching `choreographer/_impl.py` for it will find nothing.
+- `stamp_addressed_verified` is NOT best-effort at three of its four call sites (`pass_review`, `pr_pass`, `complete`) — a repository error there fails the whole verb before the transition runs. Only the `ceo_approve` call site wraps it in try/except (logged, swallowed) since CEO approval shouldn't hinge on a cosmetic ledger-stamp failure.
+- `_open_finding_ids` (the choreographer helper feeding `GateContext.open_finding_ids`) fails open — a DB lookup error returns `()` (nothing open), never blocking the resubmit on an infrastructure hiccup, but also indistinguishable from "no findings were ever filed."
+
+## Drift from CLAUDE.md
+
+None as of this doc's authoring — CLAUDE.md was updated in the same pass to add the "Revision findings ledger" section and correct the `request_changes` role-transition-table row that previously said "concrete issues."
+
+## Related
+
+- `docs/map/task-service.md` — `ceo_reject`, `_audit_events_for`
+- `docs/map/pr-gate-review.md` — `pr_fail` findings wiring, gate evidence, verify-stamp
+- `docs/map/metrics-observability.md` — rework-by-agent event widening, per-task findings counts
+- `docs/map/vault.md` — task note `## Findings` section
+- `docs/map/panel.md` — Findings tab, `bounced xN` chip, findings route
+- `docs/internal/specs/2026-07-11-revision-findings-ledger.md` — the design spec this slice implements
+
+## Health
+
+The slice is a clean, well-centralized refactor: one shared helper module (`choreographer/findings.py`) is the single chokepoint for validation/capping/rendering/insertion across all three choreographer-level producers, and `ceo_reject` (the one producer outside the choreographer) mirrors the same primitives by hand rather than drifting to its own shape. The append-only ledger design (contrast the overwrite-in-place `notes_structured` it supplements) genuinely fixes the "rounds erase each other" defect the design spec named, and the write-then-gate resolution flow (`resolved_findings` applied before `FINDINGS_ADDRESSED` re-reads) is a sound pattern already proven by the AC-coverage gate it mirrors. The two real gaps — `criterion`'s missing char cap and `mark_waived`'s unwired status — are both small, named, and low-severity (the first is defense-in-depth the DB column still bounds in practice; the second is a deliberate release-scoped deferral, not a broken feature). Best-effort posture is applied precisely where it should be (vault fetch, `ceo_approve` stamp) and withheld where a silent failure would be worse (the three same-transaction verify-stamps).
 
 # RoboCo Map — `metrics-observability` slice
 
@@ -6189,7 +6447,8 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `MetricsService.get_cycle_time_by_stage` | method | metrics.py:529 | Per-stage dwell reconstructed from `audit_log` `task.<status>` events via LEAD window; excludes named qa_fail/pr_fail |
 | `MetricsService.get_bottleneck_distribution` | method | metrics.py:587 | Cumulative dwell per stage + live parked counts + active blockers |
 | `MetricsService.get_rework_metrics` | method | metrics.py:747 | Overall/team/agent rework rate + rework cost from spawn sessions |
-| `MetricsService._rework_by_agent` | method | metrics.py:646 | Owner bounce-rate + reviewer-attributed qa_fails/pr_fails from audit_log |
+| `MetricsService._rework_by_agent` | method | metrics.py:646 | Owner bounce-rate + reviewer-attributed `qa_fails`/`pr_fails`/`pm_rejects`/`ceo_rejects` from audit_log — one aggregated `GROUP BY (agent_id, event_type)` query over all 4 named events (`_REWORK_EVENT_TYPES`/`_REWORK_EVENT_TO_FIELD`), widened from the original qa/pr-only pair. See `docs/map/review-findings.md`. |
+| `MetricsService.get_task_metrics` | method | metrics.py:~881 | Per-task `qa_fails`/`pr_fails`/`pm_rejects`/`ceo_rejects` (one aggregated audit_log query) + `findings_open`/`findings_total` (a second query against `ReviewFindingsRepository.list_for_task`, counted in Python from the fetched rows). |
 | `MetricsService._rework_cost` | method | metrics.py:720 | Sum of `estimated_cost_usd` over spawn sessions of reworked tasks |
 | `MetricsService.get_scorecard` | method | metrics.py:795 | Fused per-agent or per-cell scorecard (completed, cycle, rework, tokens, cost) |
 | `MetricsService._tokens_cost_for` | method | metrics.py:768 | Sum tokens+cost from spawn sessions for an agent slug or team |
@@ -6239,7 +6498,7 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 
 ## Data Flow
 
-Two upstreams feed this slice: (1) the **orchestrator token sweep** (`runtime/orchestrator.py` ~line 5270) reads each active agent's Claude Code transcript via the SDK `/usage/sync`, calls `billing.calculate_cost`, persists a `AgentSpawnSessionTable` row (and a `TokenUsageSnapshotTable` row), then accumulates per-agent totals and publishes a `USAGE_SNAPSHOT` event via `usage_events.publish_usage_snapshot` → `StreamEventBus` → `websocket_bridge` → `/ws/system` panel clients. (2) **task lifecycle transitions** write generic `task.<status>` and named `task.qa_fail`/`task.pr_fail` events to `audit_log` and increment `tasks.revision_count` at the single `TaskService._emit_status_transition_audit` chokepoint.
+Two upstreams feed this slice: (1) the **orchestrator token sweep** (`runtime/orchestrator.py` ~line 5270) reads each active agent's Claude Code transcript via the SDK `/usage/sync`, calls `billing.calculate_cost`, persists a `AgentSpawnSessionTable` row (and a `TokenUsageSnapshotTable` row), then accumulates per-agent totals and publishes a `USAGE_SNAPSHOT` event via `usage_events.publish_usage_snapshot` → `StreamEventBus` → `websocket_bridge` → `/ws/system` panel clients. (2) **task lifecycle transitions** write generic `task.<status>` and named `task.qa_fail`/`task.pr_fail`/`task.request_changes`/`task.ceo_reject` events to `audit_log` and increment `tasks.revision_count` at the single `TaskService._emit_status_transition_audit` chokepoint (the latter two named events are new — the revision-findings ledger, `docs/map/review-findings.md`).
 
 Downstream, the panel hits the API routes: `/api/usage/*` (summary, time-series, by-agent/team/model, projection, cache-efficiency, sessions) → `UsageService`; `/api/dashboard/metrics/{velocity,blockers,team,communication,health,agent,cycle-time,bottlenecks,rework,scorecard/agent,scorecard/team}` and `/api/dashboard/{auditor,ceo,...}` → `DashboardService` + `MetricsService`; `/api/cockpit/{summary,signals}` → `CockpitService`. `MetricsService.get_cycle_time_by_stage` runs a raw SQL window over `audit_log` filtering `event_type = 'task.' || to_status` to exclude named events, deriving per-stage dwell. Rework joins `tasks.revision_count > 0` to completed tasks and `agent_spawn_sessions.task_id` for cost. Telemetry flows separately: the self-heal loop and ci-watch loop construct their source, call `fetch()`, and feed `TelemetrySample`s to their engine's regression detector, which originates a held fix task on a breach.
 
@@ -6374,9 +6633,11 @@ No flags live *inside* this slice's files, but the slice's behavior is gated/par
 
 ## Changes Since Baseline
 
-`git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD -- <scope>` and `git diff --stat` over `roboco/services/metrics.py roboco/services/dashboard.py roboco/services/cockpit.py roboco/services/usage.py roboco/services/usage_events.py roboco/services/telemetry/ roboco/billing/` both return **empty** — no logic-touching commits to this slice since the baseline. The slice is unchanged at HEAD relative to fd10cc86.
+`git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD -- <scope>` and `git diff --stat` over `roboco/services/metrics.py roboco/services/dashboard.py roboco/services/cockpit.py roboco/services/usage.py roboco/services/usage_events.py roboco/services/telemetry/ roboco/billing/` both return **empty** — no logic-touching commits to this slice since the baseline. The slice is unchanged at HEAD relative to fd10cc86 (see the post-snapshot entry below for the one uncommitted change since).
 
 > Post-snapshot updates (since 2026-06-29): commit **536bbb64** ("Chore/all/logical gaps sweep #286") touched `billing/pricing.py`, `billing/__init__.py`, `services/metrics.py`, and `services/usage.py`. Changes: (1) `CostResult` dataclass + `calculate_cost_result` function added to `pricing.py`; `calculate_cost` refactored to a thin wrapper; `__init__.py` now re-exports all three. (2) `_blocked_since_map` helper added to `MetricsService` — reads `task.blocked` audit row as authoritative "blocked since" (#67); `get_blocker_metrics` uses it with `updated_at` fallback. (3) `get_summary` docstring corrected — no longer falsely claims rollup reads (#66). (4) `metrics._blocked_since_map` extracted as a xenon complexity refactor (no behavior change beyond the audit-row fix).
+>
+> (uncommitted, branch `feature/findings-ledger`, 2026-07-11) Revision-findings ledger: `services/metrics.py` and `models/metrics.py` are touched for the first time since baseline — `_rework_by_agent`/`get_task_metrics` widen from 2 to 4 named rework events (`pm_rejects`/`ceo_rejects` join `qa_fails`/`pr_fails`) and `get_task_metrics` gains `findings_open`/`findings_total`; `AgentReworkRate`/`TaskMetrics` (models/metrics.py) gain the matching fields, all defaulted for back-compat. See `docs/map/review-findings.md`.
 
 ## Regression Risks
 
@@ -7041,7 +7302,8 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `XEngine` | class | x_engine.py:150 | Dormant "engine 4": mirrors the release-manager "detect → originate a CEO-gated artifact → hold" shape across THREE responsibilities — release posts, mention replies, feature spotlights |
 | `XEngine._voice_guide` | method | x_engine.py:173 | Baseline house-voice constant (`_HOM_VOICE`) plus the CEO's `company_goals.brand_voice` sample when set — feeds release/reply prompts AND is the mechanism the HoM identity file points to for its own drafting |
 | `XEngine.draft_release_post` | method | x_engine.py:192 | Event-driven hook (called from `ReleaseProposalService.approve`'s publish-success branch); local-model-drafted, deduped per version, capped by `x_max_open_posts` |
-| `XEngine.run_cycle` | method | x_engine.py:255 | Periodic mentions poll; no-op unless `x_engine_enabled` AND `x_replies_enabled`; filters bot-like/low-engagement mentions, dedupes by mention id (`XSeenMentionTable`) |
+| `XEngine.run_cycle` | method | x_engine.py:255 | Periodic mentions poll; no-op unless `x_engine_enabled` AND `x_replies_enabled`; filters bot-like/low-engagement mentions, dedupes by mention id (`XSeenMentionTable`); each mention's text is run through `screen_external_text` before the local-model reply prompt sees it |
+| `screen_external_text` | function | foundation/policy/injection_guard.py:95 | Shared screen-and-neutralize guard for unattended attacker-writable text feeds (X mentions, vault inbox notes): wraps the text in an untrusted-content envelope and flags any matched injection-pattern LINE inline — nothing is removed, so the CEO-facing draft still shows what the source really said |
 | `XEngine.open_feature_spotlight_exploration` | method | x_engine.py:337 | No-ops unless `x_engine_enabled` AND `x_feature_spotlight_enabled`, no creds, a cycle already open, the open-post cap reached, or project unresolvable; else opens ONE held PENDING exploration task for the Head of Marketing (`source=x_feature_exploration`) carrying a `x_seen_features` marker snapshot |
 | `XEngine.materialize_feature_spotlight` | method | x_engine.py:433 | Called from the `propose_feature_spotlight` do-tool: marks the feature slug seen (`XSeenFeatureTable`), creates the held draft (`source=x_feature`, identical shape to a release/reply draft), completes the exploration task |
 | `XPostService.approve` | method | x_post_service.py:92 | The ONLY caller of `x_client.post_tweet`; Redis single-flight lock, re-reads task under lock, idempotent on an already-posted draft (`already_posted`); a CANCELLED draft is refused both pre-lock and re-checked under lock (`already_rejected`) — a stale approve (e.g. a queued Telegram button) can't resurrect a draft the CEO already rejected |
@@ -7522,15 +7784,20 @@ engines-heal-ciwatch-depupdate
 ## Health
 All three engines are small, single-purpose, and follow a deliberately conservative pattern: gate on a default-off flag, read-only detect, bounded+deduped originate of one PENDING task, flush-only (caller commits), never start/approve/merge/deploy. The safety invariants (self_heal HELD behind CEO approve; ci_watch/dep_update READY but ride normal gates; per-git_url dedupe for monorepos; per-cycle + rolling caps) are intact and consistent with CLAUDE.md. Two medium risks present at baseline are now resolved: CEO notify spam (536bbb64 added Redis per-fingerprint dedupe) and multi-workflow monorepo under-count (536bbb64 changed _should_open to dedupe per (git_url, workflow); d34bc1a7 hardened the SQL to normalize git_url accidentals and treat empty-string workflow as NULL). Remaining standing risks are low-severity: fingerprint collision on shared signal_name, dep_update cap-check ordering (non-eligibles consume a loop slot not a cap slot), and ci_watch cell-PM notify swallowing all exceptions. Health is good.
 
+## See also
+- `docs/map/engine-docs-sync.md` — a sibling originate-only engine that opens a docs-update task on release publish (release-triggered, no background loop).
+
 ## Purpose
 The gated release manager: a default-off background loop that deterministically assesses RoboCo's own repo (diff-since-tag → conventional-commit classification → semver bump → readiness gaps) and originates ONE held release PROPOSAL task for the CEO; the CEO's panel approve/reject routes call a fail-closed ReleaseExecutor that bumps versions, runs `make quality`, commits `chore(release): X.Y.Z`, waits for green release-commit CI, and `gh release create`s — aborting before commit on a red gate and before publish on red CI. It never auto-merges or auto-deploys; the CEO is the only actor who can trigger a publish.
+
+**Env-ladder era.** Release ops now target the project's env-ladder **prod rung** (`roboco.models.env_branches.prod_branch`) instead of the raw `projects.default_branch` column — a project with no declared ladder resolves to the same value via the read-time shim, so single-branch projects are unaffected. Before bumping, the executor runs a **full-chain promotion** (`promote_env_chain`) that merges every rung between head and prod, in order, into the prod checkout — the release commits + tags the promoted state, not just prod's own prior tip — and aborts fail-closed (`promotion_failed`) before any bump on a fetch/merge conflict. `release_readiness` diffs `prod..head` (falling back to `last_tag..HEAD` when the prod rung can't be resolved) and cross-checks the last tag against the prod tip (`_tag_drift_gaps`) to flag a hotfix that landed on prod outside the ladder.
 
 ## Files
 
 | Path | Role | LOC |
 |---|---|---|
 | roboco/services/release_executor.py | Fail-closed bump→gate→commit/push→CI→publish orchestrator with a Protocol seam (ReleaseOps) over a writable token-authenticated clone (_GitReleaseOps); idempotent on already-published versions; half-landed (publish_failed) retry skips re-bump/re-commit. | 490 |
-| roboco/services/release_proposal.py | CEO approve/reject glue over the single held proposal task; approve dispatches the ~40min executor as a background asyncio task (returns 202 immediately); heartbeat-guarded Redis fencing-token mutex; closes proposal on published OR already_published; reject records required changes and keeps it held. | 349 |
+| roboco/services/release_proposal.py | CEO approve/reject glue over the single held proposal task; approve runs `_approve_precheck` then dispatches the ~40min executor as a background asyncio task (returns 202 immediately); heartbeat-guarded Redis fencing-token mutex; closes proposal on published OR already_published; approve refuses a CANCELLED (`already_rejected`) or COMPLETED (`already_published`) proposal before ever touching the lock; reject records required changes and keeps it held, raising `TaskAlreadyCompletedError` if the proposal already published. | 547 |
 | roboco/services/release_readiness.py | Pure conventional-commit classification + semver-derivation primitives + the git/filesystem snapshot gatherer + the assess() report builder; serializes/deserializes the report for JSONB storage on the proposal task. | 572 |
 | roboco/services/release_manager_engine.py | Default-off detection loop: per interval, if no proposal is open and the gate is green and changes past threshold, originate ONE PENDING HELD Secretary-owned proposal carrying the readiness report; never publishes. | 239 |
 
@@ -7543,7 +7810,8 @@ The gated release manager: a default-off background loop that deterministically 
 | ReleaseExecutor | class | roboco/services/release_executor.py:70 | Orchestrates the fail-closed release pipeline over a ReleaseOps, aborting on any red step and returning a ReleaseResult. |
 | ReleaseExecutor.execute | method | roboco/services/release_executor.py:76 | Bump→gate→commit/push→CI→publish; short-circuits on already_published; detects half-landed (publish_failed) retry via release_commit_sha and rejoins CI→publish tail without re-bumping; returns gate_failed/ci_failed/commit_failed/publish_failed ReleaseResult on red steps. |
 | _await_proc | function | roboco/services/release_executor.py:208 | Communicate with a subprocess under a deadline; on timeout kill() the child, await proc.wait() to reap it (no zombie), and return non-zero rc so fail-closed branches fire instead of hanging the release loop. |
-| _ReleaseContext | dataclass | roboco/services/release_executor.py:227 | Writable-clone coordinates: slug, default_branch, root Path, auth_url, ci_workflow. |
+| _ReleaseContext | dataclass | roboco/services/release_executor.py:259 | Writable-clone coordinates: slug, prod_branch (the env-ladder prod-rung target, resolved via `roboco.models.env_branches.prod_branch`), root Path, git_url, git_prefix, ci_workflow, env_chain (the head→…→just-below-prod rung branches to promote; empty for a degenerate head==prod ladder). |
+| _GitReleaseOps.promote_env_chain | method | roboco/services/release_executor.py:364 | Full-chain promotion: fetch origin, then merge (`--no-edit`) each `env_chain` branch into the prod checkout in head-first order before the bump; fail-closed RuntimeError on a fetch or merge-conflict; no-op for an empty chain (degenerate ladder). |
 | _GitReleaseOps | class | roboco/services/release_executor.py:238 | Production ReleaseOps on a fresh token-authenticated writable clone: real git/make/gh with per-step subprocess deadlines. |
 | _GitReleaseOps._git | method | roboco/services/release_executor.py:249 | Run a git -C <root> command under _GIT_OP_TIMEOUT_SECONDS, returning (rc, stdout). |
 | _GitReleaseOps.is_already_published | method | roboco/services/release_executor.py:260 | git ls-remote --tags origin v<version>; true if the tag already exists (idempotency guard). |
@@ -7561,19 +7829,21 @@ The gated release manager: a default-off background loop that deterministically 
 | get_release_executor | function | roboco/services/release_executor.py:441 | Build a ReleaseExecutor over a fresh writable clone: resolve the RoboCo project, decrypt token, inject into URL, _prepare_release_clone; ci_workflow set from _resolve_release_ci_workflow(). |
 | _prepare_release_clone | function | roboco/services/release_executor.py:467 | rm -rf and re-clone the release clone at workspaces_root/_release/<slug> on the default branch. |
 | _run | function | roboco/services/release_executor.py:483 | Run a subprocess under _CLONE_TIMEOUT_SECONDS via _await_proc (used by _prepare_release_clone). |
-| ReleaseLockUnavailable | exception | roboco/services/release_proposal.py:39 | Distinct from "lock is held" — Redis itself is unreachable (infra failure, not a concurrent approve). Both paths are fail-closed but the error surface differs. |
-| ReleaseProposalService | class | roboco/services/release_proposal.py:72 | Find/approve/reject the single open release proposal; approve dispatches the executor as a background asyncio task (202), with a heartbeat-guarded fencing-token Redis mutex. |
-| ReleaseProposalService.open_proposal | method | roboco/services/release_proposal.py:77 | Return the first non-terminal release_manager-source task or None. |
-| ReleaseProposalService.approve | method | roboco/services/release_proposal.py:82 | Acquire Redis fencing-token mutex (raises ReleaseLockUnavailable on Redis outage → returns redis_unavailable; returns already_in_progress if lock held); runs executor as asyncio.Task guarded by a heartbeat; marks COMPLETED on published OR already_published; returns lock_lost if heartbeat cancels execute on TTL expiry. |
+| ReleaseLockUnavailable | exception | roboco/services/release_proposal.py:40 | Distinct from "lock is held" — Redis itself is unreachable (infra failure, not a concurrent approve). Both paths are fail-closed but the error surface differs. |
+| TaskAlreadyCompletedError | exception | roboco/services/release_proposal.py:49 | Raised by `reject()` when the proposal is already COMPLETED (published) — a stale reject (e.g. a queued Telegram button on a proposal a concurrent approve already shipped) can't cancel a release that already happened. |
+| ReleaseProposalService | class | roboco/services/release_proposal.py:77 | Find/approve/reject the single open release proposal; approve dispatches the executor as a background asyncio task (202), with a heartbeat-guarded fencing-token Redis mutex. |
+| ReleaseProposalService.open_proposal | method | roboco/services/release_proposal.py:98 | Return the first non-terminal release_manager-source task or None. |
+| ReleaseProposalService._approve_precheck | method | roboco/services/release_proposal.py:103 | Resolve the proposal + stored report, or a canned refusal: CANCELLED (the CEO already rejected it) returns an `already_rejected` ReleaseResult, COMPLETED (already published) returns `already_published` — both WITHOUT ever touching the Redis lock/executor. Split out of `approve()` to keep its own return-count bounded as more terminal-state guards are added. |
+| ReleaseProposalService.approve | method | roboco/services/release_proposal.py:165 | Runs `_approve_precheck` first (returns its canned refusal on a terminal-state proposal); otherwise acquires the Redis fencing-token mutex (raises ReleaseLockUnavailable on Redis outage → returns redis_unavailable; returns already_in_progress if lock held); runs executor as asyncio.Task guarded by a heartbeat; marks COMPLETED on published OR already_published; returns lock_lost if heartbeat cancels execute on TTL expiry. |
 | ReleaseProposalService._finalize_release_lock | method | roboco/services/release_proposal.py:191 | finally-block: cancel heartbeat/execute tasks and compare-and-del the release mutex. |
 | ReleaseProposalService._acquire_release_lock | method | roboco/services/release_proposal.py:207 | SET NX EX the release mutex with a fencing-token value; returns token if acquired, None if held (concurrent approve); raises ReleaseLockUnavailable if Redis is unreachable (caller surfaces redis_unavailable, not already_in_progress). |
 | ReleaseProposalService._release_release_lock | method | roboco/services/release_proposal.py:230 | Compare-and-del the release mutex via Lua CAS — only deletes if the key still holds our fencing token, so a late first-finally can't delete a usurper's lock. |
 | ReleaseProposalService._heartbeat_release_lock | method | roboco/services/release_proposal.py:241 | Compare-and-expire the release mutex (Lua); returns True if we still own it. |
 | ReleaseProposalService._heartbeat_loop | method | roboco/services/release_proposal.py:256 | Refreshes lock TTL while execute is running; if the lock is no longer ours (>TTL Redis outage let it expire), sets lock_lost and cancels execute fail-closed. |
-| ReleaseProposalService.reject | method | roboco/services/release_proposal.py:292 | Record the CEO's required_changes marker on the proposal; keep it held for revision. |
-| get_release_proposal_service | function | roboco/services/release_proposal.py:302 | Construct a ReleaseProposalService bound to a session. |
-| dispatch_approve | function | roboco/services/release_proposal.py:339 | Spawn the ~40min release execute as a background asyncio.Task (registered in _INFLIGHT_APPROVES) so the HTTP route returns 202 immediately; done-callback removes the entry. |
-| _run_approve_background | function | roboco/services/release_proposal.py:317 | Run approve() in a background task with a fresh session (the request session closes on the 202 response); commits on success, rolls back and logs on failure. |
+| ReleaseProposalService.reject | method | roboco/services/release_proposal.py:414 | Record the CEO's required_changes marker on the proposal; keep it held for revision. Raises TaskAlreadyCompletedError when the proposal is already COMPLETED (published) — a stale reject can't lie about an already-public release's real state. |
+| get_release_proposal_service | function | roboco/services/release_proposal.py:442 | Construct a ReleaseProposalService bound to a session. |
+| dispatch_approve | function | roboco/services/release_proposal.py:538 | Spawn the ~40min release execute as a background asyncio.Task (registered in _INFLIGHT_APPROVES) so the HTTP route returns 202 immediately; done-callback removes the entry. |
+| _run_approve_background | function | roboco/services/release_proposal.py:490 | Run approve() in a background task with a fresh session (the request session closes on the 202 response); commits on success, rolls back and logs on failure. |
 | CommitInfo | dataclass | roboco/services/release_readiness.py:89 | One commit since the last release tag: sha, subject, body, pr_number, labels. |
 | ClassifiedChange | dataclass | roboco/services/release_readiness.py:100 | A commit annotated with normalized kind, breaking flag, summary, needs_manual_classification. |
 | _has_breaking_label | function | roboco/services/release_readiness.py:111 | True if any PR label is in the breaking-label set. |
@@ -7619,9 +7889,9 @@ The gated release manager: a default-off background loop that deterministically 
 | get_release_manager_engine | function | roboco/services/release_manager_engine.py:234 | Build a ReleaseManagerEngine with optional injected assessor. |
 
 ## Data Flow
-DETECT loop: the orchestrator spawns `_release_manager_loop` (an asyncio task started in `start()`) which, when `release_manager_enabled`, sleeps `release_manager_interval_seconds` then calls `_run_release_manager_cycle` → opens a DB session → `get_release_manager_engine(db).run_cycle()`. `run_cycle` short-circuits if disabled, if `TaskService.list_open_release_proposals()` already returns one (dedup by `source='release_manager'` + non-terminal status), or if `_ready_report()` returns None. `_ready_report` calls the injected assessor (default `_production_assess`): resolve the RoboCo project by `self_heal_project_slug`, `WorkspaceService.ensure_read_clone`, `GitService.get_latest_ci_conclusion`, then `gather_snapshot(read_clone_root, master_ci_conclusion)` + `assess(snapshot, today)`. `assess` runs `classify_changes` → `derive_bump` → `next_version` → assembles gaps (changelog, version_ref, docs_drift, migration, classification, gate). If green + past threshold, `_originate` creates a PENDING HELD `RELEASE_MANAGER_SOURCE` task owned by `secretary-1` via `TaskService.create(TaskCreateRequest(..., confirmed_by_human=False))`, stores the report dict via `markers.set_release_report`, flushes, and best-effort notifies the CEO. The orchestrator cycle commits the session.
+DETECT loop: the orchestrator spawns `_release_manager_loop` (an asyncio task started in `start()`) which, when `release_manager_enabled`, sleeps `release_manager_interval_seconds` then calls `_run_release_manager_cycle` → opens a DB session → `get_release_manager_engine(db).run_cycle()`. `run_cycle` short-circuits if disabled, if `TaskService.list_open_release_proposals()` already returns one (dedup by `source='release_manager'` + non-terminal status), or if `_ready_report()` returns None. `_ready_report` calls the injected assessor (default `_production_assess`): resolve the RoboCo project by `self_heal_project_slug`, `WorkspaceService.ensure_read_clone` (pinned to the **head** rung's HEAD), `GitService.get_latest_ci_conclusion`, then best-effort fetch the project's **prod** rung into that head-pinned read clone (`_ensure_prod_fetched` — a no-op when prod==head; a fetch failure degrades to the `last_tag..HEAD` baseline rather than aborting) so `origin/<prod>` resolves, then `gather_snapshot(read_clone_root, master_ci_conclusion, prod_branch=prod_for_snapshot)` + `assess(snapshot, today)`. `assess` runs `classify_changes` → `derive_bump` → `next_version` → assembles gaps (changelog, version_ref, docs_drift, migration, classification, gate). If green + past threshold, `_originate` creates a PENDING HELD `RELEASE_MANAGER_SOURCE` task owned by `secretary-1` via `TaskService.create(TaskCreateRequest(..., confirmed_by_human=False))`, stores the report dict via `markers.set_release_report`, flushes, and best-effort notifies the CEO. The orchestrator cycle commits the session.
 
-CEO ACT path: `GET /api/release/proposal` (CEO-only) → `ReleaseProposalService.open_proposal()` → `list_open_release_proposals()[0]`. `POST /proposal/approve` (returns 202 immediately): route calls `dispatch_approve(task_id, session_factory)` which spawns `_run_approve_background` as a background asyncio.Task (the request session closes at the 202 return; the background task opens a fresh session). In `approve(task_id)`: loads the task, verifies `source == RELEASE_MANAGER_SOURCE`, reads `markers.get_release_report`; acquires Redis fencing-token mutex (`SET NX EX 3000`) — raises `ReleaseLockUnavailable` on Redis outage → returns `redis_unavailable`; returns `already_in_progress` if lock is held. Then: `get_release_executor(session)` → `executor.execute(report)` run as `asyncio.Task` while a `_heartbeat_loop` task refreshes the TTL every 60s (cancels execute and returns `lock_lost` if the lock is no longer ours). `get_release_executor` resolves the project + token, `_inject_token_into_url`, `_prepare_release_clone` (rm -rf + fresh clone); `ci_workflow` is set from `_resolve_release_ci_workflow()` (not self_heal_ci_workflow). `execute`: `is_already_published` (ls-remote tag); `release_commit_sha` (half-landed check — if prior release commit on branch, skip re-bump and rejoin CI→publish tail); else: `apply_version_bumps` (replace old version across plan, uv.lock scoped) + `write_changelog_entry` → `run_gate` (make quality, 1800s) → `commit_and_push` (add -A, commit -S, push HEAD:default; RuntimeError → `commit_failed`) → `wait_for_ci` (poll GitService 80×30s, scoped to release_ci_workflow) → `publish_release` (gh release create; RuntimeError → `publish_failed`). On `published` OR `already_published`, the proposal task is set COMPLETED + flushed; on gate/CI/commit/publish failure a ReleaseResult is returned and the proposal stays open. The background task commits the session on success, rolls back on failure. The panel polls `GET /proposal` for the final status. `POST /proposal/reject` → `svc.reject(task_id, required_changes)` writes `markers.set_release_required_changes` and keeps the task held.
+CEO ACT path: `GET /api/release/proposal` (CEO-only) → `ReleaseProposalService.open_proposal()` → `list_open_release_proposals()[0]`. `POST /proposal/approve` (returns 202 immediately): route calls `dispatch_approve(task_id, session_factory)` which spawns `_run_approve_background` as a background asyncio.Task (the request session closes at the 202 return; the background task opens a fresh session). In `approve(task_id)`: loads the task, verifies `source == RELEASE_MANAGER_SOURCE`, reads `markers.get_release_report`; acquires Redis fencing-token mutex (`SET NX EX 3000`) — raises `ReleaseLockUnavailable` on Redis outage → returns `redis_unavailable`; returns `already_in_progress` if lock is held. Then: `get_release_executor(session)` → `executor.execute(report)` run as `asyncio.Task` while a `_heartbeat_loop` task refreshes the TTL every 60s (cancels execute and returns `lock_lost` if the lock is no longer ours). `get_release_executor` resolves the project + token, clones at the **prod rung** (`roboco.models.env_branches.prod_branch`) — not the raw `default_branch` column — computes `env_chain` via `promotion_chain(project)` (the head→…→just-below-prod rungs to promote; empty for a degenerate head==prod ladder), and injects the token as a per-call `http.extraheader` (never into argv); `ci_workflow` is set from `_resolve_release_ci_workflow()` (not self_heal_ci_workflow). `execute`: `is_already_published` (ls-remote tag); `release_commit_sha` (half-landed check — if prior release commit on branch, skip re-bump and rejoin CI→publish tail); else `_run_fresh_release`: `promote_env_chain` (fetch origin + merge each `env_chain` branch into the prod checkout head-first; a fetch/merge failure aborts fail-closed with `promotion_failed` before any bump) → `apply_version_bumps` (replace old version across plan, uv.lock scoped) + `write_changelog_entry` → `run_gate` (make quality, 1800s) → `commit_and_push` (add -A, commit -S, push HEAD:prod_branch; RuntimeError → `commit_failed`) → `wait_for_ci` (poll GitService 80×30s, scoped to release_ci_workflow) → `publish_release` (REST POST to the GitHub releases API — the orchestrator image ships no `gh` binary; RuntimeError → `publish_failed`). On `published` OR `already_published`, the proposal task is set COMPLETED + flushed, and the publish-success path then hands the release to the best-effort post-publish hooks: `_draft_x_post(report)`, `_draft_video(report)`, and `_draft_docs_update(report)`. Each hook catches `Exception` broadly and logs a warning so a drafting/origination failure never affects the already-succeeded release. `_draft_docs_update` invokes `DocsSyncEngine.originate_docs_update(version=report.proposed_version, changelog=report.drafted_changelog)`; if `ROBOCO_DOCS_SYNC_ENABLED` is on and `roboco-website` is registered, exactly one PENDING Main-PM docs-update task is created for that release tag. On gate/CI/commit/publish failure a ReleaseResult is returned and the proposal stays open. The background task commits the session on success, rolls back on failure. The panel polls `GET /proposal` for the final status. `POST /proposal/reject` → `svc.reject(task_id, required_changes)` writes `markers.set_release_required_changes` and keeps the task held.
 
 ## Mermaid
 ```mermaid
@@ -7720,7 +7990,7 @@ release-manager slice
 ```
 
 ## Dependencies
-- Internal: roboco.config.settings (release_manager_enabled, release_min_commits, release_manager_interval_seconds, self_heal_project_slug, self_heal_ci_workflow, workspaces_root, redis_url), roboco.services.task.TaskService / TaskCreateRequest / RELEASE_MANAGER_SOURCE / get_task_service, roboco.services.project.ProjectService / get_project_service, roboco.services.workspace.WorkspaceService / get_workspace_service / ensure_read_clone / _inject_token_into_url, roboco.services.git.GitService / get_git_service / get_latest_ci_conclusion, roboco.services.notification.NotificationService.send_ack_notification, roboco.services.base.BaseService, roboco.foundation.identity.AGENTS (secretary-1, system), roboco.foundation.policy.content.markers (get_release_report, set_release_report, set_release_required_changes, get_release_required_changes), roboco.models.base (TaskStatus, TaskType, Team, Complexity, TaskNature, AgentRole), roboco.db.tables.TaskTable, roboco.api.routes.release (CEO-only routes), roboco.api.schemas.release, roboco.runtime.orchestrator._release_manager_loop / _run_release_manager_cycle
+- Internal: roboco.config.settings (release_manager_enabled, release_min_commits, release_manager_interval_seconds, self_heal_project_slug, self_heal_ci_workflow, workspaces_root, redis_url), roboco.models.env_branches (head_branch, prod_branch, promotion_chain — the env-ladder resolvers backing the release clone/commit/tag target, the full-chain promotion, and the readiness diff baseline), roboco.services.task.TaskService / TaskCreateRequest / RELEASE_MANAGER_SOURCE / get_task_service, roboco.services.project.ProjectService / get_project_service, roboco.services.workspace.WorkspaceService / get_workspace_service / ensure_read_clone / _inject_token_into_url, roboco.services.git.GitService / get_git_service / get_latest_ci_conclusion, roboco.services.notification.NotificationService.send_ack_notification, roboco.services.base.BaseService, roboco.foundation.identity.AGENTS (secretary-1, system), roboco.foundation.policy.content.markers (get_release_report, set_release_report, set_release_required_changes, get_release_required_changes), roboco.models.base (TaskStatus, TaskType, Team, Complexity, TaskNature, AgentRole), roboco.db.tables.TaskTable, roboco.api.routes.release (CEO-only routes), roboco.api.schemas.release, roboco.runtime.orchestrator._release_manager_loop / _run_release_manager_cycle
 - External: asyncio (subprocess, wait_for, sleep), subprocess (sync git in release_readiness), pathlib.Path, re, dataclasses, structlog, redis.asyncio, sqlalchemy.ext.asyncio.AsyncSession, fastapi (routes)
 
 ## Entry Points
@@ -7756,7 +8026,7 @@ release-manager slice
 - The proposal is created with status=PENDING and confirmed_by_human=False but the release-manager loop NEVER cancels it on a subsequent cycle — list_open_release_proposals dedups by non-terminal status, so a stale PENDING proposal blocks all future proposals until the CEO acts. There is no expiry/reaper for an abandoned proposal.
 - apply_version_bumps does a naive str.replace(old, new) on every non-uv.lock, non-CHANGELOG file in the plan. If the current version string appears as a substring of an unrelated value in any bump file (e.g. a comment, a path), it gets clobbered. The bump plan is derived from the previous release commit's files, so this is bounded but not surgical.
 - _prepare_release_clone rm -rf's workspaces_root/_release/<slug> with no locking at the filesystem level — the Redis mutex is the only guard, and it is per-proposal-task, not per-clone-path. Two different proposals for the same slug (impossible while dedup holds, but dedup is by source+non-terminal, so a CANCELLED + new PENDING could overlap) would race the rm -rf.
-
+- `_approve_precheck`'s two refusals (already_rejected / already_published) exist because a live-reproduced hole let a stale approve resurrect a proposal the CEO had already rejected or that a concurrent approve had already published — the callback surface that made this reachable is Telegram's inline Approve button, which targets a proposal by id regardless of its current status (a stale, still-clickable button in an old chat message), but the same hole was equally reachable by replaying the HTTP route, so the fix is in the service, not the Telegram layer.
 
 ## Changes Since Baseline
 
@@ -7772,6 +8042,8 @@ release-manager slice
 > - 05616607 [chore] logical-gaps: release-proposal already_published closes proposal + heartbeat-lock-loss cancels execute — adds `ReleaseLockUnavailable` exception (Redis outage → `redis_unavailable` result, not `already_in_progress`); fencing-token compare-and-del (`_RELEASE_LOCK_RELEASE_SCRIPT` Lua) + compare-and-expire heartbeat (`_RELEASE_LOCK_HEARTBEAT_SCRIPT` Lua, `_heartbeat_loop`, `_heartbeat_release_lock`); `lock_lost` result when heartbeat detects TTL expiry and cancels execute fail-closed; `_finalize_release_lock` finally helper; approve now closes proposal on `already_published` in addition to `published`.
 > - 0bf6c848 [chore] logical-gaps: release approve async dispatch (202) — adds `dispatch_approve` + `_run_approve_background` + `_INFLIGHT_APPROVES` registry; POST /proposal/approve returns 202 immediately; the ~40min execute runs in a background asyncio.Task with a fresh session; panel polls GET /proposal for final status.
 > - b3558d4e [chore] complexity: split 5 C-rank blocks to <=B for the xenon gate — refactored large methods in executor/proposal for xenon compliance; no behavior change.
+> - 8621d01d / fe9940de / d80dfb8b (#534, env-branches ladder) — replaces `default_branch`-keyed release targeting: `_ReleaseContext` gains `prod_branch` (renamed from `default_branch`) + `env_chain`; `get_release_executor` resolves the clone/commit/tag target via `roboco.models.env_branches.prod_branch` and computes `env_chain` via `promotion_chain`; `_GitReleaseOps` gains `promote_env_chain` (fetch + head-first merge of `env_chain` into the prod checkout, fail-closed `promotion_failed` on conflict), run as the first step of `_run_fresh_release`, before any version bump; `release_readiness.gather_snapshot` takes an optional `prod_branch` and diffs `prod..head` (falling back to `last_tag..HEAD` when unset) with a new `_tag_drift_gaps` check (last-tag sha vs. prod tip); `release_manager_engine._production_assess` best-effort fetches the prod rung into the head-pinned read clone before gathering the snapshot. A project with no declared ladder is unaffected (the shim resolves prod_branch/head_branch to the same `default_branch` value).
+> - `11915f36` (PR #551, Telegram V2 security follow-up) — `_approve_precheck` (new) makes `approve()` refuse a CANCELLED proposal (`already_rejected`) or a COMPLETED one (`already_published`) BEFORE touching the Redis lock/executor; `reject()` now raises the new `TaskAlreadyCompletedError` on a COMPLETED proposal instead of silently cancelling an already-public release. Closes a live-reproduced approve-after-reject hole reachable via a stale Telegram Approve button (or a replayed HTTP call).
 
 ## Regression Risks
 
@@ -7785,6 +8057,264 @@ release-manager slice
 
 ## Health
 The slice is well-structured: deterministic correctness lives in pure primitives (release_readiness) with a Protocol seam (ReleaseOps) making the fail-closed ordering unit-testable, and the detect→originate→hold→CEO-approve→publish separation is clean and matches CLAUDE.md. Post-snapshot hardening rounds (2759edf7, 05616607, 0bf6c848) resolved all four previously-flagged regression risks: (1) the Redis mutex TTL race is closed by a heartbeat loop that keeps the TTL refreshed and aborts execute fail-closed on lock-loss; (2) commit_and_push/publish_release RuntimeErrors are now caught by execute and returned as structured commit_failed/publish_failed results (no 500); (3) Redis outage now returns redis_unavailable (not already_in_progress) so the CEO knows to fix Redis; (4) the zombie-on-timeout is fixed by awaiting proc.wait(). The approve route is now async-202 with a background dispatcher (dispatch_approve). The half-landed (publish_failed) retry path (release_commit_sha) closes the prior gap where a second CEO approve re-inserted the changelog entry and created a duplicate release commit. The release CI gate is decoupled from self_heal_ci_workflow via a dedicated settings.release_ci_workflow. One low-severity known-by-design item remains: first-release version_ref gap suppression (intentional). release_manager_engine.py and release_readiness.py are unchanged since 15effce0.
+
+# RoboCo Slice Map — `engine-docs-sync`
+
+Slice key: `engine-docs-sync`. Repo root: `/Users/renzof/Documents/GitHub/ZZZ/roboco-master/roboco`. Scope: `roboco/services/docs_sync_engine.py`, the docs-sync touch points in `roboco/services/release_proposal.py` and `roboco/services/task.py`, and the release-version marker in `roboco/foundation/policy/content/markers.py`.
+
+## Purpose
+
+A default-off, release-triggered task-origination engine that keeps the public docs at docs.roboco.tech in sync with what actually ships. On a successful release publish, if `docs_sync_enabled` is on and the `roboco-website` project is registered, the engine opens exactly one PENDING Main-PM planning task per release tag against `roboco-website`. The task brief carries the release's drafted CHANGELOG section plus a pointer to the divergence checklist surfaced by `ReleaseReadinessReport`. The engine never writes docs itself, never starts/approves/merges, and has no background loop — it is invoked synchronously from `ReleaseProposalService.approve()` after the release is already published. Like the other autonomy engines, it is conservative: gate on a default-off flag, dedupe per release version, bound concurrently-open and per-cycle originations, and flush-only (the caller owns the commit).
+
+## Files
+
+| Path | Role | LOC |
+|---|---|---|
+| `roboco/services/docs_sync_engine.py` | `DocsSyncEngine` and `get_docs_sync_engine` — release-triggered origination of one docs-update task per release tag | 188 |
+| `roboco/services/release_proposal.py` | Publish-success seam: `ReleaseProposalService._draft_docs_update` hands the release report to `DocsSyncEngine` best-effort | 18 |
+| `roboco/services/task.py` | `DOCS_SYNC_SOURCE` constant and `TaskService.list_open_docs_sync_tasks(version=None)` dedupe query | 31 |
+| `roboco/foundation/policy/content/markers.py` | `DOCS_SYNC_RELEASE_VERSION` marker + `get/set_docs_sync_release_version` accessors | 17 |
+| `roboco/config.py` | `docs_sync_enabled`, `docs_sync_max_open_tasks`, `docs_sync_max_per_cycle` settings | 25 |
+| `tests/integration/services/test_docs_sync_engine.py` | Mocked integration tests for enabled / disabled / missing-project / dedupe / cap paths | 224 |
+| `tests/unit/services/test_release_proposal_docs_sync_hook.py` | Unit test that `ReleaseProposalService._draft_docs_update` is called on publish success and swallows engine failures | — |
+
+## Key Symbols
+
+| Name | Kind | File:Line | Responsibility |
+|---|---|---|---|
+| `_DOCS_PROJECT_SLUG` | constant | `roboco/services/docs_sync_engine.py:50` | The registered project slug that hosts the public docs (`roboco-website`). Engine no-ops with a warning when this project is missing. |
+| `_DIVERGENCE_CHECKLIST_POINTER` | constant | `roboco/services/docs_sync_engine.py:53` | Text pointer included in every originated task, telling the assignee to review the release-readiness `docs_drift` gaps. |
+| `DocsSyncEngine` | class | `roboco/services/docs_sync_engine.py:61` | Release-triggered docs-update task origination service. |
+| `DocsSyncEngine.__init__` | method | `roboco/services/docs_sync_engine.py:66` | Initializes the per-instance `_per_cycle_originated` counter. Reset per engine instance because `release_proposal.py` constructs a fresh engine per publish invocation. |
+| `DocsSyncEngine.originate_docs_update` | method | `roboco/services/docs_sync_engine.py:72` | Public entry point: returns the created `TaskTable` or `None` when disabled / missing project / either cap reached / already open for this version. Flushes; caller commits. |
+| `DocsSyncEngine._per_cycle_originated` | attribute | `roboco/services/docs_sync_engine.py:70` | Instance counter tracking how many docs-sync tasks this engine has originated. Guarded against `settings.docs_sync_max_per_cycle`. |
+| `DocsSyncEngine._already_open_for_version` | method | `roboco/services/docs_sync_engine.py:132` | Dedupe check using `TaskService.list_open_docs_sync_tasks(version=...)` filtered by the `docs_sync_release_version` marker. |
+| `DocsSyncEngine._open_task` | method | `roboco/services/docs_sync_engine.py:139` | Builds the `TaskCreateRequest` (Main-PM planning root, `confirmed_by_human=True`, source `docs_sync`) and stamps the release-version marker. |
+| `get_docs_sync_engine` | function | `roboco/services/docs_sync_engine.py:185` | Factory constructing a `DocsSyncEngine` bound to a session. |
+| `DOCS_SYNC_SOURCE` | constant | `roboco/services/task.py:600` | Source tag value `"docs_sync"` used for dedupe queries and task creation. |
+| `list_open_docs_sync_tasks` | method | `roboco/services/task.py:1577` | Returns non-terminal `docs_sync` tasks, optionally scoped to one release version via JSONB marker filtering in SQL. |
+| `get_docs_sync_release_version` / `set_docs_sync_release_version` | functions | `roboco/foundation/policy/content/markers.py:412,417` | Read/write the `docs_sync_release_version` marker used for per-release dedupe. |
+
+## Data Flow
+
+`ReleaseProposalService.approve()` runs `ReleaseExecutor.execute(report)` in a background task. When the executor returns `published` or `already_published`, `approve()` marks the proposal `COMPLETED`, flushes, and calls the best-effort post-publish hooks in sequence: `_draft_x_post(report)`, `_draft_video(report)`, `_draft_docs_update(report)`. Each catches `Exception` and logs a warning so a failure in any hook cannot roll back or otherwise affect the already-succeeded release.
+
+`_draft_docs_update` imports `get_docs_sync_engine` locally and calls `originate_docs_update(version=report.proposed_version, changelog=report.drafted_changelog)`. Inside the engine:
+
+1. **Flag gate**: returns `None` immediately if `settings.docs_sync_enabled` is `False`.
+2. **Project resolution**: looks up `roboco-website` via `ProjectService.get_by_slug`. If missing, logs a warning and returns `None`.
+3. **Rolling cap**: counts all non-terminal `docs_sync` tasks via `list_open_docs_sync_tasks()`; if the count is already at `docs_sync_max_open_tasks` (default 3), logs and returns `None`.
+4. **Per-cycle cap**: checks an instance-level counter (`_per_cycle_originated`) against `docs_sync_max_per_cycle` (default 1). If the counter is already at the cap, logs and returns `None`. The counter resets per engine instance; `release_proposal.py` constructs a fresh instance per publish invocation.
+5. **Per-release dedupe**: calls `list_open_docs_sync_tasks(version=version)` filtering on the `docs_sync_release_version` JSONB marker in SQL; if any row exists, logs and returns `None`.
+6. **Originate**: creates a `TaskCreateRequest` with `source=DOCS_SYNC_SOURCE`, `team=Team.MAIN_PM`, `assigned_to=AGENTS["main-pm"].uuid`, `created_by=AGENTS["system"].uuid`, `task_type=PLANNING`, `nature=TECHNICAL`, `complexity=MEDIUM`, `status=PENDING`, `confirmed_by_human=True`, `project_id=roboco-website.id`. The description includes the release version, the drafted CHANGELOG section, the divergence-checklist pointer, and a note that the task is a Main-PM coordination root ready to decompose and delegate.
+7. **Marker stamp**: calls `markers.set_docs_sync_release_version(task, version)` and flushes.
+
+The created task then rides the normal delivery lifecycle: Main PM decomposes it into per-cell subtasks, a dev/documenter implements the docs update, QA verifies, the PR reviewer passes it, and the CEO merges.
+
+## Mermaid
+
+```mermaid
+sequenceDiagram
+    participant RP as ReleaseProposalService.approve
+    participant RE as ReleaseExecutor
+    participant DSE as DocsSyncEngine
+    participant PS as ProjectService
+    participant TS as TaskService
+    participant DB as TaskTable
+
+    RP->>RE: execute(report)
+    RE-->>RP: status: published
+    RP->>RP: task.status = COMPLETED; flush
+    RP->>DSE: _draft_docs_update(report)
+    DSE->>DSE: settings.docs_sync_enabled?
+    alt disabled
+        DSE-->>RP: None
+    else enabled
+        DSE->>PS: get_by_slug("roboco-website")
+        alt project missing
+            DSE->>DSE: logger.warning
+            DSE-->>RP: None
+        else project exists
+            DSE->>TS: list_open_docs_sync_tasks()
+            alt open_count >= max_open_tasks
+                DSE-->>RP: None
+            else under rolling cap
+                DSE->>DSE: _per_cycle_originated >= max_per_cycle?
+                alt per-cycle cap reached
+                    DSE-->>RP: None
+                else under per-cycle cap
+                    DSE->>TS: list_open_docs_sync_tasks(version=report.proposed_version)
+                    alt already open for version
+                        DSE-->>RP: None
+                    else new version
+                        DSE->>TS: create(TaskCreateRequest, source=docs_sync)
+                        TS->>DB: INSERT PENDING Main-PM planning task
+                        DSE->>DSE: _per_cycle_originated += 1
+                        DSE->>DB: set docs_sync_release_version marker
+                        DSE-->>RP: created task
+                    end
+                end
+            end
+        end
+    end
+    RP->>RP: catch Exception: log warning
+```
+
+## Logical Tree
+
+```
+engine-docs-sync
+  DocsSyncEngine (roboco/services/docs_sync_engine.py)
+    _DOCS_PROJECT_SLUG = "roboco-website"
+    _DIVERGENCE_CHECKLIST_POINTER
+    originate_docs_update(version, changelog) -> TaskTable | None
+      gate on docs_sync_enabled
+      resolve roboco-website project
+      check docs_sync_max_open_tasks rolling cap
+      check docs_sync_max_per_cycle instance counter
+      dedupe per version via list_open_docs_sync_tasks(version)
+      _open_task(project_id, version, changelog)
+      increment _per_cycle_originated
+    _already_open_for_version(task_svc, version) -> bool
+    _open_task(task_svc, project_id, version, changelog) -> TaskTable
+      create TaskCreateRequest(source=docs_sync, team=MAIN_PM, ...)
+      markers.set_docs_sync_release_version(task, version)
+      session.flush()
+    get_docs_sync_engine(session) -> DocsSyncEngine
+  ReleaseProposalService seam (roboco/services/release_proposal.py)
+    approve() -> on published/already_published: _draft_docs_update(report)
+    _draft_docs_update(report) -> best-effort; catch Exception, log warning
+  TaskService support (roboco/services/task.py)
+    DOCS_SYNC_SOURCE = "docs_sync"
+    list_open_docs_sync_tasks(version=None) -> [TaskTable]
+      base filter: source == docs_sync AND status not in (COMPLETED, CANCELLED)
+      optional version filter: orchestration_markers["docs_sync_release_version"].astext == version
+  Markers (roboco/foundation/policy/content/markers.py)
+    DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
+    get_docs_sync_release_version(task) -> str | None
+    set_docs_sync_release_version(task, version)
+  Config (roboco/config.py)
+    docs_sync_enabled (default False)
+    docs_sync_max_open_tasks (default 3, ge=1)
+    docs_sync_max_per_cycle (default 1, ge=1)
+```
+
+## Dependencies
+
+- Internal: `roboco.config.settings`, `roboco.foundation.identity` (`AGENTS`), `roboco.foundation.policy.content.markers` (`DOCS_SYNC_RELEASE_VERSION`, `set_docs_sync_release_version`), `roboco.models.base` (`Complexity`, `TaskNature`, `TaskStatus`, `TaskType`, `Team`), `roboco.services.base.BaseService`, `roboco.services.project.get_project_service`, `roboco.services.task` (`DOCS_SYNC_SOURCE`, `TaskCreateRequest`, `TaskService`, `get_task_service`).
+- External: `sqlalchemy.ext.asyncio.AsyncSession`.
+
+## Entry Points
+
+| Name | File | Trigger |
+|---|---|---|
+| `ReleaseProposalService.approve` | `roboco/services/release_proposal.py:82` | CEO panel `POST /api/release/proposal/approve`; runs executor, then calls `_draft_docs_update(report)` on publish success |
+| `DocsSyncEngine.originate_docs_update` | `roboco/services/docs_sync_engine.py:72` | Called from `_draft_docs_update`; no background loop or public API route |
+
+## Config Flags
+
+- `ROBOCO_DOCS_SYNC_ENABLED` (`docs_sync_enabled`) — master switch; default `false`. When off the engine is never invoked.
+- `ROBOCO_DOCS_SYNC_MAX_OPEN_TASKS` (`docs_sync_max_open_tasks`) — rolling cap on concurrently-open docs-sync tasks; default `3`.
+- `ROBOCO_DOCS_SYNC_MAX_PER_CYCLE` (`docs_sync_max_per_cycle`) — max docs-sync tasks originated in one invocation; default `1`. Because a release publish is a single invocation, this bounds it to one task per publish event.
+
+The flag is registered in `roboco/services/settings.py`'s `FEATURE_FLAGS` tuple, so it can be toggled from the panel's Settings → Feature Flags card without editing env.
+
+## Gotchas
+
+- **No background loop.** Unlike `SelfHealEngine`, `CiWatchEngine`, and `DepUpdateEngine`, `DocsSyncEngine` has no orchestrator loop. It only runs as a synchronous post-publish hook inside `ReleaseProposalService.approve()`.
+- **Best-effort seam.** `_draft_docs_update` catches `Exception` broadly and logs a warning. An engine failure (e.g., DB rollback, unexpected `TaskService` error) must never affect the already-succeeded release publish or the proposal completion.
+- **Requires `roboco-website` registration.** The engine logs a warning and returns `None` when the docs project is not registered. This is a deliberate operator step; the engine does not create the project itself.
+- **Per-release dedupe is in SQL.** `list_open_docs_sync_tasks(version=...)` filters by the `docs_sync_release_version` JSONB marker in SQL so the database can use JSONB indexes and avoid hauling every open docs-sync row into Python.
+- **Rolling cap counts all open docs-sync tasks, not per version.** If three docs-sync tasks are already open for older releases, a new release publish will not originate a fourth task until one of the older ones closes.
+- **The originated task is `confirmed_by_human=True`.** It is ready to start immediately and appears in the Main PM's work queue; it is not held for CEO approval like a release proposal.
+- **The docs update still goes through normal gates.** The engine only opens the coordination root; implementation, QA, PR review, and CEO merge happen through the standard lifecycle.
+
+## Drift from CLAUDE.md
+
+- CLAUDE.md does not mention a docs-sync engine; this is a new subsystem.
+
+## Changes Since Baseline
+
+| SHA | Subject | Impact |
+|---|---|---|
+| af2fb904 | `[687574d2] Add docs-sync engine and release-proposal publish seam` | Introduced `roboco/services/docs_sync_engine.py`, the `release_proposal.py` seam, `DOCS_SYNC_SOURCE`, `list_open_docs_sync_tasks`, the `docs_sync_release_version` marker, and `docs_sync_max_open_tasks` / `docs_sync_max_per_cycle` config caps. |
+| db919882 | `[687574d2] Restore task.py safeguards deleted by docs-sync engine commit and filter docs_sync version in SQL` | Restored unrelated `task.py` safeguards accidentally deleted by the first commit and moved the version predicate in `list_open_docs_sync_tasks` into SQL against the JSONB marker. |
+| d333dde7 | `[e6e23c1f] Enforce docs_sync_max_per_cycle cap in DocsSyncEngine` | Added a per-instance `_per_cycle_originated` counter and guard so `originate_docs_update` respects `docs_sync_max_per_cycle` in addition to the existing rolling cap. Added `test_per_cycle_cap_is_enforced`. |
+
+## Regression Risks
+
+| Title | File:Line | Claim | Severity |
+|---|---|---|---|
+| Missing `roboco-website` project silently skips docs updates | `roboco/services/docs_sync_engine.py:80` | By design the engine logs a warning and no-ops; operators must register the docs project before enabling the flag. | low |
+| Broad exception catch in `_draft_docs_update` could mask persistent engine failures | `roboco/services/release_proposal.py:242` | Best-effort by design so publish success is never endangered, but a persistent failure would only surface as a log warning. | low |
+| Cap/dedupe ordering: open_count is checked before per-version dedupe | `roboco/services/docs_sync_engine.py:97` | Correct: a duplicate for the same version is rejected after the cap check, so the cap is not consumed by duplicates. | low |
+| Instance-level `_per_cycle_originated` counter persists across calls on a reused engine | `roboco/services/docs_sync_engine.py:66` | Safe today because `release_proposal.py` constructs a fresh `DocsSyncEngine` per publish invocation. A future refactor that reuses an instance must either create a fresh engine per publish or add an explicit reset. | low |
+
+## Health
+
+The engine is intentionally small and conservative: default-off, no background loop, bounded, deduped, and flush-only. It follows the same safety model as the other autonomy engines (never start/approve/merge/deploy) while staying out of the orchestrator's periodic loops entirely. The main dependency on operator action is registering `roboco-website` as a project before enabling the flag. Health is good.
+
+## Purpose
+
+The RoboCo video engine: a default-off subsystem that authors bespoke short marketing videos (release announcements, feature spotlights, on-demand CEO briefs) and distributes them to X and TikTok — nothing renders or posts without the flags on, and nothing posts without an explicit per-clip CEO approval. It mirrors the `XEngine` / `ReleaseManagerEngine` held-artifact shape, but splits across the real delivery lifecycle: a normal ASSIGNED UX/UI authoring task ships the composition through the standard commit/PR/QA/doc/review gate, then an orchestrator render loop renders the merged `motion/` source via the credential-free `video-renderer` sidecar and materializes a held `video_post` draft for the CEO. Two task kinds (authoring + held post), one render pass between them.
+
+## Files
+
+| Path | Role | approx LOC |
+|---|---|---|
+| `roboco/services/video_engine.py` | `VideoEngine` — opens the ASSIGNED authoring task (`open_video_task`, balanced across `ux-dev-1`/`ux-dev-2`) and originates the held `video_post` draft once the render succeeds (`_originate_video_post`); release/spotlight/on-demand trigger wiring. | 324 |
+| `roboco/services/video_post_service.py` | `VideoPostService` — CEO approve/reject over the held post; the ONLY caller of the X-v2 and TikTok posters; runs the critical section under a heartbeat-renewed Redis mutex, commits each platform's posted-id durably before the next, idempotent on already-`COMPLETED` AND on already-CANCELLED (rejected). | 629 |
+| `roboco/services/video_renderer_client.py` | `VideoRenderer` — tars the merged `motion/` dir, POSTs the tarball to the sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`), saves the returned MP4s to `video_output_dir` and PUTs each to MinIO (`_save`). `NullVideoRenderer` raises on unconfigured so the render loop fails loud rather than silently no-op'ing a real trigger; `get_video_renderer()` factory. | 188 |
+| `roboco/services/minio_client.py` | Singleton `Minio` (minio-py) with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` empty); `put_object` / `get_object_stream` / `stat_object`, sync, call sites wrapped in `asyncio.to_thread`. | 129 |
+| `roboco/services/tiktok_client.py` | `TikTokPoster` — TikTok inbox-upload poster (v2 media, OAuth2 refresh). Fernet-encrypted singleton `tiktok_credentials` row (migration 062); agents never hold creds or egress. | 326 |
+| `roboco/services/x_video_client.py` | `XVideoPoster` — X v2 media upload + tweet poster. `NullXVideoPoster` makes the unconfigured leg a graceful no-op. | 266 |
+| `roboco/runtime/heartbeat_mutex.py` | `HeartbeatMutex` — Redis mutex with heartbeat-renewed TTL, shared with `ReleaseProposalService`'s release-execute lock shape; backs `VideoPostService.approve`'s long video-upload critical section. | — |
+| `roboco/mcp/do_server.py` `propose_video` | Do-tool the UX/UI dev calls exactly once per authoring task to stamp the `video_draft` marker (composition id + per-platform captions + input props); metadata-only, does not render. | — |
+| `roboco/services/gateway/content_actions.py` `propose_video` | Server-side action: team-gated (`_caller_team` rejects be-dev/fe-dev), resolves the caller's open video task, `markers.set_video_draft` with the metadata. | — |
+| `roboco/services/gateway/content_actions.py` `request_render` | Do-verb (developer/QA): renders the caller's ACTUAL composition to keyframe PNGs via the sidecar's frames mode and stamps the `render_preview` marker — dev renders their own tree (worktree-aware, `head_sha`/`dirty` stamped), QA a read-only branch export (`WorkspaceService.export_branch_motion`). Frames land at the container-shared `{workspaces_root}/{project}/.previews/{task8}/{orientation}/`. | — |
+| `roboco/foundation/policy/tracing.py` `RENDER_VERIFIED` | `i_am_done` requirement on `source=video` tasks: no stamped `render_preview` → tracing gap naming `render_preview` (hint: call `request_render`, Read every frame). Mirrored in the possibilities-matrix fast path. | — |
+| `alembic/versions/062_tiktok_credentials.py` | Migration 062 — the `tiktok_credentials` singleton row (Fernet-encrypted OAuth2 secrets, all-or-nothing set/clear, mirroring the git-token / `x_credentials` pattern). | 44 |
+| `video-renderer/` | The sidecar: `server.js` (HTTP+tarball boundary), `render.js` (`@hyperframes/producer` `createRenderJob` + `executeRenderJob`, system `ffmpeg`, headless Chromium). Credential-free and git-free — reads only what's POSTed. pnpm-managed (`pnpm-lock.yaml`, no npm `package-lock.json`); `@hyperframes/producer` pinned exact at `0.7.36` (`0.7.60` fails every render). | — |
+| `docker/video-renderer.Dockerfile` | Sidecar image (`roboco-video-renderer`): Node + Chromium + system `ffmpeg`; installs `@hyperframes/producer`. No RoboCo source, no creds. | — |
+| `motion/README.md` `## Design bar` / `## Visual design bar (demo/kit register)` | Authoring craft an assigned UX/UI dev consults before building a composition: color/type/motion/layout dials for the text-card register, plus spacing, beat pacing (`animation-delay`, never `data-start` for beats), `pk-chip`/`pk-pill` semantic-variant discipline, camera+cursor+rhythm, and anti-generic tells for the `kit/` demo register. | 149 (file total) |
+| `motion/skills/references/{house-style,video-composition,beat-direction,motion-principles}.md` | Four upstream HyperFrames craft references (palette/lazy-defaults, video-medium scale/density, per-beat rhythm planning, ease/speed/direction variance) vendored verbatim at pinned commit `9d148d28` (Apache-2.0, header in each file) — back every rule in `motion/README.md`'s design-bar sections; re-vendor when bumping `@hyperframes/producer`. | 462 |
+| `motion/skills/hyperframes-catalog-index.md` | RoboCo-authored index of the public HyperFrames catalog (109 blocks + 24 components, 133 entries) with per-category kit-mapping triage (maps onto an existing `pk-*` piece / a choreography engine / needs a new kit piece); read on demand when planning a beat, not injected into any agent prompt. | 186 |
+| `motion/skills/{hyperframes-core,hyperframes-creative,hyperframes-keyframes}.md` | The vendor's own official HyperFrames agent skills (composition contract, beat planning, seek-safe keyframes across runtimes), vendored verbatim at a pinned upstream commit (Apache-2.0, header + re-vendor note in each file); `motion/README.md` points authoring devs at them before a new register. Primary seek-safe primitive is GSAP tweens on `window.__timelines` — this kit's CSS-animation register is a house pattern, and the clip-window rule is its empirically-derived companion. | 382 |
+| `motion/kit/kit.js` `choreographCursor` / `choreographCamera` | Choreography engines: `choreographCursor` reads `data-waypoints="t x y [click]; ..."` off a `.pk-cursor` and generates a multi-leg eased path with fade in/out, an idle-hand sway between legs, and click rings + glyph press dips at flagged waypoints (click lands ~0.2s before the thing it triggers) — replaces the old single-glide `--pk-cursor-x0/y0/x1/y1` cameo. `choreographCamera` reads `data-shots="t x y scale; ..."` off a `.pk-camera` wrapper and eases push-ins/pull-backs, settling at identity by the end. `motion/kit/README.md` documents both. | 156 (diff) |
+| `roboco/runtime/orchestrator.py` `_is_video_authoring_spawn` | Fail-closed spawn-time probe (role==developer, team==ux_ui, task.source==video) that registers the `playwright` MCP for the composition author — the one non-QA case, so the dev can preview the authored HTML in a real browser between renders. Gating-only: `agent-ux`'s image already bakes the browser + wrapper entrypoint. | — |
+
+## Data Flow
+
+DETECT → AUTHOR: a release publish (`ROBOCO_VIDEO_ON_RELEASE`), a CEO-approved feature-spotlight draft that requests one (`ROBOCO_VIDEO_ON_SPOTLIGHT`), or a CEO on-demand `POST /api/video/request` calls `VideoEngine.open_video_task`, which creates a normal ASSIGNED UX/UI authoring task (`source=video`, `confirmed_by_human=True`, balanced across the two ux-devs) — NOT held, NOT in any dispatcher's skip bucket. The assigned dev authors `motion/compositions/<id>/{vertical,square}.html` (HyperFrames render params on `<html>`), reads the vendored `motion/skills/hyperframes-{core,creative,keyframes}.md` skills and consults `kit.js`'s `choreographCursor`/`choreographCamera` engines for camera+cursor craft (a locked-off camera or a popping/freezing cursor is automatic revision; clip windows are for structural layers ONLY — beats ride base-hidden delayed CSS animations, since the renderer's clip scheduler drops any beat driven off its own clip window), previews the live HTML via the `playwright` MCP registered for this spawn (`_is_video_authoring_spawn`), calls the `propose_video` do-tool exactly once (server-side `content_actions.propose_video` is team-gated and stamps `video_draft`), then verifies the ARTIFACT: `request_render` renders the dev's actual working tree to keyframe PNGs the dev must Read (every scene fully visible and legible — the gate that catches an authored duration shorter than its scene list), iterating fix → re-render until the frames prove the brief; `i_am_done` refuses without the stamped `render_preview` marker (`Requirement.RENDER_VERIFIED`). Then `commit` + `open_pr` through the normal PR-review gate. The authoring task rides the standard QA/doc/review lifecycle to `completed`, with QA's `claim_review` evidence carrying a `video_context` block (the dev's preview + an instruction to `request_render` the branch state fresh).
+
+RENDER: once the authoring task is `completed`, the orchestrator's `_video_render_loop` (bounded retry, `_MAX_VIDEO_RENDER_ATTEMPTS`) resolves the project's read-clone at the merged HEAD, tars the `motion/` dir, and POSTs it to the credential-free `video-renderer` sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`). The sidecar untars, runs `@hyperframes/producer`'s `createRenderJob` + `executeRenderJob` per orientation (headless Chrome + system `ffmpeg`, `ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` per render), and streams both 9:16 and 1:1 MP4s back. `VideoRenderer` saves them to `ROBOCO_VIDEO_OUTPUT_DIR` (`_save` also PUTs each to MinIO when `minio_endpoint` is set, non-fatal). On success `VideoEngine._originate_video_post` materializes a held `video_post` draft (`source=video_post`, `confirmed_by_human=False`, Secretary-owned, skipped by every dispatcher) carrying `mp4_paths` (`{vertical, square}` absolute paths) + the per-platform captions.
+
+CEO ACT: `GET /api/video/posts` lists held drafts (including `mp4_paths`); `GET /api/video/posts/{id}/media?cut=vertical|square` streams the MP4 bytes for the preview player (CEO-gated, falls back to `FileResponse` on `S3Error`/unconfigured MinIO). The CEO edits captions and approves/rejects in the panel's `video-post-queue.tsx`. `POST /api/video/posts/{id}/approve` is the ONLY caller of `XVideoPoster` / `TikTokPoster`: it acquires `HeartbeatMutex`, re-reads the committed task state inside the lock, commits `COMPLETED` before releasing (so a concurrent approve can't double-post), commits each platform's posted-id durably before attempting the next (a partial failure never re-posts an already-succeeded platform on retry), and is idempotent (an already-`COMPLETED` draft returns the stored ids without calling a poster). A CANCELLED draft (already rejected) is refused both pre-lock and re-checked under lock, returning `already_rejected` — closes a hole where a stale approve (e.g. a queued Telegram button targeting the draft by id regardless of its current status) could post a draft the CEO had already rejected. `POST /api/video/posts/{id}/reject` cancels the draft with a reason — and, for a non-empty reason, `VideoEngine.reauthor_from_rejection` opens a fresh authoring task (same occasion, brief = the CEO's verbatim feedback + revise-in-place pointer at the existing composition) so the rejection feedback re-enters the delivery flow instead of dying on the cancelled draft; best-effort, never fails the reject.
+
+## Config Flags
+
+- `ROBOCO_VIDEO_ENGINE_ENABLED` — master switch; off = no video-authoring task is ever opened and no render/post happens. Panel-toggleable.
+- `ROBOCO_VIDEO_ON_RELEASE` / `ROBOCO_VIDEO_ON_SPOTLIGHT` — sub-switches for the two automatic triggers, independent of the master switch and of the CEO's on-demand `POST /video/request`.
+- `ROBOCO_VIDEO_RENDER_INTERVAL_SECONDS` / `ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_REQUEST_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_OUTPUT_DIR` — render loop cadence, per-render deadline, sidecar HTTP deadline, MP4 output dir (bind-mounted in all three compose files so renders survive container recreation).
+- `ROBOCO_VIDEO_RENDERER_BASE_URL` — the sidecar endpoint (default `http://roboco-video-renderer:3001`).
+- `ROBOCO_MINIO_*` — MinIO object storage (default-off; `video_renderer_client._save` PUTs each render after the local write; serve route streams via `StreamingResponse` with `FileResponse` fallback).
+
+## Changes Since Baseline
+
+- **2026-07-17** (PR #543, `3e801697`): Two renderer root causes fixed — `@hyperframes/producer` was floating (`^0.7.36`, no lockfile), so image builds silently picked up `0.7.60`, which fails EVERY render ("Cannot access 'rt' before initialization"); pinned exact (`0.7.36`, no caret) and committed a lockfile (regenerated as `pnpm-lock.yaml` by the immediate follow-up `a12fefcb`, not the npm `package-lock.json` this PR first wrote — this package is pnpm-managed). Second: the producer's per-clip visibility scheduler runs on a clock that lags ~50% behind the encoded timeline on a long cut, so tail scenes (past roughly the halfway mark) were silently missing from the MP4 regardless of authoring — fixed by treating `class="clip"` + `data-start`/`data-duration` as a structural-layer-only primitive and driving every beat with base-hidden styles + a delayed CSS animation instead (documented in `motion/README.md`'s "Clip windows are for structural layers only" rule). Also added the two choreography engines to `motion/kit/kit.js` (`choreographCursor` / `choreographCamera`, see Files above) plus a "Cinematography & rhythm" section in `motion/README.md` and a craft-bar block in the dev video spawn prompt (`roboco/runtime/orchestrator.py`) so a locked-off camera or a popping/freezing cursor reads as an automatic revision.
+- **2026-07-17** (PR #544, `fd621f0d`): The three craft capabilities wired one hop closer to the hands doing video work — vendored the vendor's own official HyperFrames agent skills (`hyperframes-core`/`-creative`/`-keyframes.md`, see Files above; supersedes the external-pointer-only version briefly added by the intervening `1416bd1d`); registered the `playwright` MCP for a ux-dev spawned onto a `source=video` task (`_is_video_authoring_spawn`, fail-closed role/team/task-source probe — gating-only, `agent-ux`'s image already bakes the browser); and added a video-mode override to the `ux_ui` team prompt's design bar ("video-authoring tasks are FILMS, not UI — these dials do not apply") so a video task no longer reads its own "dense product UI → motion 2-3" dial as license to ship a static slideshow.
+- **2026-07-17** (Wave 6, PR #550): Authoring craft, not engine code — `motion/README.md` gained `## Visual design bar (demo/kit register)` (spacing/hierarchy, beat pacing, `pk-chip`/`pk-pill` semantic discipline, camera+cursor+rhythm, anti-generic tells for the `kit/` register), four upstream HyperFrames craft references vendored verbatim under `motion/skills/references/` (fixing `hyperframes-creative.md`'s previously-dead `references/` pointers), and a new `motion/skills/hyperframes-catalog-index.md` (133-entry HyperFrames catalog vocabulary index, read-on-demand). No service/verb/schema change; the render/post pipeline documented above is untouched.
+
+## Health
+
+Default-off, CEO-gated at two independent points (the flags, then per-clip approval). The held-draft shape mirrors the XEngine / ReleaseManagerEngine pattern, so the dispatchers never see it. The render pass is bounded retry with `_MAX_VIDEO_RENDER_ATTEMPTS` and a per-render deadline; `NullVideoRenderer` raises on unconfigured so a misflagged trigger fails loud rather than silently no-op'ing. The approve critical section is heartbeat-mutex protected so a double-click can't double-post and a partial platform failure is recoverable, and (Wave 5, PR #551) `approve` now also refuses a CANCELLED draft outright rather than posting it. TikTok's OAuth2 secrets live Fernet-encrypted in a singleton row (migration 062); agents never hold creds or egress — `VideoPostService.approve` is the only caller of the posters.
+
+## Related
+
+- `docs/rag/architecture/video-engine.md` — the user-facing architecture doc
+- `docs/rag/architecture/minio-storage.md` — the decoupled-durable render storage
+- `docs/map/release-manager.md` — the sibling held-artifact engine whose lock shape `VideoPostService.approve` mirrors
+- `docs/map/engines-heal-ciwatch-depupdate.md` — the other default-off originate-and-stop engines
 
 ## Purpose
 The organizational-memory + playbooks slice: captures cross-agent learnings and curated playbooks, embeds them into the LEARNINGS and PLAYBOOKS pgvector RAG indexes via the OptimalService plugin architecture, and re-injects the top-K most relevant past lessons/playbooks into every agent briefing (the keystone retrieve step). Distillation at task completion runs on the local LLM only; playbook curation (draft/approve/reject/archive) is a status state-machine whose RAG index writes are split from the DB status commit so the corpus never leads the status transaction.
@@ -8028,6 +8558,77 @@ org-memory-playbooks
 ## Health
 The slice is coherent and has been further hardened by PR #286 (536bbb64): archive()/reject() provenance loss and the learnings tracking-row/chunk source-URI mismatch are both fixed, and the embedder-failure wipe in replace_chunks is now guarded. The main residual risks are (a) the caller-owned commit-then-index contract on approve/reject/archive — a future caller that forgets index_approved silently produces an un-indexed approved playbook (the poisoned-session guard in content_actions is a step forward but the footgun remains for any new caller); (b) the forced shareable=True filter silently excluding older learning rows that lack the metadata key. The org_memory_enabled gate is consistently applied at every entry (distill, index_approved, unindex_playbook, _institutional_memory), so the whole loop is inert when off. Best-effort semantics are uniformly observed: every RAG/embed failure returns []/None and never blocks completion or the briefing. No critical regressions found.
 
+## Purpose
+
+The Obsidian vault (V1+V2): a rebuildable, human-readable DB projection of the org's memory (tasks, journal entries, A2A thread digests) as wikilinked markdown, plus a default-off inbox watcher that turns `#roboco`-tagged vault notes into board-review intake drafts. V2 adds three things on top of the V1 projection: materialize-on-create (a task's note exists from the moment it's created, not just at curation/rebuild), a drift janitor (hourly-ticked, daily/weekly-gated: re-projects changed tasks, verifies a random sample, archives old terminal tasks, writes the weekly org-report), and KB ingest (the CEO's own `RoboCo/Notes/` notes become one more RAG corpus the fleet can retrieve). Default-off (`ROBOCO_OBSIDIAN_VAULT_ENABLED`; both compose files arm it `true`). Still structurally different from the other default-off engines: the projection never originates delivery work itself — the ONE writer-side effect that reaches delivery (the intake watcher) rides the existing board-review path, not a held-artifact queue.
+
+## Files
+
+| Path | Role | approx LOC |
+|---|---|---|
+| `roboco/services/vault_writer.py` | `VaultWriter` — pure, DB-free markdown materializer. `write_task` / `write_journal_entry` / `append_a2a_message` / `write_agent` / `touch_task_frontmatter` / `write_org_report`. Every note carries `aliases: [<id8>]` so a rename never breaks a `[[id8\|title]]` wikilink; `existing_narrative` reads back an Auditor-authored `## Narrative` section so a rebuild never clobbers it. V2: `write_task` is archive-aware (`TaskNoteData.archive_year` routes it to `RoboCo/Archive/<year>/Tasks/<project>/` instead of `Tasks/<project>/`, removing the stale copy on a move); `find_task_note`/`task_note_status` locate/inspect a note wherever it lives (recursive id8 lookup across both trees) for the janitor's drift check; `write_org_report` renders `RoboCo/Reports/<ISO-week>.md`. (Uncommitted, `feature/findings-ledger`) `FindingRow` + `_FINDINGS_CAP=20` + `_findings_section` render a `## Findings` section (one `[F-id8] (severity, round N, status) file:line — expected → actual → fix` line per open/resolved finding, an overflow line past the cap) into every task note — see `docs/map/review-findings.md`. | 534 |
+| `roboco/services/vault_assembly.py` | `assemble_task_note_data` — resolves a task's project slug, parent, subtasks, dependencies, and (V2) archive eligibility (`_archive_year`, gated on `vault_archive_days`) via the live `TaskService`/`ProjectService` into a `TaskNoteData`. `reproject_task` (V2) bundles assemble + narrative-preservation + `write_task` into the one code path shared by `rebuild`, the janitor's changed/sample/archival passes, and the create-on-task seam — none of them can drift on how a note gets refreshed. (Uncommitted, `feature/findings-ledger`) `_resolve_findings` fetches the task's ledger via `ReviewFindingsRepository.list_for_task`, fails open (empty tuple) on a missing session or any exception — a findings-fetch failure drops the section, never blocks the note write. | ~125 |
+| `roboco/services/vault_intake_engine.py` | `VaultIntakeEngine.run_cycle` — scans the vault's inbox dir for `#roboco`-tagged notes, dedupes via `vault_seen_notes` (path + content-hash), screens the body through `injection_guard.screen_external_text`, extracts a title/description/action-items via a local-model chat call (deterministic fallback: first heading / raw body / checkbox lines), and opens ONE PENDING board-review draft (`source=vault_note`, Product-Owner-assigned, `team=board`) per note. Appends a feedback callout back into the note (best-effort). V2: the frontmatter split + content-hash helpers moved to the shared `foundation/policy/vault_notes.py` (this module now just imports them). | ~350 |
+| `roboco/services/vault_janitor.py` **(new, V2)** | `VaultJanitor.run_cycle` — one state-gated sweep: re-project tasks changed since the last sweep (`TaskService.list_updated_since`, capped/paged, per-item isolated), verify a random stale sample (`sample_stale_tasks`), archive old terminal tasks (`list_archive_candidates`), and (weekly) render the org-report. Dueness is tracked in a JSON state file (`RoboCo/_meta/.janitor_state.json`: `last_sweep`, `last_report_week`, `archive_watermark`), not the loop's own cadence — restart-proof. | ~343 |
+| `roboco/services/vault_kb_engine.py` **(new, V2)** | `VaultKBEngine.run_cycle` — scans the allowlisted `vault_kb_dirs` (default `RoboCo/Notes`), dedups by content hash, screens every note body through the injection guard as a hard GATE (flagged → quarantined, never indexed), and ingests/deindexes into `IndexType.VAULT_NOTES` via `OptimalService.index_vault_note`/`unindex_vault_note`. Defense-in-depth containment: symlinks and any resolved-path escape from the vault root are skipped, independent of the config-load validator. | ~315 |
+| `roboco/foundation/policy/vault_notes.py` **(new, V2)** | Shared pure helpers: `content_hash` (sha256 with every `> [!kind] RoboCo: ...` feedback callout stripped first, so appending one doesn't change what the next scan considers "changed") and `split_frontmatter` (YAML frontmatter + body). Used by both the intake watcher's "drafted" callout and the KB engine's "quarantined" callout — one shared convention instead of two copies drifting. | ~46 |
+| `roboco/services/optimal_brain/indexes/vault_notes.py` **(new, V2)** | `VaultNotesIndexPlugin` — `IndexType.VAULT_NOTES` plugin, mirrors `PlaybooksIndexPlugin`'s shape (`index_note`/`delete_note`/`search_notes`, source URI `vault://<relpath>`). Scope enforced by the KB engine's dir allowlist, not this plugin. | ~70 |
+| `roboco/vault.py` | `python -m roboco.vault {rebuild,relocate}` CLI. `rebuild` re-projects every agent/task/journal-entry/A2A-thread from the DB (now archive-aware via `vault_assembly.reproject_task` — an old terminal task projects straight into `Archive/<year>/`) and materializes `.obsidian/` + `RoboCo/_meta/` from `roboco/vault_assets/` (never overwrites an existing file). `relocate <path>` moves the tree; grafts `RoboCo/` into an existing destination vault without touching its own config. | ~237 |
+| `roboco/vault_assets/` | Packaged templates copied by `ensure_vault_assets`: `.obsidian/` (Dataview, Kanban, graph-group config — V2 adds `Archive`/`Reports` graph color groups) + `meta/` (dashboard + kanban-board + README, V2 adds `Task Board.base` + `Reports.base` for Obsidian's core Bases plugin, and `Sync to your Mac.md`, the Syncthing/SMB/Obsidian-Sync runbook). Dataview dashboard queries now exclude `Archive/`. | — |
+| `roboco/foundation/policy/injection_guard.py` | `screen_external_text` / `detect_injection` — the shared prompt-injection screen-and-neutralize (data path) and hard-deny (interactive-input path) pattern set. V2 reuses it a third time: the KB engine's ingest-time hard gate (quarantine on a hit, vs. the intake watcher's screen-and-still-process posture). | 125 |
+| `roboco/services/gateway/content_actions.py` `curate_vault` | Server-side do-action: Auditor-only, re-materializes a task's note with the Auditor's `narrative` filling `## Narrative`. Inert (`invalid_state`) when the flag is off. | — |
+| `roboco/mcp/do_server.py` `curate_vault` | Do-tool the Auditor calls exactly once per completed root, POSTing to `/api/v1/do/curate_vault`. | — |
+| `roboco/db/tables.py` `VaultSeenNoteTable` | Dedup ledger for the intake watcher: `(note_path, content_hash)` — an unchanged note is never reprocessed; an edited one is eligible again. | — |
+| `roboco/services/task.py` `_materialize_vault_note` / `list_updated_since` / `list_archive_candidates` / `sample_stale_tasks` | V2: the create-time seam + the janitor's three query methods. See `docs/map/task-service.md`. | — |
+
+## Data Flow
+
+**PROJECTION (always-on when the flag is armed).** `TaskService.create` (V2) calls `_materialize_vault_note` — best-effort, same swallow-and-log posture as every other seam — so a task's note exists from the moment it's created, not just at curation/rebuild. Three more best-effort event seams fire from existing services: `TaskService._emit_status_transition_audit` → `_touch_vault_frontmatter` patches an EXISTING note's status/team/pr fields in place (now effectively always finds one for any task created post-V2, since materialize-on-create ran; a pre-V2 task without a note is still a no-op here — the janitor's changed/sample passes are what backfill it); `JournalService`'s entry-write path → `_materialize_vault_note` writes one immutable file per non-private entry; `A2AService.send` → `_materialize_vault_note` appends to a per-thread digest file, deduped per message id via an in-body marker comment. All import `get_vault_writer()` lazily and catch every exception.
+
+**CURATION (root-completion hook, orchestrator-driven).** `AgentOrchestrator._dispatch_vault_curation_work` (one of the 18 tick dispatchers, gated on `obsidian_vault_enabled`) reads `TaskService.list_completed_roots_pending_vault_curation` and calls `_maybe_spawn_vault_curation` per candidate: an in-memory one-shot guard (`_board_dispatched`) plus a durable `vault_curation_dispatched` marker (survives a restart) precede a bindingless Auditor spawn. The Auditor writes one narrative paragraph and calls `curate_vault(task_id, narrative)` exactly once; the verb re-resolves the task's parent/subtasks/dependencies fresh via `assemble_task_note_data` and fully re-materializes the note, filling the `## Narrative` section a deterministic write otherwise leaves as `_Pending Auditor curation._`.
+
+**INTAKE (independently-gated inbox watcher).** `AgentOrchestrator._vault_intake_loop` (both `obsidian_vault_enabled` AND `vault_intake_enabled` required) ticks `VaultIntakeEngine.run_cycle` every `vault_intake_interval_seconds`. Per note under the inbox dir: skip if no `#roboco` tag; skip if already seen (path + content-hash in `vault_seen_notes`); screen the body via `screen_external_text`; extract title/description/action-items via a local-model chat call against the SCREENED text, falling back to deterministic extraction; open ONE PENDING task (`source=vault_note`, Product-Owner-assigned, `team=board`) capped by `vault_intake_max_open_drafts`/`vault_intake_max_per_cycle`; append a feedback callout (best-effort). Never starts delivery directly — the board-review path is the only door.
+
+**JANITOR (V2, hourly-ticked, day/week-gated).** `AgentOrchestrator._vault_janitor_loop` (gated on `obsidian_vault_enabled` alone) ticks every `JANITOR_LOOP_INTERVAL_SECONDS` (3600, no config knob) and calls `VaultJanitor.run_cycle`. Actual work only happens when the restart-proof state file (`RoboCo/_meta/.janitor_state.json`) says it's due:
+- **Sweep** (due when `last_sweep` is >= 24h stale): `_reproject_changed` re-projects every task touched since the last sweep (`TaskService.list_updated_since`, ascending, paged 100 at a time, capped at `_MAX_REPROJECT_PER_CYCLE=200` per tick, one bad item logged-and-skipped rather than wedging the pass) via the shared `reproject_task`; `_verify_sample` pulls a random 20-task sample of tasks last touched before the sweep window (`sample_stale_tasks`) and repairs any whose note is missing or whose frontmatter status disagrees with the DB (via `touch_task_frontmatter`, not a full re-projection); `_archive_pass` moves terminal tasks past `vault_archive_days` into `Archive/<year>/` (see below). A capped tick advances `last_sweep`/`archive_watermark` only to the last-processed item's stamp (not "now"), so the very next hourly tick — already due again — picks up the tail with no gap. Logs one `vault_drift_repaired` line: `count` (repaired) / `archived` / `failed`.
+- **Weekly report** (due when `last_report_week` != the current ISO week, and `vault_report_enabled` is on): `_run_weekly_report` pulls `MetricsService.get_velocity/get_cycle_time_by_stage/get_bottleneck_distribution/get_rework_metrics` (days=7) + `UsageService.get_summary("7d")`, renders `VaultWriter.write_org_report`, and best-effort notifies the CEO (`NotificationService.send_weekly_report_notification`) — a notification failure never invalidates the already-written note.
+
+**ARCHIVAL (V2, folded into the janitor sweep).** Policy: a terminal (`completed`/`cancelled`) task whose terminal timestamp (`completed_at` else `updated_at` else `created_at`) is older than `vault_archive_days` (default 30; `0` disables archival outright) moves from `RoboCo/Tasks/<project>/` to `RoboCo/Archive/<year>/Tasks/<project>/`. `TaskService.list_archive_candidates(after, before, ...)` returns terminal tasks whose terminal timestamp falls in `[watermark, cutoff)`, paged/capped identically to the changed-task pass (`_MAX_ARCHIVE_PER_CYCLE=200`). The move itself is free: `VaultWriter.write_task` is archive-aware (`TaskNoteData.archive_year` set by `vault_assembly._archive_year`) — it looks up an existing note across BOTH `Tasks/` and `Archive/` by id8, writes the new copy at the archive-aware target directory, and deletes the stale copy if it moved. Alias-based wikilinks (`[[id8|title]]`) mean nothing pointing at an archived task ever breaks. `rebuild` is archive-aware for free (routes through the same `reproject_task`), and the shipped Dataview dashboard + graph color groups exclude `Archive/`.
+
+**KB INGEST (V2, independently double-gated).** `AgentOrchestrator._vault_kb_loop` (BOTH `obsidian_vault_enabled` AND `vault_kb_enabled` required) ticks `VaultKBEngine.run_cycle` every `vault_kb_interval_seconds` (default 900). Per allowlisted dir in `vault_kb_dirs` (default `RoboCo/Notes`; config-load validation in `Settings._validate_vault_kb_dirs` rejects an absolute/`..`-carrying entry or one overlapping `vault_intake_dir` or a reserved projection dir): recursively scan `*.md`, skip a note that's a symlink, escapes the resolved vault root, or exceeds 64KB; content-hash-dedup against the currently-tracked `IndexType.VAULT_NOTES` docs (an unchanged note is skipped); screen the frontmatter-stripped body through `screen_external_text` as a hard GATE — a flagged note is quarantined (skipped, warn-logged, a one-line feedback callout appended, and any PRIOR indexed chunks removed if it was previously clean) rather than indexed; a clean note ingests via `OptimalService.index_vault_note` (bounded to `_MAX_INGEST_PER_CYCLE=50` per tick — the tail waits for the next cycle). A deletion pass deindexes any previously-tracked path no longer seen on disk. Consumers: `roboco_kb_search` picks up `VAULT_NOTES` for free once the enum exists; `MentorService`'s default/general domain search list includes it (labeled "Vault Notes"); `EvidenceRepo.similar_memory` includes it in claim-time briefings (kind `vault_note`), same relevance floor as learnings/playbooks; the panel's KB browser has a full type entry (nav/filter/badge/stats).
+
+**REBUILD/RELOCATE (operator/CLI, not agent-facing).** `python -m roboco.vault rebuild` walks every agent, then every task (via the shared `reproject_task` — archive-aware, narrative-preserving), then every non-private journal entry, then every A2A thread, and materializes the shipped `.obsidian/`/`_meta/` assets if absent. `relocate <path>` moves `RoboCo/` into a destination, refusing if the destination already has a `RoboCo/` subtree.
+
+## Config Flags
+
+- `ROBOCO_OBSIDIAN_VAULT_ENABLED` — master switch; off = `VaultWriter` is never invoked from any seam, `curate_vault` returns `invalid_state`, the janitor/KB loops return immediately, and `python -m roboco.vault` refuses. Config default `false`; both compose files set it `true`.
+- `ROBOCO_VAULT_PATH` (default `/data/vault`) — root directory the vault materializes into; bind-mounted in both compose files.
+- `ROBOCO_VAULT_INTAKE_ENABLED` — independent switch for `_vault_intake_loop`; inert unless the master switch is ALSO on. Config default `false`; both compose files set it `true`.
+- `ROBOCO_VAULT_INTAKE_INTERVAL_SECONDS` / `ROBOCO_VAULT_INTAKE_DIR` / `ROBOCO_VAULT_INTAKE_MAX_PER_CYCLE` / `ROBOCO_VAULT_INTAKE_MAX_OPEN_DRAFTS` — cadence, inbox subfolder, per-cycle origination cap, rolling open-draft cap.
+- `ROBOCO_VAULT_ARCHIVE_DAYS` (default `30`, `0` disables) — age past which a terminal task's note archives during the janitor sweep. Checked only under the master switch — no separate enable flag.
+- `ROBOCO_VAULT_REPORT_ENABLED` (default `true`) — the janitor's weekly org-report + CEO notification. Config default `true` in both compose files (deterministic, no LLM, cheap to leave on).
+- `ROBOCO_VAULT_KB_ENABLED` (default `false`) — master switch for KB ingest; off = `_vault_kb_loop` returns immediately and `IndexType.VAULT_NOTES` stays empty. NAS compose (`docker-compose.yml`) sets it `true`; the public registry compose (`docker-compose.registry.yml`) leaves it `false` (optional engines ship off).
+- `ROBOCO_VAULT_KB_DIRS` (default `RoboCo/Notes`, CSV) — vault-relative folders the KB engine scans. Rejected at config load if absolute, `..`-carrying, or overlapping `vault_intake_dir`/`Tasks`/`Journals`/`A2A`/`Agents`/`Archive`/`Reports`/`_meta`/`.obsidian`.
+- `ROBOCO_VAULT_KB_INTERVAL_SECONDS` (default `900`, min `60`) — KB-engine scan cadence.
+
+## Health
+
+The projection side is zero-risk by construction: every seam is best-effort and DB-free from the writer's perspective, so a filesystem or permission failure degrades to a stale/missing note, never a blocked verb. Materialize-on-create closes the V1 gap where the Dataview board only ever showed curated/rebuilt tasks — a fresh task is visible immediately. The janitor is the freshness backstop for everything best-effort seams can miss: it's restart-proof (dueness lives in a state file, not loop cadence — an orchestrator that restarts more often than daily still sweeps exactly once per elapsed day), self-healing against a corrupt/hand-edited state file (any unparseable value degrades to "no state," never a wedged loop), and every per-item drain (changed-task, sample-verify, archive) isolates failures — one bad row is logged and skipped, never aborts the pass, and re-qualifies on its next change or the next sample draw. Per-cycle caps (200 reprojects, 200 archives) mean a first-enable or long-downtime backlog drains in bounded hourly slices via the resume-marker convention (a capped tick advances the marker only to the last item it actually processed) rather than one unbounded burst.
+
+The KB-ingest side is the one path with real security stakes — once a vault note is agent-retrievable, unscreened note text is injection into the fleet's retrieval context, not just a drafting risk. It layers defense-in-depth: the config-load validator rejects a dangerous `vault_kb_dirs` entry outright (can't even start with an escaping/overlapping dir); the engine independently re-checks every allowlisted dir resolves under the vault root before scanning it; every individual note is re-checked for symlink-ness and resolved-path escape before it's read (belt-and-suspenders against a dir-level check being bypassed by a per-file symlink); and the injection guard runs as a hard GATE (not the intake watcher's screen-and-still-process posture) — a flagged note is never embedded, only quarantined with a visible callout so the CEO knows why. Content-hash dedup (shared with the intake watcher's ledger convention) makes both re-scans and the quarantine callout's own append idempotent — appending the callout never itself re-triggers reprocessing.
+
+Rebuild/relocate remain idempotent and additive-safe (`ensure_vault_assets` never overwrites an existing file), so re-running against a CEO-customized vault cannot clobber `.obsidian/`/`_meta/` edits.
+
+## Related
+
+- `docs/rag/architecture/obsidian-vault.md` — the agent-facing doc (what the Auditor and vault-intake-originated tasks actually see, plus what changed for KB retrieval)
+- `docs/rag/roles/auditor.md` — the `curate_vault` verb
+- `docs/map/orchestrator.md` — `_dispatch_vault_curation_work` / `_maybe_spawn_vault_curation` / `_vault_intake_loop` / `_vault_janitor_loop` / `_vault_kb_loop`
+- `docs/map/task-service.md` — `_materialize_vault_note` / `list_updated_since` / `list_archive_candidates` / `sample_stale_tasks`
+- `docs/map/product-strategy-research-pitch.md` — `XEngine`, the sibling engine sharing `injection_guard.screen_external_text`
+- `docs/internal/specs/2026-07-09-obsidian-vault.md` — the original V1 design spec (vault layout, link-stability rationale)
+- `docs/internal/specs/2026-07-11-obsidian-vault-v2.md` — the V2 spec (materialize-on-create, janitor, archival, KB ingest, weekly report, Bases, sync doc)
+
 # Panel — RoboCo Control Panel Map
 
 ## Purpose
@@ -8056,7 +8657,7 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `panel/src/components/kanban/{core,shared,views}/` | core: kanban-board/column/card + bypass-preconditions; views: dev/qa/pm/pr-review kanban |
 | `panel/src/components/prompter/` | intake-form, chat-messages, chat-composer, draft-proposal-card, batch-review-card, success-card, board-review-sent-card |
 | `panel/src/components/a2a/` | a2a-switchboard (org-chart pair cards, 45s pulse fade) + a2a-switchboard-utils (pairKey/grouping/pulse), a2a-pair-card, a2a-conversation-list (classic fallback), a2a-transcript, a2a-reply-composer (CEO chime-in on a watched conversation), a2a-new-dm-dialog (CEO opens a fresh 1:1), a2a-direct-composer (CEO's own thread, no task link required), a2a-utils |
-| `panel/src/components/tasks/` + `tasks/task-detail/` | task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector, task-detail tabs (overview/plan/progress/commits/sessions/notes/dependencies) |
+| `panel/src/components/tasks/` + `tasks/task-detail/` | task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector, task-detail tabs (overview/plan/progress/commits/sessions/notes/dependencies/**findings**) |
 | `panel/src/components/settings/` | feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, `x-credentials-card.tsx` (write-only OAuth 1.0a secrets, mounted in `settings/page.tsx`) |
 | `panel/src/components/conventions/conventions-tab.tsx` | Per-project architecture map + health (in edit-project dialog) |
 | `panel/src/components/projects/`, `products/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups (`projects/` and `products/` each export a `*-view.tsx` consumed by `workstation/page.tsx`); `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown) |
@@ -8076,7 +8677,8 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 |---|---|---|
 | Overview / Command Center | `components/dashboard/command-center.tsx` | Composes key-metrics, usage-overview, ceo-approval-queue, pr-review-queue, release-proposal, playbook-review-queue, active-blockers, auditor-alerts, strategy-signals, team-health, recent-activity, quick-actions |
 | Metrics — Usage | `app/(dashboard)/metrics/page.tsx` + `components/metrics/*` | Summary, time-series, agent/team/model donut, sessions table, projection, cache efficiency; live via `/ws/system` USAGE_SNAPSHOT |
-| Metrics — Delivery | `components/metrics/delivery-tab.tsx` | Cycle-time, bottlenecks, rework, scorecards (read-only `/dashboard/metrics/*`) |
+| Metrics — Delivery | `components/metrics/delivery-tab.tsx` | Cycle-time, bottlenecks, rework (now incl. "PM rejects"/"CEO rejects" columns alongside QA/PR-fail counts — see `docs/map/review-findings.md`), scorecards (read-only `/dashboard/metrics/*`) |
+| Findings tab | `components/tasks/task-detail/tab-findings.tsx` | Per-round revision-findings ledger view: origin/status summary badges, severity/status badges, file:line, collapsible evidence, truncation footer; backed by `GET /api/tasks/{id}/findings` via `useTaskFindings`. A `bounced xN` chip (`task.revision_count`) surfaces on the task header alongside it. |
 | Release Proposal | `components/dashboard/release-proposal-card.tsx` | CEO approve/reject-with-changes on held `release_manager` proposal; fail-closed executor; hidden on 404, retry on real error |
 | Playbook Review Queue | `components/dashboard/playbook-review-queue.tsx` | Auditor/CEO approve/reject drafted playbooks; hidden when no drafts |
 | CEO Approval Queue | `components/dashboard/ceo-approval-queue.tsx` | Tasks in `awaiting_ceo_approval` awaiting CEO verdict |
@@ -8086,13 +8688,12 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | Feature Flags | `components/settings/feature-flags-card.tsx` | Toggles persisted to settings store; takes effect on next backend restart |
 | Intake / MegaTask | `app/(dashboard)/prompter/page.tsx` + `components/prompter/*` | Live SSE chat with spawned Claude/Grok intake agent; single-project, product, or multi-project (`project_ids`) MegaTask → `propose_batch` → `confirm-batch` |
 | A2A Live (switchboard + reply + New DM) | `app/(dashboard)/a2a/page.tsx` + `components/a2a/*` | CEO watches every agent-to-agent conversation live: default org-chart switchboard (pair cards grouped by cell/PM-chain/board, pulsing on fresh `a2a.message` frames) or the classic conversation list; drill-in shows the transcript + a reply composer that lets the CEO chime into a watched thread as itself (task-linked conversations only). "New DM" opens a fresh CEO-owned 1:1 with any DM-capable agent (no task link needed); the recipient is woken via the a2a_request dispatch path if offline, and the CEO's own threads render with `A2ADirectComposer` instead of the reply composer |
-| A2A Live (switchboard + reply) | `app/(dashboard)/a2a/page.tsx` + `components/a2a/*` | CEO watches every agent-to-agent conversation live: default org-chart switchboard (pair cards grouped by cell/PM-chain/board, pulsing on fresh `a2a.message` frames) or the classic conversation list; drill-in shows the transcript + a reply composer that lets the CEO chime into the thread as itself (task-linked conversations only) |
 | Workstation | `app/(dashboard)/workstation/page.tsx` + `components/{products,projects}/*-view.tsx` | Products + Projects as one sidebar entry, tab-switched via `?tab=`; Projects' q/cell/inactive filters are local `useState`, not URL params (scroll-bounce prevention) |
 | Project Settings / Conventions | `components/projects/edit-project-dialog.tsx` + `components/conventions/conventions-tab.tsx` | Per-project `.roboco/conventions.yml` map + health; Save / Restore via PR |
 | Usage Dashboard | `components/dashboard/usage-overview-panel.tsx` + `hooks/use-usage.ts` | Token/cost totals; live WS snapshot with HTTP-polling fallback |
 | Git | `app/(dashboard)/git/page.tsx` | Repository / Work Sessions tabs (business-page tab idiom, `?tab=`); `GitBrowser` (status/branches/log/diff + actions incl. confirm-gated "Clean Up Stale Branches") and `WorkSessionsView` (active sessions, search/status filter kept LOCAL not in URL params); old `/work-sessions` route now redirects to `/git?tab=sessions` |
 | Kanban | `components/kanban/{core,views}/*` | dnd-kit drag board; dev/qa/pm/pr-review views; drag routes through admin status-override with bypass-precondition prompt |
-| Task Detail | `components/tasks/task-detail/*` | Tabbed: overview, plan, progress, commits, sessions, notes, dependencies, AC, action dialogs |
+| Task Detail | `components/tasks/task-detail/*` | Tabbed: overview, plan, progress, commits, sessions, notes, dependencies, **findings**, AC, action dialogs |
 | AI Providers | `app/(dashboard)/settings/ai-providers/page.tsx` + `components/settings/ai-routing-card.tsx` | Per-slug/role/global model routing |
 
 ## Key Symbols
@@ -8195,7 +8796,7 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │   │   └── views/                          (dev/qa/pm/pr-review kanban)
 │   ├── prompter/                           (intake-form, chat-messages, chat-composer, draft-proposal-card, batch-review-card, success-card, board-review-sent-card)
 │   ├── a2a/                                (a2a-switchboard + a2a-switchboard-utils, a2a-pair-card, a2a-conversation-list, a2a-transcript, a2a-reply-composer, a2a-new-dm-dialog, a2a-direct-composer, a2a-utils)
-│   ├── tasks/ + tasks/task-detail/         (task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector; detail tabs: overview/plan/progress/commits/sessions/notes/dependencies)
+│   ├── tasks/ + tasks/task-detail/         (task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector; detail tabs: overview/plan/progress/commits/sessions/notes/dependencies/findings)
 │   ├── settings/                           (feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, x-credentials-card)
 │   ├── conventions/conventions-tab.tsx     (per-project architecture map + health)
 │   ├── projects/projects-view.tsx, products/products-view.tsx (Workstation tab panes)
@@ -8329,9 +8930,9 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Path | Role | LOC |
 |---|---|---|
-| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `roboco_data` DB-isolation network; NAS prod env vars + volume mounts | 556 |
+| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true` | 556 |
 | docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 556 |
-| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose, agent-* services are one-shot pre-pulls, own `roboco_data` network | 334 |
+| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network | 334 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), per-Python test matrix, docs, lifecycle regen | 548 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 451 |
 | roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 1022 |
@@ -8346,8 +8947,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/agent-dev-be.Dockerfile | Backend dev — adds postgresql-client + redis-tools on top of base | 18 |
 | docker/agent-dev-fe.Dockerfile | Frontend dev — adds Playwright system deps + pnpm + chromium browser | 37 |
 | docker/agent-qa-be.Dockerfile | Backend QA — adds postgresql-client on top of base | 18 |
-| docker/agent-qa-fe.Dockerfile | Frontend QA — Playwright deps + pnpm + chromium | 36 |
-| docker/agent-ux.Dockerfile | UX/UI agent — FROM base, no extra tools (placeholder for Figma/image tools) | 13 |
+| docker/agent-qa-fe.Dockerfile | Frontend QA — pnpm + `chromium-headless-shell` (not full chromium, under `/app/.playwright`) + `@playwright/mcp` for browser-based verification, wrapped by `playwright-mcp-entrypoint.sh` | 36 |
+| docker/agent-ux.Dockerfile | UX/UI agent (shared by ux-dev + ux-qa) — FROM base + the same `chromium-headless-shell` + `@playwright/mcp` as agent-qa-fe (role-gated at registration, not image-gated, so ux-dev never sees the MCP server despite sharing the image) | 13 |
 | docker/agent-doc.Dockerfile | Documenter — FROM base, no extra tools | 12 |
 | docker/agent-prompter.Dockerfile | Intake (Prompter) — persistent Claude Agent SDK session, ENTRYPOINT python -m roboco.agent_sdk.intake_main | 17 |
 | docker/agent-secretary.Dockerfile | Secretary — persistent Claude Agent SDK session with gated CEO-authority tools, ENTRYPOINT python -m roboco.agent_sdk.secretary_main | 19 |
@@ -8359,6 +8960,8 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/postgres-pgvector.Dockerfile | Example custom pgvector build (pg17) — currently unused; compose uses pgvector/pgvector:pg16 image directly | 15 |
 | docker/nginx.conf | nginx default.conf template: /health /ready /api/ /ws/ -> orchestrator (with X-Agent-Token header), everything else -> panel | 67 |
 | docker/postgres-init/01-create-extensions.sql | First-init SQL: CREATE EXTENSION IF NOT EXISTS vector + availability check (used by the pgvector image entrypoint) | 17 |
+| docker/scripts/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network | 46 |
+| docker/scripts/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 20 |
 | docker/scripts/sdk-startup-hook.sh | Claude SessionStart hook: start SDK server on :9000 with UV_PROJECT_ENVIRONMENT=/app/.venv + --no-sync, reset budget, print briefing/precompact | 58 |
 | docker/scripts/a2a-check-hook.sh | PostToolUse hook: poll SDK /inbox/count and remind the agent of pending A2A messages (always exits 0) | 30 |
 | docker/scripts/bash-guard-hook.sh | PreToolUse Bash guard: deny compound shell git network ops, PR/merge bypass, credential exfil, and uv run --active / uv targeting /app/.venv (exit 2 to deny) | 354 |
@@ -8484,7 +9087,7 @@ graph TD
 deployment-tooling
 ├─ Compose topologies
 │  ├─ docker-compose.yaml / .yml (build-from-source)
-│  │  ├─ infra: postgres, redis, ollama, ollama-init
+│  │  ├─ infra: postgres, redis, ollama, ollama-init, backup (pg_dump sidecar, always on)
 │  │  ├─ agent-*-image builders (14, FROM docker/agent-*.Dockerfile)
 │  │  ├─ orchestrator (build context=.)
 │  │  ├─ panel (build)
@@ -8581,7 +9184,9 @@ deployment-tooling
 - ROBOCO_X_ENGINE_ENABLED / _MENTIONS_INTERVAL_SECONDS / _MENTIONS_MAX_PER_CYCLE / _MENTIONS_MIN_ENGAGEMENT / _MAX_OPEN_POSTS / ROBOCO_X_ACCOUNT_USER_ID / _REQUEST_TIMEOUT_SECONDS — the X (Twitter) engine; inert without stored OAuth 1.0a credentials regardless of the flag
 - ROBOCO_ROADMAP_ENGINE_ENABLED / _INTERVAL_SECONDS (default 604800) / _MIN_ITEMS_PER_CYCLE / _MAX_ITEMS_PER_CYCLE — the board roadmap engine
 - ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED / _INTERVAL_SECONDS (default 259200/3d) — X-engine feature-spotlight sub-switch (requires ROBOCO_X_ENGINE_ENABLED also on), default off
+- ROBOCO_OBSIDIAN_VAULT_ENABLED / ROBOCO_VAULT_PATH (default `/data/vault`) — Obsidian vault V1 projection master switch, config-default off but both compose files set it `true`; ROBOCO_VAULT_INTAKE_ENABLED / _INTERVAL_SECONDS / _DIR / _MAX_PER_CYCLE / _MAX_OPEN_DRAFTS — the independently-gated `#roboco`-tag inbox watcher
 - ROBOCO_FABLE_MODE_ENABLED — opus-fable-playbook adoption (doctrine layer in the composed prompt + 5 Claude-path hook scripts + 1 grok-path hook), default off; off = byte-for-byte unchanged spawn path
+- ROBOCO_MINIO_ENDPOINT / _ACCESS_KEY / _SECRET_KEY / _BUCKET / _REGION — MinIO object storage (default-off; empty endpoint = disabled, media route falls back to `FileResponse`; when set, `video_renderer_client._save` PUTs each render to MinIO after the local write and `GET /api/video/posts/{id}/media` streams it via `StreamingResponse` over `minio_client.get_object_stream`, key = basename, `_require_ceo` kept so auth stays end-to-end — no presigned URLs; `S3Error` falls back to `FileResponse`); NAS compose runs `minio` + `minio-init` on the `data` network with a named `minio-data` volume, registry compose omits MinIO; see `docs/rag/architecture/minio-storage.md`
 - ROBOCO_TRANSCRIPT_RETENTION_DAYS / ROBOCO_TRANSCRIPT_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_IMAGE_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_GIT_COMMAND_TIMEOUT_SECONDS / _COMMIT_TIMEOUT_SECONDS / _NETWORK_TIMEOUT_SECONDS
@@ -8617,6 +9222,7 @@ deployment-tooling
 - Both NAS composes (`docker-compose.yml`/`.yaml`) set `ROBOCO_GUARD_ENABLED=true` / `ROBOCO_GUARD_PASSIVE_MODE=true` / `ROBOCO_GUARD_FAIL_SECURE=false` — the fastapi-guard HTTP security layer runs in detect-and-log calibration mode on the NAS, never blocking; `docker-compose.registry.yml` does not set these three and stays off (`guard_enabled` default `false`). Flipping `_PASSIVE_MODE` to `false` to enforce is a deliberate later step, not part of this arming.
 - Both NAS composes now also arm `ROBOCO_SANDBOX_DB_ENABLED` / `ROBOCO_DB_NETWORK_ISOLATED` / `ROBOCO_CLOUD_AUTH_ENABLED` / `ROBOCO_X_ENGINE_ENABLED` / `ROBOCO_ROADMAP_ENGINE_ENABLED` all `${VAR:-true}` (config default is `false` for every one), alongside the pre-existing `${VAR:-true}` flips for `ROBOCO_SELF_HEAL_ENABLED`, `ROBOCO_PROVISIONING_ENABLED`, `ROBOCO_TRANSCRIPT_PRUNE_ENABLED`, and `ROBOCO_ROUTING_STRICT` — this is a personal-deploy posture (override any via `.env`), not the published conservative default. `docker-compose.registry.yml` keeps `ROBOCO_SELF_HEAL_ENABLED:-false` (and does not set `SANDBOX_DB`/`CLOUD_AUTH`/`X_ENGINE`/`ROADMAP_ENGINE` at all, so they fall through to the config `False` default) — it arms only `ROBOCO_DB_NETWORK_ISOLATED:-true`, with its own `roboco_data` network in the `networks:` stanza, so the registry compose ships DB-isolated but otherwise conservative.
 - Surface N (scanner honeytrap) is two-layered because nginx only proxies `/api|/ws|/health|/ready` to the orchestrator: `docker/nginx.conf` has a `location ~*` block that `return 444`s the classic root scanner paths (`/.env`, `/.git`, `/wp-login.php`, `/phpmyadmin`, `actuator`, `cgi-bin`, `vendor/`, …) at the edge before they reach the panel (anchored to scanner fingerprints; `/.well-known` + real routes untouched; always on), while `roboco/security.py`'s `_THREAT_BAN_CONFIG` gained `recon`/`sensitive_file`/`cms_probing` so `/api`-path probes that DO reach guard trip an adaptive per-IP redis auto-ban (active mode only; passive logs).
+- `.github/workflows/release.yml` must build every image `docker-compose.registry.yml` pulls: `roboco-agent-base` and `roboco-agent-grok` build first (outside the loop — the Grok-family images and two interactive Grok roles `FROM` them respectively, so they must exist in the daemon before the loop runs), then a 15-entry `IMAGES` associative array covers the rest — 17 images total. The two Grok sub-images (`roboco-agent-grok-prompter` / `roboco-agent-grok-secretary`) were previously missing from the loop and were never published, so a fresh registry-compose pull 404'd on them; adding an image anywhere in the compose files without a matching `IMAGES` entry (or the two pre-loop builds) silently re-breaks a cold registry pull.
 
 
 ## Drift from CLAUDE.md
@@ -8674,13 +9280,25 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 | Makefile | quality/quality-fast/panel-gate/test/test-3.10..3.14 targets wiring pytest+ruff+mypy+xenon+vulture into the merge gate | 547 |
 | tests/foundation/ | 21 structural/parity tests: agents_config parity, lifecycle consumer/generator parity, role-set parity, seed-orchestrator parity, tracing-verb parity, route-guard consolidation, smoke replay, lifecycle spec, pr_review_gate, identity, communications, journaling, cell_teams, agent_loop, validate, task_completeness |  |
 | tests/integration/ | 100 real-DB + FastAPI integration tests: full lifecycle real DB (_StubGit), task_service_*, *_routes, migrations 013-049, sequencing, conventions e2e, metrics, release, ci_watch, dep_update, prompter_live, secretary |  |
-| tests/integration/services/ | 9 autonomy-engine integration tests: ci_watch_engine/notify/source, dep_update_engine/probe/source, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping |  |
+| tests/integration/services/ | 10 autonomy-engine integration tests: ci_watch_engine/notify/source, dep_update_engine/probe/source, docs_sync_engine, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping |  |
 | tests/integration/v1/ | 1 FastAPI TestClient e2e (test_full_pending_to_completed) exercising all six v1 routers via stateful mocked Choreographer/ContentActions through the full hand-off chain |  |
 | tests/property/ | 2 deterministic property tests (no hypothesis dep): state-machine invariants (orphan/terminal/reachability/random-walk) + tracing-completeness over smoke_test_batch |  |
 | tests/unit/ | ~430 unit tests mirroring roboco/: agents, api (+routes/+schemas), billing, config, conventions, db, enforcement, events, foundation/policy, gateway (105), llm, mcp_servers, migrations, models, runtime (64), scripts, services (120), templates, utils |  |
 | tests/unit/gateway/ | 105 Choreographer/verb-runner unit tests — the largest single cluster: every intent verb's guards, envelopes, evidence, claim locks, lane barrier, pr gate, conventions gate, content actions |  |
 | tests/unit/runtime/ | 64 orchestrator unit tests: spawn/manifest/cwd/worktree, reaper, respawn persistence, rate-limit/overload sweeps, ci_watch/dep_update/release/self_heal loops, no_spawn_human_roles, per_dev_lane_queue, readopt_running_agents |  |
 | tests/unit/services/ | 120 service unit tests: task, git (+worktree), workspace, work_session, release_executor/readiness/manager, sequencing, conventions, playbook, notification, rate_limit_tracker, optimal_brain/ (10) |  |
+| tests/e2e_smoke/ | Scripted-agent smoke tests against the live in-process orchestrator; separate from the default pytest collection (run by the PR/NAS smoke gate) |  |
+| tests/e2e_smoke/harness.py | E2E harness: E2EStack app + orchestrator client + per-test agent manifests; used by the e2e_smoke tier | ~520 |
+
+## E2E smoke harness
+
+The `tests/e2e_smoke/` tier runs scripted agents against a real in-process FastAPI app and orchestrator. It is **not** collected by the default `uv run pytest` invocation; it is exercised separately by the PR gate / NAS smoke run. The harness in `tests/e2e_smoke/harness.py` builds an `E2EStack`, mounts the orchestrator client, and gives each test a per-agent manifest.
+
+Recent harness hardening for the auditor-revival slice (PR #498, task `8323cd50`):
+
+- `tests/conftest.py` now catches a missing `pgvector` extension when creating the ephemeral test database and continues with a warning. The core schema does not require it and the e2e smoke suite does not exercise RAG, so lightweight Postgres sandboxes can run the suite without the pgvector package.
+- `tests/e2e_smoke/harness.py` clears any host-supplied `ROBOCO_AGENT_TOKEN` from the environment before a `ScriptedAgent` re-imports `roboco.mcp.flow_server`. The host agent may carry a real token for the test runner's identity; `flow_server` reads it before each call and forwards it in `X-Agent-Token`. That token does not match the ephemeral test agent IDs and causes `401 Unauthorized`, so `ScriptedAgent._module` pops it to keep scripted agents in unsigned-token mode. This guard was accidentally dropped in an earlier auditor-revival commit and restored by PR #502.
+- `tests/e2e_smoke/test_auditor_triggers.py` exercises both scheduled and reactive auditor dispatch through a `_fresh_orchestrator` helper. Because the helper constructs `AgentOrchestrator` via `__new__` to bypass normal initialization, `AgentOrchestrator.__new__` now pre-initializes the private attributes `_instances`, `_last_audit_spawn_at`, and `_notification_spawn_at` that `_is_agent_active`, `_dispatch_audit_work`, and notification-cooldown paths read. The helper still explicitly sets `_instances = {}` and `_last_audit_spawn_at = None` for clarity, but this is no longer required for correctness. The two tests are intentionally **synchronous** (no `@pytest.mark.asyncio`) because the harness already enters an async loop via `run_db`; the test body uses `asyncio.run` on an inner coroutine. Internal API calls use the raw `_SYSTEM_API_HEADERS` (system identity only) rather than the production `_system_api_headers` helper, because dev mode rejects an `UNSIGNED` `X-Agent-Token`. Settings are patched at `api_url` (the input to the computed `internal_api_url` property), and notifications are matched with `NotificationType.ALERT` instead of the string `"ALERT"`.
 
 ## Key Symbols
 
@@ -8742,6 +9360,10 @@ tests/
 ├── conftest.py  [TOP-LEVEL — DB provisioning, db_session, smoke_test_batch, skip hook]
 ├── fixtures/
 │   └── 2026-05-08-smoke-trace.json  [11 synthesized bug records, replay_kind taxonomy]
+├── e2e_smoke/  (scripted-agent smoke tests against live orchestrator; not collected by default pytest run)
+│   ├── harness.py  [E2EStack + orchestrator client + per-test agent manifests]
+│   ├── arcs.py  [seed helpers for company/project/task]
+│   └── test_auditor_triggers.py  [scheduled + reactive auditor dispatch smoke tests]
 ├── foundation/  (21 tests — structural/parity gates)
 │   ├── test_lifecycle_smoke_replay.py  [consumes the JSON fixture, dispatch by replay_kind]
 │   ├── test_lifecycle_spec.py/test_lifecycle_generators.py/test_lifecycle_consumer_parity.py
@@ -8757,20 +9379,32 @@ tests/
 │   ├── test_migration_013/014/016/028 + batch_intake/ci_watch/dep_update/observability
 │   ├── test_*_routes.py (agents, dashboard, docs, git, journal, kanban, notifications, pitch, product, project, release, research, secretary, stream, tasks, work_session, orchestrator, prompter_live)
 │   ├── test_task_service_*  [basics, transitions, lifecycle_misc, misc, background, no_silent_fallback, route_orchestration]
-│   ├── services/  [ci_watch_engine/notify/source, dep_update_engine/probe/source, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping]
+│   ├── services/  [ci_watch_engine/notify/source, dep_update_engine/probe/source, docs_sync_engine, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping]
 │   ├── v1/test_full_pending_to_completed.py  [TestClient e2e, all 6 v1 routers, stateful mocks]
 │   ├── test_bash_guard_message.sh  [standalone smoke]
 │   └── test_stop_hook_verb_names.sh  [standalone smoke]
 ├── property/  (2 — deterministic, no hypothesis)
 │   ├── test_state_machine_invariants.py  [6 invariants: orphan/terminal/reachability/random-walk/self-loop]
 │   └── test_tracing_completeness.py  [6-bullet tracing contract over smoke_test_batch]
+├── e2e_smoke/  (scripted-agent lifecycle smoke — env-gated)
+│   ├── conftest.py  [collection gate: skips unless ROBOCO_E2E_SMOKE=1]
+│   ├── harness.py  [in-process API, ephemeral Postgres, bare git origin, fake GitHub REST]
+│   ├── arcs.py  [canonical-company seeding + dev/qa/pm/reviewer lifecycle helpers]
+│   ├── test_dev_lifecycle.py  [scenario 1: leaf dev arc → awaiting_pm_review]
+│   ├── test_pm_merge_chain.py  [scenarios 2/2b: PR-gate turn cut + serial root merges]
+│   ├── test_root_ceo_chain.py  [scenario 3: pr_fail → rework → real approve-and-merge]
+│   ├── test_megatask_umbrella.py  [scenario 4: MegaTask sequencing + umbrella closure]
+│   ├── test_notification_coordination_events.py  [DB-truth checks for restored coordination-event ALERTs]
+│   ├── test_auditor_triggers.py  [scheduled sweep + reactive QA-fail alert paths spawn auditor]
+│   ├── test_auth_gate_coverage.py, test_background_engines.py, test_data_integrity.py, test_feature_spotlight.py, test_flow_verb_timeout.py, test_git_workflow.py, test_sandbox_image_tags.py, test_sandbox_on_demand.py, test_state_machine.py, test_video_pipeline.py  [other e2e smoke scenarios]
+│   └── test_bash_guard_message.sh / test_stop_hook_verb_names.sh  [NOT here — these live in tests/integration/]
 └── unit/  (~430 — mirrors roboco/)
     ├── test_* (11 top-level: agents_config, bootstrap, config_properties, enum_migration_parity, exceptions, logging, no_deleted_tool_names, notification_dedup, notification_dedup_refire, notification_delivery_refire, toolchain_flag)
     ├── agent_sdk/ (11) — grok_cli/intake/secretary/manifest/prompt_guard/usage_sync/verb_circuit_breaker
     ├── agents/ (4) — autogen_prompt_layer, briefing_cluster, conventions_ambient_injection, tool_load_directive
     ├── api/ (30) + routes/ (3) + routes/v1/ (11) + schemas/ (2) + schemas/v1/ (1) — middleware, deps, errors, websocket_*, schemas, v1 flow router tests
     ├── billing/ (1) — pricing
-    ├── config/ (5) — ci_watch/conventions/dep_update/org_memory/release_manager flag tests
+    ├── config/ (6) — ci_watch/conventions/dep_update/docs_sync/org_memory/release_manager flag tests
     ├── conventions/ (10) — classify_python/ts, cli, cli_smoke, custom, hygiene, modularity, placement, runner, scan
     ├── db/ (1) — respawn_tracker_table
     ├── enforcement/ (4) — a2a_access, journal_perms, task_lifecycle, task_ownership
@@ -8783,7 +9417,7 @@ tests/
     ├── models/ (7) — events, journal, llm, misc, product, task_create_completeness, transcription
     ├── runtime/ (64) — orchestrator spawn/reaper/loops; per_dev_lane_queue, respawn_persistence, readopt_running_agents, gateway_health
     ├── scripts/ (2) — bash_guard, verify_postgres_enums
-    ├── services/ (120) + optimal_brain/ (10 + conftest) — task, git (+worktree family), workspace, work_session, release_*, sequencing, conventions, playbook, notification, rate_limit, optimal_brain
+    ├── services/ (~120) + optimal_brain/ (10 + conftest) — task, git (+worktree family), workspace, work_session, release_* executor/readiness/manager/proposal + docs_sync hook, sequencing, conventions, playbook, notification, rate_limit, optimal_brain
     ├── templates/ (2) — pr_internal, pr_root
     └── utils/ (2) — converters, crypto
 ```
@@ -8798,6 +9432,7 @@ tests/
 |---|---|---|
 | make quality | Makefile | developer/CI merge gate — runs ruff format-check + ruff check + mypy roboco/ tests/ + pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80 + xenon + vulture |
 | make quality-fast | Makefile | pre-submit fast gate — ruff + mypy + pytest -q -x --no-cov (no coverage threshold) |
+| make e2e-smoke | Makefile | scripted-agent lifecycle smoke — `ROBOCO_E2E_SMOKE=1 uv run pytest tests/e2e_smoke -q --no-cov`; needs test Postgres + git on PATH |
 | make gate (panel-gate) | Makefile | panel pnpm lint + typecheck + vitest |
 | make test/test-3.10..3.14/test-all | Makefile | docker compose run roboco pytest -v --cov=. across Python versions |
 | uv run pytest | pyproject.toml | direct invocation — auto-applies addopts (--cov=roboco --cov-report=term-missing), testpaths=tests, asyncio_mode=auto |
@@ -8837,6 +9472,9 @@ tests/
 - The two .sh smoke scripts are NOT collected by pytest (no pytest collection of .sh); they must be invoked directly. They are not referenced in Makefile or .github/ workflows — likely run manually or in an unwired CI step.
 - _test_database_url is session-scoped with loop_scope=session; db_session is function-scoped with asyncio_default_fixture_loop_scope=function (pyproject). Mixing session+function loop scopes is supported but a session-scoped async fixture holds one event loop for the whole session.
 - conftest default port 15432 points at Docker's roboco-postgres (down on a bare-metal dev box). Per project memory the local-PG workflow is ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof ROBOCO_TEST_DB_PASSWORD= — without these env vars, ALL db_session tests silently skip on a non-Docker dev machine.
+- `tests/e2e_smoke/test_auditor_triggers.py` tests are sync wrappers around an async helper. The two auditor-trigger smoke tests are plain `def` tests that call `asyncio.run()` on an inner coroutine, because the harness already starts an async loop via `run_db`. Marking them with `@pytest.mark.asyncio` would conflict with that nested loop.
+- `tests/conftest.py` now tolerates a missing `pgvector` extension. `_test_database_url` catches `CREATE EXTENSION IF NOT EXISTS vector` failures and warns instead of failing. This lets the suite run in lightweight sandboxes, but it also means a sandbox with missing pgvector will pass with a warning rather than failing loudly.
+- `tests/e2e_smoke/harness.py` clears host `ROBOCO_AGENT_TOKEN` before scripted agents load `flow_server`. A `ScriptedAgent` pops `ROBOCO_AGENT_TOKEN` from `os.environ` before re-importing `roboco.mcp.flow_server`. Without this, a real host token is forwarded for an ephemeral test agent identity and causes 401s. Any new harness path that imports `flow_server` inside a scripted agent must do the same.
 
 
 ## Drift from CLAUDE.md
@@ -8862,6 +9500,9 @@ tests/
 > - **49526f55** test-suite quality gate unblock: fixed 12 mypy errors across 5 test files + 2 behavior corrections (child task state for cascade-cancel assertion; test_a2a_message_auth mocked to DB-free path).
 > - **76ce53e3** chat MESSAGE_SENT fix: test_websocket_bridge.py gained 3 new test functions for `_handle_message_event` (skips missing ids, skips invalid uuid, broadcasts to session+channel).
 > - **77958c1e** chat session/group/message read IDOR fix: test_messaging_service.py extended with `_make_agent` helper + IDOR access-control test coverage for get_session/get_group/list_messages.
+> - **1f129199** auditor-trigger e2e smoke test: added `tests/e2e_smoke/test_auditor_triggers.py` exercising scheduled sweep and reactive QA-fail alert paths end-to-end, plus harness mount of `/api/notifications` so `_dispatch_audit_work` can poll ALERT rows.
+> - **babffe0a** fix(e2e_smoke): repair auditor-trigger smoke tests and harden harness (#498): fixed `tests/e2e_smoke/test_auditor_triggers.py` so scheduled/reactive auditor-trigger tests reach their spawn assertions, hardened `tests/conftest.py` to tolerate missing pgvector, and cleared leaked `ROBOCO_AGENT_TOKEN` in `tests/e2e_smoke/harness.py` before scripted agents load `flow_server`. See the E2E smoke harness section above for the exact patterns.
+> - **f081a574** (PR #502, 2026-07-13): Follow-up e2e lifecycle smoke fix. Restored the `ROBOCO_AGENT_TOKEN` pop in `tests/e2e_smoke/harness.py:ScriptedAgent._module` after it was accidentally removed, and clarified the `/api/notifications` mount comment so it no longer implies the router was newly added. The orchestrator `__new__` pre-init from `89b68786` means `_fresh_orchestrator` no longer needs to manually set `_instances`.
 
 ## Regression Risks
 
@@ -8875,6 +9516,9 @@ tests/
 | Property random-walk seed is not pinned — state-machine holes can hide | tests/property/test_state_machine_invariants.py:95 | test_random_walks_stay_within_declared_states uses stdlib random without an explicit seed. A state-machine transition added by the gap-fill commits that violates an invariant on a rarely-walked path could pass CI on most runs and fail intermittently. Without hypothesis and without a fixed seed, the walk coverage is non-deterministic. | low |
 | JSON smoke-trace fixture is a synthesis — skip-classified bugs are not re-asserted | tests/fixtures/2026-05-08-smoke-trace.json:1 | 3 of 11 records are *_skip (schema_only_skip, audit_only_skip, behavioral_skip) and are documented NOT re-asserted at the spec layer in test_lifecycle_smoke_replay. A regression in the bug those records document (e.g. delegate.task_type default, the audit-layer fix) would not be caught by the smoke-replay test; it relies on other tests covering those layers. If those other tests were removed, the regression window re-opens silently. | low |
 | Shell smoke scripts are not wired into any CI/Makefile target | tests/integration/test_stop_hook_verb_names.sh:1 | test_bash_guard_message.sh and test_stop_hook_verb_names.sh are not referenced in Makefile or .github/workflows. They guard against pre-gateway legacy verb names leaking back into stop-hook.sh/bash-guard-hook.sh and against denial-message bloat. A regression (re-introducing an old verb name, or an 8-line denial) would not be caught by make quality or pytest; the scripts must be run manually. | low |
+| Missing pgvector is now a warning, not a failure | tests/conftest.py:189 | `_test_database_url` catches `CREATE EXTENSION IF NOT EXISTS vector` failures. A sandbox that accidentally omits pgvector will green-run the e2e smoke suite with a warning, so a regression in pgvector-dependent code could pass locally and only fail in CI. | low |
+| Host `ROBOCO_AGENT_TOKEN` can leak into scripted-agent calls | tests/e2e_smoke/harness.py:476 | The harness clears the token before loading `flow_server`, but any new scripted-agent bootstrap path that forgets this step will forward the test runner's real token and get 401s for ephemeral agent IDs. | low |
+| `_fresh_orchestrator` bypasses `__init__` and must stay in sync with private attributes | tests/e2e_smoke/test_auditor_triggers.py:115 | The helper constructs `AgentOrchestrator` via `__new__`. `AgentOrchestrator.__new__` now pre-initializes `_instances`, `_last_audit_spawn_at`, and `_notification_spawn_at`, so the helper's explicit initialization of `_instances` and `_last_audit_spawn_at` is defensive rather than required. A refactor of `AgentOrchestrator.__init__` that adds new instance attributes read by `_dispatch_audit_work` without also adding them to `__new__` will break the smoke tests silently until the helper is updated. | low |
 
 ## Health
 The test slice is structurally healthy and well-tiered (foundation parity/integration real-DB/property invariants/unit mirror), with a single load-bearing conftest that honestly documents its own drift from the alembic chain. The 571-file suite is async-first and coverage-gated, but two architectural facts temper confidence: (1) the coverage omit list excludes the orchestrator, git, workspace, mcp, and agents surface from the 80% gate, so make quality green does NOT mean those hot paths are covered — their regressions are deferred to NAS smoke runs; (2) the conftest builds schema via Base.metadata.create_all, which is correct today but creates a standing trap for any future NOT NULL ORM-mapped migration column. The since-baseline gap-fill commits added substantial real coverage (worktree lifecycle, respawn persistence, lane barrier, sequencing, release executor fail-closed, rate-limit atomicity), and the conftest DB-default change (5432/$USER -> 15432/roboco) fixed a real out-of-the-box failure mode but introduced silent-skip behavior on non-Docker dev boxes. The property tests lack hypothesis and a pinned seed, and the JSON smoke fixture is a synthesis with 3/11 records not re-asserted — both are documented limitations, not defects. Overall the slice is solid for a merge gate but should be supplemented by the NAS smoke run before any deploy claim, and the shell smoke scripts need wiring into CI to actually guard what they assert.
