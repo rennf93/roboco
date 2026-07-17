@@ -17,11 +17,18 @@ from roboco.db.tables import (
     A2AConversationTable,
     A2AMessageTable,
     AgentTable,
+    NotificationTable,
     ProjectTable,
     TaskTable,
 )
 from roboco.enforcement.a2a_access import A2AAccessDeniedError
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import (
+    AgentRole,
+    AgentStatus,
+    NotificationPriority,
+    NotificationType,
+    Team,
+)
 from roboco.models.a2a import (
     A2AConversationStatus,
     A2AMessage,
@@ -2381,3 +2388,187 @@ async def test_mark_all_read_racing_message_stays_unread(a2a_setup: dict) -> Non
     assert first[0].read_at is not None
     assert racing[0].read_at is None, "racing message must stay unread"
     assert row.unread_by_b == 1
+
+
+# ---------------------------------------------------------------------------
+# CEO-DM wake — a conversational A2A DM from the CEO must wake an offline
+# recipient (reuses the legacy a2a_request NotificationTable row
+# `_dispatch_a2a_work` already polls); agent<->agent A2A stays pull-only.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ceo_dm_wakes_offline_recipient(a2a_setup: dict) -> None:
+    """A CEO->agent chat message creates exactly one a2a_request wake
+    notification, with requires_ack=True so the row is visible to
+    _dispatch_a2a_work's pending_ack_only poll (A2A_REQUEST otherwise
+    defaults to requires_ack=False and is invisible there)."""
+    svc: A2AService = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation(agent_a="ceo", agent_b="be-dev-1")
+    conv_id = UUID(conv.id)
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.send_chat_message(conv_id, "ceo", "status update please")
+
+    mock_ns.send_a2a_notification.assert_awaited_once()
+    kwargs = mock_ns.send_a2a_notification.await_args.kwargs
+    assert kwargs["requires_ack"] is True
+    assert kwargs["a2a_context"]["from_agent"] == "ceo"
+    assert kwargs["a2a_context"]["to_agent"] == "be-dev-1"
+
+
+@pytest.mark.asyncio
+async def test_ceo_dm_wake_dedups_while_pending(a2a_setup: dict) -> None:
+    """A second CEO message while an unacked wake notification for the same
+    recipient is still pending must not create a duplicate."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    dev = a2a_setup["dev"]
+    conv = await svc.get_or_create_conversation(agent_a="ceo", agent_b="be-dev-1")
+    conv_id = UUID(conv.id)
+
+    pending = NotificationTable(
+        type=NotificationType.A2A_REQUEST,
+        priority=NotificationPriority.NORMAL,
+        from_agent=dev.id,  # placeholder sender — irrelevant to the dedup lookup
+        to_agents=[dev.id],
+        subject="A2A: ceo_dm",
+        body="already pending",
+        requires_ack=True,
+    )
+    db.add(pending)
+    await db.flush()
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.send_chat_message(conv_id, "ceo", "second message")
+
+    mock_ns.send_a2a_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_to_agent_dm_creates_no_wake(a2a_setup: dict) -> None:
+    """Ordinary agent<->agent A2A stays pull-only — no wake notification, so
+    routine chatter can't burn spawns."""
+    svc: A2AService = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.send_chat_message(conv_id, "be-dev-1", "sync?")
+
+    mock_ns.send_a2a_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_agent_reply_to_ceo_creates_no_wake(a2a_setup: dict) -> None:
+    """An agent's reply to the CEO must never wake the CEO — the CEO is
+    human (is_spawnable_agent_slug already refuses it), and from_slug !=
+    "ceo" stops it before that check even runs."""
+    svc: A2AService = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation(agent_a="ceo", agent_b="be-dev-1")
+    conv_id = UUID(conv.id)
+    await svc.send_chat_message(conv_id, "ceo", "status?")
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.send_chat_message(conv_id, "be-dev-1", "on it")
+
+    mock_ns.send_a2a_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ceo_dm_to_non_a2a_role_creates_no_wake(a2a_setup: dict) -> None:
+    """A CEO DM to a role with no read_a2a on its manifest (pr_reviewer,
+    auditor) must NOT create a wake row — the recipient could never ack it,
+    so it would be immortal, permanently suppress future wakes via the dedup
+    pre-check, and drive futile respawns."""
+    svc: A2AService = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation(agent_a="ceo", agent_b="pr-reviewer-1")
+    conv_id = UUID(conv.id)
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.send_chat_message(conv_id, "ceo", "review status?")
+
+    mock_ns.send_a2a_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_interject_as_ceo_wakes_only_addressed_participant(
+    a2a_setup: dict,
+) -> None:
+    """CEO interjection wakes only the @-addressed participant, not both."""
+    svc: A2AService = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.interject_as_ceo(conv_id, to_agent="be-qa", content="ping")
+
+    mock_ns.send_a2a_notification.assert_awaited_once()
+    a2a_context = mock_ns.send_a2a_notification.await_args.kwargs["a2a_context"]
+    assert a2a_context["to_agent"] == "be-qa"
+
+
+@pytest.mark.asyncio
+async def test_read_a2a_acks_pending_wake_notification(a2a_setup: dict) -> None:
+    """read_a2a (get_unread_messages) closes out a pending wake notification
+    once the recipient has actually drained its A2A inbox — otherwise the
+    dedup in _maybe_wake_ceo_recipient would permanently suppress the next
+    genuine wake for that recipient."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    qa = a2a_setup["qa"]
+    dev = a2a_setup["dev"]
+
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+    await svc.send_chat_message(conv_id, "be-dev-1", "unread for qa")
+
+    notif = NotificationTable(
+        type=NotificationType.A2A_REQUEST,
+        priority=NotificationPriority.NORMAL,
+        from_agent=dev.id,
+        to_agents=[qa.id],
+        subject="A2A: ceo_dm",
+        body="pending wake",
+        requires_ack=True,
+    )
+    db.add(notif)
+    await db.flush()
+    notif_id = notif.id
+
+    msgs = await svc.get_unread_messages(qa.id)
+    assert msgs  # the content-bearing read actually returned something
+
+    refreshed = await db.get(NotificationTable, notif_id)
+    assert refreshed is not None
+    assert qa.id in refreshed.acked_by

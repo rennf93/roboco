@@ -82,9 +82,11 @@ Each role can communicate with:
 | Role | Can Communicate With |
 |------|---------------------|
 | CEO | Everyone |
-| Board | CEO, other board, Main PM |
+| Board | CEO*, other board, Main PM |
 | Auditor | Read-only oversight via task/audit state; no agent comms |
 | PR Reviewer | Read-only; posts one change-request on the PR itself, no agent comms |
-| Main PM | CEO, Board, Cell PMs |
+| Main PM | CEO*, Board, Cell PMs |
 | Cell PM | Main PM, cell members |
 | Cell Members | Cell PM, other cell members |
+
+\* Initiation is asymmetric: the CEO may open a conversation with any agent at any time; an agent may never open one with the CEO, only reply in-thread once the CEO has started it.

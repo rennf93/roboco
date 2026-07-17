@@ -1,7 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { a2aApi, type AdminReplyRequest } from "@/lib/api/a2a";
+import {
+  a2aApi,
+  type AdminReplyRequest,
+  type CreateCeoConversationRequest,
+} from "@/lib/api/a2a";
 
 export const a2aLiveKeys = {
   all: ["a2a-live"] as const,
@@ -55,6 +59,41 @@ export function useReplyAsCeo() {
   return useMutation({
     mutationFn: ({ conversationId, ...reply }: ReplyAsCeoVariables) =>
       a2aApi.replyAsCeo(conversationId, reply),
+    onSuccess: (_sent, variables) => {
+      queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
+      queryClient.invalidateQueries({
+        queryKey: a2aLiveKeys.messages(variables.conversationId),
+      });
+    },
+  });
+}
+
+// CEO opens (or reopens) a fresh 1:1 with an agent, sending the first
+// message in the same call. Invalidates the conversation list so the new
+// thread appears; the caller selects it into view once the id comes back.
+export function useCreateCeoConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: CreateCeoConversationRequest) =>
+      a2aApi.createConversation(request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
+    },
+  });
+}
+
+export interface SendCeoMessageVariables {
+  conversationId: string;
+  content: string;
+}
+
+// CEO sends a follow-up message in a conversation it already owns (the plain
+// send route, not the watched-conversation interject-as-ceo path).
+export function useSendCeoMessage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ conversationId, content }: SendCeoMessageVariables) =>
+      a2aApi.sendCeoMessage(conversationId, content),
     onSuccess: (_sent, variables) => {
       queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
       queryClient.invalidateQueries({

@@ -23,6 +23,10 @@ interface AgentSelectorProps {
   placeholder?: string;
   filterByTeam?: Team;
   filterByRoles?: AgentRole[];
+  /** Roles dropped from the roster entirely before grouping — e.g. excluding
+   * the CEO (role=ceo, team=board) from an agent-to-agent picker, where it
+   * would otherwise land in the Board group like any other board member. */
+  excludeRoles?: AgentRole[];
   disabled?: boolean;
   allowClear?: boolean;
 }
@@ -50,6 +54,7 @@ export function AgentSelector({
   placeholder = "Select agent...",
   filterByTeam,
   filterByRoles,
+  excludeRoles,
   disabled = false,
   allowClear = true,
 }: AgentSelectorProps) {
@@ -58,6 +63,12 @@ export function AgentSelector({
   // Group agents by team
   const groupedAgents = useMemo(() => {
     let filtered = agents;
+
+    if (excludeRoles && excludeRoles.length > 0) {
+      filtered = filtered.filter(
+        (a) => !a.role || !excludeRoles.includes(a.role),
+      );
+    }
 
     // Apply team filter - also match by role for Board and Main PM
     if (filterByTeam) {
@@ -126,7 +137,7 @@ export function AgentSelector({
     }
 
     return groups;
-  }, [agents, filterByTeam, filterByRoles]);
+  }, [agents, filterByTeam, filterByRoles, excludeRoles]);
 
   // Find selected agent for display (resolve UUID to slug if needed)
   const selectedAgent = useMemo(() => {

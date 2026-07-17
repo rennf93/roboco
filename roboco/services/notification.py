@@ -665,18 +665,28 @@ class NotificationService:
 
     async def send_a2a_notification(
         self,
-        task_id: str,
+        task_id: str | None,
         a2a_context: dict[str, Any],
+        *,
+        requires_ack: bool = False,
     ) -> None:
         """Send notification for A2A request (when recipient is busy or offline).
 
         Args:
-            task_id: Related task ID
+            task_id: Related task ID. A conversational A2A DM (no task
+                behind it) passes None — the legacy protocol path always
+                has one.
             a2a_context: Dict with from_agent, to_agent, skill, message,
                 priority. `priority` is a `NotificationPriority` (full
                 tristate: NORMAL / HIGH / URGENT). This key used to be
                 `urgent: bool`, which collapsed HIGH to NORMAL —
                 A2AService now sends Priority directly.
+            requires_ack: Row-level override. A2A_REQUEST defaults to
+                requires_ack=False ("request/reply lives at message
+                layer"), which makes the row invisible to the
+                pending_ack_only poll `_dispatch_a2a_work` uses to wake an
+                offline recipient. The CEO-DM wake path (A2AService) passes
+                True so its row is actually pollable.
         """
         from_agent = a2a_context.get("from_agent", "unknown")
         to_agent = a2a_context.get("to_agent", "")
@@ -724,6 +734,7 @@ class NotificationService:
                 subject=f"{urgency_label}A2A: {skill}",
                 body=body,
                 related_task_id=task_id,
+                requires_ack=requires_ack,
             )
         )
 
@@ -903,7 +914,15 @@ class NotificationService:
             # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
             # informational), not the column's True default; default True
             # for an unmapped type preserves the safe action-required bias.
-            requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
+            # A per-row override (params.requires_ack) wins when set — used
+            # by send_a2a_notification's CEO-wake path so that row is
+            # visible under pending_ack_only even though A2A_REQUEST's type
+            # default is False.
+            requires_ack=(
+                params.requires_ack
+                if params.requires_ack is not None
+                else ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
+            ),
         )
         db.add(notification)
         await db.flush()
