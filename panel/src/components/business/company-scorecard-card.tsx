@@ -12,6 +12,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
 import { HelpTip } from "@/components/ui/help-tip";
+import { useUsageTimeSeries } from "@/hooks/use-usage";
+import { SpendTrendChart } from "./spend-trend-chart";
+import type { UsageTimePoint } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Loading skeleton — three grouped skeleton blocks
@@ -131,9 +134,15 @@ function DeliverySection({ delivery }: DeliverySectionProps) {
 
 interface SpendSectionProps {
   spend: CockpitSummary["spend"];
+  spendTrend: UsageTimePoint[] | undefined;
+  spendTrendLoading: boolean;
 }
 
-function SpendSection({ spend }: SpendSectionProps) {
+function SpendSection({
+  spend,
+  spendTrend,
+  spendTrendLoading,
+}: SpendSectionProps) {
   const {
     monthly_budget_cap_usd,
     spend_30d_usd,
@@ -190,6 +199,7 @@ function SpendSection({ spend }: SpendSectionProps) {
           )}
         </div>
       </div>
+      <SpendTrendChart data={spendTrend} isLoading={spendTrendLoading} />
     </div>
   );
 }
@@ -266,9 +276,15 @@ function StubObjectivesSection() {
 
 interface ScorecardBodyProps {
   data: CockpitSummary;
+  spendTrend: UsageTimePoint[] | undefined;
+  spendTrendLoading: boolean;
 }
 
-function ScorecardBody({ data }: ScorecardBodyProps) {
+function ScorecardBody({
+  data,
+  spendTrend,
+  spendTrendLoading,
+}: ScorecardBodyProps) {
   return (
     <Card>
       <CardHeader>
@@ -277,7 +293,11 @@ function ScorecardBody({ data }: ScorecardBodyProps) {
       </CardHeader>
       <CardContent className="space-y-6">
         <DeliverySection delivery={data.delivery} />
-        <SpendSection spend={data.spend} />
+        <SpendSection
+          spend={data.spend}
+          spendTrend={spendTrend}
+          spendTrendLoading={spendTrendLoading}
+        />
         <SpeedSection medianLeadTimeHours={data.median_lead_time_hours} />
         <StubObjectivesSection />
       </CardContent>
@@ -294,6 +314,8 @@ export function CompanyScorecardCard() {
     queryKey: ["cockpit-summary"],
     queryFn: cockpitApi.summary,
   });
+  const { data: spendTrend, isLoading: spendTrendLoading } =
+    useUsageTimeSeries("30d");
 
   if (isLoading) return <ScorecardSkeleton />;
 
@@ -307,5 +329,11 @@ export function CompanyScorecardCard() {
     );
   }
 
-  return <ScorecardBody data={data} />;
+  return (
+    <ScorecardBody
+      data={data}
+      spendTrend={spendTrend}
+      spendTrendLoading={spendTrendLoading}
+    />
+  );
 }
