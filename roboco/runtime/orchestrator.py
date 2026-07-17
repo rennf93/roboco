@@ -14287,6 +14287,13 @@ If the fast path refuses (a gate it checks is not actually met), the
 4. A frame doesn't prove it: fix the composition, then request_render()
    again. Repeat until every frame checks out.
 
+Craft bar (motion/README.md "Cinematography & rhythm"): storyboard a shot
+list before building — camera moves (pk-camera data-shots) and a cursor
+that behaves like a hand (pk-cursor data-waypoints). A locked-off camera,
+a frozen or popping cursor, or metronomic identical beats are automatic
+revision. Clip windows are for structural layers ONLY — drive beats with
+base-hidden delayed CSS animations, or the renderer drops your tail scenes.
+
 i_am_done() refuses without a stamped render preview — a clean self-review of
 the source is not enough; the rendered frames are the evidence.
 """

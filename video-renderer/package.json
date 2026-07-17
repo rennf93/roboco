@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@hyperframes/engine": "^0.7.36",
-    "@hyperframes/producer": "^0.7.36",
+    "@hyperframes/producer": "0.7.36",
     "express": "^5.0.0",
     "express-rate-limit": "^8.5.2",
     "multer": "^2.0.0",

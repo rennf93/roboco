@@ -404,6 +404,28 @@ html, body {
   clip-path: polygon(0 0, 0 70%, 22% 55%, 38% 88%, 52% 82%, 36% 50%, 62% 50%);
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
 }
+/* Idle-hand micro-drift between path legs (kit.js wraps the glyph in this
+   when choreographing data-waypoints); a pointer frozen pixel-still while
+   the scene moves reads as a rendering glitch. */
+.pk-cursor__sway {
+  animation: pk-cursor-sway 3.2s ease-in-out infinite alternate;
+}
+@keyframes pk-cursor-sway {
+  from { transform: translate(0, 0); }
+  to { transform: translate(2.5px, 1.5px); }
+}
+
+/* ---------------------------------------------------------------------- *
+ * pk-camera — a full-stage wrapper kit.js drives through data-shots
+ * (see choreographCamera). Wrap the scene (e.g. the whole .pk-frame) in
+ * one of these; everything inside, cursor included, rides the move.
+ * ---------------------------------------------------------------------- */
+.pk-camera {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  transform-origin: 50% 42%;
+}
 .pk-cursor__ring {
   position: absolute;
   left: -14px;

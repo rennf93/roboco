@@ -55,7 +55,7 @@ describe("release-0.25.0 composition", () => {
     expect(html).toContain("pk-caret");
     expect(html).toContain("typeReveal");
 
-    const cardCount = (html.match(/pk-card clip/g) || []).length;
+    const cardCount = (html.match(/class="pk-card"/g) || []).length;
     const progressCount = (html.match(/pk-pill--progress/g) || []).length;
     const completedCount = (html.match(/pk-pill--completed/g) || []).length;
     expect(cardCount).toBe(4);
@@ -68,8 +68,19 @@ describe("release-0.25.0 composition", () => {
     expect(html).toContain("Metrics donut");
     expect(html).toContain("Notification bell");
 
+    // Choreographed cursor: multi-waypoint path with at least one click
+    // beat (rings are generated at runtime by kit.js, not static HTML),
+    // and a camera that moves — a locked-off frame is an automatic bounce.
     expect(html).toContain("pk-cursor");
-    expect(html).toContain("pk-cursor__ring");
+    const waypoints = html.match(/data-waypoints="([^"]+)"/);
+    expect(waypoints).not.toBeNull();
+    expect(waypoints[1].split(";").length).toBeGreaterThanOrEqual(6);
+    expect(waypoints[1]).toContain("click");
+    const shots = html.match(/data-shots="([^"]+)"/);
+    expect(shots).not.toBeNull();
+    expect(shots[1].split(";").length).toBeGreaterThanOrEqual(4);
+    expect(html).toContain("choreographAllCursors");
+    expect(html).toContain("choreographAllCameras");
 
     expect(html).toContain("pk-toast");
     expect(html).toContain('id="toastTitle"');
