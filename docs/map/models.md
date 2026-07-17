@@ -27,7 +27,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `runtime.py` | Orchestrator runtime types — `OrchestratorAgentState`, `SpawnGitContext`, `OrchestratorAgentConfig`, `AgentInstance`, `WaitingRecord`, `MODEL_MAP`, `ROLE_MODEL_MAP` | 128 |
 | `transcription.py` | `StreamBuffer` (flush heuristic) + `TranscriptionConfig` | 119 |
 | `llm.py` | `LLMUsage`/`ToonConfig`/`EncodedBlock`/`ToonMetrics` (token + TOON serialization metrics) | 118 |
-| `notification.py` | `Notification` + `NotificationCreate` + `CreateNotificationParams` | 117 |
+| `notification.py` | `Notification` + `NotificationCreate` + `CreateNotificationParams` (gains a per-row `requires_ack: bool \| None` override, wave 3) | 121 |
 | `work_session.py` | `WorkSession` + `WorkSessionStatus` + `WorkSessionCreate`/`WorkSessionUpdate` | 117 |
 | `pitch.py` | `Pitch` + `PitchStatus` + `PitchCreate` (Board proposal → provisioning) | 73 |
 | `extraction.py` | `ExtractionContext`/`ExtractionResult`/`ExtractionConfig` | 68 |
