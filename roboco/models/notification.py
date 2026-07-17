@@ -115,3 +115,7 @@ class CreateNotificationParams:
     subject: str
     body: str
     related_task_id: str | None = None
+    # Per-row override of ACK_REQUIRED_BY_TYPE's type default. None (the
+    # default) preserves existing behavior for every caller that doesn't set
+    # this — only send_a2a_notification's CEO-wake path overrides it today.
+    requires_ack: bool | None = None
