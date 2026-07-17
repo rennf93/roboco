@@ -198,3 +198,19 @@ export interface GitRebaseResponse {
   conflict: boolean;
   conflicted_files: string[];
 }
+
+export interface GitBranchCleanupRequest {
+  project_slug: string;
+  /** Resume point from a prior truncated sweep's next_cursor. */
+  after_cursor?: string;
+}
+
+export interface GitBranchCleanupResponse {
+  project_slug: string;
+  remote_deleted: number;
+  local_deleted: number;
+  skipped: number;
+  errors: number;
+  truncated: boolean;
+  next_cursor: string | null;
+}

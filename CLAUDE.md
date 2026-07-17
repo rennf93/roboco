@@ -120,6 +120,8 @@ On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain 
 
 Because the clone is shared across a dev's tasks, a **fresh claim** git-resets the workspace to a clean tree (`git reset --hard`) before checking out the new task's branch — discarding abandoned uncommitted cruft from a finished task while preserving all commits and the gitignored `.venv`. A resume short-circuits before this, so committed work is never reset.
 
+Terminal completion and cancellation also force-delete the task's local branch ref and its `.previews/` video-render dir in the assignee's clone (alongside the existing worktree removal), skipping any branch that coincides with an environment-ladder rung; a PM/CEO can additionally sweep older backlog branches project-wide via `POST /git/branches/cleanup` or the Git page's "Clean Up Stale Branches" button.
+
 ## Git Workflow
 
 ### Branch Naming Convention

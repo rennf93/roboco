@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { useProjects } from "@/hooks/use-projects";
@@ -45,6 +45,7 @@ export interface UseGitBrowserResult {
   handlePull: () => Promise<void>;
   handleFetch: () => Promise<void>;
   handleRebase: (targetBranch: string) => Promise<void>;
+  handleCleanupBranches: () => Promise<void>;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
@@ -54,6 +55,7 @@ export interface UseGitBrowserResult {
   isRebasing: boolean;
   isCheckingOut: boolean;
   isCreatingBranch: boolean;
+  isCleaningUpBranches: boolean;
 }
 
 /**
@@ -162,7 +164,11 @@ export function useGitBrowser(): UseGitBrowserResult {
     pull,
     fetch,
     rebase,
+    cleanupBranches,
   } = useGitOperations();
+
+  // Resume point for a capped stale-branch sweep, per project.
+  const cleanupCursorRef = useRef<{ slug: string; cursor: string } | null>(null);
 
   const handleCheckout = useCallback(
     async (branch: string) => {
@@ -317,6 +323,35 @@ export function useGitBrowser(): UseGitBrowserResult {
     [projectSlug, taskId, rebase],
   );
 
+  const handleCleanupBranches = useCallback(async () => {
+    try {
+      // Resume a capped sweep from where the last click stopped — without
+      // the cursor the backend re-scans the identical first window forever.
+      const cursor =
+        cleanupCursorRef.current?.slug === projectSlug
+          ? cleanupCursorRef.current.cursor
+          : undefined;
+      const result = await cleanupBranches.mutateAsync({
+        project_slug: projectSlug,
+        ...(cursor ? { after_cursor: cursor } : {}),
+      });
+      cleanupCursorRef.current =
+        result.truncated && result.next_cursor
+          ? { slug: projectSlug, cursor: result.next_cursor }
+          : null;
+      const truncatedNote = result.truncated
+        ? " (cap reached — click again to continue where it stopped)"
+        : "";
+      toast.success(
+        `Cleaned up branches: ${result.remote_deleted} remote, ` +
+          `${result.local_deleted} local, ${result.skipped} skipped, ` +
+          `${result.errors} errors${truncatedNote}`,
+      );
+    } catch (error) {
+      toast.error(getErrorMessage(error));
+    }
+  }, [projectSlug, cleanupBranches]);
+
   const isOffline =
     !!projectsError &&
     (projectsError.message?.includes("Network Error") ||
@@ -349,6 +384,7 @@ export function useGitBrowser(): UseGitBrowserResult {
     handlePull,
     handleFetch,
     handleRebase,
+    handleCleanupBranches,
     isCommitting: commit.isPending,
     isPushing: push.isPending,
     isCreatingPR: createPR.isPending,
@@ -358,5 +394,6 @@ export function useGitBrowser(): UseGitBrowserResult {
     isRebasing: rebase.isPending,
     isCheckingOut: checkout.isPending,
     isCreatingBranch: createBranch.isPending,
+    isCleaningUpBranches: cleanupBranches.isPending,
   };
 }

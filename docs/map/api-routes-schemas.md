@@ -19,7 +19,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/dashboard.py | CEO/auditor/kanban/metrics/agents/activity dashboards. |
 | roboco/api/routes/tasks.py | Task CRUD + lifecycle transitions (claim/start/verify/qa/complete...). |
 | roboco/api/routes/work_session.py | Work-session list/commit/files/PR/merge/complete/abandon. |
-| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase. |
+| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase/branch-cleanup sweep. |
 | roboco/api/routes/project.py | Project CRUD + workspace/sync/access + conventions. |
 | roboco/api/routes/product.py | Product CRUD. |
 | roboco/api/routes/optimal.py | RAG: kb/search, rag/query, mentor/ask, learnings, decisions, review. |
@@ -75,6 +75,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/auth/status (always), /auth/login, /auth/logout (mounted only when `cloud_auth_enabled`) | auth/routes.py | none (status) / FastAPI Users cookie login |
 | GET/POST/PUT/DELETE | /api/projects, /{id}/conventions, /workspace, /sync | project.py | agent context |
+| POST | /api/git/branches/cleanup | git.py | agent context, PM/CEO role-gated like `/rebase`; rate-limit 5/60 — cursor-resumable stale-branch sweep, `GitBranchCleanupRequest`/`Response` (wave 2, open PR #548) |
 | POST | /api/v1/flow/developer/{give_me_work,i_will_work_on,open_pr,i_am_done,unclaim,resume,sync_branch} | flow_dev.py | `require_dev` (role + HMAC) |
 | POST | /api/v1/flow/qa/{claim_review,pass_review,fail_review} | flow_qa.py | `require_qa` |
 | POST | /api/v1/flow/cell_pm/{delegate,submit_up,complete,triage,unblock,reassign} | flow_cell_pm.py | `require_cell_pm` |
@@ -239,6 +240,7 @@ roboco/api/
 > - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
 > - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
 > - `637c75dc` (2026-07-17, PR #546, "wave-1 quick wins") fix(api): normalize agent UUID to slug at the orchestrator route boundary — `_validated_agent_id` now also calls `_resolve_to_slug` after its path-injection checks, so a caller-supplied DB UUID (e.g. from the panel) resolves to the canonical slug before spawn/stop/status/resolve-wait/mark-waiting address the runtime, fixing UUID-named containers and registry misses.
+> - (open PR #548, branch `feature/wave-2-hygiene-charts`, 2026-07-17) adds `POST /api/git/branches/cleanup` (PM/CEO role-gated like `/rebase`, rate-limit 5/60) + `GitBranchCleanupRequest`/`GitBranchCleanupResponse` schemas — cursor-resumable sweep of terminal tasks' remote+local branches, backing a confirm-dialog button on the panel Git page.
 
 ## Regression Risks
 
