@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, status
 from guard_core.handlers.behavior_handler import BehaviorRule
 
-from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
+from roboco.agents_config import CEO_AGENT_ID, _resolve_to_slug, verify_agent_token
 from roboco.api.auth.backend import SESSION_COOKIE_NAME
 from roboco.api.auth.session import resolve_session_user
 from roboco.api.deps import (
@@ -97,7 +97,8 @@ __all__ = ["router", "set_orchestrator"]
 
 
 def _validated_agent_id(agent_id: str) -> str:
-    """Reject an ``agent_id`` that could traverse a filesystem path downstream.
+    """Reject an ``agent_id`` that could traverse a filesystem path downstream,
+    then normalize it to the canonical slug the runtime addresses containers by.
 
     ``agent_id`` is an opaque slug / uuid the orchestrator assigns, but it is a
     request path parameter and flows into per-agent paths (e.g. the grok usage
@@ -106,6 +107,12 @@ def _validated_agent_id(agent_id: str) -> str:
     it reaches any path. Explicit guards (not a regex) so CodeQL models this as a
     path-injection barrier; the runtime ``_grok_usage_dir`` repeats the check as
     defense in depth for non-HTTP callers.
+
+    A caller (e.g. the panel) may pass an agent's DB UUID instead of its slug —
+    ``_resolve_to_slug`` maps it to the canonical slug so the runtime container
+    (named ``roboco-agent-{slug}``) and instance registry are addressed
+    consistently regardless of which identifier form was sent. An unknown UUID
+    (not in the seed map) passes through unchanged, same as today.
     """
     if (
         not agent_id
@@ -118,7 +125,7 @@ def _validated_agent_id(agent_id: str) -> str:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid agent_id",
         )
-    return agent_id
+    return _resolve_to_slug(agent_id)
 
 
 # =============================================================================
