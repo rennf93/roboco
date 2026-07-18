@@ -54,7 +54,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 if TYPE_CHECKING:
     from tests.e2e_smoke.harness import E2EStack
 
-_SMOKE_DIM = 4  # tiny embedding dim — the table is created fresh per run
+# The e2e stack's app lifespan eagerly initializes every OptimalService
+# plugin (including JOURNALS) at startup, which creates ``chunks_journals``
+# with the REAL configured embedding dimension before this test ever runs —
+# so seeding a fake chunk must match that dimension, not a fabricated small
+# one, or the insert fails with "expected N dimensions, not _SMOKE_DIM".
+_SMOKE_DIM = settings.embedding_dimensions
 _EXPECTED_H12_ROWS = 2  # first (be-pm) + second (be-pm, main-pm) both persist
 
 
