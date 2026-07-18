@@ -119,6 +119,8 @@ if __name__ == "__main__":
     # ponytail: smallest runnable self-check; pytest is the real suite above.
     user = {"id": 42}
     fields = {"auth_date": str(int(time.time())), "user": json.dumps(user)}
-    assert validate_init_data(_init_data(fields), _BOT_TOKEN, 600)["user"] == user
+    valid_result = validate_init_data(_init_data(fields), _BOT_TOKEN, 600)
+    assert valid_result is not None
+    assert valid_result["user"] == user
     assert validate_init_data(_init_data(fields), "wrong", 600) is None
     print("telegram_initdata self-check OK")
