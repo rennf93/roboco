@@ -509,6 +509,11 @@ class ProjectTable(Base):
     git_token_encrypted: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # Fernet-encrypted GitHub PAT
+    # Forge provider ("github" | "gitlab" | "gitea"). Null = auto-detect from
+    # git_url host (github.com only today); a self-hosted/GHE host must set
+    # this explicitly. Validated at the service layer (foundation/policy/
+    # forge.py), not a DB enum — see migration 075.
+    git_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # CI/CD Commands (optional)
     test_command: Mapped[str | None] = mapped_column(String(500), nullable=True)

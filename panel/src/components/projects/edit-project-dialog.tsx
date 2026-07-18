@@ -30,6 +30,15 @@ import { Team, type ProjectUpdate, type Project } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
 import { HelpTip } from "@/components/ui/help-tip";
+import { Badge } from "@/components/ui/badge";
+
+// A null git_provider means "not yet stamped" (pre-Phase-0 project or a
+// non-github.com host awaiting an explicit choice) — RoboCo is GitHub-only
+// today either way, so the badge falls back to "GitHub" rather than "Unknown".
+function forgeLabel(gitProvider: string | null): string {
+  if (!gitProvider) return "GitHub";
+  return gitProvider.charAt(0).toUpperCase() + gitProvider.slice(1);
+}
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -306,6 +315,19 @@ function EditProjectForm({
             onChange={(e) => setGitUrl(e.target.value)}
             placeholder="https://github.com/org/repo.git"
           />
+        </div>
+
+        {/* Forge (read-only — GitHub-only today) */}
+        <div className="grid gap-2">
+          <HelpTip label="Auto-detected from the Git URL's host; RoboCo's PR/CI/review surface is GitHub-only today. GitLab & Gitea support planned.">
+            <Label>Forge</Label>
+          </HelpTip>
+          <div>
+            <Badge variant="secondary">{forgeLabel(project.git_provider)}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            GitLab & Gitea support planned.
+          </p>
         </div>
 
         {/* Git Token Section */}

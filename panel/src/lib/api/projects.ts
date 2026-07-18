@@ -8,6 +8,26 @@ import type {
 } from "@/types";
 import { isMockMode } from "@/lib/mock-data";
 
+// Mock-mode github.com detection: real host extraction (mirrors the backend's
+// forge.py `_extract_host`) instead of a raw substring match, so a URL like
+// "https://github.com.evil.tld/x/y.git" doesn't false-positive as github.
+const detectGithubProvider = (gitUrl: string): "github" | null => {
+  const url = gitUrl.trim();
+  let host: string | null = null;
+  if (url.includes("://")) {
+    try {
+      host = new URL(url).hostname.toLowerCase() || null;
+    } catch {
+      host = null;
+    }
+  } else {
+    // scp-like SSH syntax: [user@]host:path (e.g. git@github.com:owner/repo.git)
+    const match = /^(?:[^@/]+@)?([^/:]+):/.exec(url);
+    host = match ? match[1].toLowerCase() : null;
+  }
+  return host === "github.com" ? "github" : null;
+};
+
 // Mock data for offline mode
 const mockProjects: Project[] = [
   {
@@ -15,6 +35,7 @@ const mockProjects: Project[] = [
     name: "roboco",
     slug: "roboco",
     git_url: "https://github.com/rennf93/roboco.git",
+    git_provider: "github",
     default_branch: "master",
     protected_branches: ["master", "slave"],
     assigned_cell: Team.BACKEND,
@@ -33,6 +54,7 @@ const mockProjects: Project[] = [
     name: "roboco-website",
     slug: "roboco-website",
     git_url: "https://github.com/rennf93/roboco-website.git",
+    git_provider: "github",
     default_branch: "master",
     protected_branches: ["master"],
     assigned_cell: Team.FRONTEND,
@@ -124,6 +146,8 @@ export const projectsApi = {
         name: project.name,
         slug: project.slug,
         git_url: project.git_url,
+        // Mock mode: mirror the backend's auto-detect (github.com -> github).
+        git_provider: project.git_provider ?? detectGithubProvider(project.git_url),
         default_branch: project.default_branch ?? "main",
         environments: project.environments ?? null,
         protected_branches: project.protected_branches ?? ["main", "master"],
