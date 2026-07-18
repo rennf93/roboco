@@ -13,7 +13,6 @@ import {
   Settings,
   Bot,
   Shield,
-  BookOpen,
   Briefcase,
   GitBranch,
   Database,
@@ -89,13 +88,7 @@ export const navItems = [
     title: "Agents",
     href: "/agents",
     icon: Bot,
-    tip: "Every agent's live state, spawn controls, and A2A conversations",
-  },
-  {
-    title: "Journals",
-    href: "/journals",
-    icon: BookOpen,
-    tip: "Per-agent reflections and learnings",
+    tip: "Every agent's live state, spawn controls, A2A conversations, and journals",
   },
   {
     title: "Auditor",

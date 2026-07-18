@@ -101,7 +101,7 @@ export const QUICK_ACTIONS_REGISTRY: QuickAction[] = [
     id: "a2a",
     label: "A2A",
     icon: Radio,
-    href: "/a2a",
+    href: "/agents?tab=conversations",
     tip: "Live agent-to-agent message switchboard and history",
   },
   {
@@ -115,7 +115,7 @@ export const QUICK_ACTIONS_REGISTRY: QuickAction[] = [
     id: "journals",
     label: "Journals",
     icon: BookOpen,
-    href: "/journals",
+    href: "/agents?tab=journals",
     tip: "Per-agent reflections and learnings",
   },
   {
