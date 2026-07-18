@@ -13,15 +13,12 @@ import {
   Settings,
   Bot,
   Shield,
-  BookOpen,
-  Boxes,
-  FolderGit2,
+  Briefcase,
   GitBranch,
   Database,
   Cpu,
   Sparkles,
   Building2,
-  Radio,
   Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -70,16 +67,10 @@ export const navItems = [
     tip: "Branches, commits, and diffs across every project workspace",
   },
   {
-    title: "Projects",
-    href: "/projects",
-    icon: FolderGit2,
-    tip: "Manage repos, git tokens, and per-project settings",
-  },
-  {
-    title: "Products",
-    href: "/products",
-    icon: Boxes,
-    tip: "Products the fleet ships against",
+    title: "Workstation",
+    href: "/workstation",
+    icon: Briefcase,
+    tip: "Products the fleet ships against, and the repos/projects behind them",
   },
   {
     title: "Social",
@@ -94,22 +85,10 @@ export const navItems = [
     tip: "Search the RAG corpus — playbooks, learnings, and vault notes",
   },
   {
-    title: "A2A",
-    href: "/a2a",
-    icon: Radio,
-    tip: "Live agent-to-agent message switchboard and history",
-  },
-  {
     title: "Agents",
     href: "/agents",
     icon: Bot,
-    tip: "Every agent's live state, spawn controls, and activity stream",
-  },
-  {
-    title: "Journals",
-    href: "/journals",
-    icon: BookOpen,
-    tip: "Per-agent reflections and learnings",
+    tip: "Every agent's live state, spawn controls, A2A conversations, and journals",
   },
   {
     title: "Auditor",

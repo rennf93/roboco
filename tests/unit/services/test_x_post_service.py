@@ -319,6 +319,55 @@ async def test_approve_rechecks_completed_under_lock_and_never_reposts(
 
 
 @pytest.mark.asyncio
+async def test_approve_refuses_already_rejected_draft(
+    db_session: AsyncSession,
+) -> None:
+    """The chokepoint guard: approving a CANCELLED (already-rejected) draft
+    refuses and never calls the X client — the reproduced bug (a stale
+    Approve after reject re-posting)."""
+    task = await _seed_draft(db_session)
+    await _svc(db_session).reject(_id(task), "not on-brand")
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert client.calls == []
+    await db_session.refresh(task)
+    assert task.status == TS.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_approve_rechecks_cancelled_under_lock_and_never_posts(
+    db_session: AsyncSession,
+) -> None:
+    """TOCTOU parity with the COMPLETED re-check: a concurrent reject cancels
+    the draft after our pre-lock read; the in-lock re-read must see CANCELLED
+    and short-circuit — never posting a rejected draft."""
+    task = await _seed_draft(db_session)
+    client = _StubClient()
+
+    async def _win_the_race(_self: XPostService, _key: str) -> str:
+        task.status = TS.CANCELLED
+        await db_session.flush()
+        return "tok"
+
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", _win_the_race),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_approve_concurrent_lock_held_returns_in_progress(
     db_session: AsyncSession,
 ) -> None:
@@ -535,6 +584,9 @@ async def test_approve_feature_spotlight_with_video_opens_video_task(
     assert kwargs["platforms"] == ["x", "tiktok"]
     assert kwargs["script"] == "Custom voiceover script"
     assert kwargs["brief"] == "Organizational Memory Loop: Draft body"
+    # The spotlight's own project scopes the video authoring — without it the
+    # video authored against the deployment-anchor project regardless.
+    assert kwargs["project_id"] == task.project_id
 
 
 @pytest.mark.asyncio

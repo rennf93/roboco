@@ -26,3 +26,11 @@ updates:
           - "*"
     allow:
       - dependency-type: "all"
+    ignore:
+      # next 16.2.x froze the panel in-browser (the "tab-hostage" bug) —
+      # pinned at 16.1.x until a verified-fixed release. eslint-config-next's
+      # peer ceiling also holds eslint/typescript majors back; see PR #560.
+      - dependency-name: "next"
+        versions: ["16.2.x"]
+      - dependency-name: "eslint-config-next"
+        versions: ["16.2.x"]

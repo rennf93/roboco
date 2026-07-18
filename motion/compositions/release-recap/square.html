@@ -154,6 +154,21 @@
       .rc-stats__line--accent { color: var(--pk-accent); }
       @keyframes rc-stats-out { to { opacity: 0; } }
 
+      /* Cursor: base-hidden + a delayed animation, per motion/README.md's
+         clip-window rule (the renderer's per-clip scheduler drifts on long
+         compositions - beats never carry the clip class). kit.css's
+         single-glide --pk-cursor-x0/x1 API has no opacity component of its
+         own, so fold a fade into a local copy of its glide keyframe rather
+         than touching kit.css. */
+      .pk-cursor {
+        opacity: 0;
+        animation: rc-cursor-glide-in 1.2s var(--pk-ease) var(--pk-cursor-delay, 0s) forwards;
+      }
+      @keyframes rc-cursor-glide-in {
+        from { opacity: 0; transform: translate(var(--pk-cursor-x0, 0px), var(--pk-cursor-y0, 0px)); }
+        to   { opacity: 1; transform: translate(var(--pk-cursor-x1, 0px), var(--pk-cursor-y1, 0px)); }
+      }
+
       .pk-toast { --pk-toast-bottom: 84px; width: 480px; }
 
       /* Closing lockup: small tile + domain. */
@@ -222,69 +237,79 @@
         </header>
 
         <div class="pk-frame__content">
-          <!-- Beat 3: the recap line types into intake. -->
-          <div class="pk-intake clip" data-start="4.2" data-duration="13.8" data-track-index="2" style="animation-delay: 4.2s;">
+          <!-- Beat 3: the recap line types into intake. Base-hidden +
+               delayed animation (motion/README.md's clip-window rule) -
+               pk-intake's own kit.css entrance already owns this. -->
+          <div class="pk-intake" style="animation-delay: 4.2s;">
             <div class="pk-intake__label">New task</div>
             <div class="pk-intake__field"><span id="typeIntro">3 releases in 6 days</span><span class="pk-caret"></span></div>
           </div>
 
           <!-- Beat 4: three releases stack and accumulate, each with a
-               one-line explainer; each flips completed as the next ships. -->
+               one-line explainer; each flips completed as the next ships.
+               Base-hidden + animation-delay per motion/README.md's
+               clip-window rule - never the clip class on a beat. Pills reuse
+               kit.css's pk-pill--swap-out/-in, which already own their own
+               enter+exit via --pk-pill-enter-delay/--pk-pill-exit-delay. -->
           <div class="pk-column">
             <div class="pk-column__header">Shipped</div>
 
-            <div class="pk-card clip" data-start="6" data-duration="12" data-track-index="3" style="animation-delay: 6s;">
+            <div class="pk-card" style="animation-delay: 6s;">
               <div class="pk-card__title">v0.18.0 · Fleet doctrine</div>
               <div class="rc-sub">One behavioral doctrine and one design bar across all 25 agents.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">Jul 4</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="6" data-duration="1.8" data-track-index="4" style="--pk-pill-enter-delay: 6s; --pk-pill-exit-delay: 7.6s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="7.8" data-duration="10.2" data-track-index="5" style="--pk-pill-enter-delay: 7.8s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 6s; --pk-pill-exit-delay: 7.6s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 7.8s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="8.2" data-duration="9.8" data-track-index="6" style="animation-delay: 8.2s;">
+            <div class="pk-card" style="animation-delay: 8.2s;">
               <div class="pk-card__title">v0.19.0 · Video engine</div>
               <div class="rc-sub">Releases become videos. Every agent gets its own dev sandbox.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">Jul 8</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="8.2" data-duration="1.8" data-track-index="7" style="--pk-pill-enter-delay: 8.2s; --pk-pill-exit-delay: 9.8s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="10" data-duration="8" data-track-index="8" style="--pk-pill-enter-delay: 10s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 8.2s; --pk-pill-exit-delay: 9.8s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 10s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card clip" data-start="10.4" data-duration="7.6" data-track-index="9" style="animation-delay: 10.4s;">
+            <div class="pk-card" style="animation-delay: 10.4s;">
               <div class="pk-card__title">v0.20.0 · Root-owned coverage</div>
               <div class="rc-sub">Acceptance criteria owned at the root. Plus the kit this video is built with.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">Jul 9</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out clip" data-start="10.4" data-duration="2.4" data-track-index="10" style="--pk-pill-enter-delay: 10.4s; --pk-pill-exit-delay: 12.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in clip" data-start="12.6" data-duration="5.4" data-track-index="11" style="--pk-pill-enter-delay: 12.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.4s; --pk-pill-exit-delay: 12.4s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.6s;">completed</span>
               </div>
             </div>
           </div>
 
-          <!-- One cursor, one glide, one click at the newest pill's edge. -->
-          <div class="pk-cursor clip" data-start="11" data-duration="7" data-track-index="12" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 340px; --pk-cursor-x1: 246px; --pk-cursor-y1: 920px;">
+          <!-- One cursor, one glide, one click at the newest pill's edge.
+               Base-hidden + a delayed animation (clip-window rule); see the
+               local .pk-cursor override in <style> above for the fade. -->
+          <div class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 340px; --pk-cursor-x1: 246px; --pk-cursor-y1: 920px;">
             <div class="pk-cursor__glyph"></div>
             <div class="pk-cursor__ring" style="--pk-click-delay: 12.4s;"></div>
           </div>
 
-          <!-- Beat 5: the kinetic stat lines. -->
-          <div class="rc-stats clip" data-start="13" data-duration="5" data-track-index="16">
+          <!-- Beat 5: the kinetic stat lines. rc-stats is fully
+               self-contained here (opacity:0 base + rc-stats-in/-out in
+               <style> above) - no clip window needed. -->
+          <div class="rc-stats">
             <div class="rc-stats__line" style="animation-delay: 13s;">3 releases</div>
             <div class="rc-stats__line" style="animation-delay: 13.3s;">6 days</div>
             <div class="rc-stats__line rc-stats__line--accent" style="animation-delay: 13.6s;">1 human</div>
           </div>
 
           <!-- Beat 6: confirmation toast, then the lockup outro. -->
-          <div class="pk-toast clip" data-start="14.8" data-duration="3.2" data-track-index="13" style="animation-delay: 14.8s;">
+          <div class="pk-toast" style="animation-delay: 14.8s;">
             <div class="pk-toast__icon"></div>
             <div class="pk-toast__body">
               <div class="pk-toast__title" id="toastTitle">3 releases shipped</div>
@@ -292,7 +317,7 @@
             </div>
           </div>
 
-          <div class="pk-outro clip" data-start="15.4" data-duration="2.6" data-track-index="14" style="animation-delay: 15.4s;">
+          <div class="pk-outro" style="animation-delay: 15.4s;">
             <span class="rc-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
             <span>roboco.tech</span>
           </div>

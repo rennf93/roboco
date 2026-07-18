@@ -8,6 +8,26 @@ import type {
 } from "@/types";
 import { isMockMode } from "@/lib/mock-data";
 
+// Mock-mode github.com detection: real host extraction (mirrors the backend's
+// forge.py `_extract_host`) instead of a raw substring match, so a URL like
+// "https://github.com.evil.tld/x/y.git" doesn't false-positive as github.
+const detectGithubProvider = (gitUrl: string): "github" | null => {
+  const url = gitUrl.trim();
+  let host: string | null = null;
+  if (url.includes("://")) {
+    try {
+      host = new URL(url).hostname.toLowerCase() || null;
+    } catch {
+      host = null;
+    }
+  } else {
+    // scp-like SSH syntax: [user@]host:path (e.g. git@github.com:owner/repo.git)
+    const match = /^(?:[^@/]+@)?([^/:]+):/.exec(url);
+    host = match ? match[1].toLowerCase() : null;
+  }
+  return host === "github.com" ? "github" : null;
+};
+
 // Mock data for offline mode
 const mockProjects: Project[] = [
   {

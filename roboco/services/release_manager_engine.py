@@ -34,6 +34,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.notification import NotificationService
+from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.release_readiness import (
     ReleaseReadinessReport,
@@ -204,6 +205,18 @@ class ReleaseManagerEngine(BaseService):
             )
         except Exception as exc:
             self.log.warning("release CEO notify failed (best-effort)", error=str(exc))
+        try:
+            await get_notification_delivery_service(
+                self.session
+            ).notify_ceo_of_queue_item(
+                kind="release",
+                id8=str(task.id)[:8],
+                title=f"v{report.proposed_version} ready",
+            )
+        except Exception as exc:
+            self.log.warning(
+                "release telegram notify failed (best-effort)", error=str(exc)
+            )
 
     async def _production_assess(self) -> ReleaseReadinessReport | None:
         """Real path: read-clone RoboCo, fetch CI, gather the snapshot, assess.

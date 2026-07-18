@@ -67,15 +67,17 @@ class _StubXPoster(XVideoPoster):
         posted: bool = True,
         video_id: str = "x-vid-1",
         raises: bool = False,
+        configured: bool = True,
     ) -> None:
         self._posted = posted
         self._video_id = video_id
         self._raises = raises
+        self._configured = configured
         self.calls: list[tuple[str, str]] = []
 
     @property
     def configured(self) -> bool:
-        return True
+        return self._configured
 
     async def post_video(self, *, mp4_path: str, caption: str) -> XVideoPostResult:
         self.calls.append((mp4_path, caption))
@@ -93,15 +95,17 @@ class _StubTikTokPoster(TikTokPoster):
         uploaded: bool = True,
         publish_id: str = "tt-pub-1",
         raises: bool = False,
+        configured: bool = True,
     ) -> None:
         self._uploaded = uploaded
         self._publish_id = publish_id
         self._raises = raises
+        self._configured = configured
         self.calls: list[tuple[str, str]] = []
 
     @property
     def configured(self) -> bool:
-        return True
+        return self._configured
 
     async def upload_to_inbox(
         self, *, mp4_path: str, caption: str
@@ -254,6 +258,77 @@ async def test_approve_single_platform_only_calls_that_poster(
 
 
 @pytest.mark.asyncio
+async def test_approve_completes_when_unconfigured_platform_is_skipped(
+    db_session: AsyncSession,
+) -> None:
+    """The live lingering-card defect: X posts, TikTok has no credentials —
+    the draft must COMPLETE (skipped, not pending-forever)."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster(configured=False)
+    with _LOCKED[0], _LOCKED[1]:
+        result = await _svc(
+            db_session, x_poster=x_poster, tiktok_poster=tiktok_poster
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    assert result.posted == {"x": "x-vid-1"}
+    assert "skipped (unconfigured): tiktok" in result.detail
+    assert tiktok_poster.calls == []  # never attempted without credentials
+    await db_session.refresh(task)
+    assert task.status == TS.COMPLETED
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["x_posted_id"] == "x-vid-1"
+    assert "tiktok_posted_id" not in draft
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_when_no_platform_is_configured(
+    db_session: AsyncSession,
+) -> None:
+    """All targets unconfigured: never silently complete a draft that
+    reached no audience."""
+    task = await _seed_video_post(db_session)
+    with _LOCKED[0], _LOCKED[1]:
+        result = await _svc(
+            db_session,
+            x_poster=_StubXPoster(configured=False),
+            tiktok_poster=_StubTikTokPoster(configured=False),
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "post_failed"
+    assert "no target platform has credentials configured" in result.detail
+    await db_session.refresh(task)
+    assert task.status != TS.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_reapprove_after_partial_post_skips_x_and_completes(
+    db_session: AsyncSession,
+) -> None:
+    """The exact recovery path for a card parked by an unconfigured
+    platform: X already posted on a prior approve, TikTok unconfigured —
+    re-approve must not re-post X and must clear the card."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster(configured=False)
+    svc = _svc(db_session, x_poster=x_poster, tiktok_poster=tiktok_poster)
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    markers.set_video_draft(task, {**draft, "x_posted_id": "x-vid-prior"})
+    await db_session.flush()
+    with _LOCKED[0], _LOCKED[1]:
+        result = await svc.approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    assert result.posted == {"x": "x-vid-prior"}
+    assert x_poster.calls == []  # already-posted guard held — no double post
+    await db_session.refresh(task)
+    assert task.status == TS.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_approve_is_idempotent_second_call_is_noop(
     db_session: AsyncSession,
 ) -> None:
@@ -272,6 +347,69 @@ async def test_approve_is_idempotent_second_call_is_noop(
     # Neither poster was called a second time.
     assert len(x_poster.calls) == 1
     assert len(tiktok_poster.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_already_rejected_draft(
+    db_session: AsyncSession,
+) -> None:
+    """The chokepoint guard: approving a CANCELLED (already-rejected) draft
+    refuses and never calls either poster — the reproduced bug (a stale
+    Approve after reject re-posting)."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster()
+    fake_engine = MagicMock()
+    fake_engine.reauthor_from_rejection = AsyncMock(return_value=None)
+    with (
+        _LOCKED[0],
+        _LOCKED[1],
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=fake_engine,
+        ),
+    ):
+        await _svc(db_session, x_poster=x_poster, tiktok_poster=tiktok_poster).reject(
+            _id(task), "not on-brand"
+        )
+        result = await _svc(
+            db_session, x_poster=x_poster, tiktok_poster=tiktok_poster
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert x_poster.calls == []
+    assert tiktok_poster.calls == []
+    await db_session.refresh(task)
+    assert task.status == TS.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_approve_rechecks_cancelled_under_lock_and_never_posts(
+    db_session: AsyncSession,
+) -> None:
+    """TOCTOU parity with the COMPLETED re-check: a concurrent reject cancels
+    the draft after our pre-lock read; the in-lock re-read must see CANCELLED
+    and short-circuit — never posting a rejected draft."""
+    task = await _seed_video_post(db_session)
+    x_poster = _StubXPoster()
+    tiktok_poster = _StubTikTokPoster()
+
+    async def _win_the_race(_self: HeartbeatMutex) -> str:
+        task.status = TS.CANCELLED
+        await db_session.flush()
+        return "tok"
+
+    with (
+        patch.object(HeartbeatMutex, "acquire", _win_the_race),
+        patch.object(HeartbeatMutex, "release", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(
+            db_session, x_poster=x_poster, tiktok_poster=tiktok_poster
+        ).approve(_id(task))
+    assert result is not None
+    assert result.status == "already_rejected"
+    assert x_poster.calls == []
+    assert tiktok_poster.calls == []
 
 
 @pytest.mark.asyncio

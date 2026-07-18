@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **Orchestrator API is no longer published on a routable host interface (GHSA-4f7g-w95g-5q2c).** Both deploy composes published the orchestrator's `:8000` on `0.0.0.0`, so anyone who could reach the host hit the control plane directly — bypassing nginx and, in the default header-trust posture (`ROBOCO_AGENT_AUTH_REQUIRED` unset, cloud auth off), reading/writing runtime settings and spoofing `X-Agent-Role: ceo` to spawn/stop agents with no credential. The publish is now bound to `127.0.0.1`; nginx reaches the API over the internal Docker network, so normal operation and on-host debugging are unchanged, while off-host access must go through nginx + cloud auth. The header-trust design itself is unchanged (it stays the deliberate local-no-login panel path); this closes the unintended off-host reachability that gave it teeth.
+
 ## [0.25.0] - 2026-07-16
 
 ### Added
@@ -32,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **E2E smoke test harness now isolates `ROBOCO_SDK_URL` for scripted-agent environments.** The per-verb circuit breaker in flow_server and do_server POSTs every rejection to ROBOCO_SDK_URL (default http://localhost:9000) for tracking and tripping circuit_open on repeated failures. When the e2e-smoke suite runs inside a live agent container, that loopback port is the host agent's own SDK server — so the breaker records genuine attempts against ephemeral test-agent IDs and can trip mid-test even for deliberately-rejected test calls. The harness now sets `ROBOCO_SDK_URL = "http://127.0.0.1:1"` alongside its existing `ROBOCO_AGENT_TOKEN` isolation, pointing it at a guaranteed-refused loopback so every environment sees the same fail-open bypass that CI already gets (no SDK server listening). This fixes `test_request_sandbox_guard_chain_over_real_api` and ensures the e2e-smoke suite passes when run inside a spawned agent container.
 - **Dispatcher no longer burns a spawn on a sequence-held task.** The dev dispatch path booted a full container for a pending task the assignee-blind sequence guard would immediately refuse at claim — spawn, refuse, exit, respawn, forever — because the dispatcher's own prefilter only checked declared dependencies and the dev's own lane, not sequence siblings. It now reuses the exact claim-gate predicate before spawning, mirroring the PM path.
 - **Active tab and sidebar-footer highlighting.** An invalid or typo'd `?tab=`/`?view=` query param silently fell through as an out-of-set value and blanked the active tab highlight and its content pane; a new `pickTab` helper validates against the known set and falls back to the default. The sidebar footer never had an active-state branch at all — it now highlights on an exact path match (not prefix, so `/settings` doesn't also light up on `/settings/ai-providers`).
 - **Release-proposal reject no longer deadlocks the readiness loop, and a failed approve surfaces why.** Rejecting a proposal left it PENDING rather than CANCELLED, so the one-open-proposal dedup blocked every future assessment cycle; reject now moves it to CANCELLED. A failed background execute (red gate, red CI, or an unhandled exception) used to leave the proposal silently pending with no signal; the approve route now stamps an execute-outcome marker on every terminal path so the panel can show a running/failed state and a retry instead of a silent wait.

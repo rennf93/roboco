@@ -4,12 +4,14 @@ Before this guard, ``pr_pass`` had no CI-status check at all — a reviewer coul
 pass an assembled PR whose CI was red, still running, or not yet scheduled.
 ``_ci_status_guard`` (wired into ``_pr_pass_blocked`` alongside the existing
 toolchain/conventions guards) reads ``GitService.get_pr_ci_status`` and blocks
-on failure/pending/pending_not_scheduled/error with reviewer-aware remediation
-(``pr_fail``, never ``i_am_blocked`` — a reviewer has no such verb). A project
-with no CI configured at all passes through cleanly, stamping the verdict note
-with why the guard did not block. ``pr_fail`` is unaffected by CI state
-entirely, and the separate inbound ``PRReviewerMixin`` surface
-(``claim_pr_review`` / ``post_pr_review``) never consults CI status at all.
+on failure/pending/pending_not_scheduled/error; only ``failure`` remediates
+via ``pr_fail`` (never ``i_am_blocked`` — a reviewer has no such verb) — the
+``error`` state is a transient GitHub API lookup failure and remediates via
+retry only, never ``pr_fail``. A project with no CI configured at all passes
+through cleanly, stamping the verdict note with why the guard did not block.
+``pr_fail`` is unaffected by CI state entirely, and the separate inbound
+``PRReviewerMixin`` surface (``claim_pr_review`` / ``post_pr_review``) never
+consults CI status at all.
 """
 
 from __future__ import annotations
@@ -162,6 +164,7 @@ async def test_pr_pass_blocked_on_github_api_error() -> None:
     assert env.error == "invalid_state"
     assert "GitHub API error" in (env.message or "")
     assert "retry" in (env.remediate or "").lower()
+    assert "do NOT pr_fail" in (env.remediate or "")
 
 
 @pytest.mark.asyncio

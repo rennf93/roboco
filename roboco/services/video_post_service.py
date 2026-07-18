@@ -150,10 +150,10 @@ class VideoPostExecuteResult:
     """The outcome of an approve call.
 
     `status` is one of: posted, posted_partial, post_failed, no_platforms,
-    already_posted, already_in_progress, redis_unavailable, lock_lost.
-    `posted` maps platform -> the id the poster returned, for platforms that
-    succeeded (persisted, so a retry after a partial failure never re-posts
-    an already-succeeded platform).
+    already_posted, already_rejected, already_in_progress, redis_unavailable,
+    lock_lost. `posted` maps platform -> the id the poster returned, for
+    platforms that succeeded (persisted, so a retry after a partial failure
+    never re-posts an already-succeeded platform).
     """
 
     status: str
@@ -218,6 +218,12 @@ class VideoPostService(BaseService):
         if task.status == TaskStatus.COMPLETED:
             draft = dict(markers.get_video_draft(task) or {})
             return self._already_posted_result(draft)
+        if task.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
 
         mutex = HeartbeatMutex(
             f"{_LOCK_PREFIX}{task_id}",
@@ -277,6 +283,12 @@ class VideoPostService(BaseService):
         draft = dict(markers.get_video_draft(locked) or {})
         if locked.status == TaskStatus.COMPLETED:
             return self._already_posted_result(draft)
+        if locked.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
         guarded = await mutex.run_guarded(
             self._post_all_platforms(locked, draft, validated_captions), token
         )
@@ -311,7 +323,8 @@ class VideoPostService(BaseService):
         cancellation, or a crash can never lose the record of what already
         posted; a retry re-reads the committed draft and skips it via the
         `already_posted` check below. Only commits COMPLETED once every
-        platform has posted (`_finalize_post`).
+        CONFIGURED platform has posted (`_finalize_post`) — a platform with
+        no credentials is skipped, never a pending-forever failure.
 
         Each commit runs through `_commit_shielded` — a lock-loss
         cancellation firing while it's in flight must not interrupt it (see
@@ -325,10 +338,18 @@ class VideoPostService(BaseService):
             )
         posted: dict[str, str] = {}
         failures: dict[str, str] = {}
+        skipped: dict[str, str] = {}
         for platform in platforms:
             already_posted = draft.get(f"{platform}_posted_id")
             if already_posted:
                 posted[platform] = str(already_posted)
+                continue
+            # An UNCONFIGURED platform is a standing deployment fact, not a
+            # transient failure: treating it as a failure left every draft
+            # targeting it pending forever (retry semantics that can never
+            # succeed), parking an already-X-posted card in the CEO queue.
+            if not self._platform_configured(platform):
+                skipped[platform] = "no credentials configured"
                 continue
             posted_id, detail = await self._attempt_platform_post(platform, draft)
             if posted_id is None:
@@ -348,7 +369,17 @@ class VideoPostService(BaseService):
             # platform-native idempotency key is a future follow-up.
             markers.set_video_draft(task, dict(draft))
             await self._commit_shielded()
-        return await self._finalize_post(task, posted, failures)
+        return await self._finalize_post(task, posted, failures, skipped)
+
+    def _platform_configured(self, platform: str) -> bool:
+        """Whether `platform`'s poster holds credentials. Unknown platforms
+        report True so they still fall through to the explicit
+        unknown-platform failure in `_post_platform`."""
+        if platform == "x":
+            return bool(self._x_poster.configured)
+        if platform == "tiktok":
+            return bool(self._tiktok_poster.configured)
+        return True
 
     async def _commit_shielded(self) -> None:
         """Commit via asyncio.shield so a lock-loss cancellation firing
@@ -421,17 +452,34 @@ class VideoPostService(BaseService):
         return result.publish_id, result.detail
 
     async def _finalize_post(
-        self, task: TaskTable, posted: dict[str, str], failures: dict[str, str]
+        self,
+        task: TaskTable,
+        posted: dict[str, str],
+        failures: dict[str, str],
+        skipped: dict[str, str],
     ) -> VideoPostExecuteResult:
-        if not failures:
+        if not failures and posted:
             task.status = TaskStatus.COMPLETED
             # Commit while still holding the lock so COMPLETED is durable
             # before release — otherwise a racing approve could acquire the
             # lock the instant we drop it and double-post before a
             # route-level commit. Shielded — see _commit_shielded.
             await self._commit_shielded()
+            detail = "posted to all configured platforms"
+            if skipped:
+                detail += "; skipped (unconfigured): " + ", ".join(sorted(skipped))
             return VideoPostExecuteResult(
-                status="posted", posted=dict(posted), detail="posted to all platforms"
+                status="posted", posted=dict(posted), detail=detail
+            )
+        if not failures and skipped:
+            # Nothing posted and nothing failed — every target platform is
+            # unconfigured. Refuse loudly instead of completing a draft that
+            # never reached any audience.
+            detail = "no target platform has credentials configured: " + ", ".join(
+                sorted(skipped)
+            )
+            return VideoPostExecuteResult(
+                status="post_failed", posted={}, detail=detail
             )
         # Every successful platform's posted-id was already committed in the
         # loop above (see _post_all_platforms) — nothing left to persist.

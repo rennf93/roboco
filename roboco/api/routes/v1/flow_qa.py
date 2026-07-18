@@ -75,7 +75,7 @@ async def qa_pass(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.pass_review(
-        x_agent_id, body.task_id, body.notes, body.ac_verdicts
+        x_agent_id, body.task_id, body.notes, body.ac_verdicts, body.criteria_verified
     )
     return envelope_to_response(env, request)
 

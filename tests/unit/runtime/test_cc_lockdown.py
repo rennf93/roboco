@@ -86,6 +86,18 @@ class TestSharedClaudeCredentialsDenied:
         assert "Read(//home/agent/.claude/.credentials.json)" in deny, deny
         assert "Read(//home/agent/.claude.json)" in deny, deny
 
+    def test_settings_set_include_co_authored_by_false(self) -> None:
+        """Suppresses the CLI's default Claude co-author commit trailer —
+        agent commits carry the agent's identity, not the model vendor's."""
+        orch = _orch()
+        path = orch._generate_agent_settings(
+            agent_id="be-dev-1",
+            role="developer",
+            workspace_path=_WS,
+            cell_workspace_path=_CELL,
+        )
+        assert json.loads(Path(path).read_text())["includeCoAuthoredBy"] is False
+
     def test_deny_uses_absolute_double_slash_form(self) -> None:
         """Per the #167 gotcha: a single leading / resolves against the
         settings.json project root, not the container filesystem root — an

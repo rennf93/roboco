@@ -12,7 +12,7 @@ importers:
         specifier: ^0.7.36
         version: 0.7.36
       '@hyperframes/producer':
-        specifier: ^0.7.36
+        specifier: 0.7.36
         version: 0.7.36
       express:
         specifier: ^5.0.0

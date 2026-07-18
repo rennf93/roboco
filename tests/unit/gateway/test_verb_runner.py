@@ -363,6 +363,7 @@ async def test_runner_forwards_actor_agent_id_to_create_root_pr() -> None:
     task_svc.submit_for_review = AsyncMock(
         return_value=MagicMock(status="awaiting_pr_review")
     )
+    task_svc.project_default_branch_for_task = AsyncMock(return_value="main")
     git_svc = AsyncMock()
     git_svc.create_pr = AsyncMock(return_value={"pr_number": 7})
     runner = VerbRunner(task_service=task_svc, git_service=git_svc)
@@ -381,6 +382,9 @@ async def test_runner_forwards_actor_agent_id_to_create_root_pr() -> None:
 
     assert git_svc.create_pr.call_args.kwargs.get("is_root_pr") is True
     assert git_svc.create_pr.call_args.kwargs.get("actor_agent_id") == agent.id
+    assert git_svc.create_pr.call_args.kwargs.get("parent") == "main", (
+        "root PR base must be the project's head rung, not a literal master"
+    )
 
 
 @pytest.mark.asyncio

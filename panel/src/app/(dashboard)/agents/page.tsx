@@ -1,159 +1,122 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  useOrchestratorStatus,
-  useWaitingAgents,
-  useAgentDefinitions,
-} from "@/hooks/use-agents";
-import { useAgentUsage } from "@/hooks/use-usage";
-import { AgentStatusResponse, AgentUsageRow } from "@/types";
-import { OfflineState } from "@/components/ui/offline-state";
-import { usePageRefresh } from "@/hooks";
-import {
-  getBoardAgents,
-  getMainPm,
-  getBackendAgents,
-  getFrontendAgents,
-  getUxAgents,
-  getSupportAgents,
-} from "@/lib/agent-definitions";
-import {
-  OrchestratorStatusCards,
-  WaitingAgentsAlert,
-  AgentGrid,
-} from "@/components/agents";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Skeleton } from "@/components/ui/skeleton";
+import { AgentsFleetView } from "@/components/agents/agents-fleet-view";
+import { A2AView } from "@/components/a2a/a2a-view";
+import { JournalsView } from "@/components/journals/journals-view";
 
-export default function AgentsPage() {
-  const { data: agents = [], isLoading: agentsLoading } = useAgentDefinitions();
-  const { data: status, isLoading, error, refetch } = useOrchestratorStatus();
-  const { data: waitingAgents } = useWaitingAgents();
-  const { data: usageRows } = useAgentUsage();
+// ---------------------------------------------------------------------------
+// Valid tab values
+// ---------------------------------------------------------------------------
 
-  const { register, unregister, refresh } = usePageRefresh();
+interface TabDef {
+  value: "fleet" | "conversations" | "journals";
+  label: string;
+  hint: string;
+}
 
-  useEffect(() => {
-    const cb = () => {
-      void refetch();
-    };
-    register(cb);
-    return () => unregister(cb);
-  }, [register, unregister, refetch]);
+const TAB_DEFS: TabDef[] = [
+  {
+    value: "fleet",
+    label: "Fleet",
+    hint: "Every agent's live state, spawn controls, and activity stream",
+  },
+  {
+    value: "conversations",
+    label: "Conversations",
+    hint: "Live agent-to-agent message switchboard and history",
+  },
+  {
+    value: "journals",
+    label: "Journals",
+    hint: "Per-agent reflections, learnings, and decisions",
+  },
+];
 
-  // Check if it's a connection error (backend not running)
-  const isOffline =
-    error &&
-    (error.message?.includes("Network Error") ||
-      error.message?.includes("ECONNREFUSED") ||
-      (error as { code?: string })?.code === "ERR_NETWORK");
+const TAB_VALUES = TAB_DEFS.map((t) => t.value);
+type TabValue = (typeof TAB_VALUES)[number];
 
-  // Convert agents array to a record keyed by agent_id for easy lookup
-  const agentStatuses = useMemo(() => {
-    const result: Record<string, AgentStatusResponse> = {};
-    if (status?.agents) {
-      for (const agent of status.agents) {
-        result[agent.agent_id] = agent;
-      }
-    }
-    return result;
-  }, [status]);
+function isValidTab(value: string | null): value is TabValue {
+  return TAB_VALUES.includes(value as TabValue);
+}
 
-  // Convert usage rows to a record keyed by agent_slug
-  const agentUsageMap = useMemo(() => {
-    const result: Record<string, AgentUsageRow> = {};
-    for (const row of usageRows ?? []) {
-      result[row.agent_slug] = row;
-    }
-    return result;
-  }, [usageRows]);
+// ---------------------------------------------------------------------------
+// Inner component that reads URL params
+// ---------------------------------------------------------------------------
+
+function AgentsPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const rawTab = searchParams.get("tab");
+  const activeTab: TabValue = isValidTab(rawTab) ? rawTab : "fleet";
+
+  const handleTabChange = (value: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", value);
+    router.replace(`/agents?${params.toString()}`);
+  };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Agents</h1>
-          <p className="text-muted-foreground">
-            Monitor and control your AI workforce
-          </p>
+    <Tabs value={activeTab} onValueChange={handleTabChange}>
+      <TabsList>
+        {TAB_DEFS.map((tab) => (
+          <Tooltip key={tab.value}>
+            <TooltipTrigger asChild>
+              {/* TooltipTrigger's asChild Slot merge clobbers TabsTrigger's
+                  own data-state; re-assert the real selection state
+                  explicitly (see task-detail/task-tabs.tsx) so the
+                  data-[state=active] styling still fires. */}
+              <TabsTrigger
+                value={tab.value}
+                data-state={tab.value === activeTab ? "active" : "inactive"}
+              >
+                {tab.label}
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{tab.hint}</TooltipContent>
+          </Tooltip>
+        ))}
+      </TabsList>
+
+      <TabsContent value="fleet" className="mt-4">
+        <AgentsFleetView />
+      </TabsContent>
+
+      <TabsContent value="conversations" className="mt-4">
+        <A2AView />
+      </TabsContent>
+
+      <TabsContent value="journals" className="mt-4">
+        <JournalsView />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page export — wraps in Suspense for useSearchParams
+// ---------------------------------------------------------------------------
+
+export default function AgentsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <Skeleton className="h-9 w-72" />
+          <Skeleton className="h-96 w-full" />
         </div>
-      </div>
-
-      {isOffline ? (
-        <OfflineState
-          title="Orchestrator Not Running"
-          description="Start the RoboCo orchestrator to spawn and monitor agents. The agent roster is shown below for reference."
-          onRetry={() => void refresh()}
-        />
-      ) : (
-        <>
-          {/* Status Overview — Total Agents is the full roster size, not the
-              orchestrator's live-instance count, so it stays truthful even
-              when most of the roster isn't currently spawned. */}
-          <OrchestratorStatusCards
-            status={status}
-            isLoading={isLoading}
-            rosterCount={agents.length}
-            rosterLoading={agentsLoading}
-          />
-
-          {/* Waiting Agents Alert */}
-          {waitingAgents && (
-            <WaitingAgentsAlert waitingAgents={waitingAgents} />
-          )}
-        </>
-      )}
-
-      {/* Agent Grids - Dynamically loaded from API. Board + Main PM fold into
-          one Leadership band so a lone Main PM card never wastes a full row. */}
-      <AgentGrid
-        title="Leadership"
-        titleHint="Board (Product Owner, Head of Marketing, Auditor) plus the Main PM"
-        agents={[...getBoardAgents(agents), ...getMainPm(agents)]}
-        agentStatuses={agentStatuses}
-        agentUsage={agentUsageMap}
-        isLoading={(isLoading || agentsLoading) && !isOffline}
-      />
-
-      <AgentGrid
-        title="Backend Cell"
-        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
-        agents={getBackendAgents(agents)}
-        agentStatuses={agentStatuses}
-        agentUsage={agentUsageMap}
-        isLoading={(isLoading || agentsLoading) && !isOffline}
-      />
-
-      <AgentGrid
-        title="Frontend Cell"
-        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
-        agents={getFrontendAgents(agents)}
-        agentStatuses={agentStatuses}
-        agentUsage={agentUsageMap}
-        isLoading={(isLoading || agentsLoading) && !isOffline}
-      />
-
-      <AgentGrid
-        title="UX/UI Cell"
-        titleHint="2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer"
-        agents={getUxAgents(agents)}
-        agentStatuses={agentStatuses}
-        agentUsage={agentUsageMap}
-        isLoading={(isLoading || agentsLoading) && !isOffline}
-      />
-
-      {/* Support section: the CEO-direct helpers — Intake/Prompter, Secretary,
-          and the root PR Reviewer — only rendered when at least one matches */}
-      {getSupportAgents(agents).length > 0 && (
-        <AgentGrid
-          title="Support"
-          titleHint="CEO-direct helpers: Intake/Prompter, Secretary, and the root PR Reviewer"
-          agents={getSupportAgents(agents)}
-          agentStatuses={agentStatuses}
-          agentUsage={agentUsageMap}
-          isLoading={(isLoading || agentsLoading) && !isOffline}
-        />
-      )}
-    </div>
+      }
+    >
+      <AgentsPageContent />
+    </Suspense>
   );
 }

@@ -32,6 +32,13 @@ vi.mock("@/hooks/use-tasks", () => ({
     refetch: vi.fn(),
   }),
 }));
+vi.mock("@/hooks/use-usage", () => ({
+  useUsageTimeSeries: () => ({
+    data: undefined,
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
+}));
 
 vi.mock("../team-health-cards", () => ({
   TeamHealthCards: () => <div>TeamHealthCardsStub</div>,
@@ -48,8 +55,8 @@ vi.mock("../active-blockers-panel", () => ({
 vi.mock("../recent-activity-feed", () => ({
   RecentActivityFeed: () => <div>RecentActivityFeedStub</div>,
 }));
-vi.mock("../quick-actions-bar", () => ({
-  QuickActionsBar: () => <div>QuickActionsBarStub</div>,
+vi.mock("../quick-actions-card", () => ({
+  QuickActionsCard: () => <div>QuickActionsCardStub</div>,
 }));
 vi.mock("../ceo-approval-queue", () => ({
   CeoApprovalQueue: () => <div>CeoApprovalQueueStub</div>,
@@ -87,6 +94,9 @@ vi.mock("../usage-overview-panel", () => ({
 vi.mock("../scorecard-overview-panel", () => ({
   ScorecardOverviewPanel: () => <div>ScorecardOverviewPanelStub</div>,
 }));
+vi.mock("../cost-trend-chart", () => ({
+  CostTrendChart: () => <div>CostTrendChartStub</div>,
+}));
 
 import { CommandCenter } from "../command-center";
 
@@ -101,11 +111,12 @@ describe("CommandCenter", () => {
   it("renders every section", () => {
     render(<CommandCenter />);
     for (const stub of [
-      "QuickActionsBarStub",
+      "QuickActionsCardStub",
       "KeyMetricsPanelStub",
       "AuditorAlertsPanelStub",
       "UsageOverviewPanelStub",
       "ScorecardOverviewPanelStub",
+      "CostTrendChartStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
       "StrategySignalsPanelStub",
@@ -124,7 +135,7 @@ describe("CommandCenter", () => {
   it("orders sections top to bottom: quick actions/key cards, team health, then the rest", () => {
     render(<CommandCenter />);
     const order = [
-      "QuickActionsBarStub",
+      "QuickActionsCardStub",
       "KeyMetricsPanelStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",

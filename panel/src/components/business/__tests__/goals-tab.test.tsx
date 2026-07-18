@@ -50,6 +50,7 @@ function buildGoals(overrides: Partial<CompanyGoals> = {}): CompanyGoals {
     constraints: [],
     operating_policy: {},
     brand_voice: "",
+    company_name: "",
     updated_at: null,
     updated_by: null,
     ...overrides,

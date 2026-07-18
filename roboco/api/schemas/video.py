@@ -42,6 +42,8 @@ class VideoPostResponse(BaseModel):
     reject_reason: str | None = None
     mp4_paths: dict[str, str] = Field(default_factory=dict)
     source_task_id: str | None = None  # the authoring task this draft rendered from
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class VideoPostApproveRequest(BaseModel):
@@ -84,6 +86,8 @@ class VideoPostHistoryResponse(BaseModel):
     posted: dict[str, str] = Field(default_factory=dict)  # platform -> posted id
     acted_at: datetime
     source_task_id: str | None = None  # the authoring task this draft rendered from
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class VideoPipelineItemResponse(BaseModel):
@@ -103,6 +107,8 @@ class VideoPipelineItemResponse(BaseModel):
     render_attempts: int = 0
     max_attempts: int = MAX_VIDEO_RENDER_ATTEMPTS
     render_error: str | None = None
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class TikTokCredentialsStatus(BaseModel):

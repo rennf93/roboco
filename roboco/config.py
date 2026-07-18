@@ -459,6 +459,32 @@ class Settings(BaseSettings):
             "the cloud-auth login endpoint returns 429."
         ),
     )
+    # Telegram Mini App sign-in: validates Telegram's signed WebApp initData
+    # and mints the SAME cloud-auth session cookie /api/auth/login issues —
+    # zero changes to deps.py/websocket.py, whose cookie gate already accepts
+    # it. Security/TLS-coupled like cloud_auth_enabled, so deliberately NOT
+    # on the panel's runtime feature-flags card (see FEATURE_FLAGS in
+    # roboco/services/settings.py).
+    telegram_miniapp_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for Telegram Mini App sign-in "
+            "(POST /api/telegram/webapp-auth). OFF by default. Requires "
+            "cloud_auth_enabled (startup fails loud if on without it) since "
+            "the Mini App mints a cloud-auth session cookie and there is "
+            "nothing to mint without it. Env-only — excluded from the panel "
+            "feature-flags card, same reasoning as cloud_auth_enabled."
+        ),
+    )
+    telegram_initdata_max_age_seconds: int = Field(
+        default=600,
+        ge=1,
+        description=(
+            "Max age (seconds) of a Telegram WebApp initData payload's "
+            "auth_date before POST /api/telegram/webapp-auth refuses it as "
+            "stale."
+        ),
+    )
     agent_token_ttl_seconds: int = Field(
         default=604800,
         ge=60,
@@ -491,6 +517,15 @@ class Settings(BaseSettings):
                 "ROBOCO_PANEL_AGENT_TOKEN (nginx CEO-token injection bypasses "
                 "the login cookie). Unset ROBOCO_PANEL_AGENT_TOKEN for a "
                 "publicly-exposed cloud-auth deploy."
+            )
+        # The Mini App auth route mints a cloud-auth session cookie — with
+        # cloud auth off there is no session mechanism to hand it to.
+        if self.telegram_miniapp_enabled and not self.cloud_auth_enabled:
+            raise ValueError(
+                "ROBOCO_TELEGRAM_MINIAPP_ENABLED=true requires "
+                "ROBOCO_CLOUD_AUTH_ENABLED=true (the Mini App mints a "
+                "cloud-auth session cookie; there is nothing to mint "
+                "without it)."
             )
         return self
 
@@ -1542,6 +1577,50 @@ class Settings(BaseSettings):
             "External panel base URL for Telegram message deep-links. Empty "
             "omits the link; e.g. https://panel.example.com -> "
             ".../tasks/<id8>."
+        ),
+    )
+    # Telegram V2 — inbound commands (/status, /queue, /task) + actionable
+    # approve/reject callback buttons on escalation DMs. Sub-switch on top of
+    # telegram_enabled: both must be on, AND credentials stored, for the poll
+    # loop to do anything. Never expands what triggers an outbound DM beyond
+    # the V1 escalation/completion senders — this only makes the escalation
+    # send actionable and adds a poll loop that reacts to the CEO's replies.
+    telegram_inbound_enabled: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch for Telegram inbound commands + actionable "
+            "approve/reject buttons. OFF by default: even with "
+            "telegram_enabled on, the bot only sends notifications, never "
+            "polls or reacts. Needs telegram_enabled on AND stored "
+            "credentials to do anything."
+        ),
+    )
+    telegram_poll_interval_seconds: float = Field(
+        default=5.0,
+        ge=1.0,
+        description=(
+            "Seconds between getUpdates long-poll re-issues. Each call itself "
+            "blocks server-side up to telegram_poll_timeout_seconds, so this "
+            "is a floor between re-issues, not the effective latency."
+        ),
+    )
+    telegram_poll_timeout_seconds: int = Field(
+        default=25,
+        ge=1,
+        le=50,
+        description="Bot API getUpdates long-poll `timeout` param (seconds).",
+    )
+    telegram_max_updates_per_cycle: int = Field(
+        default=50,
+        ge=1,
+        description="Max updates processed in one poll cycle.",
+    )
+    telegram_pending_reply_ttl_seconds: float = Field(
+        default=300.0,
+        ge=30.0,
+        description=(
+            "How long a force_reply prompt (e.g. 'reply with your rejection "
+            "reason') stays live before the pending action expires."
         ),
     )
 

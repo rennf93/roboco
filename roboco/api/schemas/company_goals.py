@@ -13,6 +13,7 @@ class CompanyGoalsResponse(BaseModel):
     constraints: list[str]
     operating_policy: dict[str, Any]
     brand_voice: str = ""
+    company_name: str = ""
     updated_at: str | None = None
     updated_by: str | None = None
 
@@ -25,3 +26,4 @@ class CompanyGoalsUpdate(BaseModel):
     constraints: list[str] | None = Field(default=None)
     operating_policy: dict[str, Any] | None = Field(default=None)
     brand_voice: str | None = Field(default=None)
+    company_name: str | None = Field(default=None)

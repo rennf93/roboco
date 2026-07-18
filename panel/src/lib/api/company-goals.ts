@@ -6,6 +6,7 @@ export interface CompanyGoals {
   constraints: string[];
   operating_policy: Record<string, unknown>;
   brand_voice: string;
+  company_name: string;
   updated_at?: string | null;
   updated_by?: string | null;
 }
@@ -18,6 +19,7 @@ export type CompanyGoalsUpdate = Partial<
     | "constraints"
     | "operating_policy"
     | "brand_voice"
+    | "company_name"
   >
 >;
 

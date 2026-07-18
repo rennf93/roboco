@@ -184,10 +184,28 @@ def test_auth_required_truthy_values(monkeypatch: pytest.MonkeyPatch) -> None:
         assert _auth_required() is True
 
 
-def test_auth_required_falsy_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    for v in ("0", "no", "false", ""):
+def test_auth_required_explicit_false_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An explicit opt-out is honored in every environment (trusted private net).
+    monkeypatch.setattr(_deps.settings, "environment", "production")
+    for v in ("0", "no", "false"):
         monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", v)
         assert _auth_required() is False
+
+
+def test_auth_required_unset_fails_open_in_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    monkeypatch.setattr(_deps.settings, "environment", "development")
+    assert _auth_required() is False
+
+
+def test_auth_required_unset_fails_closed_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # GHSA-4f7g-w95g-5q2c: an unset flag must not leave a production deploy in
+    # header-trust mode where any client can claim X-Agent-Role: ceo.
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    monkeypatch.setattr(_deps.settings, "environment", "production")
+    assert _auth_required() is True
 
 
 def test_check_agent_auth_token_no_token_in_dev_passes(

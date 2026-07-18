@@ -19,6 +19,8 @@ from roboco.services.base import BaseService
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from roboco.db.tables import ProjectTable
+
 # Canonical single-row marker — the charter is a singleton.
 SINGLETON_ID = UUID("00000000-0000-0000-0000-000000000000")
 
@@ -28,6 +30,7 @@ _EMPTY: dict[str, Any] = {
     "constraints": [],
     "operating_policy": {},
     "brand_voice": "",
+    "company_name": "",
     "updated_at": None,
     "updated_by": None,
 }
@@ -64,10 +67,27 @@ class CompanyGoalsService(BaseService):
             row.operating_policy = data["operating_policy"]
         if "brand_voice" in data:
             row.brand_voice = data["brand_voice"]
+        if "company_name" in data:
+            row.company_name = data["company_name"]
         if updated_by is not None:
             row.updated_by = updated_by
         await self.session.flush()
         return self._to_dict(row)
+
+    async def resolve_product_name(self, project: ProjectTable | None) -> str:
+        """The shared product-name fallback chain: ``project``'s own name,
+        else this charter's ``company_name``, else the "RoboCo" literal.
+
+        The single source of this resolution — XEngine and VideoEngine both
+        call it (rather than each keeping its own copy) so a drafted post/
+        video is never unbranded when neither identity source is set, and the
+        fallback order can't drift between the two callers.
+        """
+        if project is not None and project.name:
+            return project.name
+        charter = await self.get()
+        company_name = (charter.get("company_name") or "").strip()
+        return company_name or "RoboCo"
 
     @staticmethod
     def _to_dict(row: CompanyGoalsTable) -> dict[str, Any]:
@@ -77,6 +97,7 @@ class CompanyGoalsService(BaseService):
             "constraints": row.constraints or [],
             "operating_policy": row.operating_policy or {},
             "brand_voice": row.brand_voice or "",
+            "company_name": row.company_name or "",
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "updated_by": str(row.updated_by) if row.updated_by else None,
         }

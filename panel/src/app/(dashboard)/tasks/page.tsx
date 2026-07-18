@@ -75,7 +75,10 @@ function TasksPageContent() {
         }
       });
       const query = params.toString();
-      router.push(query ? `/tasks?${query}` : "/tasks");
+      // scroll: false — a UI-only param write (e.g. row expand/collapse)
+      // must not reset scroll on its own; ScrollRestoration's route key
+      // already excludes `expanded`, this is defense in depth.
+      router.push(query ? `/tasks?${query}` : "/tasks", { scroll: false });
     },
     [router, searchParams],
   );

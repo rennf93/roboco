@@ -249,6 +249,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
   const [northStar, setNorthStar] = useState<string | null>(null);
   const [brandVoice, setBrandVoice] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState<string | null>(null);
   const [constraints, setConstraints] = useState<string | null>(null);
   const [objectives, setObjectives] = useState<
     Record<string, unknown>[] | null
@@ -257,6 +258,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
   const northStarVal = northStar ?? goals.north_star ?? "";
   const brandVoiceVal = brandVoice ?? goals.brand_voice ?? "";
+  const companyNameVal = companyName ?? goals.company_name ?? "";
   const constraintsVal = constraints ?? (goals.constraints ?? []).join("\n");
   const objectivesVal = objectives ?? goals.objectives ?? [];
   const policyVal = policy ?? goals.operating_policy ?? {};
@@ -267,6 +269,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
       void queryClient.invalidateQueries({ queryKey: ["company-goals"] });
       setNorthStar(null);
       setBrandVoice(null);
+      setCompanyName(null);
       setConstraints(null);
       setObjectives(null);
       setPolicy(null);
@@ -281,6 +284,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
     saveMutation.mutate({
       north_star: northStarVal,
       brand_voice: brandVoiceVal,
+      company_name: companyNameVal,
       objectives: objectivesVal,
       constraints: constraintsVal
         .split("\n")
@@ -333,6 +337,20 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
           />
         </div>
 
+        {/* Company / product name */}
+        <div className="space-y-2">
+          <HelpTip label="Brands X/video marketing drafts when a project name isn't available — falls back to 'RoboCo' when both are unset">
+            <Label htmlFor="company-name">Company / product name</Label>
+          </HelpTip>
+          <Input
+            id="company-name"
+            value={companyNameVal}
+            disabled={saving}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="RoboCo"
+          />
+        </div>
+
         {/* Constraints */}
         <div className="space-y-2">
           <HelpTip label="Hard rules injected into every agent's briefing (e.g. licensing, no external data egress)">
@@ -373,7 +391,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
         </div>
 
         {/* Save */}
-        <HelpTip label="Saves north star, brand voice, objectives, constraints, and operating policy in one update">
+        <HelpTip label="Saves north star, brand voice, company/product name, objectives, constraints, and operating policy in one update">
           <span className="inline-block">
             <Button onClick={handleSave} disabled={saving}>
               <Save className="h-4 w-4 mr-2" />

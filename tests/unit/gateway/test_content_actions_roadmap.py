@@ -28,7 +28,7 @@ class _FakeTask:
         self.orchestration_markers = orchestration_markers
 
 
-def _actions(role: str) -> ContentActions:
+def _actions(role: str, *, notification_delivery: Any = None) -> ContentActions:
     task = MagicMock()
     agent = MagicMock()
     agent.role = role
@@ -41,6 +41,7 @@ def _actions(role: str) -> ContentActions:
         journal=MagicMock(),
         workspace=MagicMock(),
         notifications=MagicMock(),
+        notification_delivery=notification_delivery,
     )
     return ContentActions(deps)
 
@@ -173,6 +174,64 @@ async def test_propose_roadmap_persists_cycle_onto_open_task(
     assert all(it["status"] == "proposed" for it in payload["items"])
     assert payload["items"][0]["id"] == "item-0"
     actions.task.session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_propose_roadmap_sends_telegram_push_per_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Roadmap items only become CEO-actionable once propose_roadmap lands
+    (the engine's exploration-task origination has nothing to review yet),
+    so the push DM fires once per item here, not from RoadmapEngine."""
+    monkeypatch.setattr(cfg, "roadmap_min_items_per_cycle", 1)
+    monkeypatch.setattr(cfg, "roadmap_max_items_per_cycle", 7)
+    agent_id = uuid4()
+    cycle_task = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_roadmap_cycles = AsyncMock(return_value=[cycle_task])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+    notify = AsyncMock()
+    actions = _actions("product_owner", notification_delivery=notify)
+    actions.task.session.flush = AsyncMock()
+
+    items = _valid_items(3)
+    env = await actions.propose_roadmap(
+        agent_id=agent_id, cycle_goal="Close onboarding friction", items=items
+    )
+    assert env.error is None
+
+    assert notify.notify_ceo_of_queue_item.await_count == len(items)
+    id8 = str(cycle_task.id)[:8]
+    for i, call in enumerate(notify.notify_ceo_of_queue_item.await_args_list):
+        assert call.kwargs["kind"] == "roadmap"
+        assert call.kwargs["id8"] == id8
+        assert call.kwargs["extra"] == f"item-{i}"
+        assert call.kwargs["title"] == f"Item {i}"
+
+
+@pytest.mark.asyncio
+async def test_propose_roadmap_survives_telegram_push_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Telegram send failure must never block propose_roadmap itself."""
+    monkeypatch.setattr(cfg, "roadmap_min_items_per_cycle", 1)
+    monkeypatch.setattr(cfg, "roadmap_max_items_per_cycle", 7)
+    agent_id = uuid4()
+    cycle_task = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_roadmap_cycles = AsyncMock(return_value=[cycle_task])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+    notify = MagicMock()
+    notify.notify_ceo_of_queue_item = AsyncMock(side_effect=RuntimeError("boom"))
+    actions = _actions("product_owner", notification_delivery=notify)
+    actions.task.session.flush = AsyncMock()
+
+    env = await actions.propose_roadmap(
+        agent_id=agent_id, cycle_goal="Close onboarding friction", items=_valid_items(2)
+    )
+
+    assert env.error is None
+    assert env.status == "roadmap_proposed"
 
 
 @pytest.mark.asyncio

@@ -284,7 +284,16 @@ async def test_notify_telegram_send_deferred_to_after_commit(
     sent: list[str] = []
 
     class _FakeTelegramClient:
-        async def send_message(self, text: str) -> TelegramSendResult:
+        async def send_message(
+            self,
+            text: str,
+            *,
+            reply_markup: dict | None = None,
+            reply_to_message_id: int | None = None,
+            parse_mode: str | None = None,
+            disable_link_preview: bool = False,
+        ) -> TelegramSendResult:
+            _ = (reply_markup, reply_to_message_id, parse_mode, disable_link_preview)
             sent.append(text)
             return TelegramSendResult(sent=True)
 
@@ -305,7 +314,73 @@ async def test_notify_telegram_send_deferred_to_after_commit(
     await db_session.commit()
     await _await_drain(db_session)
 
-    assert sent == ["Hello CEO"]
+    assert sent == ["<b>Hello CEO</b>"]
+
+
+@pytest.mark.asyncio
+async def test_notify_ceo_of_queue_item_deferred_escaped_and_keyboarded(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The origination-time push DM (release/xpost/video/roadmap drafts)
+    reuses the exact ``/queue`` item renderer + keyboard, rides the same
+    after-commit outbox as ``_notify_telegram``, and escapes a malicious
+    title before it ever reaches the Bot API payload."""
+    monkeypatch.setattr(settings, "telegram_enabled", True)
+
+    creds = TelegramCredentialsData(bot_token="t", chat_id="1")
+
+    class _FakeCredsService:
+        async def get_decrypted(self) -> TelegramCredentialsData:
+            return creds
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_credentials.get_telegram_credentials_service",
+        lambda _session: _FakeCredsService(),
+    )
+
+    sent: list[tuple[str, dict | None, str | None]] = []
+
+    class _FakeTelegramClient:
+        async def send_message(
+            self,
+            text: str,
+            *,
+            reply_markup: dict | None = None,
+            reply_to_message_id: int | None = None,
+            parse_mode: str | None = None,
+            disable_link_preview: bool = False,
+        ) -> TelegramSendResult:
+            _ = (reply_to_message_id, disable_link_preview)
+            sent.append((text, reply_markup, parse_mode))
+            return TelegramSendResult(sent=True)
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "roboco.services.telegram_client.build_telegram_client",
+        lambda _creds, **_kwargs: _FakeTelegramClient(),
+    )
+
+    service = get_notification_delivery_service(db_session)
+    await service.notify_ceo_of_queue_item(
+        kind="release", id8="a1b2c3d4", title="<b>v1.0.0</b> ready"
+    )
+
+    assert sent == []  # deferred — nothing before commit
+
+    await db_session.commit()
+    await _await_drain(db_session)
+
+    assert len(sent) == 1
+    text, reply_markup, parse_mode = sent[0]
+    assert "&lt;b&gt;v1.0.0&lt;/b&gt; ready" in text
+    assert "<b>v1.0.0</b> ready" not in text  # never unescaped
+    assert text.startswith("🚀 <b>Release</b>")
+    assert parse_mode == "HTML"
+    assert reply_markup is not None
+    row = reply_markup["inline_keyboard"][0]
+    assert row[0]["callback_data"] == "apv:release:a1b2c3d4"
 
 
 @pytest.mark.asyncio
@@ -331,7 +406,16 @@ async def test_notify_telegram_rollback_drops_send(
     sent: list[str] = []
 
     class _FakeTelegramClient:
-        async def send_message(self, text: str) -> TelegramSendResult:
+        async def send_message(
+            self,
+            text: str,
+            *,
+            reply_markup: dict | None = None,
+            reply_to_message_id: int | None = None,
+            parse_mode: str | None = None,
+            disable_link_preview: bool = False,
+        ) -> TelegramSendResult:
+            _ = (reply_markup, reply_to_message_id, parse_mode, disable_link_preview)
             sent.append(text)
             return TelegramSendResult(sent=True)
 

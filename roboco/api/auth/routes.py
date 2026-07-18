@@ -90,7 +90,7 @@ def mount_cloud_auth(app: FastAPI, prefix: str) -> None:
     app.include_router(_logout_router, prefix=prefix, tags=["Auth"])
     app.add_middleware(
         LoginRateLimiter,
-        prefix=prefix,
+        paths=(f"{prefix}/login",),
         max_attempts=settings.login_max_attempts,
         window=60,
     )

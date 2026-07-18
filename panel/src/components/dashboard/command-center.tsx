@@ -7,13 +7,14 @@ import {
   useRecentActivity,
 } from "@/hooks/use-dashboard";
 import { useTasks } from "@/hooks/use-tasks";
+import { useUsageTimeSeries } from "@/hooks/use-usage";
 import { usePageRefresh } from "@/hooks";
 import { TeamHealthCards } from "./team-health-cards";
 import { KeyMetricsPanel } from "./key-metrics-panel";
 import { AuditorAlertsPanel } from "./auditor-alerts-panel";
 import { ActiveBlockersPanel } from "./active-blockers-panel";
 import { RecentActivityFeed } from "./recent-activity-feed";
-import { QuickActionsBar } from "./quick-actions-bar";
+import { QuickActionsCard } from "./quick-actions-card";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
 import { PrReviewQueue } from "./pr-review-queue";
 import { ReleaseProposalCard } from "./release-proposal-card";
@@ -25,6 +26,7 @@ import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
 import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
+import { CostTrendChart } from "./cost-trend-chart";
 import {
   Tooltip,
   TooltipContent,
@@ -62,6 +64,11 @@ export function CommandCenter() {
     isError: errorActivity,
     refetch: refetchActivity,
   } = useRecentActivity(24);
+  const {
+    data: costTrend,
+    isLoading: loadingCostTrend,
+    refetch: refetchCostTrend,
+  } = useUsageTimeSeries("7d");
 
   const { register, unregister } = usePageRefresh();
 
@@ -79,6 +86,9 @@ export function CommandCenter() {
       () => {
         void refetchActivity();
       },
+      () => {
+        void refetchCostTrend();
+      },
     ];
     callbacks.forEach((cb) => register(cb));
     return () => {
@@ -91,6 +101,7 @@ export function CommandCenter() {
     refetchFlags,
     refetchTasks,
     refetchActivity,
+    refetchCostTrend,
   ]);
 
   const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
@@ -143,7 +154,7 @@ export function CommandCenter() {
             Quick Actions
           </h2>
         </HelpTip>
-        <QuickActionsBar />
+        <QuickActionsCard />
       </section>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-4">
@@ -155,6 +166,8 @@ export function CommandCenter() {
         <UsageOverviewPanel />
         <ScorecardOverviewPanel />
       </div>
+
+      <CostTrendChart data={costTrend} isLoading={loadingCostTrend} />
 
       {/* Section 2: Team Health (team cards + Task Intake + Secretary) */}
       <section>

@@ -132,6 +132,7 @@ async def test_list_posts_returns_open_draft(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     task = await _seed_draft(db_session)
+    project = await db_session.get(ProjectTable, task.project_id)
     resp = await ceo_client.get("/api/x/posts")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
@@ -139,6 +140,9 @@ async def test_list_posts_returns_open_draft(
     assert body[0]["task_id"] == str(task.id)
     assert body[0]["body"] == "draft body"
     assert body[0]["release_version"] == "0.17.0"
+    assert project is not None
+    assert body[0]["project_slug"] == project.slug
+    assert body[0]["project_name"] == project.name
 
 
 @pytest.mark.asyncio
@@ -204,6 +208,7 @@ async def test_history_returns_posted_and_rejected_newest_first(
         f"/api/x/posts/{rejected.id}/reject", json={"reason": "off-brand tone"}
     )
     posted = await _seed_draft(db_session)
+    posted_project = await db_session.get(ProjectTable, posted.project_id)
     with (
         patch(
             "roboco.services.x_post_service.build_x_client",
@@ -224,6 +229,9 @@ async def test_history_returns_posted_and_rejected_newest_first(
     posted_row = next(row for row in body if row["task_id"] == str(posted.id))
     assert posted_row["status"] == "completed"
     assert posted_row["tweet_id"] == "42"
+    assert posted_project is not None
+    assert posted_row["project_slug"] == posted_project.slug
+    assert posted_row["project_name"] == posted_project.name
     rejected_row = next(row for row in body if row["task_id"] == str(rejected.id))
     assert rejected_row["status"] == "cancelled"
     assert rejected_row["reject_reason"] == "off-brand tone"

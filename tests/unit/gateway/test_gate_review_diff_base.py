@@ -86,6 +86,7 @@ class TestGateDiffParent:
     async def test_parentless_root_falls_back_to_string_derivation(self) -> None:
         t = _gate_task(branch_name="feature/main_pm/f7d0a61a", parent_task_id=None)
         task_service = AsyncMock()
+        task_service.project_default_branch_for_task = AsyncMock(return_value=None)
         c = _make_choreographer(task_service=task_service, git=AsyncMock())
 
         parent = await c._gate_diff_parent(t)

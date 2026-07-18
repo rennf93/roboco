@@ -129,7 +129,7 @@ services:
     container_name: roboco-ollama
     restart: unless-stopped
     environment:
-        OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
     ports:
       - "11435:11434"
     volumes:
@@ -415,7 +415,12 @@ services:
       - data
       - render
     ports:
-      - "8000:8000"
+      # Loopback-only: the orchestrator API is an unauthenticated control plane
+      # in header-trust mode. nginx reaches it over the internal network, so it
+      # never needs a routable host publish; remote access goes via nginx + cloud
+      # auth. A 0.0.0.0 publish exposed spawn/stop and settings-write with no
+      # credential to anyone who could reach the host (GHSA-4f7g-w95g-5q2c).
+      - "127.0.0.1:8000:8000"
     environment:
       # Database (use container name, not localhost)
       ROBOCO_DATABASE_HOST: roboco-postgres
@@ -530,9 +535,24 @@ services:
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-true}
       # Telegram notifications bridge: best-effort DMs to the CEO on escalation
-      # + completion. Config default is OFF; not yet armed here (needs stored
-      # bot-token + chat-id credentials regardless of this flag).
-      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
+      # + completion. Armed by default here per the NAS-compose convention
+      # (new flags ship ON unless the CEO opts out); inert without stored
+      # bot-token + chat-id credentials regardless of this flag.
+      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-true}
+      # Telegram V2 — inbound commands + actionable approve/reject buttons.
+      # Armed here (sub-switch of ROBOCO_TELEGRAM_ENABLED above); the whole
+      # bridge stays inert until that flag AND credentials
+      # are both set, so arming this alone does nothing yet.
+      ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-true}
+      # Telegram Mini App sign-in: validates Telegram's signed WebApp initData
+      # and mints the same cloud-auth session cookie /api/auth/login issues,
+      # so the CEO's phone becomes an authenticated panel client. Requires
+      # ROBOCO_CLOUD_AUTH_ENABLED=true (startup fails loud otherwise) AND a
+      # public HTTPS origin (the cookie is secure-only, and Telegram itself
+      # only opens Mini Apps over https). Armed by default per the NAS-compose
+      # convention — NOTE: boot fails loud if cloud auth is disabled/unseeded,
+      # so a cloud-auth-off .env must also set this false.
+      ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-true}
       ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
       ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
       ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}
@@ -601,6 +621,13 @@ services:
       #     disabled RAISES instead of degrading. Audit model_assignments first
       #     (a stale row pointing at a disabled provider would crash that spawn).
       ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-true}
+      # .env values only reach the container when referenced here — without
+      # these lines the seeded login/secret never arrive and startup fails
+      # loud (ENABLED defaults true above).
+      ROBOCO_CLOUD_AUTH_EMAIL: ${ROBOCO_CLOUD_AUTH_EMAIL:-}
+      ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
+      ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
+      ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
       ROBOCO_ROUTING_STRICT: ${ROBOCO_ROUTING_STRICT:-true}
       # Spawn preflight (token-opt Phase 3) — refuse a non-gateway delivery role
       # that would respawn forever. Default-OFF in config; ARMED here (inert in

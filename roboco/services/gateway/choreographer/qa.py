@@ -58,6 +58,11 @@ from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
 logger = structlog.get_logger()
 
+# Cap on one criteria_verified entry's `evidence` — mirrors Finding.fix's cap
+# (roboco.foundation.policy.content.models._FINDING_FIX_CAP): a pointer
+# (file:line, screenshot ref, test name), not a transcript.
+_CRITERION_EVIDENCE_CAP = 500
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -427,13 +432,13 @@ class QAMixin(_Base):
     def _qa_ac_coverage_check(
         cls, task: Any, ac_verdicts: list[str] | None
     ) -> Envelope | None:
-        """Per-acceptance-criterion verification gate for pass_review.
+        """Legacy count-only per-AC gate — superseded by ``criteria_verified``.
 
-        QA may not pass a task until it has recorded a verification for EVERY
-        acceptance criterion. A single gestalt "looks good" approval is how a
-        silently-unbuilt criterion slips through; requiring one verdict per
-        criterion forces QA to check each individually. If a criterion does not
-        hold, the QA fails the review instead of passing a partial.
+        No longer wired into ``pass_review`` (a count of arbitrary strings
+        never verified they actually named the right criterion — the live gap
+        ``_validate_criteria_verified`` closes). Kept for ``ac_verdicts``'
+        existing callers/tests; ``ac_verdicts`` itself still folds into the
+        persisted notes when supplied.
         """
         criteria = list(getattr(task, "acceptance_criteria", None) or [])
         if not criteria:
@@ -545,36 +550,181 @@ class QAMixin(_Base):
             verb=verb,
         )
 
+    @staticmethod
+    def _parse_criterion_entry(entry: Any, idx: int) -> tuple[str, str] | Envelope:
+        """Validate one ``criteria_verified`` entry into a (criterion, evidence)
+        pair, or an ``Envelope`` rejection on any structural problem."""
+        criterion = entry.get("criterion") if isinstance(entry, dict) else None
+        evidence = entry.get("evidence") if isinstance(entry, dict) else None
+        if not isinstance(criterion, str) or not criterion.strip():
+            return Envelope.invalid_state(
+                message=f"criteria_verified[{idx}] is missing a `criterion` string",
+                remediate=(
+                    "each entry needs {criterion, evidence} naming one "
+                    "acceptance criterion"
+                ),
+            )
+        if not isinstance(evidence, str) or not evidence.strip():
+            return Envelope.invalid_state(
+                message=(
+                    f"criteria_verified[{idx}] ({criterion!r}) is missing `evidence`"
+                ),
+                remediate=(
+                    "state concrete evidence: file:line, screenshot ref, "
+                    "rendered-frame path, test name"
+                ),
+            )
+        if len(evidence) > _CRITERION_EVIDENCE_CAP:
+            return Envelope.invalid_state(
+                message=(
+                    f"criteria_verified[{idx}] evidence exceeds "
+                    f"{_CRITERION_EVIDENCE_CAP} chars"
+                ),
+                remediate="keep evidence concise — a pointer, not a transcript",
+            )
+        return criterion.strip(), evidence.strip()
+
+    @classmethod
+    def _parse_criteria_verified_entries(
+        cls, criteria_verified: list[dict[str, Any]]
+    ) -> tuple[list[tuple[str, str]], Envelope | None]:
+        """Shape + soup validation for every ``criteria_verified`` entry.
+
+        Pure parsing — AC matching/coverage is the caller's job. Split out
+        of ``_validate_criteria_verified`` to keep its return count under
+        the complexity bound.
+        """
+        pairs: list[tuple[str, str]] = []
+        for idx, entry in enumerate(criteria_verified):
+            parsed = cls._parse_criterion_entry(entry, idx)
+            if isinstance(parsed, Envelope):
+                return [], parsed
+            pairs.append(parsed)
+        soup = cls._free_text_soup(
+            checks=(("criteria_verified.evidence", [e for _, e in pairs], 8),)
+        )
+        if soup is not None:
+            return [], soup
+        return pairs, None
+
+    @classmethod
+    def _validate_criteria_verified(
+        cls, t: Any, criteria_verified: list[dict[str, Any]] | None
+    ) -> tuple[list[tuple[str, str]], Envelope | None]:
+        """Mandatory per-AC verification gate for pass_review.
+
+        Returns ``(pairs, rejection)`` — ``pairs`` is ``[]`` and ``rejection``
+        non-None on any failure: none supplied (lists every AC verbatim),
+        a malformed or soupy entry, an entry naming a criterion absent from
+        the task (names the valid criteria), or a task AC left uncovered
+        (names the gap). No task ACs imposes no requirement (mirrors the
+        legacy ``_qa_ac_coverage_check``). A gestalt "looks good" is no
+        longer enough — every criterion needs its own matched, evidenced
+        entry, or QA must call ``fail_review`` instead of passing a partial.
+        """
+        criteria = list(getattr(t, "acceptance_criteria", None) or [])
+        if not criteria:
+            return [], None
+        if not criteria_verified:
+            return [], Envelope.invalid_state(
+                message=(
+                    "pass_review needs criteria_verified naming every "
+                    f"acceptance criterion; none supplied. Unverified: {criteria!r}"
+                ),
+                remediate=(
+                    "re-run the review and call pass_review with "
+                    "criteria_verified=[{criterion, evidence}, ...] — stamp "
+                    "EACH criterion with concrete evidence (file:line, "
+                    "screenshot ref, rendered-frame path, test name)"
+                ),
+            )
+        pairs, bad = cls._parse_criteria_verified_entries(criteria_verified)
+        if bad is not None:
+            return [], bad
+        provided = [c for c, _ in pairs]
+        if unknown := findings_lib.unmatched_criteria(t, provided):
+            return [], Envelope.invalid_state(
+                message=(
+                    f"criteria_verified names criteria not on this task: {unknown!r}"
+                ),
+                remediate=(
+                    "each entry's criterion must match one of the task's "
+                    f"acceptance criteria (by id or exact text): {criteria!r}"
+                ),
+            )
+        if uncovered := findings_lib.uncovered_acceptance_criteria(t, provided):
+            return [], Envelope.invalid_state(
+                message=(
+                    "criteria_verified is missing these acceptance criteria: "
+                    f"{uncovered!r}"
+                ),
+                remediate=(
+                    "stamp every criterion with concrete evidence, or call "
+                    "fail_review with the specific gap if one does not hold"
+                ),
+            )
+        return pairs, None
+
+    @staticmethod
+    def _render_criteria_verified(pairs: list[tuple[str, str]]) -> list[str]:
+        """One '[AC] <criterion> — verified: <evidence>' line per entry.
+
+        Style-matched to the findings ledger's '[F-<id8>] ...' bracket-tag
+        rendering (``findings_lib.render_finding_line``).
+        """
+        return [
+            f"[AC] {criterion} — verified: {evidence}" for criterion, evidence in pairs
+        ]
+
+    @classmethod
+    def _merge_criteria_verified_into_notes(
+        cls, notes: str, pairs: list[tuple[str, str]]
+    ) -> str:
+        """Fold the per-AC verification lines into the persisted QA notes.
+
+        Mirrors ``_merge_ac_verdicts_into_notes`` — keeps the per-criterion
+        verification in the audit trail (qa_notes) so PM/CEO see exactly how
+        QA verified each acceptance criterion.
+        """
+        lines = cls._render_criteria_verified(pairs)
+        if not lines:
+            return notes
+        return f"{notes}\n\n" + "\n".join(lines)
+
     async def _qa_pass_final_gates(
         self,
         qa_agent_id: UUID,
         task_id: UUID,
         t: Any,
         role_str: str,
-        ac_verdicts: list[str] | None,
-    ) -> Envelope | None:
-        """AC-coverage + toolchain-runnability gates for pass_review.
+        criteria_verified: list[dict[str, Any]] | None,
+    ) -> tuple[Envelope | None, list[tuple[str, str]]]:
+        """Per-AC verification + toolchain-runnability gates for pass_review.
 
-        Returns the first rejection (already emitted), else None. QA must not
-        PASS on a workspace that cannot run the suite — that is a source-read
+        Returns ``(rejection, pairs)`` — the first emitted rejection (else
+        None) and the validated ``criteria_verified`` (criterion, evidence)
+        pairs for the caller to render into notes. QA must not PASS on a
+        workspace that cannot run the suite — that is a source-read
         "verification"; fail_review is unaffected.
         """
-        ac_rejection = self._qa_ac_coverage_check(t, ac_verdicts)
-        if ac_rejection is not None:
-            return await self._emit_rejection(
-                ac_rejection.with_introspection(task=t, role=role_str),
+        pairs, bad = self._validate_criteria_verified(t, criteria_verified)
+        if bad is not None:
+            rejection = await self._emit_rejection(
+                bad.with_introspection(task=t, role=role_str),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="pass_review",
             )
+            return rejection, []
         if toolchain := await self._toolchain_broken_guard(qa_agent_id, t):
-            return await self._emit_rejection(
+            rejection = await self._emit_rejection(
                 toolchain.with_introspection(task=t, role=role_str),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="pass_review",
             )
-        return None
+            return rejection, []
+        return None, pairs
 
     async def pass_review(
         self,
@@ -582,6 +732,7 @@ class QAMixin(_Base):
         task_id: UUID,
         notes: str,
         ac_verdicts: list[str] | None = None,
+        criteria_verified: list[dict[str, Any]] | None = None,
     ) -> Envelope:
         """QA passes the task; transitions awaiting_qa → awaiting_documentation.
 
@@ -596,6 +747,16 @@ class QAMixin(_Base):
         The composed atomic ``qa_pass`` is then dispatched through
         ``VerbRunner.run_intent``, after which the verb body reassigns
         the documenter for handoff.
+
+        ``criteria_verified`` ({criterion, evidence} entries) is the
+        mandatory per-AC verification gate (``_validate_criteria_verified``):
+        every one of the task's acceptance criteria must be named by exactly
+        one entry — matched by AC id or exact text, the same match
+        ``fail_review``'s findings ledger uses for its own ``criterion``
+        field — carrying substantive evidence, or the pass is refused. A
+        gestalt "looks good" is no longer enough; QA must walk each
+        criterion. ``ac_verdicts`` (legacy, count-only) still folds into the
+        persisted notes when supplied but no longer gates the pass.
         """
         rejection, t = await self._verify_qa_owner(qa_agent_id, task_id, "pass_review")
         if rejection is not None:
@@ -621,18 +782,22 @@ class QAMixin(_Base):
             soup_checks=(("notes", notes, 8),),
         ):
             return gate_rejection
-        if rej := await self._qa_pass_final_gates(
-            qa_agent_id, task_id, t, role_str, ac_verdicts
-        ):
-            return rej
+        final_rejection, criteria_pairs = await self._qa_pass_final_gates(
+            qa_agent_id, task_id, t, role_str, criteria_verified
+        )
+        if final_rejection is not None:
+            return final_rejection
 
         briefing = await self._briefing_for(qa_agent_id, task_id)
+        merged_notes = self._merge_criteria_verified_into_notes(
+            self._merge_ac_verdicts_into_notes(notes, ac_verdicts), criteria_pairs
+        )
         spec_ctx = spec_module.Context(
             actor_id=qa_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
-            notes=self._merge_ac_verdicts_into_notes(notes, ac_verdicts),
+            notes=merged_notes,
         )
         self._store_qa_note(t, notes, ac_verdicts, passed=True)
         runner = self._verb_runner()

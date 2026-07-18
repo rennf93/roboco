@@ -111,6 +111,8 @@ const AGENT_NAMES: Record<string, string> = {
   "intake-1": "Intake",
   "secretary-1": "Secretary",
   "pr-reviewer-1": "PR Reviewer",
+  // Backend-authored notifications/events (not an agent)
+  system: "System",
 };
 
 /**

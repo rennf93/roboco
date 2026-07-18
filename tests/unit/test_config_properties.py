@@ -91,6 +91,39 @@ def test_cloud_auth_ok_without_panel_agent_token(
 
 
 # ---------------------------------------------------------------------------
+# Telegram Mini App sign-in — requires cloud_auth_enabled
+# ---------------------------------------------------------------------------
+
+
+def test_telegram_miniapp_off_does_not_require_cloud_auth() -> None:
+    """Default (off) construction never raises regardless of cloud auth."""
+    s = Settings(telegram_miniapp_enabled=False, cloud_auth_enabled=False)
+    assert s.telegram_miniapp_enabled is False
+
+
+def test_telegram_miniapp_enabled_without_cloud_auth_fails_loud() -> None:
+    """The Mini App route mints a cloud-auth session cookie — with cloud
+    auth off there's nothing to mint, so this must fail at startup."""
+    with pytest.raises(ValueError, match="ROBOCO_TELEGRAM_MINIAPP_ENABLED"):
+        Settings(telegram_miniapp_enabled=True, cloud_auth_enabled=False)
+
+
+def test_telegram_miniapp_enabled_with_cloud_auth_succeeds() -> None:
+    s = Settings(
+        telegram_miniapp_enabled=True,
+        cloud_auth_enabled=True,
+        cloud_auth_secret="s" * 32,
+    )
+    assert s.telegram_miniapp_enabled is True
+
+
+def test_telegram_initdata_max_age_defaults_to_600() -> None:
+    ten_minutes = 10 * 60
+    s = Settings()
+    assert s.telegram_initdata_max_age_seconds == ten_minutes
+
+
+# ---------------------------------------------------------------------------
 # local_llm_base_url — internal-host guard (H13)
 # ---------------------------------------------------------------------------
 

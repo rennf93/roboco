@@ -124,13 +124,42 @@ def findings_count_hint(findings: Sequence[Any]) -> str | None:
     )
 
 
-def unknown_finding_criteria(task: Any, findings: list[Finding]) -> list[str]:
-    """Findings whose ``criterion`` matches neither an AC id nor AC text.
+def unmatched_criteria(task: Any, criteria: list[str]) -> list[str]:
+    """``criteria`` entries matching neither an AC id nor AC text on ``task``.
 
-    Mirrors ``TaskService.unknown_ac_refs`` — a criterion may be supplied by
+    The shared "by id or exact text" match — a criterion may be supplied by
     its stable id (``acceptance_criteria_ids``, migration 036) or its exact
     text, since both representations already circulate (``declare_coverage``
-    accepts either). Findings with no ``criterion`` are unconstrained.
+    accepts either). Reused by ``unknown_finding_criteria`` (a finding's
+    ``criterion``) and QA's ``criteria_verified`` per-AC gate (qa.py) so the
+    match semantics can't drift between the two call sites.
+    """
+    valid_ids = set(getattr(task, "acceptance_criteria_ids", None) or [])
+    valid_texts = set(getattr(task, "acceptance_criteria", None) or [])
+    return [c for c in criteria if c not in valid_ids and c not in valid_texts]
+
+
+def uncovered_acceptance_criteria(task: Any, criteria: list[str]) -> list[str]:
+    """Task ACs (by exact text) not named by any of ``criteria`` (id or text).
+
+    The reverse of ``unmatched_criteria``: walks the task's own criteria
+    instead of the caller-supplied ones, so a per-AC verification gate can
+    name exactly which acceptance criterion still lacks a matching entry.
+    """
+    ac_ids = list(getattr(task, "acceptance_criteria_ids", None) or [])
+    ac_texts = list(getattr(task, "acceptance_criteria", None) or [])
+    provided = set(criteria)
+    uncovered = []
+    for idx, text in enumerate(ac_texts):
+        ac_id = ac_ids[idx] if idx < len(ac_ids) else None
+        if text in provided or (ac_id is not None and ac_id in provided):
+            continue
+        uncovered.append(text)
+    return uncovered
+
+
+def unknown_finding_criteria(task: Any, findings: list[Finding]) -> list[str]:
+    """Findings whose ``criterion`` matches neither an AC id nor AC text.
 
     Short-circuits to ``[]`` (never touching ``task.acceptance_criteria*``)
     when no finding supplies a criterion — the common case — so a task
@@ -139,9 +168,7 @@ def unknown_finding_criteria(task: Any, findings: list[Finding]) -> list[str]:
     criteria = [f.criterion for f in findings if f.criterion]
     if not criteria:
         return []
-    valid_ids = set(getattr(task, "acceptance_criteria_ids", None) or [])
-    valid_texts = set(getattr(task, "acceptance_criteria", None) or [])
-    return [c for c in criteria if c not in valid_ids and c not in valid_texts]
+    return unmatched_criteria(task, criteria)
 
 
 def criterion_mismatch_rejection(task: Any, unknown: list[str]) -> Envelope:

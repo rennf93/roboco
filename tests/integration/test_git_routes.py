@@ -1002,5 +1002,78 @@ async def test_merge_pr_without_task_id_no_422(git_client: dict) -> None:
     assert response.status_code == HTTPStatus.OK
 
 
+# ---------------------------------------------------------------------------
+# branches/cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cleanup_branches_success(pm_git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.cleanup_stale_branches = AsyncMock(return_value=(3, 2, 1, 0, False, None))
+        mock_get.return_value = svc
+        response = await pm_git_client["client"].post(
+            "/api/git/branches/cleanup",
+            json={"project_slug": pm_git_client["project"].slug},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert (
+        data["remote_deleted"],
+        data["local_deleted"],
+        data["skipped"],
+        data["errors"],
+        data["truncated"],
+    ) == (3, 2, 1, 0, False)
+    svc.cleanup_stale_branches.assert_awaited_once_with(
+        pm_git_client["project"].slug, after_task_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_branches_reports_truncation(pm_git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.cleanup_stale_branches = AsyncMock(
+            return_value=(200, 190, 0, 0, True, "0" * 32)
+        )
+        mock_get.return_value = svc
+        response = await pm_git_client["client"].post(
+            "/api/git/branches/cleanup",
+            json={"project_slug": pm_git_client["project"].slug},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_cleanup_branches_developer_gets_403(git_client: dict) -> None:
+    """git_client carries a DEVELOPER-role agent — same role gate as /rebase."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/branches/cleanup",
+            json={"project_slug": git_client["project"].slug},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert "BRANCH_CLEANUP_ROLE_RESTRICTED" in response.json()["detail"]
+    mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_branches_project_not_found(pm_git_client: dict) -> None:
+    response = await pm_git_client["client"].post(
+        "/api/git/branches/cleanup",
+        json={"project_slug": "does-not-exist"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
 # Re-export to keep import alive (TC reorders imports)
 _ = SimpleNamespace

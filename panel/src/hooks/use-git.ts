@@ -30,6 +30,8 @@ import type {
   GitFetchResponse,
   GitRebaseRequest,
   GitRebaseResponse,
+  GitBranchCleanupRequest,
+  GitBranchCleanupResponse,
 } from "@/types/git";
 
 // =============================================================================
@@ -331,6 +333,27 @@ export function useGitRebase() {
   });
 }
 
+/**
+ * Sweep a project's terminal-task branches (remote + local, PM/CEO only)
+ */
+export function useCleanupBranches() {
+  const queryClient = useQueryClient();
+
+  return useMutation<
+    GitBranchCleanupResponse,
+    Error,
+    GitBranchCleanupRequest
+  >({
+    mutationFn: (request) => gitApi.cleanupBranches(request),
+    onSuccess: (_, variables) => {
+      // Invalidate branches — the sweep may have deleted several.
+      queryClient.invalidateQueries({
+        queryKey: [...gitKeys.all, "branches", variables.project_slug],
+      });
+    },
+  });
+}
+
 // =============================================================================
 // Bundled Hook for Git Operations
 // =============================================================================
@@ -348,6 +371,7 @@ export function useGitOperations() {
   const pull = useGitPull();
   const fetch = useGitFetch();
   const rebase = useGitRebase();
+  const cleanupBranches = useCleanupBranches();
 
   return {
     commit,
@@ -359,5 +383,6 @@ export function useGitOperations() {
     pull,
     fetch,
     rebase,
+    cleanupBranches,
   };
 }

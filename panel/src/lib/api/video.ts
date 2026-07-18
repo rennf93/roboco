@@ -29,6 +29,8 @@ export interface VideoPost {
   // "not stale" everywhere below, so the re-render control degrades safely.
   composition_id?: string | null;
   render_status?: string | null; // null | "rendered" | "failed"
+  project_slug?: string | null;
+  project_name?: string | null;
 }
 
 // One in-flight source=video authoring task — GET /video/pipeline
@@ -46,6 +48,8 @@ export interface VideoPipelineItem {
   render_attempts: number;
   max_attempts: number;
   render_error: string | null;
+  project_slug?: string | null;
+  project_name?: string | null;
 }
 
 export interface VideoPostExecuteResult {
@@ -69,6 +73,8 @@ export interface VideoPostHistoryEntry {
   posted: Record<string, string>; // platform -> posted id
   acted_at: string;
   source_task_id?: string | null; // the authoring task this draft rendered from
+  project_slug?: string | null;
+  project_name?: string | null;
 }
 
 export interface VideoRequestResult {

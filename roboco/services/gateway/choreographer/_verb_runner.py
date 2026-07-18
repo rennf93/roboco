@@ -290,13 +290,17 @@ class VerbRunner:
         )
 
     async def _do_create_root_pr(self, task: Any, agent: Any) -> Any:
-        # Root→master PR for the in-path gate's root level (submit_root). The
-        # base is always master and is_root_pr marks it for the CEO-merge path.
-        # The PM opening the master PR is the assigned_to-may-be-None case
-        # create_pr's actor_agent_id exists for.
+        from roboco.services.gateway.merge_chain import resolve_parent_branch
+
+        # Root PR for the in-path gate's root level (submit_root). The base
+        # is the project's head rung (panel-configured env ladder; "master"
+        # only as the no-project string fallback) and is_root_pr marks it
+        # for the CEO-merge path. The PM opening it is the
+        # assigned_to-may-be-None case create_pr's actor_agent_id exists for.
+        parent = await resolve_parent_branch(task, self.task_service)
         return await self.git_service.create_pr(
             task.branch_name,
-            parent="master",
+            parent=parent,
             is_root_pr=True,
             actor_agent_id=agent.id,
         )

@@ -539,9 +539,10 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
 # A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
 # ---------------------------------------------------------------------------
 
-_EXPECTED_PAIR_COUNT = 70
+_EXPECTED_PAIR_COUNT = 93
 _EXPECTED_GROUP_COUNTS = {
     "board": 3,
+    "ceo": 23,
     "cell-backend": 15,
     "cell-frontend": 15,
     "cell-ux_ui": 15,
@@ -566,14 +567,27 @@ def test_a2a_allowed_pairs_no_duplicates() -> None:
     assert len(keys) == len(set(keys))
 
 
-def test_a2a_allowed_pairs_excludes_human_only_and_sentinel_roles() -> None:
-    """CEO, the intake interviewer, the secretary, and the system sentinel
-    are not real A2A participants in the org chart."""
+def test_a2a_allowed_pairs_excludes_non_participants_keeps_ceo() -> None:
+    """The intake interviewer, the secretary, and the system sentinel are not
+    A2A participants — but the CEO is (asymmetric panel DMs), so its pairs
+    must be in the matrix."""
     slugs = {p.agent_a for p in A2A_ALLOWED_PAIRS} | {
         p.agent_b for p in A2A_ALLOWED_PAIRS
     }
-    for excluded in ("ceo", "intake-1", "secretary-1", "system"):
+    for excluded in ("intake-1", "secretary-1", "system"):
         assert excluded not in slugs
+    assert "ceo" in slugs
+
+
+def test_a2a_allowed_pairs_ceo_paired_with_every_agent() -> None:
+    """CEO → anyone is always allowed, so every non-CEO switchboard slug
+    appears in exactly one ``ceo``-group pair."""
+    ceo_pairs = [p for p in A2A_ALLOWED_PAIRS if "ceo" in (p.agent_a, p.agent_b)]
+    non_ceo_slugs = (
+        {p.agent_a for p in A2A_ALLOWED_PAIRS} | {p.agent_b for p in A2A_ALLOWED_PAIRS}
+    ) - {"ceo"}
+    assert all(p.group_key == "ceo" for p in ceo_pairs)
+    assert len(ceo_pairs) == len(non_ceo_slugs)
 
 
 def test_a2a_allowed_pairs_group_key_counts() -> None:

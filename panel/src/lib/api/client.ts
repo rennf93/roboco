@@ -35,9 +35,18 @@ const api: AxiosInstance = axios.create({
 // Request interceptor to add auth headers and logging
 api.interceptors.request.use(
   (config) => {
-    // Add agent context headers for API authorization
-    config.headers["X-Agent-ID"] = CEO_AGENT_ID;
-    config.headers["X-Agent-Role"] = CEO_ROLE;
+    // Add agent context headers for API authorization. A caller that already
+    // set X-Agent-ID/X-Agent-Role (e.g. the CEO-initiated A2A DM composer,
+    // whose target route resolves the caller's identity from this raw header
+    // rather than a DB lookup, and needs the literal "ceo" slug — not the
+    // CEO's UUID) wins; every other call keeps defaulting to the CEO
+    // identity. has()/set(), not bracket access — AxiosHeaders brackets are
+    // case-SENSITIVE, so a caller's lowercase header key would be silently
+    // clobbered by the default.
+    if (!config.headers.has("X-Agent-ID"))
+      config.headers.set("X-Agent-ID", CEO_AGENT_ID);
+    if (!config.headers.has("X-Agent-Role"))
+      config.headers.set("X-Agent-Role", CEO_ROLE);
 
     // Log request in development
     if (process.env.NODE_ENV === "development") {

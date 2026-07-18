@@ -14,3 +14,14 @@ class TelegramCredentialsSetRequest(BaseModel):
 
     bot_token: str = Field(default="")
     chat_id: str = Field(default="")
+
+
+class TelegramWebAppAuthRequest(BaseModel):
+    """A Telegram Mini App's raw ``initData`` handoff, pre-validation.
+
+    Size-capped well above a real Telegram WebApp initData payload (query_id
+    + user + auth_date + hash rarely exceeds a few hundred bytes) so an
+    oversized body is rejected by the schema before it reaches HMAC work.
+    """
+
+    init_data: str = Field(min_length=1, max_length=4096)

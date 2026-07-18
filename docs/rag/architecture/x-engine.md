@@ -34,7 +34,7 @@ The CEO acts through panel-only REST, CEO-role-gated (`require_ceo_role`), never
 |----------|--------|
 | `GET /api/x/posts` | List every held draft (both sources) awaiting decision. |
 | `POST /api/x/posts/{task_id}/approve` | Post to X (optionally with an edited body, still 280-char clamped). Idempotent — approving an already-posted draft returns `already_posted` without a second API call. |
-| `POST /api/x/posts/{task_id}/reject` | Cancel the draft with a reason. Terminal — a rejected draft is never posted; a fresh one originates on the next cycle/release if still relevant. |
+| `POST /api/x/posts/{task_id}/reject` | Cancel the draft with a reason. Terminal — a rejected draft is never posted: `approve` refuses a CANCELLED draft outright (returns `already_rejected` without calling the X API), so a stale approve can't resurrect it; a fresh one originates on the next cycle/release if still relevant. |
 | `GET /api/x/credentials` | Whether all four OAuth secrets are stored (`has_credentials` boolean — never the secrets). |
 | `POST /api/x/credentials` | Set (or, passing all four empty, clear) the four secrets. All-or-nothing — a partial set raises a validation error. |
 

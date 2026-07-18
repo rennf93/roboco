@@ -8,6 +8,11 @@ vi.mock("@/hooks/use-agents", () => ({
   useStopAgent: () => ({ mutateAsync: vi.fn() }),
 }));
 
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -170,5 +175,40 @@ describe("AgentCard", () => {
     );
     expect(screen.getByText(/12\.3K tok/)).toBeInTheDocument();
     expect(screen.getByText(/\$0\.0421/)).toBeInTheDocument();
+  });
+
+  it("offers a DM quick-action that jumps to Conversations pre-targeted at this agent", async () => {
+    const user = userEvent.setup();
+    render(<AgentCard agent={AGENT} agentStatus={statusOf()} />);
+    await user.click(screen.getByRole("button", { name: "DM this agent" }));
+    expect(mockPush).toHaveBeenCalledWith(
+      "/agents?tab=conversations&dm=be-dev-1",
+    );
+  });
+
+  it("hides the DM quick-action for a role that can't read/answer a DM", () => {
+    const auditor = {
+      id: "auditor",
+      name: "Auditor",
+      role: "auditor",
+      team: "board",
+    } as unknown as AgentDefinition;
+    render(<AgentCard agent={auditor} agentStatus={statusOf()} />);
+    expect(
+      screen.queryByRole("button", { name: "DM this agent" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the DM quick-action for the CEO card", () => {
+    const ceo = {
+      id: "ceo",
+      name: "CEO",
+      role: "ceo",
+      team: "board",
+    } as unknown as AgentDefinition;
+    render(<AgentCard agent={ceo} agentStatus={statusOf()} />);
+    expect(
+      screen.queryByRole("button", { name: "DM this agent" }),
+    ).not.toBeInTheDocument();
   });
 });

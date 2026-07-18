@@ -22,7 +22,7 @@ Even when enabled, distribution requires an explicit per-clip CEO approval — a
 
 **On-demand CEO request** (panel-triggered). `POST /api/video/request` (CEO-role-gated) opens an authoring task directly — the CEO's escape hatch independent of the two automatic triggers.
 
-All three open a normal, **assigned** UX/UI authoring task (balanced across the two ux-devs) rather than a held draft — the dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` (one `<id>/vertical.html` + `<id>/square.html` carrying the HyperFrames render params on `<html>`) and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle.
+All three open a normal, **assigned** UX/UI authoring task (balanced across the two ux-devs) rather than a held draft — the dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` (one `<id>/vertical.html` + `<id>/square.html` carrying the HyperFrames render params on `<html>`) and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle. Authoring craft — design-bar dials for both the text-card and `kit/` demo registers, the vendored upstream HyperFrames craft references, and the read-on-demand `hyperframes-catalog-index.md` vocabulary index — lives in `motion/README.md` and `motion/skills/`, not duplicated here.
 
 ## Artifact verification (request_render)
 
@@ -39,7 +39,7 @@ The render pass materializes a held `video_post` draft — mirroring the X-post/
 | Endpoint | Effect |
 |----------|--------|
 | `GET /api/video/posts` | List every held video draft awaiting decision. |
-| `POST /api/video/posts/{task_id}/approve` | Post the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload). Idempotent — approving an already-posted draft is a no-op. |
+| `POST /api/video/posts/{task_id}/approve` | Post the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload). Idempotent — approving an already-posted draft is a no-op; approving an already-rejected (CANCELLED) draft is refused outright rather than posting it. |
 | `POST /api/video/posts/{task_id}/reject` | Cancel the draft with a reason — and route the feedback back into the flow: a non-empty reason opens a fresh authoring task (same occasion, brief = the CEO's verbatim feedback + a revise-in-place pointer at the existing composition), so a rejection is a rework loop, not a dead end. |
 | `POST /api/video/request` | Open an on-demand authoring task (CEO-only). |
 

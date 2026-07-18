@@ -139,7 +139,9 @@ async def test_publish_success_calls_x_engine_draft_seam(
     assert result is not None
     assert result.status == "published"
     fake_engine.draft_release_post.assert_awaited_once_with(
-        version=_VERSION, highlights=["feat: a thing", "fix: another thing"]
+        version=_VERSION,
+        highlights=["feat: a thing", "fix: another thing"],
+        project_id=task.project_id,
     )
 
 

@@ -1716,6 +1716,11 @@ class CompanyGoalsTable(Base):
     # JSON blob, so it gets the same discoverability. Feeds XEngine._voice_guide
     # and the Head of Marketing's briefing; empty until the CEO sets it.
     brand_voice: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # CEO-authored product/company name — brands X/video drafting prompts
+    # when a project name isn't available (mirrors brand_voice's shape).
+    # Feeds XEngine/VideoEngine's product-name resolution; "RoboCo" is the
+    # final fallback when this is also unset.
+    company_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

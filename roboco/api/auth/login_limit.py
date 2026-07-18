@@ -21,12 +21,12 @@ class LoginRateLimiter(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        prefix: str,
+        paths: tuple[str, ...],
         max_attempts: int = 10,
         window: int = 60,
     ) -> None:
         super().__init__(app)
-        self.prefix = prefix.rstrip("/")
+        self.paths = frozenset(paths)
         self.max_attempts = max_attempts
         self.window = window
 
@@ -48,10 +48,12 @@ class LoginRateLimiter(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Only the login endpoint is limited; everything else passes through.
-        if request.method != "POST" or request.url.path != f"{self.prefix}/login":
+        # Only the configured auth endpoints are limited; everything else
+        # passes through. Path-keyed buckets so login and webapp-auth attempts
+        # don't share a counter.
+        if request.method != "POST" or request.url.path not in self.paths:
             return await call_next(request)
-        key = f"auth:login:rl:{self._client_ip(request)}"
+        key = f"auth:login:rl:{request.url.path}:{self._client_ip(request)}"
         try:
             # Test seam: a fake injected via app.state.login_redis. Production
             # leaves it unset and opens its own per-request connection.

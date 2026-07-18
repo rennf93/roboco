@@ -571,7 +571,7 @@ class ContentActions:
                 ),
                 context_briefing={},
             )
-        subject = _strip_task_prefix(message).strip()
+        subject = _strip_task_prefix(_strip_ai_attribution(message)).strip()
         result = validate_commit_message(
             subject,
             min_chars=settings.commit_subject_min_chars,
@@ -1344,6 +1344,7 @@ class ContentActions:
             task, {"goal": cycle_goal.strip(), "items": normalized}
         )
         await self.task.session.flush()
+        await self._notify_roadmap_items(task, normalized)
         return Envelope.ok(
             status="roadmap_proposed",
             task_id=str(task.id),
@@ -1353,6 +1354,30 @@ class ContentActions:
                 "item_count": len(normalized),
             },
         )
+
+    async def _notify_roadmap_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — this is the moment a
+        roadmap item first becomes CEO-actionable (the engine's own
+        exploration-task origination has nothing to review yet), so the DM
+        fires here rather than from ``RoadmapEngine``. A send failure never
+        blocks ``propose_roadmap`` itself."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="roadmap",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "roadmap telegram notify failed (best-effort)", error=str(exc)
+                )
 
     @classmethod
     def _reject_feature_spotlight_fields(
@@ -3014,3 +3039,22 @@ class ContentActions:
 def _strip_task_prefix(msg: str) -> str:
     """Strip any [task-id] prefix the agent supplied; gateway re-adds canonical."""
     return _TASK_ID_PREFIX_RE.sub("", msg)
+
+
+_AI_ATTRIBUTION_RE = re.compile(
+    r"co-authored-by:.*(?:anthropic\.com|claude|grok|x\.?ai)"
+    r"|generated with.*(?:claude|grok)",
+    re.IGNORECASE,
+)
+
+
+def _strip_ai_attribution(msg: str) -> str:
+    """Drop model self-attribution lines from a commit message.
+
+    Company policy: agent commits carry the agent's own identity, never the
+    model vendor's. The settings-level ``includeCoAuthoredBy: false`` removes
+    the harness nudge, but the model can still hand-write the trailer — this
+    chokepoint covers every provider deterministically.
+    """
+    kept = [ln for ln in msg.splitlines() if not _AI_ATTRIBUTION_RE.search(ln)]
+    return "\n".join(kept)

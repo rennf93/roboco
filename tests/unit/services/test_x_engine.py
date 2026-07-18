@@ -253,6 +253,55 @@ async def test_draft_release_post_dedupes_same_version(
 
 
 @pytest.mark.asyncio
+async def test_originate_post_sends_telegram_push(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_originate_post`` is the shared chokepoint for all three X sources
+    (release/reply/feature) — a freshly-drafted post fires the styled push
+    DM (xpost kind, the draft's id8, its body)."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "RoboCo just shipped a great new feature!")
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        notify,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(
+        version=_VERSION, highlights=["feat: new thing"]
+    )
+    assert task is not None
+    notify.assert_awaited_once()
+    assert notify.await_args is not None
+    _args, kwargs = notify.await_args
+    assert kwargs["kind"] == "xpost"
+    assert kwargs["id8"] == str(task.id)[:8]
+    body = markers.get_x_draft_body(task)
+    assert body is not None
+    assert kwargs["title"] == body[:100]
+
+
+@pytest.mark.asyncio
+async def test_originate_post_survives_telegram_push_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Telegram send failure must never block the draft itself."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert task is not None
+
+
+@pytest.mark.asyncio
 async def test_draft_release_post_respects_open_cap(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1285,8 +1334,8 @@ async def test_voice_guide_falls_back_when_brand_voice_unset(
 ) -> None:
     await get_company_goals_service(db_session).upsert({"brand_voice": ""})
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
-    voice = await engine._voice_guide()
-    assert voice == x_engine_module._HOM_VOICE
+    voice = await engine._voice_guide("RoboCo")
+    assert voice == x_engine_module._hom_voice("RoboCo")
 
 
 @pytest.mark.asyncio
@@ -1297,6 +1346,55 @@ async def test_voice_guide_appends_brand_voice_when_set(
         {"brand_voice": "Dry wit, never an exclamation point."}
     )
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
-    voice = await engine._voice_guide()
-    assert x_engine_module._HOM_VOICE in voice
+    voice = await engine._voice_guide("RoboCo")
+    assert x_engine_module._hom_voice("RoboCo") in voice
     assert "Dry wit, never an exclamation point." in voice
+
+
+@pytest.mark.asyncio
+async def test_voice_guide_uses_the_given_product_name(
+    db_session: AsyncSession,
+) -> None:
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    voice = await engine._voice_guide("Acme Robotics")
+    assert "Acme Robotics" in voice
+    assert "RoboCo" not in voice
+
+
+# --------------------------------------------------------------------------- #
+# Product-name resolution (release-post prompts brand off the target project,
+# not a hardcoded "RoboCo" literal). The fallback-chain unit coverage
+# (project name -> company_name -> "RoboCo") lives on the shared helper,
+# CompanyGoalsService.resolve_product_name, in test_company_goals_service.py —
+# this only asserts the end-to-end wiring through draft_release_post.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_draft_release_post_uses_project_name_when_set(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    acme = ProjectTable(
+        name="Acme Robotics",
+        slug="acme-robotics",
+        git_url="https://github.com/x/acme.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+    )
+    db_session.add(acme)
+    await db_session.flush()
+    _mock_local_model(monkeypatch, None)  # force the deterministic fallback template
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(
+        version=_VERSION, highlights=["feat: x"], project_id=cast("UUID", acme.id)
+    )
+    assert task is not None
+    body = markers.get_x_draft_body(task)
+    assert body is not None
+    assert "Acme Robotics" in body
+    assert "RoboCo" not in body

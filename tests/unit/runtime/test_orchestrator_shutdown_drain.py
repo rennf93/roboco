@@ -39,28 +39,13 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._bg_tasks = set()
     orch._pm_respawn_tracker = {}  # #74: stop() flushes this after the drain
     # Every named background loop ``stop()`` cancels — None makes each a no-op
-    # so the test exercises ONLY the _bg_tasks drain.
-    for attr in (
-        "_health_task",
-        "_dispatcher_task",
-        "_sweeper_task",
-        "_rate_limit_probe_task",
-        "_strategy_engine_task",
-        "_external_pr_poll_task",
-        "_self_heal_task",
-        "_ci_watch_task",
-        "_dep_update_task",
-        "_env_sync_task",
-        "_release_manager_task",
-        "_x_mentions_task",
-        "_roadmap_engine_task",
-        "_x_feature_spotlight_task",
-        "_video_render_task",
-        "_vault_intake_task",
-        "_vault_janitor_task",
-        "_vault_kb_task",
-    ):
+    # so the test exercises ONLY the _bg_tasks drain. The engine-loop slots
+    # come from the REAL production initializer so a newly added engine loop
+    # can never drift this fixture stale (a hardcoded copy of the list missed
+    # `_telegram_poll_task` and broke all five tests post-merge).
+    for attr in ("_health_task", "_dispatcher_task", "_sweeper_task"):
         setattr(orch, attr, None)
+    orch._init_engine_loop_task_slots()
     return orch
 
 
