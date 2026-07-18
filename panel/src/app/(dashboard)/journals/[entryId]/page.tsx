@@ -77,7 +77,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
   if (error || !entry) {
     return (
       <div className="space-y-6">
-        <Link href="/journals" prefetch={false}>
+        <Link href="/agents?tab=journals" prefetch={false}>
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Journals
@@ -94,7 +94,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                   "The journal entry you're looking for doesn't exist or has been deleted."}
               </p>
               <div className="flex justify-center gap-4">
-                <Link href="/journals" prefetch={false}>
+                <Link href="/agents?tab=journals" prefetch={false}>
                   <Button>View All Journals</Button>
                 </Link>
               </div>
@@ -112,7 +112,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
         <div className="flex items-center gap-4">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Link href="/journals" prefetch={false}>
+              <Link href="/agents?tab=journals" prefetch={false}>
                 <Button
                   variant="ghost"
                   size="icon"
