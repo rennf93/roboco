@@ -34,7 +34,7 @@ vi.mock("../product-table", () => ({
   ),
 }));
 
-import { ProductsView } from "../products-view";
+import { ProductsView, sortProducts } from "../products-view";
 import { useUIStore } from "@/store/ui-store";
 
 const PRODUCTS: ProductSummary[] = [
@@ -96,5 +96,16 @@ describe("ProductsView", () => {
     render(<ProductsView />);
     await user.click(screen.getByLabelText("Toggle sort direction"));
     expect(screen.getByTestId("card-grid")).toHaveTextContent("Zeta,Alpha");
+  });
+});
+
+describe("sortProducts (pure)", () => {
+  const prod = (name: string, cell_count: number) =>
+    ({ name, cell_count }) as unknown as ProductSummary;
+
+  it("desc preserves the relative order of ties", () => {
+    const rows = [prod("A", 2), prod("B", 2), prod("C", 2)];
+    const out = sortProducts(rows, "cells", "desc");
+    expect(out.map((r) => r.name)).toEqual(["A", "B", "C"]);
   });
 });

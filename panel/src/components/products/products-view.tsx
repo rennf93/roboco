@@ -28,15 +28,21 @@ const SORT_OPTIONS: { value: ProductSortKey; label: string }[] = [
   { value: "cells", label: "Cell count" },
 ];
 
-function sortProducts(
+// Exported for direct unit tests. Multiplier, not sort-then-reverse — see
+// sortProjects in projects-view.tsx.
+export function sortProducts(
   products: ProductSummary[],
   key: ProductSortKey,
   direction: SortDirection,
 ): ProductSummary[] {
-  const sorted = [...products].sort((a, b) =>
-    key === "name" ? a.name.localeCompare(b.name) : a.cell_count - b.cell_count,
+  const dir = direction === "asc" ? 1 : -1;
+  return [...products].sort(
+    (a, b) =>
+      dir *
+      (key === "name"
+        ? a.name.localeCompare(b.name)
+        : a.cell_count - b.cell_count),
   );
-  return direction === "asc" ? sorted : sorted.reverse();
 }
 
 /** Products tab content — extracted from the standalone /products page so it

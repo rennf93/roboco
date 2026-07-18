@@ -30,17 +30,26 @@ const SORT_OPTIONS: { value: ProjectSortKey; label: string }[] = [
   { value: "cell", label: "Cell" },
 ];
 
-function sortProjects(
+// Exported for direct unit tests. Direction rides a comparator multiplier
+// (task-table.tsx's pattern), NOT sort-then-reverse — reversing also flips
+// the relative order of ties. The label fallback matters: the backend Team
+// enum is a superset of the panel's (fullstack/system), and an out-of-map
+// cell must sort by its raw value, never crash the view.
+export function sortProjects(
   projects: ProjectSummary[],
   key: ProjectSortKey,
   direction: SortDirection,
 ): ProjectSummary[] {
-  const sorted = [...projects].sort((a, b) =>
-    key === "name"
-      ? a.name.localeCompare(b.name)
-      : teamLabels[a.assigned_cell].localeCompare(teamLabels[b.assigned_cell]),
+  const dir = direction === "asc" ? 1 : -1;
+  const cellLabel = (cell: ProjectSummary["assigned_cell"]) =>
+    teamLabels[cell] ?? String(cell);
+  return [...projects].sort(
+    (a, b) =>
+      dir *
+      (key === "name"
+        ? a.name.localeCompare(b.name)
+        : cellLabel(a.assigned_cell).localeCompare(cellLabel(b.assigned_cell))),
   );
-  return direction === "asc" ? sorted : sorted.reverse();
 }
 
 /** Projects tab content — extracted from the standalone /projects page so it

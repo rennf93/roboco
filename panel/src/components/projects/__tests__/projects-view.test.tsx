@@ -41,7 +41,7 @@ vi.mock("../project-table", async () => {
   };
 });
 
-import { ProjectsView } from "../projects-view";
+import { ProjectsView, sortProjects } from "../projects-view";
 import { useUIStore } from "@/store/ui-store";
 
 function makeProject(overrides: Partial<ProjectSummary>): ProjectSummary {
@@ -106,5 +106,23 @@ describe("ProjectsView", () => {
     render(<ProjectsView />);
     await user.click(screen.getByLabelText("Toggle sort direction"));
     expect(screen.getByTestId("card-grid")).toHaveTextContent("Zeta,Alpha");
+  });
+});
+
+describe("sortProjects (pure)", () => {
+  const proj = (name: string, cell: string) =>
+    ({ name, assigned_cell: cell }) as unknown as ProjectSummary;
+
+  it("does not crash on a backend-only cell value and sorts it by raw value", () => {
+    const rows = [proj("a", "system"), proj("b", "backend")];
+    const out = sortProjects(rows, "cell", "asc");
+    // "Backend" < "system" (localeCompare, case-aware) — the point is no throw.
+    expect(out).toHaveLength(2);
+  });
+
+  it("desc preserves the relative order of ties (stable, not reversed)", () => {
+    const rows = [proj("A", "backend"), proj("B", "backend"), proj("C", "backend")];
+    const out = sortProjects(rows, "cell", "desc");
+    expect(out.map((r) => r.name)).toEqual(["A", "B", "C"]);
   });
 });
