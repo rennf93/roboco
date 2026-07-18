@@ -731,7 +731,8 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
 # A2A SWITCHBOARD — ALLOWED AGENT PAIRS (CEO admin view)
 # =============================================================================
 # Static, stateless derivation from can_a2a_direct(): every unordered pair of
-# real (non-human, non-sentinel) agents where at least one direction is
+# A2A participants (agents plus the CEO's asymmetric panel reach; never the
+# sentinel or the prompter/secretary) where at least one direction is
 # permitted. This is the org-chart the CEO's A2A switchboard renders as pair
 # cards — computed once at import time, since the matrix never changes at
 # runtime. The route/service layer joins this list against live DB
@@ -756,12 +757,14 @@ class A2AAllowedPair:
 
 
 # Slugs eligible for the switchboard: excludes the system sentinel and the
-# human-only roles (CEO, prompter, secretary) — none of those are real A2A
-# participants in the org chart the CEO is browsing.
+# non-participant human roles (prompter, secretary). The CEO stays in — it is
+# a real, asymmetric A2A participant (can_a2a_direct allows CEO → anyone via
+# the panel's 1:1 DM flow), so its pairs must render on the switchboard.
 _SWITCHBOARD_SLUGS: Final[list[str]] = sorted(
     slug
     for slug, row in _foundation.AGENTS.items()
-    if slug != "system" and not _foundation.is_human_only_role(row.role)
+    if slug != "system"
+    and row.role not in (_foundation.Role.PROMPTER, _foundation.Role.SECRETARY)
 )
 
 _BOARD_ROLE_VALUES: Final[frozenset[str]] = frozenset(
@@ -782,11 +785,14 @@ def _a2a_group_key(role_a: str, team_a: str, role_b: str, team_b: str) -> str:
       -> board).
     - ``board``: pure board-to-board pairs (product_owner/head_marketing/
       auditor).
+    - ``ceo``: the CEO's asymmetric 1:1 reach into any agent (panel DMs).
     - ``cross``: everything else — chiefly a PR reviewer's lateral reach
       outside its own cell/pm (delivering a gate verdict to another cell's
       PM or to main-pm), which isn't part of the escalation spine.
     """
     roles = {role_a, role_b}
+    if "ceo" in roles:
+        return "ceo"
     if team_a == team_b and team_a in _CELL_TEAM_VALUES:
         return f"cell-{team_a}"
     if roles == {"cell_pm", "main_pm"}:

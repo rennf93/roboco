@@ -66,9 +66,10 @@ export function latestPulseTimestamps(
   return out;
 }
 
-/** Stable section ordering — cells first (org-chart top-down), then the PM
- * chain, board, and finally the lateral catch-all. */
+/** Stable section ordering — the CEO's own 1:1 reach first, then cells
+ * (org-chart top-down), the PM chain, board, and the lateral catch-all. */
 export const SECTION_ORDER = [
+  "ceo",
   "cell-backend",
   "cell-frontend",
   "cell-ux_ui",
@@ -78,6 +79,7 @@ export const SECTION_ORDER = [
 ] as const;
 
 export const SECTION_LABELS: Record<string, string> = {
+  ceo: "CEO Direct",
   "cell-backend": "Backend Cell",
   "cell-frontend": "Frontend Cell",
   "cell-ux_ui": "UX/UI Cell",

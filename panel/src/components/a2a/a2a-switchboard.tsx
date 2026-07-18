@@ -1,6 +1,12 @@
 "use client";
 
-import { Radio } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ChevronRight, Radio } from "lucide-react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import type { AdminPairSummary } from "@/lib/api/a2a";
@@ -20,8 +26,9 @@ const SKELETON_COUNT = 9;
 
 /**
  * The org-chart switchboard: every allowed agent pair as a card, grouped
- * into sections (each cell, the PM chain, board, cross-team) and sorted so
- * pairs with history come first within their section.
+ * into collapsible sections (CEO direct, each cell, the PM chain, board,
+ * cross-team) and sorted so pairs with history come first within their
+ * section.
  */
 export function A2ASwitchboard({
   pairs,
@@ -30,6 +37,9 @@ export function A2ASwitchboard({
   isLoading,
   onOpenPair,
 }: A2ASwitchboardProps) {
+  // Sections start expanded; collapsed state is per-groupKey, session-local.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
   if (isLoading) {
     return (
       <div className="p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -55,35 +65,62 @@ export function A2ASwitchboard({
 
   return (
     <div className="h-full overflow-y-auto p-2 space-y-4">
-      {sections.map((section) => (
-        <div key={section.groupKey}>
-          <HelpTip label="Pairs with prior conversation history are listed first">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2 px-1 w-fit">
-              {section.label}
-              <span className="ml-1.5 text-muted-foreground/60 normal-case">
-                ({section.pairs.length})
-              </span>
-            </h3>
-          </HelpTip>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {section.pairs.map((pair) => {
-              const key = pairKey(pair.agent_a, pair.agent_b);
-              return (
-                <A2APairCard
-                  key={key}
-                  pair={pair}
-                  pulsedAt={pulses[key] ?? null}
-                  isSelected={
-                    !!pair.conversation_id &&
-                    pair.conversation_id === selectedConversationId
-                  }
-                  onOpen={() => onOpenPair(pair)}
-                />
-              );
-            })}
-          </div>
-        </div>
-      ))}
+      {sections.map((section) => {
+        const isOpen = !collapsed[section.groupKey];
+        return (
+          <Collapsible
+            key={section.groupKey}
+            open={isOpen}
+            onOpenChange={(open) =>
+              setCollapsed((prev) => ({ ...prev, [section.groupKey]: !open }))
+            }
+          >
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1 mb-2 px-1 w-fit text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {/* Tip goes on the inner span, not the CollapsibleTrigger
+                    asChild button — wrapping the trigger itself would clobber
+                    its open/closed data-state (same trap as Switch/
+                    TabsTrigger). */}
+                {isOpen ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+                <HelpTip label="Pairs with prior conversation history are listed first — click to collapse or expand this section">
+                  <span>
+                    {section.label}
+                    <span className="ml-1.5 text-muted-foreground/60 normal-case">
+                      ({section.pairs.length})
+                    </span>
+                  </span>
+                </HelpTip>
+              </button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {section.pairs.map((pair) => {
+                  const key = pairKey(pair.agent_a, pair.agent_b);
+                  return (
+                    <A2APairCard
+                      key={key}
+                      pair={pair}
+                      pulsedAt={pulses[key] ?? null}
+                      isSelected={
+                        !!pair.conversation_id &&
+                        pair.conversation_id === selectedConversationId
+                      }
+                      onOpen={() => onOpenPair(pair)}
+                    />
+                  );
+                })}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        );
+      })}
     </div>
   );
 }

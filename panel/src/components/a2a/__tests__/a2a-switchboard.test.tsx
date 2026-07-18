@@ -117,6 +117,23 @@ describe("A2ASwitchboard", () => {
     );
   });
 
+  it("collapses and re-expands a section when its header is clicked", () => {
+    render(
+      <A2ASwitchboard
+        pairs={[buildPair()]}
+        pulses={{}}
+        selectedConversationId={null}
+        isLoading={false}
+        onOpenPair={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("pair-card")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Backend Cell/ }));
+    expect(screen.queryByTestId("pair-card")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Backend Cell/ }));
+    expect(screen.getByTestId("pair-card")).toBeInTheDocument();
+  });
+
   it("passes each pair's pulse timestamp through by canonical pair key", () => {
     const pair = buildPair();
     render(
