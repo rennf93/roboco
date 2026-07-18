@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Team } from "@/types";
+import { DEFAULT_QUICK_ACTION_IDS } from "@/components/dashboard/quick-actions-registry";
 
 interface UIState {
   // Sidebar
@@ -17,6 +18,11 @@ interface UIState {
   // design doc §1) — same persisted-preference idiom as sidebar/theme.
   a2aContextOpen: boolean;
 
+  // Workstation cards/table toggle, persisted per-surface so Products and
+  // Projects remember their own choice independently. Cards is the default.
+  productsView: "cards" | "table";
+  projectsView: "cards" | "table";
+
   // Client-only Settings-page prefs (never sent to the backend — the
   // server's settings allowlist is transcript_retention_days + feature
   // flags only). Same persisted-preference idiom as sidebar/theme.
@@ -25,16 +31,28 @@ interface UIState {
   autoRefresh: boolean;
   refreshIntervalSeconds: number;
 
+  // Quick Actions (Overview dashboard) — ordered list of
+  // quick-actions-registry ids the CEO has chosen to show. Per-browser only,
+  // same persisted-preference idiom as everything else in this store; see
+  // quick-actions-card.tsx for the render/customize side.
+  quickActionIds: string[];
+
   // Actions
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setTheme: (theme: "light" | "dark" | "system") => void;
   setCurrentTeam: (team: Team | null) => void;
   toggleA2AContext: () => void;
+  setProductsView: (view: "cards" | "table") => void;
+  setProjectsView: (view: "cards" | "table") => void;
   setNotificationsEnabled: (enabled: boolean) => void;
   setSoundEnabled: (enabled: boolean) => void;
   setAutoRefresh: (enabled: boolean) => void;
   setRefreshIntervalSeconds: (seconds: number) => void;
+
+  // Quick Actions actions
+  setQuickActionIds: (ids: string[]) => void;
+  resetQuickActionIds: () => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -45,10 +63,15 @@ export const useUIStore = create<UIState>()(
       theme: "system",
       currentTeam: null,
       a2aContextOpen: true,
+      productsView: "cards",
+      projectsView: "cards",
       notificationsEnabled: true,
       soundEnabled: true,
       autoRefresh: false, // default-off: never start a background poller unasked
       refreshIntervalSeconds: 30,
+
+      // Quick Actions default
+      quickActionIds: DEFAULT_QUICK_ACTION_IDS,
 
       toggleSidebar: () =>
         set((state) => ({ sidebarOpen: !state.sidebarOpen })),
@@ -57,12 +80,19 @@ export const useUIStore = create<UIState>()(
       setCurrentTeam: (team) => set({ currentTeam: team }),
       toggleA2AContext: () =>
         set((state) => ({ a2aContextOpen: !state.a2aContextOpen })),
+      setProductsView: (view) => set({ productsView: view }),
+      setProjectsView: (view) => set({ projectsView: view }),
       setNotificationsEnabled: (enabled) =>
         set({ notificationsEnabled: enabled }),
       setSoundEnabled: (enabled) => set({ soundEnabled: enabled }),
       setAutoRefresh: (enabled) => set({ autoRefresh: enabled }),
       setRefreshIntervalSeconds: (seconds) =>
         set({ refreshIntervalSeconds: seconds }),
+
+      // Quick Actions actions
+      setQuickActionIds: (ids) => set({ quickActionIds: ids }),
+      resetQuickActionIds: () =>
+        set({ quickActionIds: DEFAULT_QUICK_ACTION_IDS }),
     }),
     {
       name: "roboco-ui-storage",
@@ -71,10 +101,14 @@ export const useUIStore = create<UIState>()(
         theme: state.theme,
         currentTeam: state.currentTeam,
         a2aContextOpen: state.a2aContextOpen,
+        productsView: state.productsView,
+        projectsView: state.projectsView,
         notificationsEnabled: state.notificationsEnabled,
         soundEnabled: state.soundEnabled,
         autoRefresh: state.autoRefresh,
         refreshIntervalSeconds: state.refreshIntervalSeconds,
+        // Quick Actions
+        quickActionIds: state.quickActionIds,
       }),
     },
   ),

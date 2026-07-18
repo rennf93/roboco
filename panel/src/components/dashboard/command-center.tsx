@@ -14,7 +14,7 @@ import { KeyMetricsPanel } from "./key-metrics-panel";
 import { AuditorAlertsPanel } from "./auditor-alerts-panel";
 import { ActiveBlockersPanel } from "./active-blockers-panel";
 import { RecentActivityFeed } from "./recent-activity-feed";
-import { QuickActionsBar } from "./quick-actions-bar";
+import { QuickActionsCard } from "./quick-actions-card";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
 import { PrReviewQueue } from "./pr-review-queue";
 import { ReleaseProposalCard } from "./release-proposal-card";
@@ -154,7 +154,7 @@ export function CommandCenter() {
             Quick Actions
           </h2>
         </HelpTip>
-        <QuickActionsBar />
+        <QuickActionsCard />
       </section>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-4">
