@@ -11,6 +11,7 @@ Also implements the ACK system for tracking acknowledgments.
 
 import asyncio
 import contextlib
+import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -41,6 +42,22 @@ if TYPE_CHECKING:
     from roboco.models.metrics import TaskMetrics
 
 _log = structlog.get_logger(service="notification_delivery")
+
+
+def _esc(value: object) -> str:
+    """HTML-escape a dynamic value before it lands in a Telegram HTML
+    message — mirrors ``telegram_inbound._esc``; every DM this service
+    composes runs its dynamic parts (a notification subject, a panel link)
+    through this before interpolation."""
+    return html.escape(str(value), quote=False)
+
+
+def _esc_attr(value: object) -> str:
+    """Like ``_esc`` but also escapes quotes — mirrors
+    ``telegram_inbound._esc_attr``. The panel-link ``href`` is the one place
+    this service interpolates into an HTML attribute rather than a text
+    node; an unescaped ``"`` there would close the attribute early."""
+    return html.escape(str(value), quote=True)
 
 
 def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> str:
@@ -891,26 +908,25 @@ class NotificationDeliveryService(BaseService):
             escalator_slug=escalator.slug,
         )
 
-    async def _notify_telegram(
-        self, *, task_id: UUID, subject: str, actionable: bool = False
+    async def _send_telegram_deferred(
+        self,
+        *,
+        text: str,
+        reply_markup: dict[str, Any] | None,
+        disable_link_preview: bool = False,
     ) -> None:
-        """Best-effort Telegram DM to the CEO alongside an in-app notification.
+        """Shared best-effort deferred-send plumbing behind every Telegram DM
+        this service issues (``_notify_telegram``, ``notify_ceo_of_queue_item``).
 
-        Degrades to a no-op unless ``telegram_enabled`` is armed and credentials
-        are stored. Credentials are fetched now (a fast DB read on the open
-        session); the actual network send is deferred via
+        Degrades to a no-op unless ``telegram_enabled`` is armed and
+        credentials are stored. Credentials are fetched now (a fast DB read
+        on the open session); the actual network send is deferred via
         ``defer_after_commit`` so a slow Telegram Bot API call can't hold the
         caller's open transaction for up to ``telegram_timeout_seconds``.
         Never raises into the caller — a credentials/network failure only
-        logs. The message carries a panel deep-link when ``panel_base_url``
-        is set.
-
-        ``actionable=True`` (escalation only — V1's completion send never
-        expands beyond link-only, and no new call site is added here) also
-        attaches an Approve/Reject/Open inline keyboard (V2, gated separately
-        by ``telegram_inbound_enabled`` — with it off the buttons render but
-        the bot never polls for the tap, so they're harmlessly inert; the
-        plain-text link still works either way).
+        logs. ``text`` is sent with HTML ``parse_mode``; callers are
+        responsible for escaping every dynamic value they interpolated into
+        it (``_esc``).
         """
         from roboco.config import settings
 
@@ -927,22 +943,18 @@ class NotificationDeliveryService(BaseService):
             _log.warning("telegram_notify_failed", error=str(exc))
             return
 
-        text = subject
-        if settings.panel_base_url:
-            link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
-            text = f"{subject}\n{link}"
         timeout = settings.telegram_timeout_seconds
-        reply_markup = None
-        if actionable:
-            from roboco.services.telegram_inbound import build_action_keyboard
-
-            reply_markup = build_action_keyboard("task", str(task_id)[:8])
 
         async def _send() -> None:
             client = None
             try:
                 client = build_telegram_client(creds, timeout=timeout)
-                result = await client.send_message(text, reply_markup=reply_markup)
+                result = await client.send_message(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML",
+                    disable_link_preview=disable_link_preview,
+                )
                 if not result.sent:
                     _log.warning("telegram_notify_skip", detail=result.detail)
             except Exception as exc:  # best-effort — never break the drain
@@ -953,6 +965,60 @@ class NotificationDeliveryService(BaseService):
                         await client.close()
 
         defer_after_commit(self.session, _send)
+
+    async def _notify_telegram(
+        self, *, task_id: UUID, subject: str, actionable: bool = False
+    ) -> None:
+        """Best-effort Telegram DM to the CEO alongside an in-app notification.
+
+        The message carries a panel deep-link (named "Open in panel", link
+        preview disabled so the card never swallows the chat) when
+        ``panel_base_url`` is set.
+
+        ``actionable=True`` (escalation only — V1's completion send never
+        expands beyond link-only, and no new call site is added here) also
+        attaches an Approve/Reject/Open inline keyboard (V2, gated separately
+        by ``telegram_inbound_enabled`` — with it off the buttons render but
+        the bot never polls for the tap, so they're harmlessly inert; the
+        plain-text link still works either way).
+        """
+        from roboco.config import settings
+
+        text = f"<b>{_esc(subject)}</b>"
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        reply_markup = None
+        if actionable:
+            from roboco.services.telegram_inbound import build_action_keyboard
+
+            reply_markup = build_action_keyboard("task", str(task_id)[:8])
+
+        await self._send_telegram_deferred(
+            text=text, reply_markup=reply_markup, disable_link_preview=True
+        )
+
+    async def notify_ceo_of_queue_item(
+        self, *, kind: str, id8: str, extra: str = "", title: str
+    ) -> None:
+        """Best-effort push DM at the moment a held draft becomes CEO-
+        actionable — release proposals, X drafts, video posts, and roadmap
+        items used to land in the approval queue silently, with no ping
+        until the CEO happened to run ``/queue``. Reuses the exact styled
+        item line and Approve/Reject/Open keyboard ``/queue`` itself renders
+        (``telegram_inbound.render_queue_item_text`` / ``build_action_keyboard``
+        — one renderer, two callers), and the same degrade-to-no-op contract
+        as ``_notify_telegram``: a credentials/network failure only logs,
+        never raises into the originating engine.
+        """
+        from roboco.services.telegram_inbound import (
+            build_action_keyboard,
+            render_queue_item_text,
+        )
+
+        text = render_queue_item_text(kind, id8, extra, title)
+        reply_markup = build_action_keyboard(kind, id8, extra)
+        await self._send_telegram_deferred(text=text, reply_markup=reply_markup)
 
     async def notify_ceo_of_escalation(
         self,

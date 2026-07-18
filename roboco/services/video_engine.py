@@ -29,6 +29,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
     VIDEO_POST_SOURCE,
@@ -534,6 +535,16 @@ class VideoEngine(BaseService):
             "video-engine: video post drafted (held for CEO)",
             source_task_id=str(source_task.id),
         )
+        try:
+            await get_notification_delivery_service(
+                self.session
+            ).notify_ceo_of_queue_item(
+                kind="video", id8=str(task.id)[:8], title=occasion
+            )
+        except Exception as exc:
+            self.log.warning(
+                "video-engine: telegram notify failed (best-effort)", error=str(exc)
+            )
         return task
 
     # ---- reject -> re-author (CEO feedback loop) ---------------------------

@@ -220,6 +220,49 @@ async def test_loop_never_publishes_or_approves(
 
 
 @pytest.mark.asyncio
+async def test_proposes_sends_telegram_push(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshly-originated release proposal fires the styled push DM
+    (release kind, the proposal's id8, its version) alongside the existing
+    in-app notification."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        notify,
+    )
+    engine = ReleaseManagerEngine(db_session, assessor=_assessor(_report()))
+    task = await engine.run_cycle()
+    assert task is not None
+    notify.assert_awaited_once()
+    _args, kwargs = notify.await_args
+    assert kwargs["kind"] == "release"
+    assert kwargs["id8"] == str(task.id)[:8]
+    assert _VERSION in kwargs["title"]
+
+
+@pytest.mark.asyncio
+async def test_proposes_survives_telegram_push_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Telegram send failure must never block origination itself."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    engine = ReleaseManagerEngine(db_session, assessor=_assessor(_report()))
+    task = await engine.run_cycle()
+    assert task is not None
+    assert await get_task_service(db_session).list_open_release_proposals()
+
+
+@pytest.mark.asyncio
 async def test_none_assessment_no_proposal(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

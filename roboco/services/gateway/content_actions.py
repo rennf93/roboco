@@ -1344,6 +1344,7 @@ class ContentActions:
             task, {"goal": cycle_goal.strip(), "items": normalized}
         )
         await self.task.session.flush()
+        await self._notify_roadmap_items(task, normalized)
         return Envelope.ok(
             status="roadmap_proposed",
             task_id=str(task.id),
@@ -1353,6 +1354,30 @@ class ContentActions:
                 "item_count": len(normalized),
             },
         )
+
+    async def _notify_roadmap_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — this is the moment a
+        roadmap item first becomes CEO-actionable (the engine's own
+        exploration-task origination has nothing to review yet), so the DM
+        fires here rather than from ``RoadmapEngine``. A send failure never
+        blocks ``propose_roadmap`` itself."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="roadmap",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "roadmap telegram notify failed (best-effort)", error=str(exc)
+                )
 
     @classmethod
     def _reject_feature_spotlight_fields(

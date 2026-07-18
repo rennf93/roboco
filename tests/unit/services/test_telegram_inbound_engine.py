@@ -253,7 +253,7 @@ async def test_expired_reply_prompt_sends_notice(
     )
 
     client.send_message.assert_awaited_once_with(
-        "That prompt expired — tap the button again."
+        "That prompt expired — tap the button again.", parse_mode="HTML"
     )
     dispatch.assert_not_called()
     assert ("777", 42) not in ti._PENDING_REPLIES
@@ -743,3 +743,207 @@ async def test_mark_audit_adds_via_telegram_row() -> None:
     assert added.agent_id == CEO_UUID
     assert added.target_id == task_id
     assert added.details["via"] == "telegram"
+
+
+# ---------------------------------------------------------------------------
+# /queue rendering — pluralization + HTML formatting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_queue_empty_says_nothing_awaiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    monkeypatch.setattr(engine, "_collect_queue_items", AsyncMock(return_value=[]))
+    client = AsyncMock()
+
+    await engine._send_queue(client)
+
+    client.send_message.assert_awaited_once_with(
+        "✅ Nothing awaiting your approval.", parse_mode="HTML"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_queue_singular_item_pluralization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    monkeypatch.setattr(
+        engine,
+        "_collect_queue_items",
+        AsyncMock(return_value=[("task", "a1b2c3d4", "", "Ship it")]),
+    )
+    client = AsyncMock()
+
+    await engine._send_queue(client)
+
+    header = client.send_message.await_args_list[0].args[0]
+    assert header == "<b>🔔 Awaiting your approval</b> — 1 item"
+
+
+@pytest.mark.asyncio
+async def test_send_queue_plural_items_pluralization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    monkeypatch.setattr(
+        engine,
+        "_collect_queue_items",
+        AsyncMock(
+            return_value=[
+                ("task", "a1b2c3d4", "", "Ship it"),
+                ("release", "deadbeef", "", "v1.0.0 ready"),
+            ]
+        ),
+    )
+    client = AsyncMock()
+
+    await engine._send_queue(client)
+
+    header = client.send_message.await_args_list[0].args[0]
+    assert header == "<b>🔔 Awaiting your approval</b> — 2 items"
+
+
+@pytest.mark.asyncio
+async def test_send_queue_item_line_escapes_title_and_carries_keyboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Injection regression: a malicious task title must arrive HTML-escaped
+    — never as live markup — in the /queue item line's sent payload."""
+    engine = _engine()
+    monkeypatch.setattr(
+        engine,
+        "_collect_queue_items",
+        AsyncMock(return_value=[("task", "a1b2c3d4", "", "<b>bold&joke</b>")]),
+    )
+    client = AsyncMock()
+
+    await engine._send_queue(client)
+
+    item_call = client.send_message.await_args_list[1]
+    text = item_call.args[0]
+    assert "&lt;b&gt;bold&amp;joke&lt;/b&gt;" in text
+    assert "<b>bold&joke</b>" not in text
+    assert text.startswith("📋 <b>Task</b> — ")
+    assert item_call.kwargs["parse_mode"] == "HTML"
+    assert "reply_markup" in item_call.kwargs
+
+
+# ---------------------------------------------------------------------------
+# /task — link preview disabled, title/status/team escaping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_command_task_disables_link_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    monkeypatch.setattr(engine, "_render_task", AsyncMock(return_value="detail"))
+    client = AsyncMock()
+
+    await engine._dispatch_command("task", "a1b2c3d4", client)
+
+    client.send_message.assert_awaited_once_with(
+        "detail", parse_mode="HTML", disable_link_preview=True
+    )
+
+
+def test_format_task_detail_escapes_html_in_title() -> None:
+    """Injection regression: a task titled ``<b>bold&joke</b>`` must render
+    HTML-escaped, not as live markup, in /task's detail view."""
+    engine = _engine()
+    task = _fake_task(title="<b>bold&joke</b>")
+
+    rendered = engine._format_task_detail(task)
+
+    assert "&lt;b&gt;bold&amp;joke&lt;/b&gt;" in rendered
+    assert "<b>bold&joke</b>" not in rendered
+
+
+def test_format_task_detail_pr_url_is_a_named_link() -> None:
+    engine = _engine()
+    task = _fake_task()
+    task.pr_url = "https://github.com/example/repo/pull/1"
+
+    rendered = engine._format_task_detail(task)
+
+    assert '<a href="https://github.com/example/repo/pull/1">View PR</a>' in rendered
+
+
+def test_format_task_detail_pr_url_quote_cannot_break_out_of_href() -> None:
+    """Injection regression: a pr_url containing a literal '"' must not be
+    able to close the href attribute early and inject a bogus attribute —
+    _esc_attr (quote=True) turns it into '&quot;', keeping the whole value
+    inside the attribute."""
+    engine = _engine()
+    task = _fake_task()
+    task.pr_url = 'https://evil.example/x" onmouseover="alert(1)'
+
+    rendered = engine._format_task_detail(task)
+
+    assert (
+        '<a href="https://evil.example/x&quot; onmouseover=&quot;alert(1)">'
+        "View PR</a>" in rendered
+    )
+    assert 'onmouseover="alert(1)"' not in rendered
+
+
+# ---------------------------------------------------------------------------
+# outcome confirmations (_finish_action / _consume_reply) — escaping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finish_action_escapes_text_and_edits_origin() -> None:
+    engine = _engine()
+    client = AsyncMock()
+
+    await engine._finish_action(client, 42, True, "Rejected: <script>xss</script>")
+
+    client.edit_message_reply_markup.assert_awaited_once_with(42, None)
+    call = client.edit_message_text.await_args
+    assert call.args == (42, "✅ Rejected: &lt;script&gt;xss&lt;/script&gt;")
+    assert call.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_finish_action_escapes_text_without_origin() -> None:
+    engine = _engine()
+    client = AsyncMock()
+
+    await engine._finish_action(client, None, False, "<script>alert(1)</script>")
+
+    call = client.send_message.await_args
+    assert call.args == ("❌ &lt;script&gt;alert(1)&lt;/script&gt;",)
+    assert call.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_consume_reply_reject_outcome_arrives_escaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end regression: a reject reason that reaches the CEO through
+    whatever text a dispatch handler returns must never arrive as live HTML —
+    the funnel (_finish_action) escapes it regardless of the handler."""
+    engine = _engine()
+    client = AsyncMock()
+    dispatch = AsyncMock(return_value=(True, "Rejected: <script>xss</script>"))
+    monkeypatch.setattr(engine, "_dispatch_reject", dispatch)
+    pending = ti._PendingAction(
+        kind="xpost",
+        id8="a1b2c3d4",
+        extra="",
+        action="reject",
+        origin_message_id=None,
+        expires_at=time.monotonic() + 60,
+    )
+
+    await engine._consume_reply(pending, "<script>xss</script>", client)
+
+    dispatch.assert_awaited_once_with("xpost", "a1b2c3d4", "", "<script>xss</script>")
+    sent_text = client.send_message.await_args.args[0]
+    assert "&lt;script&gt;xss&lt;/script&gt;" in sent_text
+    assert "<script>xss</script>" not in sent_text
