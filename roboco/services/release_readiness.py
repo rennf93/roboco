@@ -12,11 +12,15 @@ gate state) is layered on top of these primitives in Task 3.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 BumpKind = Literal["major", "minor", "patch"]
 
@@ -439,10 +443,47 @@ def _run_git(root: Path, args: list[str]) -> str:
     return result.stdout
 
 
-def _pyproject_version(root: Path) -> str:
-    text = (root / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+_TOML_VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _toml_version(path: Path) -> str:
+    match = _TOML_VERSION_RE.search(path.read_text(encoding="utf-8"))
     return match.group(1) if match else ""
+
+
+def _package_json_version(path: Path) -> str:
+    version = json.loads(path.read_text(encoding="utf-8")).get("version")
+    return version if isinstance(version, str) else ""
+
+
+def _version_file_version(path: Path) -> str:
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    return lines[0].strip() if lines else ""
+
+
+_VERSION_PROBES: tuple[tuple[str, Callable[[Path], str]], ...] = (
+    ("pyproject.toml", _toml_version),
+    ("package.json", _package_json_version),
+    ("Cargo.toml", _toml_version),
+    ("VERSION", _version_file_version),
+)
+
+
+def _project_version(root: Path) -> str:
+    """Current version from the repo's own manifest — first probe that
+    yields one wins (pyproject.toml, package.json, Cargo.toml, VERSION).
+
+    Missing or unparseable manifests are skipped, never raised: a non-Python
+    layout must degrade to "" (readiness reports the gap) instead of
+    crashing the release-manager sweep every cycle."""
+    for name, probe in _VERSION_PROBES:
+        try:
+            version = probe(root / name)
+        except (OSError, ValueError):
+            continue
+        if version:
+            return version
+    return ""
 
 
 def _last_tag(root: Path) -> str | None:
@@ -607,7 +648,7 @@ def gather_snapshot(
     (the ``tag_drift`` gap). None ⇒ degenerate/unsplit project, baseline stays
     ``last_tag`` (unchanged behavior).
     """
-    version = _pyproject_version(root)
+    version = _project_version(root)
     tag = _last_tag(root)
     prod_tip = _rev_parse(root, f"origin/{prod_branch}") if prod_branch else None
     last_tag_sha = _rev_parse(root, f"{tag}^{{commit}}") if tag else None

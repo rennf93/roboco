@@ -14,6 +14,7 @@ from roboco.services.release_readiness import (
     CommitInfo,
     _commits_since,
     _draft_changelog,
+    _project_version,
     _run_git,
     classify_changes,
     derive_bump,
@@ -164,3 +165,41 @@ def test_draft_changelog_falls_back_to_transcription_without_curation() -> None:
     draft = _draft_changelog("0.25.0", changes, "2026-07-15", empty)
     assert "### Added" in draft
     assert "- shiny thing" in draft
+
+
+# --------------------------------------------------------------------------- #
+# _project_version — manifest-variant probing, never raises on a non-Python
+# layout (a missing/unparseable manifest must not crash the readiness sweep).
+# --------------------------------------------------------------------------- #
+
+
+def test_project_version_reads_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('version = "1.2.3"\n', encoding="utf-8")
+    assert _project_version(tmp_path) == "1.2.3"
+
+
+def test_project_version_falls_back_to_package_json(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"version": "4.5.6"}', encoding="utf-8")
+    assert _project_version(tmp_path) == "4.5.6"
+
+
+def test_project_version_falls_back_to_cargo_toml(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "x"\nversion = "7.8.9"\n', encoding="utf-8"
+    )
+    assert _project_version(tmp_path) == "7.8.9"
+
+
+def test_project_version_falls_back_to_version_file(tmp_path: Path) -> None:
+    (tmp_path / "VERSION").write_text("2.0.0\n", encoding="utf-8")
+    assert _project_version(tmp_path) == "2.0.0"
+
+
+def test_project_version_empty_when_no_manifest(tmp_path: Path) -> None:
+    assert _project_version(tmp_path) == ""
+
+
+def test_project_version_skips_unparseable_manifest(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "VERSION").write_text("3.1.4\n", encoding="utf-8")
+    assert _project_version(tmp_path) == "3.1.4"
