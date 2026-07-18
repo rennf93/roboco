@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import { useCreateCeoConversation } from "@/hooks/use-a2a-live";
+import { useAgentDefinitions } from "@/hooks/use-agents";
 
 // Self, plus every role that can't actually read/answer a DM: auditor and
 // pr_reviewer carry no read_a2a on their manifests, prompter and secretary
@@ -39,6 +40,13 @@ interface A2ANewDmDialogProps {
   /** Called with the new (or reopened) conversation's id once the CEO's
    * first message is sent — the caller selects/opens it in the page. */
   onCreated: (conversationId: string) => void;
+  /** Controlled-open pair — omit both for the default uncontrolled trigger-
+   * button behavior (internal state). Pass both to drive the dialog from
+   * outside, e.g. the agent card's DM quick-action deep link. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** Preselects this agent as the target whenever the dialog opens. */
+  initialTarget?: string | null;
 }
 
 /**
@@ -46,8 +54,15 @@ interface A2ANewDmDialogProps {
  * classic list only ever show conversations that already exist; this is the
  * one surface that creates one, addressed to any agent (never itself).
  */
-export function A2ANewDmDialog({ onCreated }: A2ANewDmDialogProps) {
-  const [open, setOpen] = useState(false);
+export function A2ANewDmDialog({
+  onCreated,
+  open: openProp,
+  onOpenChange,
+  initialTarget,
+}: A2ANewDmDialogProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const [targetAgent, setTargetAgent] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const create = useCreateCeoConversation();
@@ -56,6 +71,27 @@ export function A2ANewDmDialog({ onCreated }: A2ANewDmDialogProps) {
     setTargetAgent(null);
     setMessage("");
   };
+
+  // A deep-linked initialTarget is untrusted URL input (?dm=<anything>):
+  // only preselect an agent that exists on the roster AND can receive a DM.
+  // An excluded role, an unknown slug, or a still-loading roster opens the
+  // dialog unselected instead — safe over convenient.
+  const { data: roster = [] } = useAgentDefinitions();
+  const preselectable =
+    !!initialTarget &&
+    roster.some(
+      (a) =>
+        a.id === initialTarget &&
+        (!a.role || !EXCLUDE_NON_DM_ROLES.includes(a.role)),
+    );
+
+  // Preselect on the open transition (render-phase adjustment, not an
+  // effect — same idiom as the connection-banner reset in a2a-view.tsx).
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open && initialTarget && preselectable) setTargetAgent(initialTarget);
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
