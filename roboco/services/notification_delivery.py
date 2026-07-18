@@ -52,6 +52,14 @@ def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
 
+def _esc_attr(value: object) -> str:
+    """Like ``_esc`` but also escapes quotes — mirrors
+    ``telegram_inbound._esc_attr``. The panel-link ``href`` is the one place
+    this service interpolates into an HTML attribute rather than a text
+    node; an unescaped ``"`` there would close the attribute early."""
+    return html.escape(str(value), quote=True)
+
+
 def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> str:
     """Human-readable completion summary — real effort vs wall-clock, not a lone
     wall-clock figure. Degrades to wall-clock-only (turns 'n/a') when there are
@@ -979,7 +987,7 @@ class NotificationDeliveryService(BaseService):
         text = f"<b>{_esc(subject)}</b>"
         if settings.panel_base_url:
             link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
-            text += f'\n<a href="{_esc(link)}">Open in panel</a>'
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
         reply_markup = None
         if actionable:
             from roboco.services.telegram_inbound import build_action_keyboard

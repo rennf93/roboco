@@ -36,11 +36,13 @@ pre/a/blockquote) — nothing else is ever emitted.
 from __future__ import annotations
 
 import html
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
+import structlog
 from sqlalchemy import func, select
 
 from roboco.config import settings
@@ -79,6 +81,8 @@ if TYPE_CHECKING:
 
     from roboco.db.tables import TaskTable
     from roboco.services.telegram_credentials import TelegramCredentialsData
+
+logger = structlog.get_logger()
 
 # Reuses the system_settings KV store instead of a dedicated table (see
 # `roboco.services.settings._VALIDATORS` for the write-side int validator).
@@ -149,25 +153,70 @@ def _esc(value: object) -> str:
     return html.escape(str(value), quote=False)
 
 
-def _truncate(text: str, limit: int = _MESSAGE_CHAR_LIMIT) -> str:
-    """Telegram's own sendMessage cap, applied to the FINAL assembled HTML
-    string. Every dynamic value is escaped before assembly (``_esc``), so the
-    only tags/entities present are the small fixed set this module emits —
-    but a naive slice can still land mid-tag (``<b>...<``) or mid-entity
-    (``&am``), and Telegram's HTML parser rejects a message like that
-    outright. Back off to the last safe boundary instead of a byte-exact cut:
-    a few extra trimmed characters beats a message that fails to send.
-    """
-    if len(text) <= limit:
-        return text
-    cut = text[: limit - 1]
+def _esc_attr(value: object) -> str:
+    """Like ``_esc`` but also escapes quotes (``quote=True``). Every
+    ``href="..."`` value sits inside an HTML attribute, not a text node — an
+    unescaped ``"`` in the value closes the attribute early and lets the rest
+    of the string inject arbitrary markup/attributes into the ``<a>`` tag."""
+    return html.escape(str(value), quote=True)
+
+
+# Telegram-HTML's own supported tag subset (see module docstring) — the only
+# tags ``_truncate`` ever needs to balance, since every dynamic value is
+# escaped before assembly.
+_TELEGRAM_TAGS = frozenset({"b", "i", "u", "s", "code", "pre", "a", "blockquote"})
+_TAG_RE = re.compile(r"</?([a-z]+)(?:\s[^>]*)?>")
+
+
+def _safe_boundary(cut: str) -> str:
+    """Back a truncated slice off the last mid-tag (``<b>...<``) or
+    mid-entity (``&am``) boundary — Telegram's HTML parser rejects either
+    outright."""
     last_lt, last_gt = cut.rfind("<"), cut.rfind(">")
     if last_lt > last_gt:  # an unclosed '<...' — back off before it
         cut = cut[:last_lt]
     last_amp, last_semi = cut.rfind("&"), cut.rfind(";")
     if last_amp > last_semi:  # an unclosed '&...' entity — back off before it
         cut = cut[:last_amp]
-    return cut.rstrip() + "…"
+    return cut
+
+
+def _closing_tags(text: str) -> str:
+    """The Telegram-HTML tags still open at the end of ``text``, rendered as
+    closing tags in reverse (innermost-first) order."""
+    stack: list[str] = []
+    for m in _TAG_RE.finditer(text):
+        name = m.group(1)
+        if name not in _TELEGRAM_TAGS:
+            continue
+        if m.group(0).startswith("</"):
+            if stack and stack[-1] == name:
+                stack.pop()
+        else:
+            stack.append(name)
+    return "".join(f"</{name}>" for name in reversed(stack))
+
+
+def _truncate(text: str, limit: int = _MESSAGE_CHAR_LIMIT) -> str:
+    """Telegram's own sendMessage cap, applied to the FINAL assembled HTML
+    string. Every dynamic value is escaped before assembly (``_esc``), so the
+    only tags/entities present are the small fixed set this module emits —
+    but a naive slice can still land mid-tag, mid-entity, or (since the slice
+    point falls wherever the char count happens to land) inside an as-yet-
+    unclosed tag like ``<code>``, and Telegram's HTML parser rejects an
+    unbalanced message outright. Back off to the last safe tag/entity
+    boundary (``_safe_boundary``), then append whatever closing tags are
+    still owed (``_closing_tags``) — trimming further first if the closing
+    tags themselves would push past ``limit``.
+    """
+    if len(text) <= limit:
+        return text
+    cut = _safe_boundary(text[: limit - 1])
+    closing = _closing_tags(cut)
+    while len(cut.rstrip()) + 1 + len(closing) > limit:
+        cut = _safe_boundary(cut[:-1])
+        closing = _closing_tags(cut)
+    return cut.rstrip() + "…" + closing
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -541,11 +590,18 @@ class TelegramInboundEngine(BaseService):
             parse_mode="HTML",
         )
         for kind, id8, extra, title in items[:_QUEUE_ITEM_CAP]:
-            await client.send_message(
+            result = await client.send_message(
                 render_queue_item_text(kind, id8, extra, title),
                 reply_markup=build_action_keyboard(kind, id8, extra),
                 parse_mode="HTML",
             )
+            if not result.sent:
+                logger.warning(
+                    "telegram queue item send failed",
+                    kind=kind,
+                    id8=id8,
+                    detail=result.detail,
+                )
 
     async def _resolve_task(self, id8: str) -> TaskTable | None:
         """Exact id-prefix resolution — ``search_tasks`` also OR-matches
@@ -606,10 +662,10 @@ class TelegramInboundEngine(BaseService):
             f"Team: {_esc(team_val)}",
         ]
         if task.pr_url:
-            lines.append(f'PR: <a href="{_esc(task.pr_url)}">View PR</a>')
+            lines.append(f'PR: <a href="{_esc_attr(task.pr_url)}">View PR</a>')
         link = _deep_link("task", id8)
         if link:
-            lines.append(f'<a href="{_esc(link)}">Open in panel</a>')
+            lines.append(f'<a href="{_esc_attr(link)}">Open in panel</a>')
         return "\n".join(lines)
 
     # ---- callback (button) handling ---------------------------------------

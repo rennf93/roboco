@@ -873,6 +873,24 @@ def test_format_task_detail_pr_url_is_a_named_link() -> None:
     assert '<a href="https://github.com/example/repo/pull/1">View PR</a>' in rendered
 
 
+def test_format_task_detail_pr_url_quote_cannot_break_out_of_href() -> None:
+    """Injection regression: a pr_url containing a literal '"' must not be
+    able to close the href attribute early and inject a bogus attribute —
+    _esc_attr (quote=True) turns it into '&quot;', keeping the whole value
+    inside the attribute."""
+    engine = _engine()
+    task = _fake_task()
+    task.pr_url = 'https://evil.example/x" onmouseover="alert(1)'
+
+    rendered = engine._format_task_detail(task)
+
+    assert (
+        '<a href="https://evil.example/x&quot; onmouseover=&quot;alert(1)">'
+        "View PR</a>" in rendered
+    )
+    assert 'onmouseover="alert(1)"' not in rendered
+
+
 # ---------------------------------------------------------------------------
 # outcome confirmations (_finish_action / _consume_reply) — escaping
 # ---------------------------------------------------------------------------

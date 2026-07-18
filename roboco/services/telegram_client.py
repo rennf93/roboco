@@ -18,9 +18,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 
 if TYPE_CHECKING:
     from roboco.services.telegram_credentials import TelegramCredentialsData
+
+logger = structlog.get_logger()
 
 _API_BASE = "https://api.telegram.org"
 
@@ -282,7 +285,13 @@ class LiveTelegramClient(TelegramClient):
         )
         client = await self._http()
         with contextlib.suppress(httpx.HTTPError):
-            await client.post(url, json=payload, timeout=self._timeout)
+            resp = await client.post(url, json=payload, timeout=self._timeout)
+            if not resp.is_success:
+                logger.warning(
+                    "telegram edit_message_text failed",
+                    status_code=resp.status_code,
+                    detail=resp.text[:200],
+                )
 
 
 def build_telegram_client(

@@ -6,9 +6,11 @@ from __future__ import annotations
 import pytest
 from roboco.config import settings as cfg
 from roboco.services.telegram_inbound import (
+    _MESSAGE_CHAR_LIMIT,
     ParsedCallback,
     _authorized_chat,
     _esc,
+    _esc_attr,
     _truncate,
     build_action_keyboard,
     build_callback,
@@ -144,12 +146,21 @@ class TestEsc:
         assert _esc("<b>bold&joke</b>") == "&lt;b&gt;bold&amp;joke&lt;/b&gt;"
 
     def test_quotes_are_left_alone(self) -> None:
-        # quote=False — this module's messages are HTML text nodes, never
-        # attribute values built from unbounded free text.
+        # quote=False — _esc renders HTML text nodes, where quotes need no
+        # escaping. Attribute values (e.g. href="...") go through _esc_attr
+        # instead, which does escape them.
         assert _esc('it\'s "fine"') == 'it\'s "fine"'
 
     def test_stringifies_non_str_values(self) -> None:
         assert _esc(42) == "42"
+
+
+class TestEscAttr:
+    def test_escapes_quotes_and_angle_brackets(self) -> None:
+        assert _esc_attr("""a"b'c<d>e""") == "a&quot;b&#x27;c&lt;d&gt;e"
+
+    def test_stringifies_non_str_values(self) -> None:
+        assert _esc_attr(42) == "42"
 
 
 class TestTruncateHtml:
@@ -170,6 +181,23 @@ class TestTruncateHtml:
         result = _truncate(text)
         assert result.endswith("…")
         assert "&am" not in result
+
+    @pytest.mark.parametrize("title_len", range(4048, 4069))
+    def test_render_queue_item_truncation_balances_code_tag(
+        self, title_len: int
+    ) -> None:
+        # Regression: a naive char-count slice landed inside the trailing
+        # `<code>id8</code>` span, shipping an unclosed `<code>` Telegram's
+        # HTML parser rejects outright.
+        text = render_queue_item_text("roadmap", "abc12345", "item-0", "A" * title_len)
+        assert text.count("<code>") == text.count("</code>")
+        assert len(text) <= _MESSAGE_CHAR_LIMIT
+
+    def test_truncate_balances_a_bold_wrapped_tag(self) -> None:
+        text = "<b>" + ("y" * 4200) + "</b>"
+        result = _truncate(text)
+        assert result.count("<b>") == result.count("</b>")
+        assert len(result) <= _MESSAGE_CHAR_LIMIT
 
 
 class TestRenderQueueItemText:
