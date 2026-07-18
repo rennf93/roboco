@@ -28,7 +28,7 @@ interface ProjectTableProps {
   isLoading: boolean;
 }
 
-const teamLabels: Record<Team, string> = {
+export const teamLabels: Record<Team, string> = {
   board: "Board",
   main_pm: "Main PM",
   backend: "Backend",
@@ -37,7 +37,7 @@ const teamLabels: Record<Team, string> = {
   marketing: "Marketing",
 };
 
-const teamColors: Record<Team, string> = {
+export const teamColors: Record<Team, string> = {
   board: "bg-purple-500/10 text-purple-500 hover:bg-purple-500/20",
   main_pm: "bg-blue-500/10 text-blue-500 hover:bg-blue-500/20",
   backend: "bg-green-500/10 text-green-500 hover:bg-green-500/20",
@@ -46,7 +46,7 @@ const teamColors: Record<Team, string> = {
   marketing: "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20",
 };
 
-function getTokenBadge(hasGitToken: boolean) {
+export function getTokenBadge(hasGitToken: boolean) {
   const badge = hasGitToken ? (
     <Badge className="bg-green-500/10 text-green-500">
       <Key className="h-3 w-3 mr-1" />
@@ -65,7 +65,7 @@ function getTokenBadge(hasGitToken: boolean) {
   );
 }
 
-function getStatusBadge(isActive: boolean) {
+export function getStatusBadge(isActive: boolean) {
   const badge = isActive ? (
     <Badge className="bg-green-500/10 text-green-500">Active</Badge>
   ) : (
@@ -79,7 +79,7 @@ function getStatusBadge(isActive: boolean) {
   return <HelpTip label={hint}>{badge}</HelpTip>;
 }
 
-function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
+export function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
   if (!counts) {
     return <span className="text-muted-foreground text-xs">—</span>;
   }
@@ -118,7 +118,7 @@ function TasksCell({ counts }: { counts: ProjectTaskCounts | null }) {
   );
 }
 
-function CiWatchBadge({ enabled }: { enabled: boolean }) {
+export function CiWatchBadge({ enabled }: { enabled: boolean }) {
   if (!enabled) return null;
   return (
     <HelpTip label="Opens a fix task automatically when this project's CI goes red on its default branch.">
@@ -131,6 +131,20 @@ function CiWatchBadge({ enabled }: { enabled: boolean }) {
       </Badge>
     </HelpTip>
   );
+}
+
+// Converts a git URL to a browsable HTTPS URL (strip .git suffix, handle SSH
+// format). Module-level (not component-local) so the card grid view can
+// reuse it verbatim for the same "View repository" action.
+export function getExternalUrl(project: Pick<ProjectSummary, "git_url">) {
+  let url = project.git_url;
+  if (url.endsWith(".git")) {
+    url = url.slice(0, -4);
+  }
+  if (url.startsWith("git@")) {
+    url = url.replace("git@", "https://").replace(":", "/");
+  }
+  return url;
 }
 
 export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
@@ -157,20 +171,6 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
       </div>
     );
   }
-
-  // Convert git URL to browsable URL (strip .git suffix, handle SSH format)
-  const getExternalUrl = (project: ProjectSummary) => {
-    let url = project.git_url;
-    // Remove .git suffix
-    if (url.endsWith(".git")) {
-      url = url.slice(0, -4);
-    }
-    // Convert SSH format (git@github.com:org/repo) to HTTPS
-    if (url.startsWith("git@")) {
-      url = url.replace("git@", "https://").replace(":", "/");
-    }
-    return url;
-  };
 
   return (
     <>
