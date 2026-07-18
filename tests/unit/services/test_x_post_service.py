@@ -584,6 +584,9 @@ async def test_approve_feature_spotlight_with_video_opens_video_task(
     assert kwargs["platforms"] == ["x", "tiktok"]
     assert kwargs["script"] == "Custom voiceover script"
     assert kwargs["brief"] == "Organizational Memory Loop: Draft body"
+    # The spotlight's own project scopes the video authoring — without it the
+    # video authored against the deployment-anchor project regardless.
+    assert kwargs["project_id"] == task.project_id
 
 
 @pytest.mark.asyncio

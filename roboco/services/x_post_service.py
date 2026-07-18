@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
@@ -244,6 +244,10 @@ class XPostService(BaseService):
                 script=video_script.strip() or feature_brief,
                 platforms=["x", "tiktok"],
                 brief=feature_brief,
+                # The spotlight draft's own project — without it the video
+                # authors against the deployment-anchor project's motion/
+                # tree regardless of which project the spotlight is about.
+                project_id=cast("UUID | None", task.project_id),
             )
         except Exception as exc:
             logger.warning("spotlight video draft failed (best-effort): %s", exc)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
@@ -263,8 +263,9 @@ class ReleaseProposalService(BaseService):
             if result.status in ("published", "already_published"):
                 task.status = TaskStatus.COMPLETED
                 await self.session.flush()
-                await self._draft_x_post(report)
-                await self._draft_video(report)
+                release_project_id = cast("UUID | None", task.project_id)
+                await self._draft_x_post(report, release_project_id)
+                await self._draft_video(report, release_project_id)
                 await self._draft_docs_update(report)
             return result
         finally:
@@ -273,32 +274,40 @@ class ReleaseProposalService(BaseService):
             )
             await self._close_redis()
 
-    async def _draft_x_post(self, report: ReleaseReadinessReport) -> None:
+    async def _draft_x_post(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
         """Hand the just-published release to the X engine for a held
         announcement draft (best-effort — never raises into approve(); a
         drafting failure must not affect the release's already-succeeded
-        publish). Off/no-creds is itself a no-op inside the engine."""
+        publish). Off/no-creds is itself a no-op inside the engine. The
+        proposal task's project scopes the draft to the released project."""
         try:
             from roboco.services.x_engine import get_x_engine
 
             await get_x_engine(self.session).draft_release_post(
                 version=report.proposed_version,
                 highlights=list(report.change_summary),
+                project_id=project_id,
             )
         except Exception as exc:
             logger.warning("x-post draft failed (best-effort): %s", exc)
 
-    async def _draft_video(self, report: ReleaseReadinessReport) -> None:
+    async def _draft_video(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
         """Hand the just-published release to the video engine for a held
         UX/UI authoring task (best-effort — never raises into approve(); a
         drafting failure must not affect the release's already-succeeded
-        publish). Off/no-sub-switch is itself a no-op inside the engine."""
+        publish). Off/no-sub-switch is itself a no-op inside the engine. The
+        proposal task's project scopes the draft to the released project."""
         try:
             from roboco.services.video_engine import get_video_engine
 
             await get_video_engine(self.session).draft_release_video(
                 version=report.proposed_version,
                 changelog=report.drafted_changelog,
+                project_id=project_id,
             )
         except Exception as exc:
             logger.warning("video draft failed (best-effort): %s", exc)

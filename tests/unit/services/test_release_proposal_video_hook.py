@@ -147,7 +147,7 @@ async def test_publish_success_calls_video_engine_draft_seam(
     assert result is not None
     assert result.status == "published"
     fake_video_engine.draft_release_video.assert_awaited_once_with(
-        version=_VERSION, changelog=_CHANGELOG
+        version=_VERSION, changelog=_CHANGELOG, project_id=task.project_id
     )
 
 

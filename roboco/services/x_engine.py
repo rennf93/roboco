@@ -243,6 +243,12 @@ class XEngine(BaseService):
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         return await get_project_service(self.session).get_by_slug(slug)
 
+    async def _project_or_default(self, project_id: UUID | None) -> ProjectTable | None:
+        """The explicitly-targeted project, or the deployment-anchor fallback."""
+        if project_id is not None:
+            return await get_project_service(self.session).get(project_id)
+        return await self._roboco_project()
+
     async def _voice_guide(self) -> str:
         """Baseline house style plus the CEO's brand-voice sample, when set.
 
@@ -263,14 +269,16 @@ class XEngine(BaseService):
     # ---- release posts (event-driven hook) --------------------------------
 
     async def draft_release_post(
-        self, *, version: str, highlights: list[str]
+        self, *, version: str, highlights: list[str], project_id: UUID | None = None
     ) -> TaskTable | None:
         """Originate ONE held release-announcement draft, or None (no-op).
 
         No-ops when the flag is off, no credentials are configured, a draft
         for this version already exists (retry-safe), or the open-post cap is
         reached. Called from ``ReleaseProposalService.approve()``'s publish
-        success branch — never invoked by the loop itself.
+        success branch — never invoked by the loop itself. ``project_id``
+        scopes the draft to the released project; omitted falls back to the
+        deployment-anchor project.
         """
         if not settings.x_engine_enabled:
             return None
@@ -291,10 +299,10 @@ class XEngine(BaseService):
                 version=version,
             )
             return None
-        project = await self._roboco_project()
+        project = await self._project_or_default(project_id)
         if project is None or project.id is None:
             self.log.warning(
-                "x-engine: RoboCo project not resolvable; skipping release post",
+                "x-engine: target project not resolvable; skipping release post",
                 version=version,
             )
             return None

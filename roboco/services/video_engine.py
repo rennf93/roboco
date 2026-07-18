@@ -437,7 +437,7 @@ class VideoEngine(BaseService):
     # ---- release trigger (event-driven hook) -------------------------------
 
     async def draft_release_video(
-        self, *, version: str, changelog: str
+        self, *, version: str, changelog: str, project_id: UUID | None = None
     ) -> TaskTable | None:
         """Originate ONE UX/UI video-authoring task for a release announcement,
         or None (no-op).
@@ -464,6 +464,7 @@ class VideoEngine(BaseService):
             platforms=["x", "tiktok"],
             brief=brief,
             suggested_input_props={"version": version, "highlights": highlights},
+            project_id=project_id,
         )
 
     async def _draft_release_script(self, version: str, changelog: str) -> str:
