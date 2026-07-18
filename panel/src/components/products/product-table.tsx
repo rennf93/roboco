@@ -23,7 +23,7 @@ import type { ProductSummary, Team } from "@/types";
 import { EditProductDialog } from "./edit-product-dialog";
 import { HelpTip } from "@/components/ui/help-tip";
 
-const TEAM_LABELS: Record<Team, string> = {
+export const TEAM_LABELS: Record<Team, string> = {
   board: "Board",
   main_pm: "Main PM",
   backend: "Backend",
@@ -37,7 +37,7 @@ interface ProductTableProps {
   isLoading: boolean;
 }
 
-function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
+export function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
   if (cells.length === 0) {
     return <span className="text-muted-foreground text-sm">Unmapped</span>;
   }
@@ -62,7 +62,7 @@ function CellsList({ cells }: { cells: ProductSummary["cells"] }) {
   );
 }
 
-function ProgressCell({
+export function ProgressCell({
   progress,
 }: {
   progress: ProductSummary["progress"];
