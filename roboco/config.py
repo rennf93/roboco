@@ -459,6 +459,32 @@ class Settings(BaseSettings):
             "the cloud-auth login endpoint returns 429."
         ),
     )
+    # Telegram Mini App sign-in: validates Telegram's signed WebApp initData
+    # and mints the SAME cloud-auth session cookie /api/auth/login issues —
+    # zero changes to deps.py/websocket.py, whose cookie gate already accepts
+    # it. Security/TLS-coupled like cloud_auth_enabled, so deliberately NOT
+    # on the panel's runtime feature-flags card (see FEATURE_FLAGS in
+    # roboco/services/settings.py).
+    telegram_miniapp_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for Telegram Mini App sign-in "
+            "(POST /api/telegram/webapp-auth). OFF by default. Requires "
+            "cloud_auth_enabled (startup fails loud if on without it) since "
+            "the Mini App mints a cloud-auth session cookie and there is "
+            "nothing to mint without it. Env-only — excluded from the panel "
+            "feature-flags card, same reasoning as cloud_auth_enabled."
+        ),
+    )
+    telegram_initdata_max_age_seconds: int = Field(
+        default=600,
+        ge=1,
+        description=(
+            "Max age (seconds) of a Telegram WebApp initData payload's "
+            "auth_date before POST /api/telegram/webapp-auth refuses it as "
+            "stale."
+        ),
+    )
     agent_token_ttl_seconds: int = Field(
         default=604800,
         ge=60,
@@ -491,6 +517,15 @@ class Settings(BaseSettings):
                 "ROBOCO_PANEL_AGENT_TOKEN (nginx CEO-token injection bypasses "
                 "the login cookie). Unset ROBOCO_PANEL_AGENT_TOKEN for a "
                 "publicly-exposed cloud-auth deploy."
+            )
+        # The Mini App auth route mints a cloud-auth session cookie — with
+        # cloud auth off there is no session mechanism to hand it to.
+        if self.telegram_miniapp_enabled and not self.cloud_auth_enabled:
+            raise ValueError(
+                "ROBOCO_TELEGRAM_MINIAPP_ENABLED=true requires "
+                "ROBOCO_CLOUD_AUTH_ENABLED=true (the Mini App mints a "
+                "cloud-auth session cookie; there is nothing to mint "
+                "without it)."
             )
         return self
 

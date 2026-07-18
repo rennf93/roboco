@@ -61,8 +61,11 @@ export const config = {
   // Everything except the login page itself (avoids a redirect loop), API
   // routes (nginx routes /api/* straight to the orchestrator in prod — this
   // never sees them there; excluded defensively for a bare `next start`),
-  // Next's internal asset paths, and the static icon files at the app root.
+  // the Telegram Mini App surface (/tg authenticates via Telegram initData,
+  // not the password-login cookie — redirecting it to /login would strand a
+  // phone session that can never reach that page), Next's internal asset
+  // paths, and the static icon files at the app root.
   matcher: [
-    "/((?!login|api|_next/static|_next/image|favicon.ico|apple-icon.png|icon.png).*)",
+    "/((?!login|api|tg(?:/|$)|_next/static|_next/image|favicon.ico|apple-icon.png|icon.png).*)",
   ],
 };

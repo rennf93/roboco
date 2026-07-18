@@ -29,6 +29,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
 | `roboco/utils/converters.py` | `InvalidIdentifierError` + `require_uuid` / `to_python_uuid` / `to_python_uuid_list` + `repo_key` | 99 |
 | `roboco/utils/crypto.py` | Fernet `encrypt_token` / `decrypt_token` / `is_encryption_configured` + `EncryptionError` | 111 |
+| `roboco/utils/telegram_initdata.py` | Pure Telegram Mini App `initData` validation (no I/O): `WebAppData`-keyed HMAC-SHA256 derivation, `hmac.compare_digest` check, freshness window (`auth_date` within `max_age_seconds`, ±60s clock-skew tolerance, no far-future) | 76 |
 
 ## Key Symbols
 
@@ -271,7 +272,7 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 | `x_engine_enabled` | X (Twitter) engine | `ROBOCO_X_ENGINE_ENABLED` |
 | `roadmap_engine_enabled` | Board roadmap engine | `ROBOCO_ROADMAP_ENGINE_ENABLED` |
 
-Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NETWORK_ISOLATED`) are deliberately **not** in `FEATURE_FLAGS` — both are compose/env-coupled (cookie/TLS posture and the `networks:` topology respectively) and unsafe for a runtime toggle to flip mid-session; they stay pure env vars, not panel-tunable settings.
+Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NETWORK_ISOLATED`) are deliberately **not** in `FEATURE_FLAGS` — both are compose/env-coupled (cookie/TLS posture and the `networks:` topology respectively) and unsafe for a runtime toggle to flip mid-session; they stay pure env vars, not panel-tunable settings. `ROBOCO_TELEGRAM_MINIAPP_ENABLED` (Telegram Mini App sign-in) joins them for the same reason — security/TLS-coupled, and `Settings` fails loud at startup if it's armed without `cloud_auth_enabled`; its sibling `telegram_initdata_max_age_seconds` (default 600) is likewise env-only.
 
 Other settings read here: `transcript_retention_days` (int, ≥1; read by orchestrator at `runtime/orchestrator.py:5910`). Non-flag config consumed: `settings.redis_url` (`health`, `stream_bus`), `settings.encryption_key` (`crypto`).
 
@@ -314,6 +315,7 @@ No logic-touching commits to list — IMPACT: none.
 > - `321e68d7` [sweep] proactive: `_find_code_patterns` method, its call, summary line, and count removed; `ContextPackage.code_patterns` field retained (always-empty, back-compat).
 > - `536bbb64` Chore/all/logical-gaps-sweep (#286) — merge commit pulling the above into the branch.
 > - `d83104e9` (2026-07-17, PR #546, "wave-1 quick wins") fix(llm): provider mode switches preserve per-agent model pins — `_apply_anthropic`/`_apply_grok`/`_apply_ollama`/`_apply_self_hosted` now delete only ROLE/GLOBAL `model_assignments` rows (`scope != AGENT_SLUG`) instead of wiping the whole table, so an AGENT_SLUG pin survives a mode switch; `OLLAMA_ROLE_DEFAULTS` removed from `llm_catalog.py` as dead code (it was never consulted by routing — see `models.md`).
+> - `82642bea` (2026-07-18, PR #554, Telegram V3 Mini App) adds `roboco/utils/telegram_initdata.py` (new file, pure `validate_init_data`) — no other file in this slice's scope touched by the PR.
 
 ## Regression Risks
 

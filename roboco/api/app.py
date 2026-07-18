@@ -45,6 +45,7 @@ from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
+from roboco.api.routes.telegram import mount_telegram_miniapp_auth
 from roboco.api.routes.telegram import router as telegram_router
 from roboco.api.routes.usage import router as usage_router
 from roboco.api.routes.v1 import do as do_module
@@ -486,6 +487,9 @@ def create_app() -> FastAPI:
         prefix=f"{api_prefix}/telegram",
         tags=["Telegram"],
     )
+    # Telegram Mini App sign-in — public, pre-auth; mounted only when both
+    # telegram_miniapp_enabled and cloud_auth_enabled are armed.
+    mount_telegram_miniapp_auth(app, f"{api_prefix}/telegram")
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
     app.include_router(

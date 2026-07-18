@@ -34,7 +34,9 @@ class _BrokenRedis:
 def _app(redis: Any) -> FastAPI:
     app = FastAPI()
     app.state.login_redis = redis
-    app.add_middleware(LoginRateLimiter, prefix="/auth", max_attempts=3, window=60)
+    app.add_middleware(
+        LoginRateLimiter, paths=("/auth/login",), max_attempts=3, window=60
+    )
 
     @app.post("/auth/login")
     async def login() -> dict[str, bool]:
