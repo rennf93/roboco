@@ -10,8 +10,8 @@ a registration-time rejection unless the operator sets this column explicitly
 project keeps resolving to GitHub behavior until GitLab/Gitea providers land
 in a later phase.
 
-Revision ID: 075_project_git_provider
-Revises: 074_telegram_credentials
+Revision ID: 076_project_git_provider
+Revises: 075_company_goals_company_name
 Create Date: 2026-07-18
 """
 
@@ -20,8 +20,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "075_project_git_provider"
-down_revision = "074_telegram_credentials"
+revision = "076_project_git_provider"
+down_revision = "075_company_goals_company_name"
 branch_labels: dict[str, str] | None = None
 depends_on: dict[str, str] | None = None
 
