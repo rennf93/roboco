@@ -35,6 +35,7 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { ProjectSelector } from "@/components/projects/project-selector";
 import { useProjects } from "@/hooks/use-projects";
 import { RerenderControl } from "@/components/dashboard/video-rerender-control";
+import { ProjectBadge } from "@/components/dashboard/project-badge";
 import { CheckCircle2, Film, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -222,6 +223,11 @@ function VideoPostRow({
             <span className="font-medium">{meta.label}</span>
           </span>
         </HelpTip>
+        <ProjectBadge
+          slug={post.project_slug}
+          name={post.project_name}
+          label="The project (repository) this video targets"
+        />
         {post.occasion && (
           <HelpTip label="The occasion/event this video was drafted for">
             <Badge variant="outline">{post.occasion}</Badge>

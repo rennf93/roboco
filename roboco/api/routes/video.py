@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.schemas.project_fields import task_project_fields
 from roboco.api.schemas.video import (
     TikTokCredentialsSetRequest,
     TikTokCredentialsStatus,
@@ -143,6 +144,7 @@ def _status_value(task: TaskTable) -> str:
 
 def _to_response(task: TaskTable) -> VideoPostResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPostResponse(
         task_id=str(task.id),
         source=task.source,
@@ -156,6 +158,8 @@ def _to_response(task: TaskTable) -> VideoPostResponse:
         reject_reason=markers.get_video_reject_reason(task),
         mp4_paths=dict(draft.get("mp4_paths") or {}),
         source_task_id=draft.get("source_task_id"),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
@@ -185,6 +189,7 @@ async def list_video_posts(
 
 def _to_pipeline_item(task: TaskTable) -> VideoPipelineItemResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPipelineItemResponse(
         task_id=str(task.id),
         title=task.title,
@@ -195,6 +200,8 @@ def _to_pipeline_item(task: TaskTable) -> VideoPipelineItemResponse:
         render_status=draft.get("render_status"),
         render_attempts=int(draft.get("render_attempts", 0)),
         render_error=draft.get("render_error"),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
@@ -300,6 +307,7 @@ def _posted_ids(draft: dict[str, Any]) -> dict[str, str]:
 
 def _to_history_response(task: TaskTable) -> VideoPostHistoryResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPostHistoryResponse(
         task_id=str(task.id),
         source=task.source,
@@ -314,6 +322,8 @@ def _to_history_response(task: TaskTable) -> VideoPostHistoryResponse:
         posted=_posted_ids(draft),
         acted_at=task.updated_at or task.created_at,
         source_task_id=draft.get("source_task_id"),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 

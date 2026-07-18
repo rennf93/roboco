@@ -1334,8 +1334,8 @@ async def test_voice_guide_falls_back_when_brand_voice_unset(
 ) -> None:
     await get_company_goals_service(db_session).upsert({"brand_voice": ""})
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
-    voice = await engine._voice_guide()
-    assert voice == x_engine_module._HOM_VOICE
+    voice = await engine._voice_guide("RoboCo")
+    assert voice == x_engine_module._hom_voice("RoboCo")
 
 
 @pytest.mark.asyncio
@@ -1346,6 +1346,55 @@ async def test_voice_guide_appends_brand_voice_when_set(
         {"brand_voice": "Dry wit, never an exclamation point."}
     )
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
-    voice = await engine._voice_guide()
-    assert x_engine_module._HOM_VOICE in voice
+    voice = await engine._voice_guide("RoboCo")
+    assert x_engine_module._hom_voice("RoboCo") in voice
     assert "Dry wit, never an exclamation point." in voice
+
+
+@pytest.mark.asyncio
+async def test_voice_guide_uses_the_given_product_name(
+    db_session: AsyncSession,
+) -> None:
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    voice = await engine._voice_guide("Acme Robotics")
+    assert "Acme Robotics" in voice
+    assert "RoboCo" not in voice
+
+
+# --------------------------------------------------------------------------- #
+# Product-name resolution (release-post prompts brand off the target project,
+# not a hardcoded "RoboCo" literal). The fallback-chain unit coverage
+# (project name -> company_name -> "RoboCo") lives on the shared helper,
+# CompanyGoalsService.resolve_product_name, in test_company_goals_service.py —
+# this only asserts the end-to-end wiring through draft_release_post.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_draft_release_post_uses_project_name_when_set(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    acme = ProjectTable(
+        name="Acme Robotics",
+        slug="acme-robotics",
+        git_url="https://github.com/x/acme.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+    )
+    db_session.add(acme)
+    await db_session.flush()
+    _mock_local_model(monkeypatch, None)  # force the deterministic fallback template
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(
+        version=_VERSION, highlights=["feat: x"], project_id=cast("UUID", acme.id)
+    )
+    assert task is not None
+    body = markers.get_x_draft_body(task)
+    assert body is not None
+    assert "Acme Robotics" in body
+    assert "RoboCo" not in body

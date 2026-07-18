@@ -676,6 +676,49 @@ async def test_draft_release_video_brief_contains_brand_voice_when_set(
 
 
 # --------------------------------------------------------------------------- #
+# Product-name resolution (release-video prompts brand off the target
+# project, not a hardcoded "RoboCo" literal). The fallback-chain unit
+# coverage (project name -> company_name -> "RoboCo") lives on the shared
+# helper, CompanyGoalsService.resolve_product_name, in
+# test_company_goals_service.py — this only asserts the end-to-end wiring
+# through draft_release_video.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_uses_project_name_when_set(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    acme = ProjectTable(
+        name="Acme Robotics",
+        slug="acme-robotics",
+        git_url="https://github.com/x/acme.git",
+        default_branch="master",
+        protected_branches=["master"],
+        assigned_cell=Team.BACKEND,
+        created_by=SYSTEM_UUID,
+        is_active=True,
+        video_engine_enabled=True,
+    )
+    db_session.add(acme)
+    await db_session.flush()
+    _mock_local_model(monkeypatch, None)  # force the deterministic fallback template
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(
+        version="1.0.0", changelog=_CHANGELOG, project_id=cast("UUID", acme.id)
+    )
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "Acme Robotics" in draft["script"]
+    assert "RoboCo" not in draft["script"]
+    assert "Acme Robotics" in draft["brief"]
+    assert "RoboCo" not in draft["brief"]
+
+
+# --------------------------------------------------------------------------- #
 # brief enrichment shared by every occasion — brand voice + motion pointer
 # (spec Task 2: "Feed the video brief")
 # --------------------------------------------------------------------------- #

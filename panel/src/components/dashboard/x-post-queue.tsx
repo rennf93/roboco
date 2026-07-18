@@ -24,6 +24,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { HelpTip } from "@/components/ui/help-tip";
+import { ProjectBadge } from "@/components/dashboard/project-badge";
 import { AtSign, CheckCircle2, Rocket, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -108,6 +109,11 @@ function XPostRow({
             <span className="font-medium">{meta.label}</span>
           </span>
         </HelpTip>
+        <ProjectBadge
+          slug={post.project_slug}
+          name={post.project_name}
+          label="The project (repository) this draft targets"
+        />
         {post.release_version && (
           <HelpTip label="The release this post announces">
             <Badge variant="outline">v{post.release_version}</Badge>

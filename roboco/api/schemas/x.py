@@ -36,6 +36,8 @@ class XPostResponse(BaseModel):
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
     reject_reason: str | None = None
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class XPostApproveRequest(BaseModel):
@@ -73,6 +75,8 @@ class XPostHistoryResponse(BaseModel):
     tweet_id: str | None = None
     reject_reason: str | None = None
     acted_at: datetime
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class XCredentialsStatus(BaseModel):

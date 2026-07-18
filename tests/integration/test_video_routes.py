@@ -414,6 +414,7 @@ async def test_list_posts_returns_open_draft(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     task = await _seed_draft(db_session)
+    project = await db_session.get(ProjectTable, task.project_id)
     resp = await ceo_client.get("/api/video/posts")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
@@ -425,6 +426,9 @@ async def test_list_posts_returns_open_draft(
         "square": "/render/out/1-square.mp4",
         "vertical": "/render/out/1-vertical.mp4",
     }
+    assert project is not None
+    assert body[0]["project_slug"] == project.slug
+    assert body[0]["project_name"] == project.name
 
 
 @pytest.mark.asyncio
@@ -471,6 +475,7 @@ async def test_pipeline_lists_non_terminal_authoring_task(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    project = await db_session.get(ProjectTable, task.project_id)
     resp = await ceo_client.get("/api/video/pipeline")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
@@ -481,6 +486,9 @@ async def test_pipeline_lists_non_terminal_authoring_task(
     assert row["render_attempts"] == 0
     assert row["max_attempts"] == markers.MAX_VIDEO_RENDER_ATTEMPTS
     assert row["render_error"] is None
+    assert project is not None
+    assert row["project_slug"] == project.slug
+    assert row["project_name"] == project.name
 
 
 @pytest.mark.asyncio
@@ -706,6 +714,7 @@ async def test_history_returns_posted_and_rejected_newest_first(
             json={"reason": "wrong occasion"},
         )
     posted = await _seed_draft(db_session, platforms=["x"])
+    posted_project = await db_session.get(ProjectTable, posted.project_id)
     creds_svc = get_x_credentials_service(db_session)
     await creds_svc.set_credentials(
         api_key="ak", api_secret="as", access_token="at", access_token_secret="ats"
@@ -736,6 +745,9 @@ async def test_history_returns_posted_and_rejected_newest_first(
         posted_row = next(row for row in body if row["task_id"] == str(posted.id))
         assert posted_row["status"] == "completed"
         assert posted_row["posted"] == {"x": "xid42"}
+        assert posted_project is not None
+        assert posted_row["project_slug"] == posted_project.slug
+        assert posted_row["project_name"] == posted_project.name
         rejected_row = next(row for row in body if row["task_id"] == str(rejected.id))
         assert rejected_row["status"] == "cancelled"
         assert rejected_row["reject_reason"] == "wrong occasion"

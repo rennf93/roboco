@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.schemas.project_fields import task_project_fields
 from roboco.api.schemas.x import (
     XCredentialsSetRequest,
     XCredentialsStatus,
@@ -46,6 +47,7 @@ def _to_response(task: "TaskTable") -> XPostResponse:
     body = markers.get_x_draft_body(task) or task.description or ""
     mention = markers.get_x_mention_ref(task)
     feature = markers.get_x_feature_ref(task)
+    project_slug, project_name = task_project_fields(task)
     return XPostResponse(
         task_id=str(task.id),
         source=task.source,
@@ -57,6 +59,8 @@ def _to_response(task: "TaskTable") -> XPostResponse:
         mention=XMentionRefModel(**mention) if mention else None,
         feature=XFeatureRefModel(**feature) if feature else None,
         reject_reason=markers.get_x_reject_reason(task),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
@@ -74,6 +78,7 @@ def _to_history_response(task: "TaskTable") -> XPostHistoryResponse:
     body = markers.get_x_draft_body(task) or task.description or ""
     mention = markers.get_x_mention_ref(task)
     feature = markers.get_x_feature_ref(task)
+    project_slug, project_name = task_project_fields(task)
     return XPostHistoryResponse(
         task_id=str(task.id),
         source=task.source,
@@ -87,6 +92,8 @@ def _to_history_response(task: "TaskTable") -> XPostHistoryResponse:
         tweet_id=markers.get_x_posted_tweet_id(task),
         reject_reason=markers.get_x_reject_reason(task),
         acted_at=task.updated_at or task.created_at,
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
