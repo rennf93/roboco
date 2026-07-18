@@ -169,6 +169,11 @@ select = [
 # tool layer; we accept the >5 kwarg signatures here for the same reason
 # they're accepted in `roboco/mcp/**`.
 "roboco/services/gateway/**/*.py" = ["PLC0415", "PLR0913"]
+# The forge provider ABC/transport mirror REST endpoint parameter contracts
+# (e.g. list_pulls' head/base/state/per_page, create_release's tag/name/body/
+# target_commitish) — a bundle dataclass would just relocate the same named
+# fields behind one hop, same rationale as roboco/mcp/** and gateway/** above.
+"roboco/services/forge/*.py" = ["PLR0913"]
 # Route signatures ARE the HTTP contract — each FastAPI query/path/body
 # param must be a discrete typed argument for OpenAPI + validation, so the
 # >5-arg rule doesn't fit them (same rationale as roboco/mcp/**). TC003:

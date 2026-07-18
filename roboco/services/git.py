@@ -61,6 +61,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.forge import GitProvider, RepoRef, provider_for
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.project import get_project_service
 from roboco.services.task import TaskService, get_task_service
@@ -325,11 +326,6 @@ _HTTP_METHOD_NOT_ALLOWED = 405
 # commit, or (on the unscoped all-workflows endpoint) an unrelated green
 # workflow, masks the HEAD commit's failing run and the signal flickers.
 _CI_RUN_WINDOW = 20
-# Transient GitHub failures (network, 429, 5xx) are retried within the cycle so
-# a single blip does not silently skip a whole self-heal pass.
-_CI_FETCH_ATTEMPTS = 3
-_CI_FETCH_BACKOFF_SECONDS = 0.5
-_CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
 # huge repo) can't hang the i_am_done/pr_pass gate forever.
 _CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
@@ -374,16 +370,6 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return max(same_head, key=lambda r: int(r.get("run_attempt") or 0))
 
 
-def _api_base() -> str:
-    """GitHub REST base URL — honors ``settings.github_api_base_url``.
-
-    Five call sites already read the setting (CI runs, open-PR list); the
-    PR create/merge/branch sites hardcoded the public host, which broke any
-    GitHub Enterprise or test override. One helper keeps them uniform.
-    """
-    return settings.github_api_base_url.rstrip("/")
-
-
 @dataclass(frozen=True)
 class _CiRunQuery:
     """Bundle of per-project inputs to a CI-run fetch (owner/repo, branch, token,
@@ -408,6 +394,21 @@ class GitService(BaseService):
     """
 
     service_name: ClassVar[str] = "git"
+
+    @property
+    def _forge(self) -> GitProvider:
+        """The GitHub REST transport (Phase 1 of the forge-providers spec).
+
+        A property, not an ``__init__``-set attribute: several unit tests
+        build a ``GitService`` via ``GitService.__new__(GitService)`` to skip
+        the DB-session constructor, and a plain instance attribute would be
+        unset on those. Every project resolves to ``GitHubProvider`` today
+        (registration-time validation in ``roboco/foundation/policy/forge.py``
+        rejects anything else) — no per-call project resolution is needed
+        until a second provider actually exists. Construction is cheap
+        (no I/O), so resolving fresh per access costs nothing.
+        """
+        return provider_for()
 
     async def _run_git(
         self,
@@ -778,17 +779,12 @@ class GitService(BaseService):
             https://x-access-token:TOKEN@github.com/owner/repo.git
             https://github.com/owner/repo.git
             git@github.com:owner/repo.git
+
+        Delegates to the provider's own URL parsing (``GitHubProvider`` today
+        — a future provider's shape may differ, e.g. GitLab subgroups).
         """
-        path_match = re.search(
-            r"github\.com[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$",
-            url,
-        )
-        if not path_match:
-            raise GitError(
-                "Could not parse GitHub owner/repo from remote URL",
-                {"url_host": url.rsplit("@", maxsplit=1)[-1].split("/", maxsplit=1)[0]},
-            )
-        return path_match.group("owner"), path_match.group("repo")
+        ref = provider_for().parse_repo_ref(url)
+        return ref.owner, ref.repo
 
     def _parse_github_remote(self, workspace: Path) -> tuple[str, str]:
         """Read the origin remote URL from a workspace and parse owner/repo."""
@@ -2108,19 +2104,13 @@ class GitService(BaseService):
         git_token: str,
     ) -> dict[str, Any] | None:
         """Return the first open PR for head→base, or None."""
-        async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-            existing = await client.get(
-                f"{_api_base()}/repos/{owner}/{repo}/pulls",
-                headers={
-                    "Authorization": f"Bearer {git_token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                params={
-                    "head": f"{owner}:{source_branch}",
-                    "base": target_branch,
-                    "state": "open",
-                },
-            )
+        existing = await self._forge.list_pulls(
+            RepoRef(owner, repo),
+            git_token,
+            head=source_branch,
+            base=target_branch,
+            include_api_version=False,
+        )
         if existing.is_success and existing.json():
             return cast("dict[str, Any]", existing.json()[0])
         return None
@@ -2157,18 +2147,10 @@ class GitService(BaseService):
         self, project_slug: str, owner: str, repo: str, git_token: str
     ) -> list[dict[str, Any]] | None:
         """GET a repo's open PRs; return the raw list, or None on any error."""
-        api_base = settings.github_api_base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{api_base}/repos/{owner}/{repo}/pulls",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    params={"state": "open", "per_page": 100},
-                )
+            resp = await self._forge.list_pulls(
+                RepoRef(owner, repo), git_token, per_page=100
+            )
         except httpx.HTTPError as e:
             self.log.warning(
                 "list_open_prs request failed", project=project_slug, error=str(e)
@@ -2266,43 +2248,6 @@ class GitService(BaseService):
             "completed_at": run.get("updated_at"),
         }
 
-    async def _get_ci_runs_response(
-        self,
-        project_slug: str,
-        url: str,
-        headers: dict[str, str],
-        params: dict[str, str | int],
-    ) -> httpx.Response | None:
-        """GET *url* with retry/back-off; return the successful response or None."""
-        resp: httpx.Response | None = None
-        for attempt in range(_CI_FETCH_ATTEMPTS):
-            last = attempt + 1 == _CI_FETCH_ATTEMPTS
-            try:
-                async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                    resp = await client.get(url, headers=headers, params=params)
-            except httpx.HTTPError as e:
-                if last:
-                    self.log.warning(
-                        "get_latest_ci_conclusion request failed",
-                        project=project_slug,
-                        error=str(e),
-                    )
-                    return None
-                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            if resp.is_success:
-                return resp
-            if resp.status_code in _CI_RETRYABLE_STATUS and not last:
-                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            self.log.warning(
-                "get_latest_ci_conclusion non-2xx",
-                project=project_slug,
-                status=resp.status_code,
-            )
-            return None
-        return resp
-
     async def _fetch_latest_ci_run(
         self,
         query: _CiRunQuery,
@@ -2324,29 +2269,32 @@ class GitService(BaseService):
         branch, so only pushes to the default branch (not pull-request runs,
         whose head is a feature branch) count — exactly the "is the default
         branch red" signal self-heal needs. Transient network / 429 / 5xx errors
-        are retried a few times before giving up so a single blip doesn't
-        silently skip the cycle.
+        are retried a few times (inside the provider) before giving up so a
+        single blip doesn't silently skip the cycle.
         """
         owner, repo = query.owner_repo
-        api_base = settings.github_api_base_url.rstrip("/")
-        base = f"{api_base}/repos/{owner}/{repo}/actions"
-        url = f"{base}/workflows/{workflow}/runs" if workflow else f"{base}/runs"
-        headers = {
-            "Authorization": f"Bearer {query.git_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        params: dict[str, str | int] = {
-            "branch": query.branch,
-            "status": "completed",
-            "per_page": _CI_RUN_WINDOW,
-        }
-        if head_sha:
-            params["head_sha"] = head_sha
-        resp = await self._get_ci_runs_response(
-            query.project_slug, url, headers, params
-        )
-        if resp is None or not resp.is_success:
+        try:
+            resp = await self._forge.list_ci_runs(
+                RepoRef(owner, repo),
+                query.git_token,
+                workflow=workflow,
+                branch=query.branch,
+                head_sha=head_sha,
+                per_page=_CI_RUN_WINDOW,
+            )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_latest_ci_conclusion request failed",
+                project=query.project_slug,
+                error=str(e),
+            )
+            return None
+        if not resp.is_success:
+            self.log.warning(
+                "get_latest_ci_conclusion non-2xx",
+                project=query.project_slug,
+                status=resp.status_code,
+            )
             return None
         data = resp.json()
         runs = data.get("workflow_runs") if isinstance(data, dict) else None
@@ -2363,16 +2311,17 @@ class GitService(BaseService):
     ) -> httpx.Response:
         """POST the PR payload to GitHub; translate HTTP errors to GitError."""
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                return await client.post(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json=payload,
-                )
+            return cast(
+                "httpx.Response",
+                await self._forge.create_pr(
+                    RepoRef(owner, repo),
+                    git_token,
+                    head=str(payload.get("head", "")),
+                    base=str(payload.get("base", "")),
+                    title=str(payload.get("title", "")),
+                    body=str(payload.get("body", "")),
+                ),
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while creating PR: {e}",
@@ -2391,16 +2340,9 @@ class GitService(BaseService):
         (422/409). Best-effort: logs and never raises — a missing label must not
         block PR creation."""
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.post(
-                    f"{_api_base()}/repos/{owner}/{repo}/labels",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"name": name, "color": self._PR_LABEL_COLOR},
-                )
+            resp = await self._forge.ensure_label(
+                RepoRef(owner, repo), git_token, name, self._PR_LABEL_COLOR
+            )
         except Exception as e:
             self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
             return
@@ -2431,16 +2373,9 @@ class GitService(BaseService):
         for name in labels:
             await self._ensure_label_exists(owner, repo, git_token, name)
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.post(
-                    f"{_api_base()}/repos/{owner}/{repo}/issues/{pr_number}/labels",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"labels": labels},
-                )
+            resp = await self._forge.add_labels(
+                RepoRef(owner, repo), git_token, pr_number, labels
+            )
         except Exception as e:
             self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
             return
@@ -2607,20 +2542,13 @@ class GitService(BaseService):
         except GitError:
             return {"status": "missing_ref"}
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.post(
-                    f"{_api_base()}/repos/{owner}/{repo}/merges",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={
-                        "base": target_branch,
-                        "head": source_branch,
-                        "commit_message": f"sync: {source_branch} → {target_branch}",
-                    },
-                )
+            resp = await self._forge.merge_branch(
+                RepoRef(owner, repo),
+                git_token,
+                base=target_branch,
+                head=source_branch,
+                commit_message=f"sync: {source_branch} → {target_branch}",
+            )
         except httpx.HTTPError as exc:
             self.log.warning(
                 "env-sync merges API error", project=project_slug, error=str(exc)
@@ -2828,16 +2756,9 @@ class GitService(BaseService):
         other non-2xx surfaces the GitHub validation text inline.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.patch(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json=payload,
-                )
+            resp = await self._forge.update_pr(
+                RepoRef(owner, repo), git_token, pr_number, payload=payload
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while updating PR #{pr_number}: {e}",
@@ -2869,17 +2790,9 @@ class GitService(BaseService):
         agent slugs onto GitHub usernames where the project records that.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.post(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/"
-                    f"{pr_number}/requested_reviewers",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"reviewers": reviewers},
-                )
+            resp = await self._forge.request_reviewers(
+                RepoRef(owner, repo), git_token, pr_number, reviewers
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while adding reviewers to PR #{pr_number}: {e}",
@@ -2929,18 +2842,10 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             raise GitError(f"no git token for project {project_slug!r}", details)
-        api_base = settings.github_api_base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.post(
-                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"body": body, "event": event},
-                )
+            resp = await self._forge.post_review(
+                RepoRef(owner, repo), git_token, pr_number, body=body, event=event
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while posting review to PR #{pr_number}: {e}",
@@ -2990,17 +2895,10 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return ""
-        api_base = settings.github_api_base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github.v3.diff",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.get_pr_diff(
+                RepoRef(owner, repo), git_token, pr_number
+            )
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_diff request failed",
@@ -3017,7 +2915,7 @@ class GitService(BaseService):
                 status=resp.status_code,
             )
             return ""
-        return resp.text
+        return cast("str", resp.text)
 
     async def get_pr_head_sha(self, project_slug: str, pr_number: int) -> str | None:
         """Fetch a PR's current head commit SHA READ-ONLY via the GitHub API.
@@ -3045,17 +2943,8 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        api_base = settings.github_api_base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
             if not resp.is_success:
                 self.log.warning(
                     "get_pr_head_sha non-2xx",
@@ -3114,29 +3003,29 @@ class GitService(BaseService):
         config = await self._ci_status_config(project_slug)
         if isinstance(config, dict):
             return config
-        owner, repo, headers = config
+        owner, repo, git_token = config
         head_sha_or_gap = await self._resolve_ci_head_sha(
-            project_slug, pr_number, owner, repo, headers
+            project_slug, pr_number, owner, repo, git_token
         )
         if isinstance(head_sha_or_gap, dict):
             return head_sha_or_gap
         head_sha = head_sha_or_gap
         check_runs = await self._fetch_check_runs(
-            project_slug, owner, repo, head_sha, headers
+            project_slug, owner, repo, head_sha, git_token
         )
         if isinstance(check_runs, dict):
             return check_runs
         if check_runs:
             return self._classify_check_runs(check_runs, head_sha)
         return await self._classify_zero_check_runs(
-            project_slug, owner, repo, head_sha, headers
+            project_slug, owner, repo, head_sha, git_token
         )
 
     async def _ci_status_config(
         self, project_slug: str
-    ) -> tuple[str, str, dict[str, str]] | dict[str, Any]:
-        """Resolve ``(owner, repo, auth headers)`` for a CI-status lookup, or
-        a terminal ``no_ci_configured`` gap dict when the project, its
+    ) -> tuple[str, str, str] | dict[str, Any]:
+        """Resolve ``(owner, repo, git_token)`` for a CI-status lookup, or a
+        terminal ``no_ci_configured`` gap dict when the project, its
         git_url, or a git token is missing, or the git_url doesn't parse."""
         project = await get_project_service(self.session).get_by_slug(project_slug)
         if project is None or not project.git_url:
@@ -3148,12 +3037,7 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return {"state": "no_ci_configured", "head_sha": None}
-        headers = {
-            "Authorization": f"Bearer {git_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        return owner, repo, headers
+        return owner, repo, git_token
 
     async def _resolve_ci_head_sha(
         self,
@@ -3161,7 +3045,7 @@ class GitService(BaseService):
         pr_number: int,
         owner: str,
         repo: str,
-        headers: dict[str, str],
+        git_token: str,
     ) -> str | dict[str, Any]:
         """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
 
@@ -3175,11 +3059,7 @@ class GitService(BaseService):
         treat as green.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers=headers,
-                )
+            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_ci_status pr lookup unreachable",
@@ -3212,7 +3092,7 @@ class GitService(BaseService):
         owner: str,
         repo: str,
         head_sha: str,
-        headers: dict[str, str],
+        git_token: str,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         """GET the check-runs for ``head_sha``.
 
@@ -3223,12 +3103,9 @@ class GitService(BaseService):
         unparseable body) is ``error``.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
-                    headers=headers,
-                    params={"per_page": 100},
-                )
+            resp = await self._forge.list_check_runs(
+                RepoRef(owner, repo), git_token, head_sha, per_page=100
+            )
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_ci_status check-runs request failed",
@@ -3286,7 +3163,7 @@ class GitService(BaseService):
         owner: str,
         repo: str,
         head_sha: str,
-        headers: dict[str, str],
+        git_token: str,
     ) -> dict[str, Any]:
         """No check-runs exist yet for ``head_sha`` — tell "not scheduled" apart
         from "no CI configured" by asking whether the repo has any workflows.
@@ -3295,12 +3172,9 @@ class GitService(BaseService):
         ``no_ci_configured``; any other failure is ``error``.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/actions/workflows",
-                    headers=headers,
-                    params={"per_page": 1},
-                )
+            resp = await self._forge.list_workflows(
+                RepoRef(owner, repo), git_token, per_page=1
+            )
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_ci_status workflows request failed",
@@ -3513,16 +3387,15 @@ class GitService(BaseService):
     ) -> httpx.Response:
         """PUT the merge request to GitHub; HTTP errors → GitError."""
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                return await client.put(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}/merge",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"merge_method": merge_method},
-                )
+            return cast(
+                "httpx.Response",
+                await self._forge.merge_pr(
+                    RepoRef(owner, repo),
+                    git_token,
+                    pr_number,
+                    merge_method=merge_method,
+                ),
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while merging PR #{pr_number}: {e}",
@@ -3610,16 +3483,9 @@ class GitService(BaseService):
         so the branch is preserved (cleanup is best-effort; stranding is not).
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls",
-                    params={"base": branch, "state": "open", "per_page": 1},
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.list_pulls(
+                RepoRef(owner, repo), git_token, base=branch, per_page=1, timeout=10.0
+            )
             if not resp.is_success:
                 return True
             return bool(resp.json())
@@ -3650,16 +3516,9 @@ class GitService(BaseService):
             )
             return False
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.delete(
-                    f"{_api_base()}/repos/{owner}/{repo}/git/refs/heads/{branch}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
-            return True
+            await self._forge.delete_branch_ref(
+                RepoRef(owner, repo), git_token, branch, timeout=10.0
+            )
         except httpx.HTTPError:
             return False
 
@@ -3671,20 +3530,14 @@ class GitService(BaseService):
         Silently swallows errors — branch cleanup is not critical.
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                pr_resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
-                if not pr_resp.is_success:
-                    return
-                branch = (pr_resp.json().get("head") or {}).get("ref")
-                if not branch:
-                    return
+            pr_resp = await self._forge.get_pr(
+                RepoRef(owner, repo), git_token, pr_number, timeout=10.0
+            )
+            if not pr_resp.is_success:
+                return
+            branch = (pr_resp.json().get("head") or {}).get("ref")
+            if not branch:
+                return
             await self._delete_remote_branch_best_effort(owner, repo, branch, git_token)
         except httpx.HTTPError:
             return
@@ -3872,15 +3725,7 @@ class GitService(BaseService):
         merge method in its settings.
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.get_repo(RepoRef(owner, repo), git_token)
             if not resp.is_success:
                 return None
             data = resp.json()
@@ -4653,15 +4498,7 @@ class GitService(BaseService):
         non-success response is still False (GitHub answered, just not merged).
         """
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
         except httpx.HTTPError:
             return None
         if not resp.is_success:
@@ -4799,15 +4636,7 @@ class GitService(BaseService):
     ) -> tuple[str, str] | None:
         """Return ``(head_ref, base_ref)`` for a PR, or ``None`` if unavailable."""
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                )
+            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
         except httpx.HTTPError:
             return None
         if not resp.is_success:
@@ -5239,38 +5068,25 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
 
-        headers = {
-            "Authorization": f"Bearer {git_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-            existing = await client.get(
-                f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                headers=headers,
-            )
-            already_closed = (
-                existing.is_success and existing.json().get("state") == "closed"
-            )
-            if not already_closed:
-                if comment:
-                    await client.post(
-                        f"{_api_base()}/repos/{owner}/{repo}/issues/"
-                        f"{pr_number}/comments",
-                        headers=headers,
-                        json={"body": comment},
-                    )
-                resp = await client.patch(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers=headers,
-                    json={"state": "closed"},
+        repo_ref = RepoRef(owner, repo)
+        existing = await self._forge.get_pr(repo_ref, git_token, pr_number)
+        already_closed = (
+            existing.is_success and existing.json().get("state") == "closed"
+        )
+        if not already_closed:
+            if comment:
+                await self._forge.create_issue_comment(
+                    repo_ref, git_token, pr_number, comment
                 )
-                if not resp.is_success:
-                    raise GitError(
-                        f"GitHub API refused PR close ({resp.status_code}): "
-                        f"{resp.text[:200]}",
-                        {"owner": owner, "repo": repo, "pr": pr_number},
-                    )
+            resp = await self._forge.update_pr(
+                repo_ref, git_token, pr_number, payload={"state": "closed"}
+            )
+            if not resp.is_success:
+                raise GitError(
+                    f"GitHub API refused PR close ({resp.status_code}): "
+                    f"{resp.text[:200]}",
+                    {"owner": owner, "repo": repo, "pr": pr_number},
+                )
         if delete_branch:
             await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
@@ -5318,14 +5134,9 @@ class GitService(BaseService):
         git_token = await self._get_project_token_or_raise(project.slug)
 
         try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                    },
-                )
+            resp = await self._forge.get_pr(
+                RepoRef(owner, repo), git_token, pr_number, include_api_version=False
+            )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error fetching PR #{pr_number}: {e}",

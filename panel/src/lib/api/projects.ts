@@ -147,7 +147,9 @@ export const projectsApi = {
         slug: project.slug,
         git_url: project.git_url,
         // Mock mode: mirror the backend's auto-detect (github.com -> github).
-        git_provider: project.git_provider ?? detectGithubProvider(project.git_url),
+        git_provider:
+          project.git_provider ??
+          (project.git_url.includes("github.com") ? "github" : null),
         default_branch: project.default_branch ?? "main",
         environments: project.environments ?? null,
         protected_branches: project.protected_branches ?? ["main", "master"],
