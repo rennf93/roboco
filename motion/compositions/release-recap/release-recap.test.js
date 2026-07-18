@@ -6,10 +6,11 @@ import { describe, expect, it } from "vitest";
 // HTML-structure smoke test for the release-recap composition - mirrors
 // panel-demo.test.js (this clip extends the same pk-* kit). We parse the
 // HTML as text and assert structural invariants: dimensions, props.js
-// wiring, the kit stylesheet link, timed clips, the three-release beats
-// (card + chip + pill flip each), the cursor, the toast/outro, the offline
-// constraint, and the captions.json schema/limits/copy regressions the CEO's
-// revision called out on the prior text-card composition.
+// wiring, the kit stylesheet link, the structural-only clip-window
+// allowlist, the three-release beats (card + chip + pill flip each), the
+// cursor, the toast/outro, the offline constraint, and the captions.json
+// schema/limits/copy regressions the CEO's revision called out on the prior
+// text-card composition.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = here;
@@ -56,8 +57,16 @@ describe("release-recap composition", () => {
     // register, not the text-card register).
     expect(html).toContain('href="../../kit/kit.css"');
 
-    // At least one timed clip element.
-    expect(html).toMatch(/class="[^"]*clip[^"]*"/);
+    // Clip windows are for structural layers only (motion/README.md's
+    // clip-window rule - the renderer's per-clip scheduler drifts behind the
+    // encoded timeline on long compositions and silently drops the tail).
+    // Only the cold-open hero, the full-length panel frame, and its
+    // duration-matching status indicator may carry class="clip"; every beat
+    // (intake, cards, pill swaps, cursor, stats, toast, outro) drives via
+    // base-hidden + delayed CSS animation instead.
+    const clipClasses = [...html.matchAll(/class="([^"]*\bclip\b[^"]*)"/g)].map((m) => m[1]);
+    expect(clipClasses.length).toBe(3);
+    expect(new Set(clipClasses)).toEqual(new Set(["rc-hero clip", "pk-frame clip", "pk-frame__status clip"]));
 
     // Panel frame chrome - "the video must show the product moving".
     expect(html).toContain("pk-frame");
@@ -70,8 +79,9 @@ describe("release-recap composition", () => {
     expect(html).toContain("typeReveal");
 
     // Three release beats: a card + version chip + a progress -> completed
-    // pill flip each ("status pills flipping", plural).
-    const cardCount = (html.match(/pk-card clip/g) || []).length;
+    // pill flip each ("status pills flipping", plural). Cards are
+    // beat-level (base-hidden + animation-delay), never class="clip".
+    const cardCount = (html.match(/class="pk-card"/g) || []).length;
     const progressCount = (html.match(/pk-pill--progress/g) || []).length;
     const completedCount = (html.match(/pk-pill--completed/g) || []).length;
     expect(cardCount).toBe(3);
