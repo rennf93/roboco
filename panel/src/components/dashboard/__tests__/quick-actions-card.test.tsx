@@ -76,12 +76,13 @@ describe("QuickActionsCard", () => {
       const user = userEvent.setup();
       const dialog = await openDialog(user);
 
-      // Auditor isn't in DEFAULT_QUICK_ACTION_IDS.
+      // Social isn't in DEFAULT_QUICK_ACTION_IDS (auditor now is — the
+      // legacy bar's actions all ride the defaults).
       await user.click(
-        within(dialog).getByRole("checkbox", { name: "Show Auditor" }),
+        within(dialog).getByRole("checkbox", { name: "Show Social" }),
       );
 
-      expect(useUIStore.getState().quickActionIds).toContain("auditor");
+      expect(useUIStore.getState().quickActionIds).toContain("social");
     });
 
     it("reorders with the move-later arrow", async () => {

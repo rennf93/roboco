@@ -205,6 +205,9 @@ const REGISTRY_BY_ID: ReadonlyMap<string, QuickAction> = new Map(
 // hardcoded QuickActionsBar (New Task dialog / Spawn Agent / Secretary /
 // Journals / Auditor), which never surfaced Tasks, Kanban, Git, or Metrics
 // at all despite those being the highest-traffic destinations.
+// Includes every destination the legacy QuickActionsBar offered (secretary,
+// journals, auditor) — absorbing it must not silently demote any of them out
+// of a fresh install's default view.
 export const DEFAULT_QUICK_ACTION_IDS: string[] = [
   "new-task",
   "tasks",
@@ -212,6 +215,9 @@ export const DEFAULT_QUICK_ACTION_IDS: string[] = [
   "git-repository",
   "agents",
   "a2a",
+  "business-secretary",
+  "journals",
+  "auditor",
   "metrics-performance",
   "settings",
 ];

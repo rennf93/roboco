@@ -43,6 +43,11 @@ export function QuickActionsCard() {
 
   return (
     <div className="flex flex-wrap items-center gap-3">
+      {actions.length === 0 && (
+        <p className="py-4 text-center text-sm text-muted-foreground">
+          No quick actions selected — use the pencil to add some.
+        </p>
+      )}
       <div className="grid flex-1 grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-2">
         {actions.map((action) => (
           <HelpTip key={action.id} label={action.tip}>
