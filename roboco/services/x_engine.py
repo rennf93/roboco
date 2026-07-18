@@ -49,6 +49,7 @@ from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
     X_FEATURE_EXPLORATION_SOURCE,
@@ -771,7 +772,12 @@ class XEngine(BaseService):
     async def _originate_post(
         self, *, title: str, body: str, source: str, project_id: UUID
     ) -> TaskTable:
-        """Open ONE PENDING, HELD X draft owned by the Secretary."""
+        """Open ONE PENDING, HELD X draft owned by the Secretary.
+
+        The single chokepoint for all three X sources (release post, mention
+        reply, feature spotlight — the last via ``materialize_feature_spotlight``
+        below) — one push-DM call here covers all three.
+        """
         task_svc = get_task_service(self.session)
         task = await task_svc.create(
             TaskCreateRequest(
@@ -792,6 +798,16 @@ class XEngine(BaseService):
         )
         markers.set_x_draft_body(task, body)
         await self.session.flush()
+        try:
+            await get_notification_delivery_service(
+                self.session
+            ).notify_ceo_of_queue_item(
+                kind="xpost", id8=str(task.id)[:8], title=body[:100]
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: telegram notify failed (best-effort)", error=str(exc)
+            )
         return task
 
     async def materialize_feature_spotlight(

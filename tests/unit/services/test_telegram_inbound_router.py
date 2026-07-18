@@ -8,10 +8,13 @@ from roboco.config import settings as cfg
 from roboco.services.telegram_inbound import (
     ParsedCallback,
     _authorized_chat,
+    _esc,
+    _truncate,
     build_action_keyboard,
     build_callback,
     parse_callback,
     parse_command,
+    render_queue_item_text,
 )
 
 _CALLBACK_DATA_MAX_BYTES = 64  # mirrors Telegram's own callback_data cap
@@ -134,3 +137,68 @@ class TestAuthorizedChat:
 
     def test_empty_chat_id_rejected(self) -> None:
         assert _authorized_chat("", "12345") is False
+
+
+class TestEsc:
+    def test_escapes_angle_brackets_and_ampersand(self) -> None:
+        assert _esc("<b>bold&joke</b>") == "&lt;b&gt;bold&amp;joke&lt;/b&gt;"
+
+    def test_quotes_are_left_alone(self) -> None:
+        # quote=False — this module's messages are HTML text nodes, never
+        # attribute values built from unbounded free text.
+        assert _esc('it\'s "fine"') == 'it\'s "fine"'
+
+    def test_stringifies_non_str_values(self) -> None:
+        assert _esc(42) == "42"
+
+
+class TestTruncateHtml:
+    def test_short_text_is_untouched(self) -> None:
+        assert _truncate("hello") == "hello"
+
+    def test_backs_off_before_an_unclosed_angle_bracket(self) -> None:
+        # A naive slice at `limit - 1` would land inside "<code>", leaving a
+        # bare '<' Telegram's HTML parser can't make sense of — back off to
+        # before it instead.
+        text = ("x" * 4093) + "<code>"
+        result = _truncate(text)
+        assert result.endswith("…")
+        assert not result.rstrip("…").endswith("<")
+
+    def test_backs_off_before_an_unclosed_entity(self) -> None:
+        text = ("x" * 4093) + "&amp;"
+        result = _truncate(text)
+        assert result.endswith("…")
+        assert "&am" not in result
+
+
+class TestRenderQueueItemText:
+    def test_escapes_html_in_title(self) -> None:
+        text = render_queue_item_text("task", "a1b2c3d4", "", "<b>bold&joke</b>")
+        assert "&lt;b&gt;bold&amp;joke&lt;/b&gt;" in text
+        assert "<b>bold&joke</b>" not in text
+
+    def test_kind_emoji_and_label_per_kind(self) -> None:
+        assert render_queue_item_text("release", "a1b2c3d4", "", "x").startswith(
+            "🚀 <b>Release</b>"
+        )
+        assert render_queue_item_text("video", "a1b2c3d4", "", "x").startswith(
+            "🎬 <b>Video</b>"
+        )
+        assert render_queue_item_text("xpost", "a1b2c3d4", "", "x").startswith(
+            "✕ <b>Post</b>"
+        )
+        assert render_queue_item_text("roadmap", "a1b2c3d4", "", "x").startswith(
+            "🗺️ <b>Roadmap</b>"
+        )
+        assert render_queue_item_text("task", "a1b2c3d4", "", "x").startswith(
+            "📋 <b>Task</b>"
+        )
+
+    def test_id8_and_extra_render_as_code_span(self) -> None:
+        text = render_queue_item_text("roadmap", "a1b2c3d4", "item-2", "x")
+        assert "<code>a1b2c3d4:item-2</code>" in text
+
+    def test_no_extra_omits_suffix(self) -> None:
+        text = render_queue_item_text("task", "a1b2c3d4", "", "x")
+        assert "<code>a1b2c3d4</code>" in text

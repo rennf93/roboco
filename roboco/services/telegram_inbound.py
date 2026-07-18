@@ -22,10 +22,20 @@ again).
 The getUpdates offset cursor persists in the existing ``system_settings`` KV
 store (``telegram_last_update_id``) rather than a new table, so a restart
 doesn't replay already-processed updates.
+
+Every outbound send uses Telegram's HTML ``parse_mode`` for real hierarchy
+(bold headers, ``<code>`` ids, named links) instead of the original flat
+plain-text posture. That only stays injection-safe because EVERY dynamic
+value — task titles, reasons, subjects, urls, team/kind names — is run
+through ``_esc`` (``html.escape``) before it is interpolated; the only
+unescaped HTML in any composed message is the static markup this module
+writes itself. Telegram-HTML supports only a small tag subset (b/i/u/s/code/
+pre/a/blockquote) — nothing else is ever emitted.
 """
 
 from __future__ import annotations
 
+import html
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -91,19 +101,73 @@ _DEFAULT_REJECT_MIN_CHARS = (
 # trail requirement for a CEO approval note.
 _TASK_APPROVE_MIN_CHARS = 20
 
+# /status render order — the lifecycle's actual flow (pending -> claimed ->
+# in_progress -> paused|blocked -> the review-gate chain -> completed /
+# cancelled), not TaskStatus's declaration order or an alphabetical dump.
+_STATUS_ORDER: tuple[TaskStatus, ...] = (
+    TaskStatus.BACKLOG,
+    TaskStatus.PENDING,
+    TaskStatus.CLAIMED,
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.PAUSED,
+    TaskStatus.BLOCKED,
+    TaskStatus.VERIFYING,
+    TaskStatus.NEEDS_REVISION,
+    TaskStatus.AWAITING_QA,
+    TaskStatus.AWAITING_DOCUMENTATION,
+    TaskStatus.AWAITING_PR_REVIEW,
+    TaskStatus.AWAITING_PM_REVIEW,
+    TaskStatus.AWAITING_CEO_APPROVAL,
+    TaskStatus.COMPLETED,
+    TaskStatus.CANCELLED,
+)
+
+# /queue + push-DM item rendering — (emoji, label) per kind.
+_KIND_DISPLAY: dict[str, tuple[str, str]] = {
+    "release": ("🚀", "Release"),
+    "video": ("🎬", "Video"),
+    "xpost": ("✕", "Post"),
+    "roadmap": ("🗺️", "Roadmap"),
+    "task": ("📋", "Task"),
+}
+
 _HELP_TEXT = (
-    "Commands:\n"
-    "/status - fleet snapshot\n"
-    "/queue - everything awaiting your approval, with buttons\n"
-    "/task <id8-or-title> - task detail\n"
-    "/help - this message"
+    "<b>RoboCo commands</b>\n"
+    "/status — fleet snapshot\n"
+    "/queue — approvals with one-tap buttons\n"
+    "/task — task detail (id prefix or title)\n"
+    "/help — this list"
 )
 
 
+def _esc(value: object) -> str:
+    """HTML-escape any dynamic value before it lands in a Telegram HTML
+    message. Telegram-HTML has no safe-interpolation primitive of its own —
+    every dynamic string (task titles, reasons, URLs, ...) must be escaped by
+    hand before assembly. Static markup this module writes is the only
+    unescaped HTML."""
+    return html.escape(str(value), quote=False)
+
+
 def _truncate(text: str, limit: int = _MESSAGE_CHAR_LIMIT) -> str:
+    """Telegram's own sendMessage cap, applied to the FINAL assembled HTML
+    string. Every dynamic value is escaped before assembly (``_esc``), so the
+    only tags/entities present are the small fixed set this module emits —
+    but a naive slice can still land mid-tag (``<b>...<``) or mid-entity
+    (``&am``), and Telegram's HTML parser rejects a message like that
+    outright. Back off to the last safe boundary instead of a byte-exact cut:
+    a few extra trimmed characters beats a message that fails to send.
+    """
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"
+    cut = text[: limit - 1]
+    last_lt, last_gt = cut.rfind("<"), cut.rfind(">")
+    if last_lt > last_gt:  # an unclosed '<...' — back off before it
+        cut = cut[:last_lt]
+    last_amp, last_semi = cut.rfind("&"), cut.rfind(";")
+    if last_amp > last_semi:  # an unclosed '&...' entity — back off before it
+        cut = cut[:last_amp]
+    return cut.rstrip() + "…"
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -157,6 +221,20 @@ def parse_callback(data: str) -> ParsedCallback | None:
         return None
     extra = parts[3] if len(parts) == _CALLBACK_PARTS_WITH_EXTRA else ""
     return ParsedCallback(action=action, kind=kind, id8=id8, extra=extra)
+
+
+def render_queue_item_text(kind: str, id8: str, extra: str, title: str) -> str:
+    """One styled ``<emoji> <b>Kind</b> — <escaped title> <code>id8[:extra]</code>``
+    line. Shared by ``/queue``'s listing (``_send_queue``) and the
+    origination-time push DM (``NotificationDeliveryService.
+    notify_ceo_of_queue_item``) so a freshly-drafted item and the same item
+    later listed by ``/queue`` render identically — one renderer, two
+    callers."""
+    emoji, label = _KIND_DISPLAY.get(kind, ("📋", kind.title()))
+    suffix = f":{extra}" if extra else ""
+    return _truncate(
+        f"{emoji} <b>{label}</b> — {_esc(title)} <code>{_esc(id8 + suffix)}</code>"
+    )
 
 
 # Deep-link target per kind — mirrors where each queue actually lives in the
@@ -330,7 +408,9 @@ class TelegramInboundEngine(BaseService):
                 if pending.expires_at > time.monotonic():
                     await self._consume_reply(pending, text, client)
                     return
-                await client.send_message("That prompt expired — tap the button again.")
+                await client.send_message(
+                    "That prompt expired — tap the button again.", parse_mode="HTML"
+                )
                 return
         cmd, args = parse_command(text)
         if not cmd:
@@ -341,19 +421,28 @@ class TelegramInboundEngine(BaseService):
         self, cmd: str, args: str, client: TelegramClient
     ) -> None:
         if cmd in ("start", "help"):
-            await client.send_message(_HELP_TEXT)
+            await client.send_message(_HELP_TEXT, parse_mode="HTML")
         elif cmd == "status":
-            await client.send_message(await self._render_status())
+            await client.send_message(await self._render_status(), parse_mode="HTML")
         elif cmd == "queue":
             await self._send_queue(client)
         elif cmd == "task":
-            await client.send_message(await self._render_task(args))
+            await client.send_message(
+                await self._render_task(args),
+                parse_mode="HTML",
+                disable_link_preview=True,
+            )
         else:
-            await client.send_message(f"Unknown command /{cmd}.\n\n{_HELP_TEXT}")
+            await client.send_message(
+                f"Unknown command /{_esc(cmd)}.\n\n{_HELP_TEXT}", parse_mode="HTML"
+            )
 
     async def _render_status(self) -> str:
         """Cheap snapshot: active-agent count + task counts by status — no
-        spend/strategy/pitch queries (that's the heavier cockpit summary)."""
+        spend/strategy/pitch queries (that's the heavier cockpit summary).
+        Statuses render in lifecycle order (only the nonzero ones), not
+        alphabetically — a CEO scanning on a phone reads top-to-bottom as the
+        pipeline, not as an a-z dump."""
         counts = await get_task_service(self.session).count_by_status()
         active_result = await self.session.execute(
             select(func.count(AgentTable.id)).where(
@@ -361,8 +450,17 @@ class TelegramInboundEngine(BaseService):
             )
         )
         active = active_result.scalar_one()
-        lines = [f"Active agents: {active}", "", "Tasks by status:"]
-        lines += [f"  {k}: {v}" for k, v in sorted(counts.items())]
+        lines = [
+            "<b>🤖 Fleet</b>",
+            f"Active agents: <b>{active}</b>",
+            "",
+            "<b>📋 Tasks</b>",
+        ]
+        lines += [
+            f"• {status.value} — <b>{counts[status.value]}</b>"
+            for status in _STATUS_ORDER
+            if counts.get(status.value)
+        ]
         return _truncate("\n".join(lines))
 
     async def _collect_queue_items(self) -> list[tuple[str, str, str, str]]:
@@ -379,10 +477,7 @@ class TelegramInboundEngine(BaseService):
 
     async def _queue_items_for_tasks(self) -> list[tuple[str, str, str, str]]:
         tasks = await get_task_service(self.session).list_awaiting_ceo_approval()
-        return [
-            ("task", str(t.id)[:8], "", f"[Task] {t.title or 'Untitled'}")
-            for t in tasks
-        ]
+        return [("task", str(t.id)[:8], "", t.title or "Untitled") for t in tasks]
 
     async def _queue_items_for_release(self) -> list[tuple[str, str, str, str]]:
         proposal = await get_release_proposal_service(self.session).open_proposal()
@@ -391,7 +486,7 @@ class TelegramInboundEngine(BaseService):
         id8 = str(proposal.id)[:8]
         report = markers.get_release_report(proposal) or {}
         version = report.get("proposed_version") or "?"
-        return [("release", id8, "", f"[Release] v{version} ready")]
+        return [("release", id8, "", f"v{version} ready")]
 
     async def _queue_items_for_xposts(self) -> list[tuple[str, str, str, str]]:
         posts = await get_x_post_service(self.session).list_open_posts()
@@ -399,7 +494,7 @@ class TelegramInboundEngine(BaseService):
         for post in posts:
             id8 = str(post.id)[:8]
             body = markers.get_x_draft_body(post) or post.description or ""
-            result.append(("xpost", id8, "", f"[X post] {body[:100]}"))
+            result.append(("xpost", id8, "", body[:100]))
         return result
 
     async def _queue_items_for_videos(self) -> list[tuple[str, str, str, str]]:
@@ -409,7 +504,7 @@ class TelegramInboundEngine(BaseService):
             id8 = str(post.id)[:8]
             draft = markers.get_video_draft(post) or {}
             occasion = draft.get("occasion") or "untitled"
-            result.append(("video", id8, "", f"[Video] {occasion}"))
+            result.append(("video", id8, "", occasion))
         return result
 
     async def _queue_items_for_roadmap(self) -> list[tuple[str, str, str, str]]:
@@ -430,20 +525,26 @@ class TelegramInboundEngine(BaseService):
                 continue
             item_id = str(item.get("id") or "")
             title = item.get("title") or "untitled"
-            result.append(("roadmap", id8, item_id, f"[Roadmap] {title}"))
+            result.append(("roadmap", id8, item_id, title))
         return result
 
     async def _send_queue(self, client: TelegramClient) -> None:
         items = await self._collect_queue_items()
         if not items:
-            await client.send_message("Nothing awaiting your approval.")
-            return
-        await client.send_message(f"{len(items)} item(s) awaiting your approval:")
-        for kind, id8, extra, title in items[:_QUEUE_ITEM_CAP]:
-            suffix = f":{extra}" if extra else ""
-            text = _truncate(f"{title} ({id8}{suffix})")
             await client.send_message(
-                text, reply_markup=build_action_keyboard(kind, id8, extra)
+                "✅ Nothing awaiting your approval.", parse_mode="HTML"
+            )
+            return
+        noun = "item" if len(items) == 1 else "items"
+        await client.send_message(
+            f"<b>🔔 Awaiting your approval</b> — {len(items)} {noun}",
+            parse_mode="HTML",
+        )
+        for kind, id8, extra, title in items[:_QUEUE_ITEM_CAP]:
+            await client.send_message(
+                render_queue_item_text(kind, id8, extra, title),
+                reply_markup=build_action_keyboard(kind, id8, extra),
+                parse_mode="HTML",
             )
 
     async def _resolve_task(self, id8: str) -> TaskTable | None:
@@ -464,7 +565,7 @@ class TelegramInboundEngine(BaseService):
     async def _render_task(self, args: str) -> str:
         q = args.strip()
         if not q:
-            return "Usage: /task <id8-or-title-fragment>"
+            return "Usage: /task id8-or-title-fragment"
         task = await self._resolve_task(q)
         if task is None:
             resolved_or_error = await self._search_task_by_fragment(q)
@@ -479,11 +580,14 @@ class TelegramInboundEngine(BaseService):
         rendered error/disambiguation message for the caller to return as-is."""
         candidates = await get_task_service(self.session).search_tasks(q, limit=5)
         if not candidates:
-            return f"No task matches {q!r}."
+            return f"No task matches {_esc(q)!r}."
         if len(candidates) > 1:
-            listing = "\n".join(f"  {str(t.id)[:8]} - {t.title}" for t in candidates)
+            listing = "\n".join(
+                f"• <code>{_esc(str(t.id)[:8])}</code> — {_esc(t.title)}"
+                for t in candidates
+            )
             return (
-                f"Multiple matches for {q!r}:\n{listing}\n\n"
+                f"Multiple matches for {_esc(q)!r}:\n{listing}\n\n"
                 "Retry with a more specific id or title."
             )
         return candidates[0]
@@ -497,15 +601,15 @@ class TelegramInboundEngine(BaseService):
             task.team.value if task.team and hasattr(task.team, "value") else "n/a"
         )
         lines = [
-            f"[{id8}] {task.title or 'Untitled'}",
-            f"Status: {status_val}",
-            f"Team: {team_val}",
+            f"<b><code>{_esc(id8)}</code> {_esc(task.title or 'Untitled')}</b>",
+            f"Status: <b>{_esc(status_val)}</b>",
+            f"Team: {_esc(team_val)}",
         ]
         if task.pr_url:
-            lines.append(f"PR: {task.pr_url}")
+            lines.append(f'PR: <a href="{_esc(task.pr_url)}">View PR</a>')
         link = _deep_link("task", id8)
         if link:
-            lines.append(link)
+            lines.append(f'<a href="{_esc(link)}">Open in panel</a>')
         return "\n".join(lines)
 
     # ---- callback (button) handling ---------------------------------------
@@ -553,7 +657,7 @@ class TelegramInboundEngine(BaseService):
         client: TelegramClient,
     ) -> None:
         field = (
-            f"approval notes (>= {_TASK_APPROVE_MIN_CHARS} chars)"
+            f"approval notes (at least {_TASK_APPROVE_MIN_CHARS} chars)"
             if parsed.action == "apv"
             else "rejection reason"
         )
@@ -561,8 +665,9 @@ class TelegramInboundEngine(BaseService):
             f":{parsed.extra}" if parsed.extra else ""
         )
         prompt = await client.send_message(
-            f"Reply to THIS message with your {field} for {target}.",
+            f"Reply to THIS message with your {field} for <code>{_esc(target)}</code>.",
             reply_markup={"force_reply": True},
+            parse_mode="HTML",
         )
         if prompt.message_id is None:
             return
@@ -596,14 +701,20 @@ class TelegramInboundEngine(BaseService):
     ) -> None:
         """Clears the original message's button row and stamps the outcome —
         the chat stays honest instead of leaving a stale, still-clickable
-        Approve/Reject row after the action already happened."""
+        Approve/Reject row after the action already happened. ``text`` is the
+        single funnel every approve/reject outcome (across all five kinds)
+        flows through, so it's escaped once here rather than at each of the
+        dozen call sites that compose it — it may embed a task title, a
+        rejection reason, or a service-raised error message, all dynamic."""
         icon = "✅" if ok else "❌"
-        rendered = _truncate(f"{icon} {text}")
+        rendered = _truncate(f"{icon} {_esc(text)}")
         if origin_message_id is not None:
             await client.edit_message_reply_markup(int(origin_message_id), None)
-            await client.edit_message_text(int(origin_message_id), rendered)
+            await client.edit_message_text(
+                int(origin_message_id), rendered, parse_mode="HTML"
+            )
         else:
-            await client.send_message(rendered)
+            await client.send_message(rendered, parse_mode="HTML")
 
     def _mark_audit(
         self, kind: str, task_id: UUID, action: str, *, item_id: str = ""
