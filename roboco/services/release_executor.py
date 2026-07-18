@@ -471,7 +471,8 @@ class _GitReleaseOps:
         # binary, so the CLI path fails at publish time with a missing binary.
         import httpx
 
-        from roboco.config import settings
+        from roboco.services.forge import RepoRef
+        from roboco.services.forge.github import GitHubProvider
         from roboco.services.git import GitService
         from roboco.services.project import ProjectService
 
@@ -482,23 +483,16 @@ class _GitReleaseOps:
         if not token:
             raise RuntimeError(f"release publish failed: no git token for {self._slug}")
         owner, repo = GitService._parse_git_url(self._git_url)
-        api_base = settings.github_api_base_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=_PUBLISH_TIMEOUT_SECONDS) as client:
-                resp = await client.post(
-                    f"{api_base}/repos/{owner}/{repo}/releases",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={
-                        "tag_name": tag,
-                        "name": tag,
-                        "body": notes,
-                        "target_commitish": self._default_branch,
-                    },
-                )
+            resp = await GitHubProvider().create_release(
+                RepoRef(owner, repo),
+                token,
+                tag_name=tag,
+                name=tag,
+                body=notes,
+                target_commitish=self._default_branch,
+                timeout=_PUBLISH_TIMEOUT_SECONDS,
+            )
         except httpx.HTTPError as e:
             raise RuntimeError(f"release publish failed: {e}") from e
         if resp.status_code != _HTTP_CREATED:

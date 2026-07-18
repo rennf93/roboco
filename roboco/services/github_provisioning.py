@@ -18,6 +18,8 @@ from dataclasses import dataclass
 import httpx
 
 from roboco.config import settings
+from roboco.services.forge import RepoRef
+from roboco.services.forge.github import GitHubProvider
 
 
 class ProvisioningError(Exception):
@@ -62,6 +64,7 @@ class GitHubProvisioningService:
         )
         self._client = client
         self._owns_client = client is None
+        self._provider = GitHubProvider(base_url=self._base_url)
 
     @property
     def enabled(self) -> bool:
@@ -98,19 +101,14 @@ class GitHubProvisioningService:
             raise ProvisioningDisabledError(msg)
         client = await self._http()
         try:
-            resp = await client.post(
-                f"{self._base_url}/orgs/{self._org}/repos",
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json={
-                    "name": name,
-                    "description": description[:350],
-                    "private": private,
-                    "auto_init": True,
-                },
+            resp = await self._provider.create_org_repo(
+                self._token,
+                self._org,
+                name=name,
+                description=description[:350],
+                private=private,
+                auto_init=True,
+                client=client,
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
@@ -141,13 +139,10 @@ class GitHubProvisioningService:
         """GET ``org/name`` and rebuild a ProvisionedRepo (idempotent re-create)."""
         client = await self._http()
         try:
-            resp = await client.get(
-                f"{self._base_url}/repos/{self._org}/{name}",
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
+            resp = await self._provider.get_repo(
+                RepoRef(self._org, name),
+                self._token,
+                client=client,
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
