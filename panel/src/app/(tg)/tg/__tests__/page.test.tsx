@@ -131,6 +131,20 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("dev mock also engages when the CDN bridge loaded with empty initData", async () => {
+    // A bare browser tab still loads telegram-web-app.js, so the bridge
+    // object exists — only a real Telegram launch carries initData.
+    vi.stubEnv("NODE_ENV", "development");
+    waitForTelegramWebApp.mockResolvedValue(mockWebApp(""));
+
+    render(<TelegramMiniAppPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("tg-tab-bar")).toBeInTheDocument(),
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("starts Telegram theme sync against the #tg-shell element once ready", async () => {
     const shell = document.createElement("div");
     shell.id = "tg-shell";

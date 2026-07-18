@@ -54,7 +54,11 @@ export default function TelegramMiniAppPage() {
     void (async () => {
       let webApp = await waitForTelegramWebApp();
       if (cancelled) return;
-      if (!webApp && process.env.NODE_ENV === "development") {
+      // Outside Telegram the CDN script still loads and defines a bridge
+      // object — just with empty initData (a real launch always carries
+      // it). Either shape means "not a Telegram launch" for the dev
+      // fallback.
+      if (!webApp?.initData && process.env.NODE_ENV === "development") {
         webApp = createDevMockWebApp();
       }
       if (!webApp) {
