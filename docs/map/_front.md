@@ -1,6 +1,6 @@
 # RoboCo — The Complete Map (2026-06-29)
 
-> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 31 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
+> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 35 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
 >
 > Verified range figures: `git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD` returns **2 commits** on `master` (`15effce0` "Chore: 141 Gaps fill-in (#283)" and `3aff6e04` "Chore: Close gaps (#285)"), but the bundled diff is enormous — **577 files changed, +36,653/-4,214 lines** (verified via `git diff --stat`). The two PRs squash months of per-fix work (F0xx audit gaps, F123 worktrees, sequencing, pr_fail loop-closers, model rename, etc.) into two merge commits, so the effective change surface is far larger than the commit count implies. Earlier per-fix commits (e202ce39, 250be5c2, a957e4fa, 82541077, cf7603f3, e52fd05d, 919aa7e2, 12621a36, 9927d248, c03e76c4, 2f322286, c34e978f, 3a4a3fe5, 53d60da3) are ancestors of `15effce0` and are the substance of the gap-fill.
 
@@ -19,35 +19,39 @@
 
 1. foundation-lifecycle
 2. foundation-batch-sequencing
-3. foundation-policy-misc
-4. foundation-conventions-identity
+3. foundation-conventions-identity
+4. foundation-policy-misc
 5. models
 6. db-migrations
-7. task-service
-8. worksession-git
-9. workspace
-10. choreographer
-11. pr-gate-review
-12. gateway-support
-13. orchestrator
-14. runtime-providers
-15. engines-heal-ciwatch-depupdate
-16. release-manager
-17. org-memory-playbooks
-18. notification
-19. a2a-audit-journal-permissions
-20. conventions-service-validator
-21. intake-secretary
-22. product-strategy-research-pitch
+7. api-core-websocket
+8. api-routes-schemas
+9. gateway-support
+10. mcp-servers
+11. choreographer
+12. task-service
+13. worksession-git
+14. workspace
+15. support-services
+16. orchestrator
+17. runtime-providers
+18. prompts-roles-taxonomy
+19. notification
+20. a2a-audit-journal-permissions
+21. pr-gate-review
+22. review-findings
 23. metrics-observability
-24. support-services
-25. mcp-servers
-26. api-core-websocket
-27. api-routes-schemas
-28. panel
-29. deployment-tooling
-30. tests
-31. prompts-roles-taxonomy
+24. conventions-service-validator
+25. intake-secretary
+26. product-strategy-research-pitch
+27. engines-heal-ciwatch-depupdate
+28. release-manager
+29. engine-docs-sync
+30. video-engine
+31. org-memory-playbooks
+32. vault
+33. panel
+34. deployment-tooling
+35. tests
 
 ---
 
