@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Orchestrator API is no longer published on a routable host interface (GHSA-4f7g-w95g-5q2c).** Both deploy composes published the orchestrator's `:8000` on `0.0.0.0`, so anyone who could reach the host hit the control plane directly — bypassing nginx and, in the default header-trust posture (`ROBOCO_AGENT_AUTH_REQUIRED` unset, cloud auth off), reading/writing runtime settings and spoofing `X-Agent-Role: ceo` to spawn/stop agents with no credential. The publish is now bound to `127.0.0.1`; nginx reaches the API over the internal Docker network, so normal operation and on-host debugging are unchanged, while off-host access must go through nginx + cloud auth. The header-trust design itself is unchanged (it stays the deliberate local-no-login panel path); this closes the unintended off-host reachability that gave it teeth.
 
+### Fixed
+
+- **Python quality gate: restored green on roboco-api@slave (CI run 29653535468).** Two independent code-level bugs broke the 'Python quality gate' job, not a dependency pin (pydantic-settings was already correctly pinned at 2.14.2). ① `roboco/services/git.py`: `_delete_remote_branch_best_effort` was typed to return `bool` but its success path fell off the function end with no return statement, failing mypy's `missing-return-statement` check and silently returning `None` instead of the documented `True` — added the missing `return True`. ② `roboco/services/company_goals.py`: `CompanyGoalsService.upsert`'s six repetitive `if key in data: row.key = data[key]` branches pushed the module's average cyclomatic complexity past xenon's `--max-modules A` gate — refactored into a data-driven loop over a `_MUTABLE_FIELDS` tuple (behaviourally identical, now rank A). Verified by reproducing all three CI steps locally on the slave-branch worktree: `uv sync --extra dev`, `alembic upgrade head` (all 76 migrations apply cleanly), and `make quality` (13,510 tests, 94.56% coverage, all gates green).
+
 ## [0.25.0] - 2026-07-16
 
 ### Added
