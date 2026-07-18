@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useStopAgent } from "@/hooks/use-agents";
 import { AgentStatusResponse } from "@/types";
 import { AgentDefinition } from "@/lib/agent-definitions";
@@ -20,11 +21,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreHorizontal, Activity, Square } from "lucide-react";
+import { MoreHorizontal, Activity, MessageSquare, Square } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { agentStateDescription, stateColors } from "./agent-state-badge";
 import { SpawnAgentDialog } from "./spawn-agent-dialog";
+import { EXCLUDE_NON_DM_ROLES } from "@/components/a2a/a2a-new-dm-dialog";
 import type { AgentUsageRow } from "@/types";
 
 interface AgentCardProps {
@@ -34,8 +36,12 @@ interface AgentCardProps {
 }
 
 export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
+  const router = useRouter();
   const stopAgent = useStopAgent();
   const state = agentStatus?.state || "stopped";
+  // Same exclusion list the New DM dialog enforces (self, plus roles that
+  // can't read/answer a DM) — a card for one of those renders no DM button.
+  const canDm = !!agent.role && !EXCLUDE_NON_DM_ROLES.includes(agent.role);
   // "Up" = anything that isn't a terminal/down state. Spawn is offered ONLY when
   // the agent is down; an up agent (active / running / idle / paused / …) shows
   // View Details + Stop instead. We list the DOWN states rather than the up ones
@@ -78,54 +84,72 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
           <CardTitle className="truncate text-base">
             {agent.name || "Unknown Agent"}
           </CardTitle>
-          <DropdownMenu>
-            <HelpTip label="Agent actions">
-              <DropdownMenuTrigger asChild>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {canDm && (
+              <HelpTip label="DM this agent">
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 shrink-0"
-                  aria-label="Agent actions"
-                  title="Agent actions"
+                  className="h-6 w-6"
+                  aria-label="DM this agent"
+                  title="DM this agent"
+                  onClick={() =>
+                    router.push(`/agents?tab=conversations&dm=${agent.id}`)
+                  }
                 >
-                  <MoreHorizontal className="h-3.5 w-3.5" />
+                  <MessageSquare className="h-3.5 w-3.5" />
                 </Button>
-              </DropdownMenuTrigger>
-            </HelpTip>
-            <DropdownMenuContent align="end">
-              {!isActive && (
-                <SpawnAgentDialog agentId={agent.id} agentName={agent.name} />
-              )}
-              {isActive && (
-                <>
-                  <HelpTip label="Open this agent's status, activity, and live output stream" side="left">
-                    <DropdownMenuItem asChild>
-                      <Link href={"/agents/" + agent.id} prefetch={false}>
-                        <Activity className="h-4 w-4 mr-2" />
-                        View Details
-                      </Link>
-                    </DropdownMenuItem>
-                  </HelpTip>
-                  <DropdownMenuSeparator />
-                  <HelpTip label="Lets the agent finish its current step before stopping" side="left">
-                    <DropdownMenuItem onClick={() => handleStop(true)}>
-                      <Square className="h-4 w-4 mr-2" />
-                      Stop Gracefully
-                    </DropdownMenuItem>
-                  </HelpTip>
-                  <HelpTip label="Kills the container immediately, even mid-task" side="left">
-                    <DropdownMenuItem
-                      onClick={() => handleStop(false)}
-                      className="text-red-600"
-                    >
-                      <Square className="h-4 w-4 mr-2" />
-                      Force Stop
-                    </DropdownMenuItem>
-                  </HelpTip>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </HelpTip>
+            )}
+            <DropdownMenu>
+              <HelpTip label="Agent actions">
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0"
+                    aria-label="Agent actions"
+                    title="Agent actions"
+                  >
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </HelpTip>
+              <DropdownMenuContent align="end">
+                {!isActive && (
+                  <SpawnAgentDialog agentId={agent.id} agentName={agent.name} />
+                )}
+                {isActive && (
+                  <>
+                    <HelpTip label="Open this agent's status, activity, and live output stream" side="left">
+                      <DropdownMenuItem asChild>
+                        <Link href={"/agents/" + agent.id} prefetch={false}>
+                          <Activity className="h-4 w-4 mr-2" />
+                          View Details
+                        </Link>
+                      </DropdownMenuItem>
+                    </HelpTip>
+                    <DropdownMenuSeparator />
+                    <HelpTip label="Lets the agent finish its current step before stopping" side="left">
+                      <DropdownMenuItem onClick={() => handleStop(true)}>
+                        <Square className="h-4 w-4 mr-2" />
+                        Stop Gracefully
+                      </DropdownMenuItem>
+                    </HelpTip>
+                    <HelpTip label="Kills the container immediately, even mid-task" side="left">
+                      <DropdownMenuItem
+                        onClick={() => handleStop(false)}
+                        className="text-red-600"
+                      >
+                        <Square className="h-4 w-4 mr-2" />
+                        Force Stop
+                      </DropdownMenuItem>
+                    </HelpTip>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
         <CardDescription className="truncate text-xs">
           {agent.role?.replace(/_/g, " ") || "N/A"}

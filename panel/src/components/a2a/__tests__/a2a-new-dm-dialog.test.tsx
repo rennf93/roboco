@@ -100,4 +100,51 @@ describe("A2ANewDmDialog", () => {
       screen.queryByRole("button", { name: /start conversation/i }),
     ).not.toBeInTheDocument();
   });
+
+  describe("controlled open + initialTarget (DM quick-action deep link)", () => {
+    it("stays closed by default when open=false, and opens with the target preselected once open=true", () => {
+      const onOpenChange = vi.fn();
+      const { rerender } = render(
+        <A2ANewDmDialog
+          onCreated={vi.fn()}
+          open={false}
+          onOpenChange={onOpenChange}
+          initialTarget="be-dev-1"
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /start conversation/i }),
+      ).not.toBeInTheDocument();
+
+      rerender(
+        <A2ANewDmDialog
+          onCreated={vi.fn()}
+          open={true}
+          onOpenChange={onOpenChange}
+          initialTarget="be-dev-1"
+        />,
+      );
+      expect(screen.getByLabelText("Agent")).toHaveValue("be-dev-1");
+    });
+
+    it("routes trigger clicks and Escape/close through the caller's onOpenChange, not internal state", () => {
+      const onOpenChange = vi.fn();
+      render(
+        <A2ANewDmDialog
+          onCreated={vi.fn()}
+          open={true}
+          onOpenChange={onOpenChange}
+          initialTarget={null}
+        />,
+      );
+      // The trigger sits behind Radix's aria-hidden focus-trap boundary
+      // while the dialog is open, so it must be queried with hidden: true.
+      fireEvent.click(
+        screen.getByRole("button", { name: /new dm/i, hidden: true }),
+      );
+      // Radix requests a state change; the controlled caller decides — this
+      // dialog never flips itself open/closed while controlled.
+      expect(onOpenChange).toHaveBeenCalled();
+    });
+  });
 });

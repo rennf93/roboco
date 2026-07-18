@@ -20,7 +20,6 @@ import {
   Cpu,
   Sparkles,
   Building2,
-  Radio,
   Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -87,16 +86,10 @@ export const navItems = [
     tip: "Search the RAG corpus — playbooks, learnings, and vault notes",
   },
   {
-    title: "A2A",
-    href: "/a2a",
-    icon: Radio,
-    tip: "Live agent-to-agent message switchboard and history",
-  },
-  {
     title: "Agents",
     href: "/agents",
     icon: Bot,
-    tip: "Every agent's live state, spawn controls, and activity stream",
+    tip: "Every agent's live state, spawn controls, and A2A conversations",
   },
   {
     title: "Journals",
