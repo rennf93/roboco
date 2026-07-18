@@ -3405,13 +3405,19 @@ class GitService(BaseService):
     async def _sync_target_branch(
         self, workspace: Path, target_branch: str, git_token: str
     ) -> str:
-        """Checkout + pull the target branch, return the tip commit hash.
+        """Checkout + hard-sync the target branch to origin, return its tip.
 
         If the target branch has no local ref (common in agent workspaces that
         only ever checked out their own task branch), fetch it from origin and
-        create a tracking branch before pulling. This prevents the "parent
-        branch doesn't exist locally" SERVICE_ERROR that blocks every leaf→cell
+        create a tracking branch first. This prevents the "parent branch
+        doesn't exist locally" SERVICE_ERROR that blocks every leaf→cell
         merge in a shared workspace.
+
+        The sync is fetch + ``reset --hard origin/<branch>``, never ``pull``:
+        a bare pull fatals on a divergent local ref ("Need to specify how to
+        reconcile divergent branches"), and a local target branch that has
+        drifted from origin in a workspace clone is cruft by definition — the
+        remote side of the merge is authoritative.
         """
         checkout = await self._run_git(
             workspace, ["checkout", target_branch], check=False
@@ -3439,7 +3445,10 @@ class GitService(BaseService):
                         "tracking_stderr": tracking.stderr.strip(),
                     },
                 )
-        await self._run_git(workspace, ["pull"], token=git_token)
+        await self._run_git(
+            workspace, ["fetch", "origin", target_branch], token=git_token
+        )
+        await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
         log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
         return log_result.stdout.strip()
 

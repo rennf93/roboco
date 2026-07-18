@@ -918,15 +918,13 @@ async def test_push_propagates_non_gh001_error_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_sync_target_branch_uses_local_ref_when_present() -> None:
-    """If the target branch already exists locally, just checkout + pull."""
+    """If the target branch exists locally, checkout + hard-sync to origin."""
     svc = _service()
     calls: list[list[str]] = []
 
     async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
         calls.append(args)
         if args[:2] == ["checkout", "feature/backend/parent"]:
-            return MagicMock(returncode=0, stdout="", stderr="")
-        if args[:1] == ["pull"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if args[:2] == ["log", "-1"]:
             return MagicMock(returncode=0, stdout="local-tip-sha", stderr="")
@@ -938,8 +936,10 @@ async def test_sync_target_branch_uses_local_ref_when_present() -> None:
     )
     assert sha == "local-tip-sha"
     assert ["checkout", "feature/backend/parent"] in calls
-    assert ["pull"] in calls
-    assert ["fetch", "origin", "feature/backend/parent"] not in calls
+    assert ["fetch", "origin", "feature/backend/parent"] in calls
+    assert ["reset", "--hard", "origin/feature/backend/parent"] in calls
+    assert ["pull"] not in calls
+    assert ["checkout", "-b", "feature/backend/parent"] not in [c[:3] for c in calls]
 
 
 @pytest.mark.asyncio
@@ -955,8 +955,6 @@ async def test_sync_target_branch_fetches_and_tracks_when_local_ref_missing() ->
         if args[:2] == ["fetch", "origin"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if args[:3] == ["checkout", "-b", "feature/backend/parent"]:
-            return MagicMock(returncode=0, stdout="", stderr="")
-        if args[:1] == ["pull"]:
             return MagicMock(returncode=0, stdout="", stderr="")
         if args[:2] == ["log", "-1"]:
             return MagicMock(returncode=0, stdout="origin-tip-sha", stderr="")
@@ -975,7 +973,8 @@ async def test_sync_target_branch_fetches_and_tracks_when_local_ref_missing() ->
         "feature/backend/parent",
         "origin/feature/backend/parent",
     ] in calls
-    assert ["pull"] in calls
+    assert ["reset", "--hard", "origin/feature/backend/parent"] in calls
+    assert ["pull"] not in calls
 
 
 @pytest.mark.asyncio
