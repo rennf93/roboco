@@ -483,6 +483,17 @@ class ScriptedAgent:
         # test agent IDs and causes 401s. Drop it so tests run in the same
         # unsigned-token mode as CI.
         os.environ.pop("ROBOCO_AGENT_TOKEN", None)
+        # Same leakage class for the per-verb circuit breaker: flow_server /
+        # do_server post rejections to ROBOCO_SDK_URL (default
+        # http://localhost:9000), which is this repo's own live agent SDK
+        # loopback port when the suite happens to run inside a real spawned
+        # agent container. That breaker then records genuine attempts for
+        # the ephemeral test-agent IDs and can trip circuit_open mid-test
+        # (surfaced by test_request_sandbox_guard_chain_over_real_api's 3
+        # deliberately-rejected calls). Point it at a guaranteed-refused
+        # loopback port so every environment sees the same fail-open
+        # bypass CI gets (no SDK process listening at all).
+        os.environ["ROBOCO_SDK_URL"] = "http://127.0.0.1:1"
         module = importlib.import_module(name)
         if getattr(module, "AGENT_ID", None) != str(self.agent_id):
             module = importlib.reload(module)
