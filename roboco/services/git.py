@@ -346,6 +346,20 @@ _FAILING_CHECK_CONCLUSIONS = frozenset(
 _HTTP_NOT_FOUND = 404
 
 
+def _latest_check_runs_by_name(
+    check_runs: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Newest (highest-id) check-run per name — GitHub check-run ids are
+    globally monotonic, so the highest id is the most recent attempt."""
+    latest: dict[str, dict[str, Any]] = {}
+    for cr in check_runs:
+        name = str(cr.get("name") or "check")
+        prev = latest.get(name)
+        if prev is None or int(cr.get("id") or 0) > int(prev.get("id") or 0):
+            latest[name] = cr
+    return latest
+
+
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """Pick the run reflecting the branch's current-HEAD CI conclusion.
 
@@ -3246,16 +3260,23 @@ class GitService(BaseService):
     def _classify_check_runs(
         check_runs: list[dict[str, Any]], head_sha: str
     ) -> dict[str, Any]:
-        """Map a non-empty check-runs list to a failure/pending/success state."""
+        """Map a non-empty check-runs list to a failure/pending/success state.
+
+        Deduped per check name first (see ``_latest_check_runs_by_name``): a
+        superseded duplicate workflow run (the push + pull_request
+        double-trigger) leaves cancelled same-name check-runs on the same
+        SHA that would otherwise mask the surviving run's green forever.
+        """
+        latest = _latest_check_runs_by_name(check_runs)
         failing = [
-            str(cr.get("name") or "check")
-            for cr in check_runs
+            name
+            for name, cr in latest.items()
             if cr.get("status") == "completed"
             and cr.get("conclusion") in _FAILING_CHECK_CONCLUSIONS
         ]
         if failing:
             return {"state": "failure", "failing_checks": failing, "head_sha": head_sha}
-        if any(cr.get("status") != "completed" for cr in check_runs):
+        if any(cr.get("status") != "completed" for cr in latest.values()):
             return {"state": "pending", "head_sha": head_sha}
         return {"state": "success", "head_sha": head_sha}
 

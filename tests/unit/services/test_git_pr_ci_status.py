@@ -117,6 +117,73 @@ async def test_failing_check_names_it() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_duplicate_run_superseded_by_newer_green() -> None:
+    """A superseded duplicate workflow run's cancelled check-run must not mask
+    the newer same-name run's green (the push + pull_request double-trigger
+    leaves both on the same head SHA)."""
+    checks = _resp(
+        200,
+        json_payload={
+            "check_runs": [
+                {
+                    "id": 1,
+                    "name": "tests",
+                    "status": "completed",
+                    "conclusion": "cancelled",
+                },
+                {
+                    "id": 2,
+                    "name": "tests",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ]
+        },
+    )
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "success", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_newest_same_name_run_failing_still_fails() -> None:
+    """Dedup keeps the newest run per name — a red re-run supersedes an older
+    green, never the reverse."""
+    checks = _resp(
+        200,
+        json_payload={
+            "check_runs": [
+                {
+                    "id": 1,
+                    "name": "tests",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 2,
+                    "name": "tests",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ]
+        },
+    )
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out is not None
+    assert out["state"] == "failure"
+    assert out["failing_checks"] == ["tests"]
+
+
+@pytest.mark.asyncio
 async def test_still_running_check_is_pending() -> None:
     checks = _resp(
         200,
