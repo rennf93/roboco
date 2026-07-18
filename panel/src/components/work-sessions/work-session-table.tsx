@@ -148,10 +148,10 @@ export function WorkSessionTable({
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <GitBranch className="h-4 w-4 text-muted-foreground" />
-                      <HelpTip label="Open this session's detail page.">
+                      <HelpTip label="Open the owning task — the session's branch, commits, and PR live on its detail tabs.">
                         <Link
                           prefetch={false}
-                          href={`/work-sessions/${session.id}`}
+                          href={`/tasks/${session.task_id}`}
                           className="font-medium hover:underline font-mono text-sm"
                         >
                           {session.branch_name}
@@ -191,7 +191,7 @@ export function WorkSessionTable({
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Link
-                          href={`/work-sessions/${session.id}`}
+                          href={`/tasks/${session.task_id}`}
                           prefetch={false}
                         >
                           <Button variant="ghost" size="icon">
@@ -199,7 +199,7 @@ export function WorkSessionTable({
                           </Button>
                         </Link>
                       </TooltipTrigger>
-                      <TooltipContent>Open work session</TooltipContent>
+                      <TooltipContent>Open the owning task</TooltipContent>
                     </Tooltip>
                   </TableCell>
                 </TableRow>
@@ -216,11 +216,11 @@ export function WorkSessionTable({
                 <div className="flex min-w-0 items-center gap-2">
                   <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <HelpTip
-                    label={`Open this session's detail page — ${session.branch_name}`}
+                    label={`Open the owning task for ${session.branch_name} — commits and PR live on its detail tabs.`}
                   >
                     <Link
                       prefetch={false}
-                      href={`/work-sessions/${session.id}`}
+                      href={`/tasks/${session.task_id}`}
                       className="truncate font-mono text-sm font-medium hover:underline"
                     >
                       {session.branch_name}
@@ -230,7 +230,7 @@ export function WorkSessionTable({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Link
-                      href={`/work-sessions/${session.id}`}
+                      href={`/tasks/${session.task_id}`}
                       prefetch={false}
                     >
                       <Button variant="ghost" size="icon" className="shrink-0">
@@ -238,7 +238,7 @@ export function WorkSessionTable({
                       </Button>
                     </Link>
                   </TooltipTrigger>
-                  <TooltipContent>Open work session</TooltipContent>
+                  <TooltipContent>Open the owning task</TooltipContent>
                 </Tooltip>
               </div>
               <div className="mt-3 divide-y">

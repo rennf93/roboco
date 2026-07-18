@@ -16,7 +16,6 @@ import {
   XCircle,
   FileCode,
 } from "lucide-react";
-import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { formatAbsoluteTimestamp } from "@/lib/utils";
 import { WorkSessionStatus } from "@/types";
@@ -271,18 +270,6 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
                 addSuffix: true,
               })}
             </div>
-          </HelpTip>
-        </div>
-
-        {/* View Full Session Link */}
-        <div className="flex justify-end pt-2">
-          <HelpTip label="Opens the full work-session record — branch, every commit, and status history">
-            <Link href={`/work-sessions/${session.id}`} prefetch={false}>
-              <Button variant="outline" size="sm" className="gap-2">
-                <ExternalLink className="h-3 w-3" />
-                View Details
-              </Button>
-            </Link>
           </HelpTip>
         </div>
       </CardContent>
