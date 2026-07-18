@@ -230,9 +230,19 @@ OptionalAgentId = Annotated[UUID | None, Depends(get_optional_agent_id)]
 
 
 def _auth_required() -> bool:
-    """True when agent HMAC auth is mandatory (prod-ish) vs opt-in (dev)."""
+    """True when agent HMAC auth is mandatory (prod-ish) vs opt-in (dev).
+
+    An UNSET flag fails closed in production: a public deployment must not sit
+    in header-trust mode, where any client reaching the API can claim
+    ``X-Agent-Role: ceo`` without a signed token (GHSA-4f7g-w95g-5q2c). An
+    explicit opt-out still stands for a trusted private-network prod deploy.
+    """
     val = os.environ.get("ROBOCO_AGENT_AUTH_REQUIRED", "").strip().lower()
-    return val in ("1", "true", "yes")
+    if val in ("1", "true", "yes"):
+        return True
+    if val in ("0", "false", "no"):
+        return False
+    return settings.environment == "production"
 
 
 def _check_agent_auth_token(

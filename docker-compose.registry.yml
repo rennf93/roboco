@@ -314,7 +314,12 @@ services:
       ROBOCO_PORT: 8000
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
       ROBOCO_AGENT_AUTH_SECRET: ${ROBOCO_AGENT_AUTH_SECRET:?ROBOCO_AGENT_AUTH_SECRET is required}
-      ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-false}
+      # Fail closed by default (GHSA-4f7g-w95g-5q2c): this deploy is
+      # ROBOCO_ENVIRONMENT=production, and header-trust off a network-reachable
+      # port lets any client claim X-Agent-Role: ceo. nginx injects the CEO
+      # token below so the panel keeps working. Set false only on a trusted
+      # private network with no untrusted reach to nginx.
+      ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-true}
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
       ROBOCO_LOCAL_LLM_MODEL: glm-5.2:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
@@ -476,7 +481,10 @@ services:
     ports:
       - "3000:80"
     environment:
-      ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:-}
+      # Required when cloud auth is off: with auth armed, nginx must inject a
+      # valid CEO token or the panel is locked out (GHSA-4f7g-w95g-5q2c). Mint
+      # one with the agent-auth secret; see docs/backend/ops.
+      ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:?ROBOCO_PANEL_AGENT_TOKEN is required (mint a CEO token from ROBOCO_AGENT_AUTH_SECRET) unless ROBOCO_CLOUD_AUTH_ENABLED=true}
       NGINX_ENVSUBST_FILTER: "^ROBOCO_"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
