@@ -264,9 +264,19 @@ security: bandit pip-audit
 # QUALITY GATES
 # =============================================================================
 
+# docker-compose.yaml and docker-compose.yml must stay byte-identical: Compose's
+# default file lookup prefers .yaml, so a bare `docker compose up` silently runs
+# whichever twin is stale. This has drifted before (see CHANGELOG's vault-mount
+# divergence) — this is the guard that catches it before it ships again.
+.PHONY: compose-sync
+compose-sync:
+	@cmp -s docker-compose.yml docker-compose.yaml || (echo "docker-compose.yaml has drifted from docker-compose.yml — copy .yml over .yaml" && exit 1)
+
 # Run every quality gate. Fails on any red. Use this as the merge gate.
 .PHONY: quality
 quality: sync
+	@echo "==> compose files in sync (.yaml == .yml)"
+	@$(MAKE) compose-sync
 	@echo "==> ruff format --check"
 	@uv run ruff format --check .
 	@echo "==> ruff check"
