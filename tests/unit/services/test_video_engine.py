@@ -457,6 +457,68 @@ async def test_originate_video_post_holds_draft_for_secretary(
 
 
 @pytest.mark.asyncio
+async def test_originate_video_post_sends_telegram_push(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        notify,
+    )
+    engine = video_engine_module.VideoEngine(db_session)
+    source_task = await engine.open_video_task(
+        occasion="release v1.0.0",
+        script="Here's what shipped",
+        platforms=["x", "tiktok"],
+        brief="Announce the release",
+    )
+    assert source_task is not None
+
+    draft_task = await engine._originate_video_post(
+        source_task=source_task,
+        mp4_paths={"vertical": "/a.mp4", "square": "/b.mp4"},
+        captions={"x": "shipped!", "tiktok": "shipped!"},
+        platforms=["x", "tiktok"],
+    )
+
+    notify.assert_awaited_once()
+    _args, kwargs = notify.await_args
+    assert kwargs["kind"] == "video"
+    assert kwargs["id8"] == str(draft_task.id)[:8]
+    assert kwargs["title"] == "release v1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_originate_video_post_survives_telegram_push_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Telegram send failure must never block the draft itself."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    engine = video_engine_module.VideoEngine(db_session)
+    source_task = await engine.open_video_task(
+        occasion="release v1.0.0", script="s", platforms=["x"], brief="b"
+    )
+    assert source_task is not None
+
+    draft_task = await engine._originate_video_post(
+        source_task=source_task,
+        mp4_paths={"vertical": "/a.mp4", "square": "/b.mp4"},
+        captions={"x": "shipped!"},
+        platforms=["x"],
+    )
+    assert draft_task is not None
+
+
+@pytest.mark.asyncio
 async def test_originate_video_post_not_counted_by_dedupe_against_new_occasion(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

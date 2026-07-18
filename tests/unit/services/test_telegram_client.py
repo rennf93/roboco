@@ -94,6 +94,59 @@ async def test_live_client_send_message_with_reply_markup_and_message_id() -> No
 
 
 @pytest.mark.asyncio
+async def test_live_client_send_message_with_formatting_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert body["parse_mode"] == "HTML"
+        assert body["link_preview_options"] == {"is_disabled": True}
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveTelegramClient(_CREDS, timeout=5.0, client=http_client)
+    result = await client.send_message(
+        "<b>hi</b>", parse_mode="HTML", disable_link_preview=True
+    )
+    assert result.sent is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_live_client_send_message_omits_formatting_fields_when_unset() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert "parse_mode" not in body
+        assert "link_preview_options" not in body
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveTelegramClient(_CREDS, timeout=5.0, client=http_client)
+    result = await client.send_message("hi")
+    assert result.sent is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_live_client_edit_message_text_with_parse_mode() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/bot123456:ABC/editMessageText"
+        body = json.loads(request.content.decode())
+        assert body["text"] == "<b>done</b>"
+        assert body["parse_mode"] == "HTML"
+        assert body["link_preview_options"] == {"is_disabled": True}
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveTelegramClient(_CREDS, timeout=5.0, client=http_client)
+    await client.edit_message_text(
+        7, "<b>done</b>", parse_mode="HTML", disable_link_preview=True
+    )
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_live_client_get_updates_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/bot123456:ABC/getUpdates"
@@ -161,4 +214,5 @@ async def test_null_client_v2_methods_are_all_noops() -> None:
     # None of these raise — that's the whole contract.
     await client.answer_callback_query("cq1", "text")
     await client.edit_message_reply_markup(1, None)
-    await client.edit_message_text(1, "done")
+    await client.edit_message_text(1, "done", parse_mode="HTML")
+    await client.send_message("hi", parse_mode="HTML", disable_link_preview=True)

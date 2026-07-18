@@ -253,6 +253,54 @@ async def test_draft_release_post_dedupes_same_version(
 
 
 @pytest.mark.asyncio
+async def test_originate_post_sends_telegram_push(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_originate_post`` is the shared chokepoint for all three X sources
+    (release/reply/feature) — a freshly-drafted post fires the styled push
+    DM (xpost kind, the draft's id8, its body)."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "RoboCo just shipped a great new feature!")
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        notify,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(
+        version=_VERSION, highlights=["feat: new thing"]
+    )
+    assert task is not None
+    notify.assert_awaited_once()
+    _args, kwargs = notify.await_args
+    assert kwargs["kind"] == "xpost"
+    assert kwargs["id8"] == str(task.id)[:8]
+    body = markers.get_x_draft_body(task)
+    assert body is not None
+    assert kwargs["title"] == body[:100]
+
+
+@pytest.mark.asyncio
+async def test_originate_post_survives_telegram_push_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Telegram send failure must never block the draft itself."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert task is not None
+
+
+@pytest.mark.asyncio
 async def test_draft_release_post_respects_open_cap(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

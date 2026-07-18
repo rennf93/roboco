@@ -18,9 +18,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import structlog
 
 if TYPE_CHECKING:
     from roboco.services.telegram_credentials import TelegramCredentialsData
+
+logger = structlog.get_logger()
 
 _API_BASE = "https://api.telegram.org"
 
@@ -51,6 +54,8 @@ class TelegramClient(ABC):
         *,
         reply_markup: dict[str, Any] | None = None,
         reply_to_message_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
     ) -> TelegramSendResult: ...
 
     @abstractmethod
@@ -75,7 +80,14 @@ class TelegramClient(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def edit_message_text(self, message_id: int, text: str) -> None: ...
+    async def edit_message_text(
+        self,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
+    ) -> None: ...
 
     @abstractmethod
     async def close(self) -> None:
@@ -98,8 +110,10 @@ class NullTelegramClient(TelegramClient):
         *,
         reply_markup: dict[str, Any] | None = None,
         reply_to_message_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
     ) -> TelegramSendResult:
-        _ = (text, reply_markup, reply_to_message_id)
+        _ = (text, reply_markup, reply_to_message_id, parse_mode, disable_link_preview)
         return TelegramSendResult(sent=False, detail="no credentials configured")
 
     async def get_updates(
@@ -118,8 +132,15 @@ class NullTelegramClient(TelegramClient):
     ) -> None:
         _ = (message_id, reply_markup)
 
-    async def edit_message_text(self, message_id: int, text: str) -> None:
-        _ = (message_id, text)
+    async def edit_message_text(
+        self,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
+    ) -> None:
+        _ = (message_id, text, parse_mode, disable_link_preview)
 
 
 class LiveTelegramClient(TelegramClient):
@@ -151,12 +172,31 @@ class LiveTelegramClient(TelegramClient):
             await self._client.aclose()
             self._client = None
 
+    @staticmethod
+    def _format_payload(
+        payload: dict[str, Any],
+        *,
+        parse_mode: str | None,
+        disable_link_preview: bool,
+    ) -> None:
+        """Mutates ``payload`` in place with the formatting fields shared by
+        ``sendMessage``/``editMessageText`` — only when actually set, so a
+        plain-text caller's payload is byte-for-byte unchanged. Bot API 7.0+
+        field name (``disable_web_page_preview`` is the legacy alias, still
+        accepted, but ``link_preview_options`` is current)."""
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        if disable_link_preview:
+            payload["link_preview_options"] = {"is_disabled": True}
+
     async def send_message(
         self,
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
         reply_to_message_id: int | None = None,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
     ) -> TelegramSendResult:
         url = f"{_API_BASE}/bot{self._creds.bot_token}/sendMessage"
         payload: dict[str, Any] = {"chat_id": self._creds.chat_id, "text": text}
@@ -164,6 +204,9 @@ class LiveTelegramClient(TelegramClient):
             payload["reply_markup"] = reply_markup
         if reply_to_message_id is not None:
             payload["reply_to_message_id"] = reply_to_message_id
+        self._format_payload(
+            payload, parse_mode=parse_mode, disable_link_preview=disable_link_preview
+        )
         client = await self._http()
         try:
             resp = await client.post(url, json=payload, timeout=self._timeout)
@@ -223,16 +266,32 @@ class LiveTelegramClient(TelegramClient):
         with contextlib.suppress(httpx.HTTPError):
             await client.post(url, json=payload, timeout=self._timeout)
 
-    async def edit_message_text(self, message_id: int, text: str) -> None:
+    async def edit_message_text(
+        self,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        disable_link_preview: bool = False,
+    ) -> None:
         url = f"{_API_BASE}/bot{self._creds.bot_token}/editMessageText"
         payload: dict[str, Any] = {
             "chat_id": self._creds.chat_id,
             "message_id": message_id,
             "text": text,
         }
+        self._format_payload(
+            payload, parse_mode=parse_mode, disable_link_preview=disable_link_preview
+        )
         client = await self._http()
         with contextlib.suppress(httpx.HTTPError):
-            await client.post(url, json=payload, timeout=self._timeout)
+            resp = await client.post(url, json=payload, timeout=self._timeout)
+            if not resp.is_success:
+                logger.warning(
+                    "telegram edit_message_text failed",
+                    status_code=resp.status_code,
+                    detail=resp.text[:200],
+                )
 
 
 def build_telegram_client(
