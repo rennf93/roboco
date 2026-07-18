@@ -55,8 +55,8 @@ vi.mock("../active-blockers-panel", () => ({
 vi.mock("../recent-activity-feed", () => ({
   RecentActivityFeed: () => <div>RecentActivityFeedStub</div>,
 }));
-vi.mock("../quick-actions-bar", () => ({
-  QuickActionsBar: () => <div>QuickActionsBarStub</div>,
+vi.mock("../quick-actions-card", () => ({
+  QuickActionsCard: () => <div>QuickActionsCardStub</div>,
 }));
 vi.mock("../ceo-approval-queue", () => ({
   CeoApprovalQueue: () => <div>CeoApprovalQueueStub</div>,
@@ -111,7 +111,7 @@ describe("CommandCenter", () => {
   it("renders every section", () => {
     render(<CommandCenter />);
     for (const stub of [
-      "QuickActionsBarStub",
+      "QuickActionsCardStub",
       "KeyMetricsPanelStub",
       "AuditorAlertsPanelStub",
       "UsageOverviewPanelStub",
@@ -135,7 +135,7 @@ describe("CommandCenter", () => {
   it("orders sections top to bottom: quick actions/key cards, team health, then the rest", () => {
     render(<CommandCenter />);
     const order = [
-      "QuickActionsBarStub",
+      "QuickActionsCardStub",
       "KeyMetricsPanelStub",
       "TeamHealthCardsStub",
       "CeoApprovalQueueStub",
