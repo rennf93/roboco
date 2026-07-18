@@ -1,10 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
 const { waitForTelegramWebApp } = vi.hoisted(() => ({
   waitForTelegramWebApp: vi.fn(),
 }));
-vi.mock("@/lib/telegram/webapp", () => ({ waitForTelegramWebApp }));
+// Keep the real dev-mock helpers (createDevMockWebApp / isDevMockWebApp) —
+// only the bridge resolver is faked.
+vi.mock("@/lib/telegram/webapp", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  waitForTelegramWebApp,
+}));
+
+const { startTelegramThemeSync } = vi.hoisted(() => ({
+  startTelegramThemeSync: vi.fn(() => () => undefined),
+}));
+vi.mock("@/lib/telegram/theme", () => ({ startTelegramThemeSync }));
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock("@/lib/api/client", () => ({
@@ -35,13 +45,23 @@ vi.mock("@/components/tg/tg-chat-tab", () => ({
 import TelegramMiniAppPage from "../page";
 
 function mockWebApp(initData = "abc123") {
-  return { ready: vi.fn(), expand: vi.fn(), initData };
+  return {
+    ready: vi.fn(),
+    expand: vi.fn(),
+    disableVerticalSwipes: vi.fn(),
+    initData,
+  };
 }
 
 describe("TelegramMiniAppPage — auth bootstrap", () => {
   beforeEach(() => {
     waitForTelegramWebApp.mockReset();
+    startTelegramThemeSync.mockClear();
     post.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("shows a spinner while validating", () => {
@@ -72,6 +92,7 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
     );
     expect(webApp.ready).toHaveBeenCalledTimes(1);
     expect(webApp.expand).toHaveBeenCalledTimes(1);
+    expect(webApp.disableVerticalSwipes).toHaveBeenCalledTimes(1);
     expect(post).toHaveBeenCalledWith("/telegram/webapp-auth", {
       init_data: "real-init-data",
     });
@@ -90,5 +111,39 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
     );
     expect(screen.getByText("Mini App disabled")).toBeInTheDocument();
     expect(screen.queryByTestId("tg-tab-bar")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the dev mock outside Telegram in development — no auth POST", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    waitForTelegramWebApp.mockResolvedValue(null);
+
+    render(<TelegramMiniAppPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("tg-tab-bar")).toBeInTheDocument(),
+    );
+    expect(post).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText(/open from telegram/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("starts Telegram theme sync against the #tg-shell element once ready", async () => {
+    const shell = document.createElement("div");
+    shell.id = "tg-shell";
+    document.body.appendChild(shell);
+    try {
+      const webApp = mockWebApp();
+      waitForTelegramWebApp.mockResolvedValue(webApp);
+      post.mockResolvedValue({ data: { ok: true } });
+
+      render(<TelegramMiniAppPage />);
+
+      await waitFor(() =>
+        expect(startTelegramThemeSync).toHaveBeenCalledWith(webApp, shell),
+      );
+    } finally {
+      shell.remove();
+    }
   });
 });
