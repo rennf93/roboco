@@ -485,6 +485,7 @@ async def test_originate_video_post_sends_telegram_push(
     )
 
     notify.assert_awaited_once()
+    assert notify.await_args is not None
     _args, kwargs = notify.await_args
     assert kwargs["kind"] == "video"
     assert kwargs["id8"] == str(draft_task.id)[:8]

@@ -274,6 +274,7 @@ async def test_originate_post_sends_telegram_push(
     )
     assert task is not None
     notify.assert_awaited_once()
+    assert notify.await_args is not None
     _args, kwargs = notify.await_args
     assert kwargs["kind"] == "xpost"
     assert kwargs["id8"] == str(task.id)[:8]

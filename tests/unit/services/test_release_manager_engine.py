@@ -238,6 +238,7 @@ async def test_proposes_sends_telegram_push(
     task = await engine.run_cycle()
     assert task is not None
     notify.assert_awaited_once()
+    assert notify.await_args is not None
     _args, kwargs = notify.await_args
     assert kwargs["kind"] == "release"
     assert kwargs["id8"] == str(task.id)[:8]

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -18,6 +18,9 @@ from roboco.services.roadmap_service import RoadmapItemResult
 from roboco.services.telegram_credentials import TelegramCredentialsData
 from roboco.services.video_post_service import VideoPostExecuteResult
 from roboco.services.x_post_service import XPostExecuteResult
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 CEO_UUID = ti._CEO_UUID
 
@@ -857,7 +860,7 @@ def test_format_task_detail_escapes_html_in_title() -> None:
     engine = _engine()
     task = _fake_task(title="<b>bold&joke</b>")
 
-    rendered = engine._format_task_detail(task)
+    rendered = engine._format_task_detail(cast("TaskTable", task))
 
     assert "&lt;b&gt;bold&amp;joke&lt;/b&gt;" in rendered
     assert "<b>bold&joke</b>" not in rendered
@@ -868,7 +871,7 @@ def test_format_task_detail_pr_url_is_a_named_link() -> None:
     task = _fake_task()
     task.pr_url = "https://github.com/example/repo/pull/1"
 
-    rendered = engine._format_task_detail(task)
+    rendered = engine._format_task_detail(cast("TaskTable", task))
 
     assert '<a href="https://github.com/example/repo/pull/1">View PR</a>' in rendered
 
@@ -882,7 +885,7 @@ def test_format_task_detail_pr_url_quote_cannot_break_out_of_href() -> None:
     task = _fake_task()
     task.pr_url = 'https://evil.example/x" onmouseover="alert(1)'
 
-    rendered = engine._format_task_detail(task)
+    rendered = engine._format_task_detail(cast("TaskTable", task))
 
     assert (
         '<a href="https://evil.example/x&quot; onmouseover=&quot;alert(1)">'
