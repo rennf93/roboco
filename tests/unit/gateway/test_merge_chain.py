@@ -72,10 +72,23 @@ class TestResolveParentBranch:
         task_service.get.assert_awaited_once_with(root_id)
 
     @pytest.mark.asyncio
-    async def test_falls_back_when_no_parent(self) -> None:
+    async def test_parentless_root_uses_project_head_rung(self) -> None:
+        # A parentless root's branch was cut from the project's head rung
+        # (panel-configured env ladder), so that rung is the PR base / merge
+        # target — never a literal "master", which on a main-default repo
+        # silently targets a branch the project doesn't use.
         task = MagicMock(parent_task_id=None, branch_name="feature/backend/ROOT0001")
         task_service = AsyncMock()
-        # No parent → root→master.
+        task_service.project_default_branch_for_task = AsyncMock(return_value="main")
+        assert await resolve_parent_branch(task, task_service) == "main"
+        task_service.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parentless_root_falls_back_to_string_when_no_project(self) -> None:
+        task = MagicMock(parent_task_id=None, branch_name="feature/backend/ROOT0001")
+        task_service = AsyncMock()
+        task_service.project_default_branch_for_task = AsyncMock(return_value=None)
+        # No project to consult → string derivation's master fallback.
         assert await resolve_parent_branch(task, task_service) == "master"
         task_service.get.assert_not_called()
 

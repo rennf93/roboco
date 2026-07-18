@@ -76,8 +76,12 @@ async def resolve_parent_branch(task: Any, task_service: Any) -> str:
     created — the merge then has no valid target and the cell↔Main-PM loop
     wedges. In that case fall back to the child task's own project
     default branch (e.g. master), which is what the child branch was actually
-    cut from. Only when there is genuinely no project to consult do we fall
-    back to pure string derivation.
+    cut from. A PARENTLESS root resolves the same way: its branch was cut
+    from the project's head rung (panel-configured env ladder), so that rung
+    is the root PR base / merge target — never a literal ``master``, which
+    on a ``main``-default repo silently targets a branch the project doesn't
+    use. Only when there is genuinely no project to consult do we fall back
+    to pure string derivation.
     """
     parent_id = getattr(task, "parent_task_id", None)
     if parent_id is not None:
@@ -91,6 +95,10 @@ async def resolve_parent_branch(task: Any, task_service: Any) -> str:
             default_branch = await _project_default_branch(task, task_service)
             if default_branch is not None:
                 return default_branch
+    else:
+        default_branch = await _project_default_branch(task, task_service)
+        if default_branch is not None:
+            return default_branch
     return parent_branch_for(task.branch_name)
 
 
