@@ -11,13 +11,14 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentsFleetView } from "@/components/agents/agents-fleet-view";
 import { A2AView } from "@/components/a2a/a2a-view";
+import { JournalsView } from "@/components/journals/journals-view";
 
 // ---------------------------------------------------------------------------
 // Valid tab values
 // ---------------------------------------------------------------------------
 
 interface TabDef {
-  value: "fleet" | "conversations";
+  value: "fleet" | "conversations" | "journals";
   label: string;
   hint: string;
 }
@@ -32,6 +33,11 @@ const TAB_DEFS: TabDef[] = [
     value: "conversations",
     label: "Conversations",
     hint: "Live agent-to-agent message switchboard and history",
+  },
+  {
+    value: "journals",
+    label: "Journals",
+    hint: "Per-agent reflections, learnings, and decisions",
   },
 ];
 
@@ -87,6 +93,10 @@ function AgentsPageContent() {
 
       <TabsContent value="conversations" className="mt-4">
         <A2AView />
+      </TabsContent>
+
+      <TabsContent value="journals" className="mt-4">
+        <JournalsView />
       </TabsContent>
     </Tabs>
   );

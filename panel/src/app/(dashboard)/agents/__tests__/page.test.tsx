@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-// The two tab panes have their own dedicated tests — stub them here so this
-// page test only checks tab composition + the URL-driven default, mirroring
-// workstation/__tests__/page.test.tsx.
+// The three tab panes have their own dedicated tests — stub them here so
+// this page test only checks tab composition + the URL-driven default,
+// mirroring workstation/__tests__/page.test.tsx.
 vi.mock("@/components/agents/agents-fleet-view", () => ({
   AgentsFleetView: () => <div>AgentsFleetViewStub</div>,
 }));
 vi.mock("@/components/a2a/a2a-view", () => ({
   A2AView: () => <div>A2AViewStub</div>,
+}));
+vi.mock("@/components/journals/journals-view", () => ({
+  JournalsView: () => <div>JournalsViewStub</div>,
 }));
 
 const mockReplace = vi.fn();
@@ -53,5 +56,20 @@ describe("AgentsPage", () => {
       "inactive",
     );
     expect(screen.getByText("A2AViewStub")).toBeInTheDocument();
+  });
+
+  it("activates the Journals tab from ?tab=journals", () => {
+    searchParams = new URLSearchParams("tab=journals");
+    render(<AgentsPage />);
+
+    expect(screen.getByRole("tab", { name: "Journals" })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(screen.getByRole("tab", { name: "Fleet" })).toHaveAttribute(
+      "data-state",
+      "inactive",
+    );
+    expect(screen.getByText("JournalsViewStub")).toBeInTheDocument();
   });
 });
