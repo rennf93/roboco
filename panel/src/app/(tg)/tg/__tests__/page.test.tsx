@@ -29,6 +29,9 @@ vi.mock("@/lib/api/client", () => ({
 vi.mock("@/components/tg/tg-tab-bar", () => ({
   TgTabBar: () => <div data-testid="tg-tab-bar" />,
 }));
+vi.mock("@/components/tg/tg-today-tab", () => ({
+  TgTodayTab: () => <div data-testid="tg-today-tab" />,
+}));
 vi.mock("@/components/tg/tg-approvals-tab", () => ({
   TgApprovalsTab: () => <div data-testid="tg-approvals-tab" />,
 }));
@@ -96,8 +99,8 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
     expect(post).toHaveBeenCalledWith("/telegram/webapp-auth", {
       init_data: "real-init-data",
     });
-    // Default tab is Approvals.
-    expect(screen.getByTestId("tg-approvals-tab")).toBeInTheDocument();
+    // Default tab is Today.
+    expect(screen.getByTestId("tg-today-tab")).toBeInTheDocument();
   });
 
   it("renders an error screen with the server's message when auth is refused", async () => {

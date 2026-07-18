@@ -11,6 +11,7 @@ import {
 import { startTelegramThemeSync } from "@/lib/telegram/theme";
 import { TgWebAppProvider } from "@/lib/telegram/hooks";
 import { TgTabBar, type TgTab } from "@/components/tg/tg-tab-bar";
+import { TgTodayTab } from "@/components/tg/tg-today-tab";
 import { TgApprovalsTab } from "@/components/tg/tg-approvals-tab";
 import { TgInboxTab } from "@/components/tg/tg-inbox-tab";
 import { TgBoardTab } from "@/components/tg/tg-board-tab";
@@ -46,7 +47,7 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
  */
 export default function TelegramMiniAppPage() {
   const [state, setState] = useState<BootstrapState>({ kind: "validating" });
-  const [tab, setTab] = useState<TgTab>("approvals");
+  const [tab, setTab] = useState<TgTab>("today");
 
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +130,7 @@ export default function TelegramMiniAppPage() {
   return (
     <TgWebAppProvider webApp={state.webApp}>
       <div className="p-3 pb-20">
+        {tab === "today" && <TgTodayTab onNavigate={setTab} />}
         {tab === "approvals" && <TgApprovalsTab />}
         {tab === "inbox" && <TgInboxTab />}
         {tab === "board" && <TgBoardTab />}

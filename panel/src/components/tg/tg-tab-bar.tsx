@@ -1,15 +1,16 @@
 "use client";
 
-import { CheckSquare, Bell, Kanban, MessageSquare } from "lucide-react";
+import { Gauge, CheckSquare, Bell, Kanban, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type TgTab = "approvals" | "inbox" | "board" | "chat";
+export type TgTab = "today" | "approvals" | "inbox" | "board" | "chat";
 
 const TABS: ReadonlyArray<{
   id: TgTab;
   label: string;
   icon: typeof CheckSquare;
 }> = [
+  { id: "today", label: "Today", icon: Gauge },
   { id: "approvals", label: "Approvals", icon: CheckSquare },
   { id: "inbox", label: "Inbox", icon: Bell },
   { id: "board", label: "Board", icon: Kanban },

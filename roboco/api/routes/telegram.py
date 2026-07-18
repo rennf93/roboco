@@ -23,6 +23,7 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.telegram import (
     TelegramCredentialsSetRequest,
     TelegramCredentialsStatus,
+    TelegramTodayResponse,
     TelegramWebAppAuthRequest,
 )
 from roboco.config import settings
@@ -34,6 +35,7 @@ from roboco.services.telegram_credentials import (
     TelegramCredentialsValidationError,
     get_telegram_credentials_service,
 )
+from roboco.services.tg_cockpit import get_tg_cockpit_service
 from roboco.utils.telegram_initdata import validate_init_data
 
 if TYPE_CHECKING:
@@ -82,6 +84,20 @@ async def set_telegram_credentials(
         ) from e
     await db.commit()
     return TelegramCredentialsStatus(has_credentials=has_creds)
+
+
+@router.get("/today", response_model=TelegramTodayResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+async def get_today_brief(
+    db: DbSession, agent: CurrentAgentContext
+) -> TelegramTodayResponse:
+    """The Mini App's one-round-trip "Today" brief — needs-you items, fleet
+    snapshot, today's spend, ship state. DB-only by construction (see
+    ``TgCockpitService``)."""
+    require_ceo_role(agent.role, action="view the Today brief")
+    return TelegramTodayResponse.model_validate(
+        await get_tg_cockpit_service(db).today()
+    )
 
 
 # ==========================================================================
