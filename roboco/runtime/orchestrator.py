@@ -1891,6 +1891,11 @@ class AgentOrchestrator:
         # without an interactive prompt (which would hang a non-TTY agent
         # container). Explicit deny rules still apply.
         settings: dict[str, Any] = {
+            # Agent commits carry the agent's own identity, never the model
+            # vendor's — without this the CLI's default nudges the model into
+            # appending "Co-Authored-By: Claude <noreply@anthropic.com>" to
+            # commit messages it hands the gateway commit verb.
+            "includeCoAuthoredBy": False,
             "permissions": {
                 "defaultMode": "bypassPermissions",
                 "allow": base_allow + role_config["allow"],

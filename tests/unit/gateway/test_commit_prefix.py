@@ -118,6 +118,45 @@ async def test_commit_strips_then_re_adds_prefix() -> None:
 
 
 @pytest.mark.asyncio
+async def test_commit_strips_ai_attribution_trailer() -> None:
+    """Model self-attribution lines never reach git — agent commits carry the
+    agent's own identity, not the model vendor's."""
+    aid = uuid4()
+    tid = uuid4()
+
+    t = MagicMock(
+        id=tid,
+        assigned_to=aid,
+        active_claimant_id=aid,
+        plan="x",
+        status="in_progress",
+        branch_name="feature/backend/abcd1234",
+    )
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = t
+    git_svc = AsyncMock()
+    git_svc.commit.return_value = {"sha": "deadbeef"}
+
+    deps = _make_deps(task=task_svc, git=git_svc)
+    actions = ContentActions(deps)
+
+    await actions.commit(
+        agent_id=aid,
+        message=(
+            "docs(qa): capture the quality-gate diagnosis notes\n\n"
+            "Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>\n"
+            "🤖 Generated with Claude Code"
+        ),
+    )
+
+    msg = git_svc.commit.await_args.kwargs["message"]
+    assert "Co-Authored-By" not in msg
+    assert "anthropic.com" not in msg
+    assert "Generated with" not in msg
+    assert "capture the quality-gate diagnosis notes" in msg
+
+
+@pytest.mark.asyncio
 async def test_commit_prefix_collapses_multiple_spaces() -> None:
     """`[old]   foo` should become `[new] foo`, not `[new]   foo`."""
     aid = uuid4()

@@ -571,7 +571,7 @@ class ContentActions:
                 ),
                 context_briefing={},
             )
-        subject = _strip_task_prefix(message).strip()
+        subject = _strip_task_prefix(_strip_ai_attribution(message)).strip()
         result = validate_commit_message(
             subject,
             min_chars=settings.commit_subject_min_chars,
@@ -3014,3 +3014,22 @@ class ContentActions:
 def _strip_task_prefix(msg: str) -> str:
     """Strip any [task-id] prefix the agent supplied; gateway re-adds canonical."""
     return _TASK_ID_PREFIX_RE.sub("", msg)
+
+
+_AI_ATTRIBUTION_RE = re.compile(
+    r"co-authored-by:.*(?:anthropic\.com|claude|grok|x\.?ai)"
+    r"|generated with.*(?:claude|grok)",
+    re.IGNORECASE,
+)
+
+
+def _strip_ai_attribution(msg: str) -> str:
+    """Drop model self-attribution lines from a commit message.
+
+    Company policy: agent commits carry the agent's own identity, never the
+    model vendor's. The settings-level ``includeCoAuthoredBy: false`` removes
+    the harness nudge, but the model can still hand-write the trailer — this
+    chokepoint covers every provider deterministically.
+    """
+    kept = [ln for ln in msg.splitlines() if not _AI_ATTRIBUTION_RE.search(ln)]
+    return "\n".join(kept)
