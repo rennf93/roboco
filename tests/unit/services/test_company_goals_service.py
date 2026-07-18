@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ async def test_get_returns_empty_defaults_when_unset(db_session: Any) -> None:
     assert goals["constraints"] == []
     assert goals["operating_policy"] == {}
     assert goals["brand_voice"] == ""
+    assert goals["company_name"] == ""
 
 
 @pytest.mark.asyncio
@@ -89,3 +91,70 @@ async def test_brand_voice_untouched_by_partial_upsert(db_session: Any) -> None:
     goals = await svc.get()
     assert goals["brand_voice"] == "Speak as 'we'."
     assert goals["north_star"] == "Ship a delightful product"
+
+
+@pytest.mark.asyncio
+async def test_company_name_roundtrips(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"company_name": "Acme Robotics"})
+    goals = await svc.get()
+    assert goals["company_name"] == "Acme Robotics"
+
+
+@pytest.mark.asyncio
+async def test_company_name_untouched_by_partial_upsert(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"company_name": "Acme Robotics"})
+    # Mirrors brand_voice's partial-update contract.
+    await svc.upsert({"north_star": "Ship a delightful product"})
+    goals = await svc.get()
+    assert goals["company_name"] == "Acme Robotics"
+    assert goals["north_star"] == "Ship a delightful product"
+
+
+# --------------------------------------------------------------------------- #
+# resolve_product_name — the shared fallback chain XEngine and VideoEngine
+# both brand their drafting prompts with (project name -> company_name ->
+# "RoboCo"). A SimpleNamespace stands in for a ProjectTable: the method only
+# reads ``.name``, so a full project/agent seed adds nothing here.
+# --------------------------------------------------------------------------- #
+
+
+def _project_stub(name: str) -> Any:
+    """A ProjectTable stand-in for resolve_product_name, which only reads
+    ``.name`` — returning ``Any`` (not the SimpleNamespace type) so it type-
+    checks against the real ``ProjectTable | None`` parameter with no cast."""
+    return SimpleNamespace(name=name)
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_name_uses_project_name(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    name = await svc.resolve_product_name(_project_stub("Acme Robotics"))
+    assert name == "Acme Robotics"
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_name_falls_back_to_company_name(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"company_name": "Acme Robotics"})
+    name = await svc.resolve_product_name(None)
+    assert name == "Acme Robotics"
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_name_ignores_a_project_with_no_name(
+    db_session: Any,
+) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"company_name": "Acme Robotics"})
+    name = await svc.resolve_product_name(_project_stub(""))
+    assert name == "Acme Robotics"
+
+
+@pytest.mark.asyncio
+async def test_resolve_product_name_defaults_to_roboco(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"company_name": ""})
+    name = await svc.resolve_product_name(None)
+    assert name == "RoboCo"

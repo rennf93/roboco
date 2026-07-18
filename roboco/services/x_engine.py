@@ -78,11 +78,14 @@ if TYPE_CHECKING:
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MIN_MENTION_CHARS = 3
 
-_HOM_VOICE = (
-    "You are RoboCo's Head of Marketing, posting on the company's X (Twitter) "
-    "account. Confident and concise, no emoji spam, no hashtags unless truly "
-    "apt. Speak as 'we'. Plain text only, no markdown, no thread — one post."
-)
+
+def _hom_voice(product_name: str) -> str:
+    return (
+        f"You are {product_name}'s Head of Marketing, posting on the company's "
+        "X (Twitter) account. Confident and concise, no emoji spam, no "
+        "hashtags unless truly apt. Speak as 'we'. Plain text only, no "
+        "markdown, no thread — one post."
+    )
 
 
 def _clamp_tweet(text: str) -> str:
@@ -93,16 +96,20 @@ def _clamp_tweet(text: str) -> str:
     return collapsed[: MAX_TWEET_CHARS - 1].rstrip() + "…"
 
 
-def _fallback_release_body(version: str, highlights: list[str]) -> str:
+def _fallback_release_body(
+    version: str, highlights: list[str], product_name: str
+) -> str:
     lead = highlights[0] if highlights else "assorted improvements"
-    return f"RoboCo v{version} is out: {lead}"
+    return f"{product_name} v{version} is out: {lead}"
 
 
-def _release_prompt(version: str, highlights: list[str], voice: str) -> str:
+def _release_prompt(
+    version: str, highlights: list[str], voice: str, product_name: str
+) -> str:
     bullets = "\n".join(f"- {h}" for h in highlights[:5]) or "- routine improvements"
     return (
         f"{voice}\n\n"
-        f"Draft ONE tweet (max 280 characters) announcing that RoboCo "
+        f"Draft ONE tweet (max 280 characters) announcing that {product_name} "
         f"v{version} just shipped. Lead with the most user-visible change.\n\n"
         f"Highlights:\n{bullets}\n"
     )
@@ -249,7 +256,7 @@ class XEngine(BaseService):
             return await get_project_service(self.session).get(project_id)
         return await self._roboco_project()
 
-    async def _voice_guide(self) -> str:
+    async def _voice_guide(self, product_name: str) -> str:
         """Baseline house style plus the CEO's brand-voice sample, when set.
 
         The CEO-supplied sample lives in the company charter (``company_goals.
@@ -259,10 +266,11 @@ class XEngine(BaseService):
         """
         charter = await get_company_goals_service(self.session).get()
         brand_voice = (charter.get("brand_voice") or "").strip()
+        hom_voice = _hom_voice(product_name)
         if not brand_voice:
-            return _HOM_VOICE
+            return hom_voice
         return (
-            f"{_HOM_VOICE}\n\n"
+            f"{hom_voice}\n\n"
             f"Additional brand-voice direction from the CEO:\n{brand_voice}"
         )
 
@@ -306,7 +314,10 @@ class XEngine(BaseService):
                 version=version,
             )
             return None
-        body = await self._draft_release_body(version, highlights)
+        product_name = await get_company_goals_service(
+            self.session
+        ).resolve_product_name(project)
+        body = await self._draft_release_body(version, highlights, product_name)
         task = await self._originate_post(
             title=f"X post: release v{version}",
             body=body,
@@ -318,17 +329,23 @@ class XEngine(BaseService):
         self.log.info("x-engine: release post drafted (held for CEO)", version=version)
         return task
 
-    async def _draft_release_body(self, version: str, highlights: list[str]) -> str:
-        voice = await self._voice_guide()
+    async def _draft_release_body(
+        self, version: str, highlights: list[str], product_name: str
+    ) -> str:
+        voice = await self._voice_guide(product_name)
         try:
-            draft = await _chat(_release_prompt(version, highlights, voice))
+            draft = await _chat(
+                _release_prompt(version, highlights, voice, product_name)
+            )
         except Exception as exc:
             self.log.warning(
                 "x-engine: local-model draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
-        body = (draft or "").strip() or _fallback_release_body(version, highlights)
+        body = (draft or "").strip() or _fallback_release_body(
+            version, highlights, product_name
+        )
         return _clamp_tweet(body)
 
     # ---- mentions (periodic poll) ------------------------------------------
@@ -443,7 +460,10 @@ class XEngine(BaseService):
         return task
 
     async def _draft_reply_body(self, screened_mention_text: str) -> str:
-        voice = await self._voice_guide()
+        # Reply drafts are always from RoboCo's own X account (company-scoped
+        # by design, unlike a release/spotlight post which can target any
+        # project) — the literal is intentional, not a missed thread.
+        voice = await self._voice_guide("RoboCo")
         try:
             draft = await _chat(_reply_prompt(screened_mention_text, voice))
         except Exception as exc:

@@ -29,6 +29,8 @@ export interface XPost {
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
   reject_reason?: string | null;
+  project_slug?: string | null;
+  project_name?: string | null;
 }
 
 export interface XPostExecuteResult {
@@ -51,6 +53,8 @@ export interface XPostHistoryEntry {
   tweet_id?: string | null;
   reject_reason?: string | null;
   acted_at: string;
+  project_slug?: string | null;
+  project_name?: string | null;
 }
 
 export interface XCredentialsStatus {

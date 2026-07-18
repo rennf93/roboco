@@ -141,6 +141,32 @@ describe("VideoPostQueue", () => {
     expect(screen.getByDisplayValue("New RoboCo drop!")).toBeInTheDocument();
   });
 
+  it("renders a project badge when project_slug/project_name is present", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "v-1",
+        source: "video_post",
+        title: "Video: release v0.19.0",
+        status: "pending",
+        occasion: "release",
+        script: "Acme Robotics v0.19.0 just shipped!",
+        platforms: ["x", "tiktok"],
+        x_caption: "Acme Robotics v0.19.0 is here!",
+        tiktok_caption: "New Acme Robotics drop!",
+        mp4_paths: {
+          vertical: "/fake/vertical.mp4",
+          square: "/fake/square.mp4",
+        },
+        project_slug: "acme-robotics",
+        project_name: "Acme Robotics",
+      },
+    ] as VideoPost[]);
+
+    render(withQueryClient(<VideoPostQueue />));
+
+    expect(await screen.findByText("Acme Robotics")).toBeInTheDocument();
+  });
+
   it("shows the fetched title and script instead of dropping them", async () => {
     render(withQueryClient(<VideoPostQueue />));
     expect(

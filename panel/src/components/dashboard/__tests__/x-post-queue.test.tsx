@@ -93,6 +93,26 @@ describe("XPostQueue", () => {
     expect(screen.getByText(/Playbook curation/)).toBeInTheDocument();
   });
 
+  it("renders a project badge when project_slug/project_name is present", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "x-4",
+        source: "x_post",
+        title: "X post: release v0.18.0",
+        status: "pending",
+        body: "Acme Robotics v0.18.0 just shipped!",
+        char_count: 36,
+        release_version: "0.18.0",
+        project_slug: "acme-robotics",
+        project_name: "Acme Robotics",
+      },
+    ] as XPost[]);
+
+    render(withQueryClient(<XPostQueue />));
+
+    expect(await screen.findByText("Acme Robotics")).toBeInTheDocument();
+  });
+
   it("disables only the row being approved, not every row's Approve", async () => {
     render(withQueryClient(<XPostQueue />));
 

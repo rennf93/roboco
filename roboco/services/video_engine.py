@@ -129,30 +129,32 @@ def _first_changelog_bullet(changelog: str) -> str:
     return highlights[0] if highlights else ""
 
 
-def _fallback_release_script(version: str, changelog: str) -> str:
+def _fallback_release_script(version: str, changelog: str, product_name: str) -> str:
     highlight = _first_changelog_bullet(changelog)
     lead = f": {highlight}" if highlight else ""
-    return f"RoboCo v{version} just shipped{lead}."
+    return f"{product_name} v{version} just shipped{lead}."
 
 
-def _release_video_prompt(version: str, changelog: str) -> str:
+def _release_video_prompt(version: str, changelog: str, product_name: str) -> str:
     return (
-        "You are RoboCo's marketing team, writing a short voiceover script "
-        "for a bespoke motion-graphics video announcing a release. Plain "
-        "text, 2-3 short sentences, energetic but factual — no invented "
-        "facts.\n\n"
-        f"Write the script for RoboCo v{version}, based on this CHANGELOG "
-        f"entry:\n{changelog[:1000]}\n"
+        f"You are {product_name}'s marketing team, writing a short voiceover "
+        "script for a bespoke motion-graphics video announcing a release. "
+        "Plain text, 2-3 short sentences, energetic but factual — no "
+        "invented facts.\n\n"
+        f"Write the script for {product_name} v{version}, based on this "
+        f"CHANGELOG entry:\n{changelog[:1000]}\n"
     )
 
 
-def _release_video_brief(version: str, changelog: str, highlights: list[str]) -> str:
+def _release_video_brief(
+    version: str, changelog: str, highlights: list[str], product_name: str
+) -> str:
     """The structured release brief: the (capped) CHANGELOG section for this
     version plus its highlights list — replaces the old one-liner-as-
     description. The LLM script stays a separate ``script`` prop suggestion,
     never the whole brief."""
     section = changelog[:_CHANGELOG_BRIEF_CHARS].strip() or "(no changelog entry)"
-    parts = [f"RoboCo v{version} release notes:", section]
+    parts = [f"{product_name} v{version} release notes:", section]
     if highlights:
         bullets = "\n".join(f"- {h}" for h in highlights)
         parts.append(f"Highlights:\n{bullets}")
@@ -455,9 +457,17 @@ class VideoEngine(BaseService):
         """
         if not (settings.video_engine_enabled and settings.video_on_release):
             return None
-        script = await self._draft_release_script(version, changelog)
+        project = (
+            await get_project_service(self.session).get(project_id)
+            if project_id is not None
+            else None
+        )
+        product_name = await get_company_goals_service(
+            self.session
+        ).resolve_product_name(project)
+        script = await self._draft_release_script(version, changelog, product_name)
         highlights = _changelog_highlights(changelog)
-        brief = _release_video_brief(version, changelog, highlights)
+        brief = _release_video_brief(version, changelog, highlights, product_name)
         return await self.open_video_task(
             occasion=f"release {version}",
             script=script,
@@ -467,16 +477,20 @@ class VideoEngine(BaseService):
             project_id=project_id,
         )
 
-    async def _draft_release_script(self, version: str, changelog: str) -> str:
+    async def _draft_release_script(
+        self, version: str, changelog: str, product_name: str
+    ) -> str:
         try:
-            draft = await _chat(_release_video_prompt(version, changelog))
+            draft = await _chat(_release_video_prompt(version, changelog, product_name))
         except Exception as exc:
             self.log.warning(
                 "video-engine: local-model script draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
-        return (draft or "").strip() or _fallback_release_script(version, changelog)
+        return (draft or "").strip() or _fallback_release_script(
+            version, changelog, product_name
+        )
 
     # ---- held draft (materialized once a render pass produces MP4s) -------
 
