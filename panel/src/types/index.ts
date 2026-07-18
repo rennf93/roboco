@@ -1033,6 +1033,9 @@ export interface Project {
   name: string;
   slug: string;
   git_url: string;
+  // Forge provider ("github"|"gitlab"|"gitea"); null = auto-detect from
+  // git_url host (github.com -> github, stamped on create). GitHub-only today.
+  git_provider: string | null;
   default_branch: string;
   // Ordered environment ladder (first=head/PR-target, last=prod/release-target).
   // Null/empty => degenerate 1-rung ladder synthesized from default_branch.
@@ -1071,6 +1074,8 @@ export interface ProjectCreate {
   name: string;
   slug: string;
   git_url: string;
+  // null/omitted = auto-detect from git_url host (github.com -> github).
+  git_provider?: string | null;
   default_branch?: string;
   // Ordered environment ladder; null/empty inherits default_branch (shim).
   environments?: EnvironmentRung[] | null;
@@ -1089,6 +1094,8 @@ export interface ProjectCreate {
 export interface ProjectUpdate {
   name?: string;
   git_url?: string;
+  // null = revert to auto-detect; omitted = leave unchanged.
+  git_provider?: string | null;
   default_branch?: string;
   // Ordered environment ladder; null clears (reverts to default_branch shim).
   environments?: EnvironmentRung[] | null;

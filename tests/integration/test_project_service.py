@@ -93,6 +93,144 @@ async def test_create_project_duplicate_slug_raises(project_setup: dict) -> None
 
 
 @pytest.mark.asyncio
+async def test_create_project_auto_stamps_github(project_setup: dict) -> None:
+    """A github.com git_url with no explicit git_provider auto-stamps 'github'."""
+    svc = project_setup["svc"]
+    project = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    assert project.git_provider == "github"
+
+
+@pytest.mark.asyncio
+async def test_create_project_explicit_github_provider_preserved(
+    project_setup: dict,
+) -> None:
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_provider"] = "github"
+    project = await svc.create(
+        ProjectCreate(**payload_dict), project_setup["creator_id"]
+    )
+    assert project.git_provider == "github"
+
+
+@pytest.mark.asyncio
+async def test_create_project_github_enterprise_escape_hatch(
+    project_setup: dict,
+) -> None:
+    """An explicit git_provider='github' is accepted even on a non-github.com
+    host (the GitHub Enterprise escape hatch)."""
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_url"] = "https://ghe.example.com/owner/repo.git"
+    payload_dict["git_provider"] = "github"
+    project = await svc.create(
+        ProjectCreate(**payload_dict), project_setup["creator_id"]
+    )
+    assert project.git_provider == "github"
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_gitlab_url(project_setup: dict) -> None:
+    """A gitlab.com git_url with no explicit git_provider is rejected loud and
+    early — Phase 0's whole point (was a silent multi-step-deep GitError)."""
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_url"] = "https://gitlab.com/group/project.git"
+    with pytest.raises(ValidationError):
+        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_explicit_gitlab_provider(
+    project_setup: dict,
+) -> None:
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_url"] = "https://gitlab.com/group/project.git"
+    payload_dict["git_provider"] = "gitlab"
+    with pytest.raises(ValidationError):
+        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_unknown_host(project_setup: dict) -> None:
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_url"] = "https://git.internal.example/owner/repo.git"
+    with pytest.raises(ValidationError):
+        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_unknown_provider_string(
+    project_setup: dict,
+) -> None:
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_provider"] = "bitbucket"
+    with pytest.raises(ValidationError):
+        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_git_url_changed_to_gitlab(project_setup: dict) -> None:
+    svc = project_setup["svc"]
+    project = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    with pytest.raises(ValidationError):
+        await svc.update(
+            project.id,
+            ProjectUpdate(git_url="https://gitlab.com/group/project.git"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_git_url_unrelated_field_does_not_reraise_forge(
+    project_setup: dict,
+) -> None:
+    """An update that touches neither git_url nor git_provider never
+    re-validates the forge, so a project's existing (grandfathered) combo
+    can't retroactively block an unrelated rename."""
+    svc = project_setup["svc"]
+    project = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    updated = await svc.update(project.id, ProjectUpdate(name="renamed"))
+    assert updated is not None
+    assert updated.name == "renamed"
+
+
+@pytest.mark.asyncio
+async def test_update_git_provider_to_gitlab_rejected(project_setup: dict) -> None:
+    svc = project_setup["svc"]
+    project = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    with pytest.raises(ValidationError):
+        await svc.update(project.id, ProjectUpdate(git_provider="gitlab"))
+
+
+@pytest.mark.asyncio
+async def test_update_git_provider_explicit_none_reverts_to_auto_detect(
+    project_setup: dict,
+) -> None:
+    """Explicit None clears the override (#197); the still-github.com git_url
+    keeps the update valid via auto-detect."""
+    svc = project_setup["svc"]
+    payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
+    payload_dict["git_provider"] = "github"
+    project = await svc.create(
+        ProjectCreate(**payload_dict), project_setup["creator_id"]
+    )
+    updated = await svc.update(project.id, ProjectUpdate(git_provider=None))
+    assert updated is not None
+    assert updated.git_provider is None
+
+
+@pytest.mark.asyncio
 async def test_create_project_rejects_protected_git_url(
     project_setup: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -521,7 +659,6 @@ async def test_update_sync_state_success(project_setup: dict) -> None:
 async def test_get_decrypted_token_decryption_error(
     project_setup: dict,
 ) -> None:
-
     svc = project_setup["svc"]
     payload = _project_payload(uuid4().hex[:6])
     pd = payload.model_dump()
@@ -549,7 +686,6 @@ async def test_get_decrypted_token_returns_none_when_project_missing(
 async def test_get_decrypted_token_by_slug_decryption_error(
     project_setup: dict,
 ) -> None:
-
     svc = project_setup["svc"]
     payload = _project_payload(uuid4().hex[:6])
     pd = payload.model_dump()
@@ -691,6 +827,5 @@ async def test_check_agent_access_with_allowed_list_membership(
 
 @pytest.mark.asyncio
 async def test_get_project_service_factory(db_session: AsyncSession) -> None:
-
     svc = get_project_service(db_session)
     assert isinstance(svc, ProjectService)

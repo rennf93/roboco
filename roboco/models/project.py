@@ -115,6 +115,17 @@ class Project(TimestampMixin):
 
     # Git Configuration
     git_url: str = Field(..., description="Git repository URL")
+    # Forge provider ("github" | "gitlab" | "gitea"). Null = auto-detect from
+    # git_url host (github.com only today, stamped on create); a self-hosted
+    # host must set this explicitly. Validated by
+    # foundation.policy.forge.validate_project_forge at the service layer.
+    git_provider: str | None = Field(
+        default=None,
+        description=(
+            "Forge provider ('github'|'gitlab'|'gitea'). null = auto-detect "
+            "from git_url host; RoboCo is GitHub-only today."
+        ),
+    )
     default_branch: str = Field(default="master", description="Default branch name")
     protected_branches: list[str] = Field(
         default_factory=lambda: ["main", "master"],
@@ -258,6 +269,13 @@ class ProjectCreate(RobocoBase):
     name: str = Field(..., min_length=1, max_length=100)
     slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     git_url: str
+    git_provider: str | None = Field(
+        default=None,
+        description=(
+            "Forge provider ('github'|'gitlab'|'gitea'). null = auto-detect "
+            "from git_url host (github.com -> github, stamped on create)."
+        ),
+    )
     default_branch: str = "master"
     protected_branches: list[str] = Field(default_factory=lambda: ["main", "master"])
     environments: list[dict[str, str]] | None = None
@@ -283,6 +301,13 @@ class ProjectUpdate(RobocoBase):
 
     name: str | None = None
     git_url: str | None = None
+    git_provider: str | None = Field(
+        default=None,
+        description=(
+            "Forge provider ('github'|'gitlab'|'gitea'). Re-validated against "
+            "the (possibly also-updated) git_url whenever either field is set."
+        ),
+    )
     default_branch: str | None = None
     protected_branches: list[str] | None = None
     environments: list[dict[str, str]] | None = None

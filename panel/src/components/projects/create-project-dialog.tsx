@@ -27,6 +27,7 @@ import { Team, type ProjectCreate } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
 import { HelpTip } from "@/components/ui/help-tip";
+import { Badge } from "@/components/ui/badge";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -185,6 +186,19 @@ export function CreateProjectDialog() {
               />
               <p className="text-xs text-muted-foreground">
                 Use HTTPS URL for token-based authentication
+              </p>
+            </div>
+
+            {/* Forge (read-only — GitHub-only today) */}
+            <div className="grid gap-2">
+              <HelpTip label="Auto-detected from the Git URL's host at creation; RoboCo's PR/CI/review surface is GitHub-only today. GitLab & Gitea support planned.">
+                <Label>Forge</Label>
+              </HelpTip>
+              <div>
+                <Badge variant="secondary">GitHub</Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                GitLab & Gitea support planned.
               </p>
             </div>
 

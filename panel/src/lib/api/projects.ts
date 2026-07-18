@@ -15,6 +15,7 @@ const mockProjects: Project[] = [
     name: "roboco",
     slug: "roboco",
     git_url: "https://github.com/rennf93/roboco.git",
+    git_provider: "github",
     default_branch: "master",
     protected_branches: ["master", "slave"],
     assigned_cell: Team.BACKEND,
@@ -33,6 +34,7 @@ const mockProjects: Project[] = [
     name: "roboco-website",
     slug: "roboco-website",
     git_url: "https://github.com/rennf93/roboco-website.git",
+    git_provider: "github",
     default_branch: "master",
     protected_branches: ["master"],
     assigned_cell: Team.FRONTEND,
@@ -124,6 +126,10 @@ export const projectsApi = {
         name: project.name,
         slug: project.slug,
         git_url: project.git_url,
+        // Mock mode: mirror the backend's auto-detect (github.com -> github).
+        git_provider:
+          project.git_provider ??
+          (project.git_url.includes("github.com") ? "github" : null),
         default_branch: project.default_branch ?? "main",
         environments: project.environments ?? null,
         protected_branches: project.protected_branches ?? ["main", "master"],

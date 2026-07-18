@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from roboco.config import settings
 from roboco.db.tables import ProjectTable, TaskTable
 from roboco.exceptions import ValidationError
+from roboco.foundation.policy.forge import detect_provider, validate_project_forge
 from roboco.models.base import TaskStatus, Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
@@ -62,6 +63,18 @@ class ProjectService(BaseService):
                     field="git_url",
                 )
 
+    def _assert_forge_supported(
+        self, git_url: str | None, git_provider: str | None
+    ) -> None:
+        """Reject an unsupported/unrecognized forge (Phase 0 of the forge-
+        providers spec) — turns today's silent multi-step-deep GitLab/Gitea
+        failure into a loud registration-time error."""
+        error = validate_project_forge(git_url, git_provider)
+        if error:
+            raise ValidationError(
+                error, field="git_provider" if git_provider is not None else "git_url"
+            )
+
     async def create(
         self,
         data: ProjectCreate,
@@ -89,6 +102,13 @@ class ProjectService(BaseService):
             )
 
         self._assert_git_url_allowed(data.git_url)
+        self._assert_forge_supported(data.git_url, data.git_provider)
+
+        # Null + a github.com git_url auto-stamps "github" so the column
+        # reflects reality without forcing every caller to set it explicitly.
+        git_provider = data.git_provider
+        if git_provider is None and detect_provider(data.git_url) == "github":
+            git_provider = "github"
 
         # Encrypt git token if provided
         encrypted_token = None
@@ -103,6 +123,7 @@ class ProjectService(BaseService):
             name=data.name,
             slug=data.slug,
             git_url=data.git_url,
+            git_provider=git_provider,
             default_branch=data.default_branch,
             protected_branches=data.protected_branches,
             environments=data.environments,
@@ -194,6 +215,27 @@ class ProjectService(BaseService):
 
         self._assert_git_url_allowed(data.git_url)
 
+        # Apply updates for explicitly-set fields (excluding git_token which we
+        # handle separately below). exclude_unset keeps UNSET fields out; we do
+        # NOT also exclude_none, so a field the caller explicitly set to None
+        # clears the stored value (distinct from unset = leave unchanged) — #197.
+        update_data = data.model_dump(exclude_unset=True, exclude={"git_token"})
+
+        # Re-validate the forge only when git_url or git_provider is actually
+        # changing. An unrelated rename (neither field touched) skips this
+        # entirely. When git_provider ISN'T explicitly part of THIS call, it
+        # is NOT carried forward from the stored row as if re-declared — a
+        # stored "github" may be a Phase-0 auto-stamp from the *old* git_url,
+        # and trusting it across a host swap would silently smuggle the GHE
+        # escape hatch through exactly the case Phase 0 exists to catch (a
+        # git_url edited onto gitlab.com/gitea while git_provider is left
+        # alone). Changing the host while keeping an explicit override
+        # requires restating git_provider in the same call.
+        if "git_url" in update_data or "git_provider" in update_data:
+            new_git_url = update_data.get("git_url", project.git_url)
+            new_git_provider = update_data.get("git_provider")
+            self._assert_forge_supported(new_git_url, new_git_provider)
+
         # Handle git_token specially (empty string clears, None leaves unchanged)
         token_updated = False
         if data.git_token is not None:
@@ -212,11 +254,6 @@ class ProjectService(BaseService):
                     self.log.error("Failed to encrypt git token", error=str(e))
                     raise
 
-        # Apply updates for explicitly-set fields (excluding git_token which we
-        # handled above). exclude_unset keeps UNSET fields out; we do NOT also
-        # exclude_none, so a field the caller explicitly set to None clears the
-        # stored value (distinct from unset = leave unchanged) — #197.
-        update_data = data.model_dump(exclude_unset=True, exclude={"git_token"})
         for key, value in update_data.items():
             if hasattr(project, key):
                 setattr(project, key, value)

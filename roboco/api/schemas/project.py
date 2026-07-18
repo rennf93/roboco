@@ -29,6 +29,9 @@ class ProjectResponse(BaseModel):
     name: str
     slug: str
     git_url: str
+    # Forge provider ("github"|"gitlab"|"gitea"); null = auto-detect from
+    # git_url host (github.com -> github, stamped on create).
+    git_provider: str | None = None
     default_branch: str
     protected_branches: list[str]
     environments: list[dict[str, str]] | None = None
@@ -114,6 +117,13 @@ class ProjectCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     git_url: str
+    git_provider: str | None = Field(
+        default=None,
+        description=(
+            "Forge provider ('github'|'gitlab'|'gitea'). null = auto-detect "
+            "from git_url host (github.com -> github)."
+        ),
+    )
     default_branch: str = "master"
     protected_branches: list[str] | None = Field(
         default=None,
@@ -149,6 +159,13 @@ class ProjectUpdateRequest(BaseModel):
 
     name: str | None = None
     git_url: str | None = None
+    git_provider: str | None = Field(
+        default=None,
+        description=(
+            "Forge provider ('github'|'gitlab'|'gitea'). Re-validated against "
+            "the (possibly also-updated) git_url whenever either is set."
+        ),
+    )
     default_branch: str | None = None
     protected_branches: list[str] | None = None
     environments: list[dict[str, str]] | None = None
@@ -247,6 +264,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         name=str(project.name),
         slug=str(project.slug),
         git_url=str(project.git_url),
+        git_provider=project.git_provider,
         default_branch=str(default_branch) if default_branch else "master",
         protected_branches=list(project.protected_branches or []),
         environments=list(project.environments) if project.environments else None,
