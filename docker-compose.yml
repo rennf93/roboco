@@ -129,7 +129,7 @@ services:
     container_name: roboco-ollama
     restart: unless-stopped
     environment:
-        OLLAMA_API_KEY: ${OLLAMA_API_KEY}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
     ports:
       - "11435:11434"
     volumes:
@@ -614,6 +614,13 @@ services:
       #     disabled RAISES instead of degrading. Audit model_assignments first
       #     (a stale row pointing at a disabled provider would crash that spawn).
       ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-true}
+      # .env values only reach the container when referenced here — without
+      # these lines the seeded login/secret never arrive and startup fails
+      # loud (ENABLED defaults true above).
+      ROBOCO_CLOUD_AUTH_EMAIL: ${ROBOCO_CLOUD_AUTH_EMAIL:-}
+      ROBOCO_CLOUD_AUTH_PASSWORD: ${ROBOCO_CLOUD_AUTH_PASSWORD:-}
+      ROBOCO_CLOUD_AUTH_SECRET: ${ROBOCO_CLOUD_AUTH_SECRET:-}
+      ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE: ${ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE:-2592000}
       ROBOCO_ROUTING_STRICT: ${ROBOCO_ROUTING_STRICT:-true}
       # Spawn preflight (token-opt Phase 3) — refuse a non-gateway delivery role
       # that would respawn forever. Default-OFF in config; ARMED here (inert in
