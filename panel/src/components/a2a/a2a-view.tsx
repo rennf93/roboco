@@ -121,6 +121,11 @@ function A2AViewContent() {
     setPrevDmParam(dmParam);
     setDmTarget(dmParam);
     setDmDialogOpen(true);
+  } else if (!dmParam && prevDmParam !== null) {
+    // Re-arm once the strip removes `dm` — without this the latch holds the
+    // last value forever and a repeated identical deep link (re-pasted URL,
+    // second DM click without a tab remount) silently does nothing.
+    setPrevDmParam(null);
   }
 
   const {

@@ -50,6 +50,14 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
 }));
 
+vi.mock("@/hooks/use-agents", () => ({
+  useAgentDefinitions: () => ({
+    data: [
+      { id: "be-dev-1", name: "Backend Dev 1", role: "developer", team: "backend" },
+    ],
+  }),
+}));
+
 vi.mock("@/hooks/use-a2a-live", () => ({
   a2aLiveKeys,
   useA2AConversations,
@@ -507,6 +515,22 @@ describe("A2AView", () => {
         screen.queryByText("New direct message"),
       ).not.toBeInTheDocument();
       expect(mockReplace).not.toHaveBeenCalled();
+    });
+
+    it("re-arms for a repeated identical dm value after the strip (latch reset)", () => {
+      searchParams = new URLSearchParams("tab=conversations&dm=be-dev-1");
+      const { rerender } = render(withPageRefresh(<A2AView />));
+      expect(mockReplace).toHaveBeenCalledTimes(1);
+
+      // The strip landed: same mounted view, dm gone from the URL.
+      searchParams = new URLSearchParams("tab=conversations");
+      rerender(withPageRefresh(<A2AView />));
+
+      // The SAME dm value arrives again (re-pasted link / second click
+      // without a tab remount) — the handshake must fire again.
+      searchParams = new URLSearchParams("tab=conversations&dm=be-dev-1");
+      rerender(withPageRefresh(<A2AView />));
+      expect(mockReplace).toHaveBeenCalledTimes(2);
     });
 
     it("drops to a bare /agents path when dm was the only param", () => {

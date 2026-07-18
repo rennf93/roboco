@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import { useCreateCeoConversation } from "@/hooks/use-a2a-live";
+import { useAgentDefinitions } from "@/hooks/use-agents";
 
 // Self, plus every role that can't actually read/answer a DM: auditor and
 // pr_reviewer carry no read_a2a on their manifests, prompter and secretary
@@ -71,12 +72,25 @@ export function A2ANewDmDialog({
     setMessage("");
   };
 
+  // A deep-linked initialTarget is untrusted URL input (?dm=<anything>):
+  // only preselect an agent that exists on the roster AND can receive a DM.
+  // An excluded role, an unknown slug, or a still-loading roster opens the
+  // dialog unselected instead — safe over convenient.
+  const { data: roster = [] } = useAgentDefinitions();
+  const preselectable =
+    !!initialTarget &&
+    roster.some(
+      (a) =>
+        a.id === initialTarget &&
+        (!a.role || !EXCLUDE_NON_DM_ROLES.includes(a.role)),
+    );
+
   // Preselect on the open transition (render-phase adjustment, not an
   // effect — same idiom as the connection-banner reset in a2a-view.tsx).
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
-    if (open && initialTarget) setTargetAgent(initialTarget);
+    if (open && initialTarget && preselectable) setTargetAgent(initialTarget);
   }
 
   const handleSubmit = (e: React.FormEvent) => {

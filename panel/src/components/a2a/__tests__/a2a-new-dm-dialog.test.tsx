@@ -4,6 +4,15 @@ import React from "react";
 
 const { mutate } = vi.hoisted(() => ({ mutate: vi.fn() }));
 
+vi.mock("@/hooks/use-agents", () => ({
+  useAgentDefinitions: () => ({
+    data: [
+      { id: "be-dev-1", name: "Backend Dev 1", role: "developer", team: "backend" },
+      { id: "auditor", name: "Auditor", role: "auditor", team: "board" },
+    ],
+  }),
+}));
+
 vi.mock("@/hooks/use-a2a-live", () => ({
   useCreateCeoConversation: () => ({ mutate, isPending: false }),
 }));
@@ -146,5 +155,31 @@ describe("A2ANewDmDialog", () => {
       // dialog never flips itself open/closed while controlled.
       expect(onOpenChange).toHaveBeenCalled();
     });
+  });
+});
+
+describe("initialTarget validation (untrusted URL input)", () => {
+  it("does not preselect an excluded role deep-linked via ?dm=", () => {
+    render(
+      <A2ANewDmDialog
+        open
+        onOpenChange={() => {}}
+        initialTarget="auditor"
+        onCreated={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Agent")).toHaveValue("");
+  });
+
+  it("does not preselect an unknown slug", () => {
+    render(
+      <A2ANewDmDialog
+        open
+        onOpenChange={() => {}}
+        initialTarget="doesnotexist"
+        onCreated={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Agent")).toHaveValue("");
   });
 });
