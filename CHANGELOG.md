@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- **Orchestrator API is no longer published on a routable host interface (GHSA-4f7g-w95g-5q2c).** Both deploy composes published the orchestrator's `:8000` on `0.0.0.0`, so anyone who could reach the host hit the control plane directly — bypassing nginx and, in the default header-trust posture (`ROBOCO_AGENT_AUTH_REQUIRED` unset, cloud auth off), reading/writing runtime settings and spoofing `X-Agent-Role: ceo` to spawn/stop agents with no credential. The publish is now bound to `127.0.0.1`; nginx reaches the API over the internal Docker network, so normal operation and on-host debugging are unchanged, while off-host access must go through nginx + cloud auth. The header-trust design itself is unchanged (it stays the deliberate local-no-login panel path); this closes the unintended off-host reachability that gave it teeth.
+
 ## [0.25.0] - 2026-07-16
 
 ### Added

@@ -415,7 +415,12 @@ services:
       - data
       - render
     ports:
-      - "8000:8000"
+      # Loopback-only: the orchestrator API is an unauthenticated control plane
+      # in header-trust mode. nginx reaches it over the internal network, so it
+      # never needs a routable host publish; remote access goes via nginx + cloud
+      # auth. A 0.0.0.0 publish exposed spawn/stop and settings-write with no
+      # credential to anyone who could reach the host (GHSA-4f7g-w95g-5q2c).
+      - "127.0.0.1:8000:8000"
     environment:
       # Database (use container name, not localhost)
       ROBOCO_DATABASE_HOST: roboco-postgres
