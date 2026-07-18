@@ -7,7 +7,7 @@ export { AuditorAlertsPanel } from "./auditor-alerts-panel";
 export { ActiveBlockersPanel } from "./active-blockers-panel";
 export { RecentActivityFeed } from "./recent-activity-feed";
 export { ActivityItem } from "./activity-item";
-export { QuickActionsBar } from "./quick-actions-bar";
+export { QuickActionsCard } from "./quick-actions-card";
 export { HealthIndicator } from "./health-indicator";
 export { CeoApprovalQueue } from "./ceo-approval-queue";
 export { ReleaseProposalCard } from "./release-proposal-card";

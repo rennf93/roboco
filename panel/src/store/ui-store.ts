@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Team } from "@/types";
+import { DEFAULT_QUICK_ACTION_IDS } from "@/components/dashboard/quick-actions-registry";
 
 interface UIState {
   // Sidebar
@@ -30,6 +31,12 @@ interface UIState {
   autoRefresh: boolean;
   refreshIntervalSeconds: number;
 
+  // Quick Actions (Overview dashboard) — ordered list of
+  // quick-actions-registry ids the CEO has chosen to show. Per-browser only,
+  // same persisted-preference idiom as everything else in this store; see
+  // quick-actions-card.tsx for the render/customize side.
+  quickActionIds: string[];
+
   // Actions
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -42,6 +49,10 @@ interface UIState {
   setSoundEnabled: (enabled: boolean) => void;
   setAutoRefresh: (enabled: boolean) => void;
   setRefreshIntervalSeconds: (seconds: number) => void;
+
+  // Quick Actions actions
+  setQuickActionIds: (ids: string[]) => void;
+  resetQuickActionIds: () => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -59,6 +70,9 @@ export const useUIStore = create<UIState>()(
       autoRefresh: false, // default-off: never start a background poller unasked
       refreshIntervalSeconds: 30,
 
+      // Quick Actions default
+      quickActionIds: DEFAULT_QUICK_ACTION_IDS,
+
       toggleSidebar: () =>
         set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
@@ -74,6 +88,11 @@ export const useUIStore = create<UIState>()(
       setAutoRefresh: (enabled) => set({ autoRefresh: enabled }),
       setRefreshIntervalSeconds: (seconds) =>
         set({ refreshIntervalSeconds: seconds }),
+
+      // Quick Actions actions
+      setQuickActionIds: (ids) => set({ quickActionIds: ids }),
+      resetQuickActionIds: () =>
+        set({ quickActionIds: DEFAULT_QUICK_ACTION_IDS }),
     }),
     {
       name: "roboco-ui-storage",
@@ -88,6 +107,8 @@ export const useUIStore = create<UIState>()(
         soundEnabled: state.soundEnabled,
         autoRefresh: state.autoRefresh,
         refreshIntervalSeconds: state.refreshIntervalSeconds,
+        // Quick Actions
+        quickActionIds: state.quickActionIds,
       }),
     },
   ),
