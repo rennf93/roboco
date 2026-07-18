@@ -24,6 +24,17 @@ if TYPE_CHECKING:
 # Canonical single-row marker — the charter is a singleton.
 SINGLETON_ID = UUID("00000000-0000-0000-0000-000000000000")
 
+# Charter fields ``upsert`` writes verbatim when present in the partial-update
+# payload (``updated_by`` is handled separately — it's not a charter field).
+_MUTABLE_FIELDS = (
+    "north_star",
+    "objectives",
+    "constraints",
+    "operating_policy",
+    "brand_voice",
+    "company_name",
+)
+
 _EMPTY: dict[str, Any] = {
     "north_star": "",
     "objectives": [],
@@ -57,18 +68,9 @@ class CompanyGoalsService(BaseService):
         if row is None:
             row = CompanyGoalsTable(id=SINGLETON_ID)
             self.session.add(row)
-        if "north_star" in data:
-            row.north_star = data["north_star"]
-        if "objectives" in data:
-            row.objectives = data["objectives"]
-        if "constraints" in data:
-            row.constraints = data["constraints"]
-        if "operating_policy" in data:
-            row.operating_policy = data["operating_policy"]
-        if "brand_voice" in data:
-            row.brand_voice = data["brand_voice"]
-        if "company_name" in data:
-            row.company_name = data["company_name"]
+        for field in _MUTABLE_FIELDS:
+            if field in data:
+                setattr(row, field, data[field])
         if updated_by is not None:
             row.updated_by = updated_by
         await self.session.flush()

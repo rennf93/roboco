@@ -3519,6 +3519,7 @@ class GitService(BaseService):
             await self._forge.delete_branch_ref(
                 RepoRef(owner, repo), git_token, branch, timeout=10.0
             )
+            return True
         except httpx.HTTPError:
             return False
 
