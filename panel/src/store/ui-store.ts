@@ -18,6 +18,11 @@ interface UIState {
   // design doc §1) — same persisted-preference idiom as sidebar/theme.
   a2aContextOpen: boolean;
 
+  // Workstation cards/table toggle, persisted per-surface so Products and
+  // Projects remember their own choice independently. Cards is the default.
+  productsView: "cards" | "table";
+  projectsView: "cards" | "table";
+
   // Client-only Settings-page prefs (never sent to the backend — the
   // server's settings allowlist is transcript_retention_days + feature
   // flags only). Same persisted-preference idiom as sidebar/theme.
@@ -38,6 +43,8 @@ interface UIState {
   setTheme: (theme: "light" | "dark" | "system") => void;
   setCurrentTeam: (team: Team | null) => void;
   toggleA2AContext: () => void;
+  setProductsView: (view: "cards" | "table") => void;
+  setProjectsView: (view: "cards" | "table") => void;
   setNotificationsEnabled: (enabled: boolean) => void;
   setSoundEnabled: (enabled: boolean) => void;
   setAutoRefresh: (enabled: boolean) => void;
@@ -56,6 +63,8 @@ export const useUIStore = create<UIState>()(
       theme: "system",
       currentTeam: null,
       a2aContextOpen: true,
+      productsView: "cards",
+      projectsView: "cards",
       notificationsEnabled: true,
       soundEnabled: true,
       autoRefresh: false, // default-off: never start a background poller unasked
@@ -71,6 +80,8 @@ export const useUIStore = create<UIState>()(
       setCurrentTeam: (team) => set({ currentTeam: team }),
       toggleA2AContext: () =>
         set((state) => ({ a2aContextOpen: !state.a2aContextOpen })),
+      setProductsView: (view) => set({ productsView: view }),
+      setProjectsView: (view) => set({ projectsView: view }),
       setNotificationsEnabled: (enabled) =>
         set({ notificationsEnabled: enabled }),
       setSoundEnabled: (enabled) => set({ soundEnabled: enabled }),
@@ -90,6 +101,8 @@ export const useUIStore = create<UIState>()(
         theme: state.theme,
         currentTeam: state.currentTeam,
         a2aContextOpen: state.a2aContextOpen,
+        productsView: state.productsView,
+        projectsView: state.projectsView,
         notificationsEnabled: state.notificationsEnabled,
         soundEnabled: state.soundEnabled,
         autoRefresh: state.autoRefresh,
