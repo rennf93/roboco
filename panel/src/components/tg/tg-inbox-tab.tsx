@@ -9,6 +9,7 @@ import { getErrorMessage } from "@/lib/api/client";
 import type { Notification } from "@/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { TgAvatar } from "@/components/tg/ui";
 import { Bell, Check } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -17,41 +18,47 @@ import { cn } from "@/lib/utils";
 function TgNotificationRow({ notification }: { notification: Notification }) {
   const acknowledge = useAcknowledgeNotification();
   const needsAck = notification.requires_ack && !notification.is_acknowledged;
+  const sender = getAgentDisplayName(notification.from_agent);
 
   return (
     <div
       className={cn(
-        "rounded-xl border bg-card p-3 text-card-foreground",
-        notification.is_read ? "opacity-70" : "border-l-4 border-l-primary",
+        "flex gap-3 rounded-2xl border bg-card p-3 text-card-foreground",
+        notification.is_read
+          ? "opacity-70"
+          : "border-primary/25 bg-primary/[0.04]",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium leading-snug">
-          {notification.subject}
+      <TgAvatar name={sender} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-medium leading-snug">
+            {notification.subject}
+          </p>
+          {needsAck && (
+            <Button
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              disabled={acknowledge.isPending}
+              onClick={() =>
+                acknowledge.mutate(notification.id, {
+                  onError: (err) => toast.error(getErrorMessage(err)),
+                })
+              }
+            >
+              <Check className="mr-1 h-3.5 w-3.5" />
+              Ack
+            </Button>
+          )}
+        </div>
+        <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+          {notification.body}
         </p>
-        {needsAck && (
-          <Button
-            size="sm"
-            className="h-7 shrink-0 px-2 text-xs"
-            disabled={acknowledge.isPending}
-            onClick={() =>
-              acknowledge.mutate(notification.id, {
-                onError: (err) => toast.error(getErrorMessage(err)),
-              })
-            }
-          >
-            <Check className="mr-1 h-3.5 w-3.5" />
-            Ack
-          </Button>
-        )}
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          {sender} ·{" "}
+          {formatDistanceToNow(new Date(notification.timestamp))} ago
+        </p>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
-        {notification.body}
-      </p>
-      <p className="mt-1.5 text-[11px] text-muted-foreground">
-        {getAgentDisplayName(notification.from_agent)} ·{" "}
-        {formatDistanceToNow(new Date(notification.timestamp))} ago
-      </p>
     </div>
   );
 }

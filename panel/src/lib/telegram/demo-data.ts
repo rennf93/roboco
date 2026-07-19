@@ -137,6 +137,12 @@ export const DEMO_TODAY: TodayBrief = {
       { name: "ux-dev-2", role: "developer", team: "ux_ui", task_title: "v0.26.0 release motion" },
     ],
   },
-  spend: { tokens_today: 2_400_000, cost_today_usd: 18.72 },
+  spend: {
+    tokens_today: 2_400_000,
+    cost_today_usd: 18.72,
+    series: [12.4, 9.1, 15.8, 11.2, 21.6, 14.9, 18.72],
+    delta_pct: 25.6,
+  },
+  velocity: { series: [3, 5, 2, 6, 4, 7, 5], week_total: 32 },
   ship: { version: "0.25.0", open_release_proposal: true, ci_fix_tasks: 0 },
 };

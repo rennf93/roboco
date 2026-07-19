@@ -11,13 +11,17 @@ red.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import cast as sql_cast
+from sqlalchemy import func, select
+from sqlalchemy.types import Date
 
 from roboco.config import settings
-from roboco.db.tables import TaskTable
+from roboco.db.tables import AgentSpawnSessionTable, TaskTable
 from roboco.foundation.policy.content import markers
+from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.task import get_task_service
@@ -33,6 +37,8 @@ if TYPE_CHECKING:
 # Phone-screen caps: the brief shows the top few and a count, never a feed.
 _TASK_ITEM_CAP = 5
 _WORKING_AGENT_CAP = 8
+# Trailing window for the hero spend sparkline and the velocity bars.
+_SERIES_DAYS = 7
 
 
 def _task_item(task: TaskTable) -> dict[str, Any]:
@@ -57,6 +63,7 @@ class TgCockpitService(BaseService):
             "needs_you": needs_you,
             "fleet": await self.fleet(),
             "spend": await self._spend(),
+            "velocity": await self._velocity(),
             "ship": {
                 "version": settings.app_version,
                 "open_release_proposal": needs_you["held_drafts"]["release_proposals"]
@@ -64,6 +71,11 @@ class TgCockpitService(BaseService):
                 "ci_fix_tasks": len(await tasks.list_open_ci_watch_tasks()),
             },
         }
+
+    def _window_dates(self) -> list[date]:
+        """The last ``_SERIES_DAYS`` calendar dates (UTC), oldest → today."""
+        today = datetime.now(UTC).date()
+        return [today - timedelta(days=n) for n in reversed(range(_SERIES_DAYS))]
 
     async def _needs_you(self, tasks: TaskService) -> dict[str, Any]:
         awaiting = await tasks.list_awaiting_ceo_approval()
@@ -130,13 +142,74 @@ class TgCockpitService(BaseService):
         # brief to zeros instead of failing the whole endpoint.
         try:
             summary = await get_usage_service(self.session).get_today_summary()
+            series = await self._spend_series()
+            today = series[-1] if series else 0.0
+            prior = series[-2] if len(series) >= 2 else 0.0  # noqa: PLR2004
             return {
                 "tokens_today": int(summary.get("tokens_today", 0)),
                 "cost_today_usd": float(summary.get("cost_today_usd", 0.0)),
+                "series": series,
+                "delta_pct": _pct_change(today, prior),
             }
         except Exception:  # pragma: no cover - defensive degradation
             self.log.warning("today-brief usage summary failed", exc_info=True)
-            return {"tokens_today": 0, "cost_today_usd": 0.0}
+            return {
+                "tokens_today": 0,
+                "cost_today_usd": 0.0,
+                "series": [0.0] * _SERIES_DAYS,
+                "delta_pct": None,
+            }
+
+    async def _spend_series(self) -> list[float]:
+        """Per-day cost (USD) over the trailing window, zero-filled — the
+        hero sparkline. Grouped by the spawn session's start date, matching
+        what today's spend counts."""
+        day = sql_cast(AgentSpawnSessionTable.started_at, Date).label("day")
+        result = await self.session.execute(
+            select(
+                day,
+                func.coalesce(
+                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                ).label("cost"),
+            )
+            .where(
+                sql_cast(AgentSpawnSessionTable.started_at, Date)
+                >= self._window_dates()[0]
+            )
+            .group_by(day)
+        )
+        by_day = {row.day: float(row.cost) for row in result}
+        return [round(by_day.get(d, 0.0), 4) for d in self._window_dates()]
+
+    async def _velocity(self) -> dict[str, Any]:
+        """Per-day completed-task counts over the trailing window (the
+        'shipped this week' bars) plus the window total."""
+        try:
+            day = sql_cast(TaskTable.completed_at, Date).label("day")
+            result = await self.session.execute(
+                select(day, func.count(TaskTable.id).label("n"))
+                .where(
+                    TaskTable.status == TaskStatus.COMPLETED,
+                    TaskTable.completed_at.isnot(None),
+                    sql_cast(TaskTable.completed_at, Date) >= self._window_dates()[0],
+                )
+                .group_by(day)
+            )
+            by_day = {row.day: int(row.n) for row in result}
+            series = [by_day.get(d, 0) for d in self._window_dates()]
+            return {"series": series, "week_total": sum(series)}
+        except Exception:  # pragma: no cover - defensive degradation
+            self.log.warning("today-brief velocity failed", exc_info=True)
+            return {"series": [0] * _SERIES_DAYS, "week_total": 0}
+
+
+def _pct_change(current: float, prior: float) -> float | None:
+    """Signed percent change vs the prior day; None when there's no prior
+    baseline to compare against (a first day of spend shouldn't read as an
+    infinite spike)."""
+    if prior <= 0:
+        return None
+    return round((current - prior) / prior * 100, 1)
 
 
 def get_tg_cockpit_service(session: AsyncSession) -> TgCockpitService:
