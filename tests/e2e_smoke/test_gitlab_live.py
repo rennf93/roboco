@@ -202,7 +202,8 @@ async def _verify_merge_publish_cli(
         if merged_resp.is_success:
             break
         time.sleep(1.0)
-    assert merged_resp is not None and merged_resp.is_success, merged_resp.text
+    assert merged_resp is not None
+    assert merged_resp.is_success, merged_resp.text
     for _ in range(_MERGE_SETTLE_ATTEMPTS):
         if (await provider.get_pr(ref, _TOKEN, pr_number)).json().get("merged"):
             break
