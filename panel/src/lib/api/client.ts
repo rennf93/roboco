@@ -61,6 +61,16 @@ api.interceptors.request.use(
   },
 );
 
+/**
+ * The Telegram Mini App owns its auth UX: /tg signs in via initData and
+ * renders its own wall. Global mounts (the agent-roster sync) can 401 there
+ * before that sign-in lands — bouncing the webview to the password /login
+ * page it cannot complete would hijack the cockpit.
+ */
+export function isTgSurfacePath(pathname: string): boolean {
+  return /^\/tg(\/|$)/.test(pathname);
+}
+
 // A 401 only means "log in" when cloud auth is actually on. In header-trust /
 // secure mode (cloud auth off) a 401 is a misconfigured agent token, not a
 // missing session — bouncing to /login would dead-end on a page whose backend
@@ -68,6 +78,9 @@ api.interceptors.request.use(
 // doesn't re-enter this interceptor) and only redirect when cloud auth is on.
 async function redirectToLoginIfCloudAuth(): Promise<void> {
   if (typeof window === "undefined" || window.location.pathname === "/login") {
+    return;
+  }
+  if (isTgSurfacePath(window.location.pathname)) {
     return;
   }
   try {
