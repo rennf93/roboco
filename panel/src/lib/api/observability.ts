@@ -167,6 +167,20 @@ export const observabilityApi = {
     return data;
   },
 
+  /** Every agent's rollup scorecard in one batch (N+1 fix for the panel's
+   * Members table) — GET /dashboard/metrics/members?team&days */
+  getAllMemberScorecards: async (
+    days = 30,
+    team?: string,
+  ): Promise<MemberScorecard[]> => {
+    if (isMockMode()) return [];
+    const { data } = await api.get<MemberScorecard[]>(
+      "/dashboard/metrics/members",
+      { params: { days, ...(team ? { team } : {}) } },
+    );
+    return data;
+  },
+
   /** Org / team rollup — GET /dashboard/metrics/org?team&days */
   getOrgScorecard: async (days = 30, team?: string): Promise<OrgScorecard> => {
     if (isMockMode()) return emptyOrg(team ?? null);

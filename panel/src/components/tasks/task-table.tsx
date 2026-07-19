@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, memo } from "react";
 import { Task } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -262,6 +262,319 @@ function SortableHeader({
   );
 }
 
+interface TaskRowProps {
+  node: TaskTreeNode;
+  isExpanded: boolean;
+  childCount: number;
+  projectNames: Record<string, string>;
+  projectGitUrls: Record<string, string>;
+  productNames: Record<string, string>;
+  onToggleExpand: (taskId: string) => void;
+}
+
+// Memoized: a page renders up to 100 of these (PAGE_SIZE_OPTIONS caps there)
+// and re-renders on every sort/page/expand change or unrelated parent update
+// — memoizing stops an unchanged row's markup from being torn down and
+// rebuilt every time. `node` stays referentially stable across React Query
+// refetches for unchanged tasks (structural sharing); projectNames/
+// projectGitUrls/productNames/onToggleExpand are stabilized by the caller.
+const TaskTableRow = memo(function TaskTableRow({
+  node,
+  isExpanded,
+  childCount,
+  projectNames,
+  projectGitUrls,
+  productNames,
+  onToggleExpand,
+}: TaskRowProps) {
+  const task = node.task;
+  const hasChildren = node.children.length > 0;
+
+  const handleRowClick = (e: React.MouseEvent) => {
+    // Don't toggle if clicking on interactive elements
+    const target = e.target as HTMLElement;
+    if (
+      target.closest("a") ||
+      target.closest("button") ||
+      target.closest('[role="button"]') ||
+      target.closest("[data-no-expand]")
+    ) {
+      return;
+    }
+    if (hasChildren) {
+      onToggleExpand(task.id);
+    }
+  };
+
+  return (
+    <TableRow
+      className={cn(
+        "hover:bg-muted/50",
+        node.depth > 0 && "bg-muted/20",
+        hasChildren && "cursor-pointer",
+      )}
+      onClick={handleRowClick}
+    >
+      <TableCell className="max-w-[22rem]">
+        <div
+          className="flex items-center gap-1 min-w-0"
+          style={{ paddingLeft: `${node.depth * 1.5}rem` }}
+        >
+          {hasChildren ? (
+            <HelpTip
+              label={
+                isExpanded
+                  ? "Hides this task's subtasks"
+                  : "Shows this task's subtasks inline"
+              }
+            >
+              <Button
+                onClick={() => onToggleExpand(task.id)}
+                variant="ghost"
+                size="icon-sm"
+                className="p-0.5 h-5 w-5 shrink-0"
+                aria-label={isExpanded ? "Collapse" : "Expand"}
+              >
+                {isExpanded ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRightIcon className="h-4 w-4" />
+                )}
+              </Button>
+            </HelpTip>
+          ) : (
+            <span className="w-5 shrink-0" />
+          )}
+          <Link
+            prefetch={false}
+            href={"/tasks/" + task.id}
+            className="block hover:underline min-w-0"
+          >
+            <div className="font-medium flex items-center gap-2 min-w-0">
+              <span className="truncate" title={task.title}>
+                {task.title}
+              </span>
+              {task.batch_id && !task.parent_task_id && (
+                <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
+                  <Badge
+                    variant="outline"
+                    className="text-xs shrink-0 border-primary/50 text-primary"
+                  >
+                    MegaTask
+                  </Badge>
+                </HelpTip>
+              )}
+              {childCount > 0 && (
+                <HelpTip label="Direct subtasks under this task, regardless of their current status.">
+                  <Badge variant="secondary" className="text-xs shrink-0">
+                    {childCount} subtask
+                    {childCount !== 1 ? "s" : ""}
+                  </Badge>
+                </HelpTip>
+              )}
+            </div>
+          </Link>
+        </div>
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <TaskStatusBadge status={task.status} />
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <GitStatusBadge
+          task={task}
+          repoUrl={
+            task.project_id ? projectGitUrls[task.project_id] : undefined
+          }
+        />
+      </TableCell>
+      <TableCell className="capitalize whitespace-nowrap">
+        {task.team.replace(/_/g, " ")}
+      </TableCell>
+      <TableCell className="whitespace-nowrap text-sm">
+        {task.project_id && projectNames[task.project_id] ? (
+          <span>{projectNames[task.project_id]}</span>
+        ) : task.product_id && productNames[task.product_id] ? (
+          <span className="text-muted-foreground">
+            {productNames[task.product_id]}{" "}
+            <span className="text-xs">(product)</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <Badge
+          className={
+            (priorityColors[task.priority] ?? priorityColors[2]) + " text-xs"
+          }
+        >
+          {priorityLabels[task.priority] ?? "P2 - Medium"}
+        </Badge>
+      </TableCell>
+      <TableCell className="whitespace-nowrap">
+        <HelpTip
+          label={
+            task.assigned_to
+              ? "The agent currently pinned to this task."
+              : "No agent pinned — the orchestrator routes it by role and availability."
+          }
+        >
+          <Badge variant="outline">
+            {getAgentDisplayName(task.assigned_to)}
+          </Badge>
+        </HelpTip>
+      </TableCell>
+      <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+        <HelpTip label={new Date(task.created_at).toLocaleString()}>
+          <span>
+            {formatDistanceToNow(new Date(task.created_at), {
+              addSuffix: true,
+            })}
+          </span>
+        </HelpTip>
+      </TableCell>
+      <TableCell>
+        <TaskActions task={task} />
+      </TableCell>
+    </TableRow>
+  );
+});
+
+// Mobile card counterpart of TaskTableRow — same memoization rationale.
+const TaskTableCard = memo(function TaskTableCard({
+  node,
+  isExpanded,
+  childCount,
+  projectNames,
+  projectGitUrls,
+  productNames,
+  onToggleExpand,
+}: TaskRowProps) {
+  const task = node.task;
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <ResponsiveTableCard style={{ marginLeft: `${node.depth * 1}rem` }}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            {hasChildren && (
+              <HelpTip
+                label={
+                  isExpanded
+                    ? "Hides this task's subtasks"
+                    : "Shows this task's subtasks inline"
+                }
+              >
+                <Button
+                  onClick={() => onToggleExpand(task.id)}
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-5 w-5 shrink-0 p-0.5"
+                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="h-4 w-4" />
+                  ) : (
+                    <ChevronRightIcon className="h-4 w-4" />
+                  )}
+                </Button>
+              </HelpTip>
+            )}
+            <Link
+              prefetch={false}
+              href={"/tasks/" + task.id}
+              className="min-w-0 truncate font-medium hover:underline"
+              title={task.title}
+            >
+              {task.title}
+            </Link>
+          </div>
+          {(task.batch_id && !task.parent_task_id) || childCount > 0 ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {task.batch_id && !task.parent_task_id && (
+                <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
+                  <Badge
+                    variant="outline"
+                    className="border-primary/50 text-xs text-primary"
+                  >
+                    MegaTask
+                  </Badge>
+                </HelpTip>
+              )}
+              {childCount > 0 && (
+                <HelpTip label="Direct subtasks under this task, regardless of their current status.">
+                  <Badge variant="secondary" className="text-xs">
+                    {childCount} subtask
+                    {childCount !== 1 ? "s" : ""}
+                  </Badge>
+                </HelpTip>
+              )}
+            </div>
+          ) : null}
+        </div>
+        <TaskActions task={task} />
+      </div>
+
+      <div className="mt-3 divide-y">
+        <ResponsiveTableCardRow label="Status">
+          <TaskStatusBadge status={task.status} />
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Git">
+          <GitStatusBadge
+            task={task}
+            repoUrl={
+              task.project_id ? projectGitUrls[task.project_id] : undefined
+            }
+          />
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Team">
+          <span className="capitalize">{task.team.replace(/_/g, " ")}</span>
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Project">
+          {task.project_id && projectNames[task.project_id]
+            ? projectNames[task.project_id]
+            : task.product_id && productNames[task.product_id]
+              ? `${productNames[task.product_id]} (product)`
+              : "—"}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Priority">
+          <Badge
+            className={
+              (priorityColors[task.priority] ?? priorityColors[2]) +
+              " text-xs"
+            }
+          >
+            {priorityLabels[task.priority] ?? "P2 - Medium"}
+          </Badge>
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Assigned">
+          <HelpTip
+            label={
+              task.assigned_to
+                ? "The agent currently pinned to this task."
+                : "No agent pinned — the orchestrator routes it by role and availability."
+            }
+          >
+            <Badge variant="outline">
+              {getAgentDisplayName(task.assigned_to)}
+            </Badge>
+          </HelpTip>
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Created">
+          <HelpTip label={new Date(task.created_at).toLocaleString()}>
+            <span>
+              {formatDistanceToNow(new Date(task.created_at), {
+                addSuffix: true,
+              })}
+            </span>
+          </HelpTip>
+        </ResponsiveTableCardRow>
+      </div>
+    </ResponsiveTableCard>
+  );
+});
+
 export function TaskTable({
   tasks,
   isLoading,
@@ -431,19 +744,25 @@ export function TaskTable({
     }
   };
 
-  const toggleExpand = (taskId: string) => {
-    const next = new Set(expandedIds);
-    if (next.has(taskId)) {
-      next.delete(taskId);
-    } else {
-      next.add(taskId);
-    }
-    if (onExpandedChange) {
-      onExpandedChange(next);
-    } else {
-      setInternalExpandedIds(next);
-    }
-  };
+  // Stable across renders that don't touch expand state, so TaskTableRow's
+  // memoization actually holds on an unrelated re-render (e.g. a sibling
+  // page-chrome state change) instead of every row rebuilding regardless.
+  const toggleExpand = useCallback(
+    (taskId: string) => {
+      const next = new Set(expandedIds);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      if (onExpandedChange) {
+        onExpandedChange(next);
+      } else {
+        setInternalExpandedIds(next);
+      }
+    },
+    [expandedIds, onExpandedChange],
+  );
 
   const expandAll = () => {
     const allParentIds = new Set<string>();
@@ -563,171 +882,18 @@ export function TaskTable({
                 ) : paginatedTasks.length === 0 ? (
                   <TaskTableEmpty />
                 ) : (
-                  paginatedTasks.map((node) => {
-                    const task = node.task;
-                    const hasChildren = node.children.length > 0;
-                    const isExpanded = expandedIds.has(task.id);
-                    const childCount = childrenMap.get(task.id)?.length || 0;
-
-                    const handleRowClick = (e: React.MouseEvent) => {
-                      // Don't toggle if clicking on interactive elements
-                      const target = e.target as HTMLElement;
-                      if (
-                        target.closest("a") ||
-                        target.closest("button") ||
-                        target.closest('[role="button"]') ||
-                        target.closest("[data-no-expand]")
-                      ) {
-                        return;
-                      }
-                      if (hasChildren) {
-                        toggleExpand(task.id);
-                      }
-                    };
-
-                    return (
-                      <TableRow
-                        key={task.id}
-                        className={cn(
-                          "hover:bg-muted/50",
-                          node.depth > 0 && "bg-muted/20",
-                          hasChildren && "cursor-pointer",
-                        )}
-                        onClick={handleRowClick}
-                      >
-                        <TableCell className="max-w-[22rem]">
-                          <div
-                            className="flex items-center gap-1 min-w-0"
-                            style={{ paddingLeft: `${node.depth * 1.5}rem` }}
-                          >
-                            {hasChildren ? (
-                              <HelpTip
-                                label={
-                                  isExpanded
-                                    ? "Hides this task's subtasks"
-                                    : "Shows this task's subtasks inline"
-                                }
-                              >
-                                <Button
-                                  onClick={() => toggleExpand(task.id)}
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="p-0.5 h-5 w-5 shrink-0"
-                                  aria-label={isExpanded ? "Collapse" : "Expand"}
-                                >
-                                  {isExpanded ? (
-                                    <ChevronDown className="h-4 w-4" />
-                                  ) : (
-                                    <ChevronRightIcon className="h-4 w-4" />
-                                  )}
-                                </Button>
-                              </HelpTip>
-                            ) : (
-                              <span className="w-5 shrink-0" />
-                            )}
-                            <Link
-                              prefetch={false}
-                              href={"/tasks/" + task.id}
-                              className="block hover:underline min-w-0"
-                            >
-                              <div className="font-medium flex items-center gap-2 min-w-0">
-                                <span className="truncate" title={task.title}>
-                                  {task.title}
-                                </span>
-                                {task.batch_id && !task.parent_task_id && (
-                                  <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
-                                    <Badge
-                                      variant="outline"
-                                      className="text-xs shrink-0 border-primary/50 text-primary"
-                                    >
-                                      MegaTask
-                                    </Badge>
-                                  </HelpTip>
-                                )}
-                                {childCount > 0 && (
-                                  <HelpTip label="Direct subtasks under this task, regardless of their current status.">
-                                    <Badge
-                                      variant="secondary"
-                                      className="text-xs shrink-0"
-                                    >
-                                      {childCount} subtask
-                                      {childCount !== 1 ? "s" : ""}
-                                    </Badge>
-                                  </HelpTip>
-                                )}
-                              </div>
-                            </Link>
-                          </div>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <TaskStatusBadge status={task.status} />
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <GitStatusBadge
-                            task={task}
-                            repoUrl={
-                              task.project_id
-                                ? projectGitUrls[task.project_id]
-                                : undefined
-                            }
-                          />
-                        </TableCell>
-                        <TableCell className="capitalize whitespace-nowrap">
-                          {task.team.replace(/_/g, " ")}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-sm">
-                          {task.project_id && projectNames[task.project_id] ? (
-                            <span>{projectNames[task.project_id]}</span>
-                          ) : task.product_id &&
-                            productNames[task.product_id] ? (
-                            <span className="text-muted-foreground">
-                              {productNames[task.product_id]}{" "}
-                              <span className="text-xs">(product)</span>
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <Badge
-                            className={
-                              (priorityColors[task.priority] ??
-                                priorityColors[2]) + " text-xs"
-                            }
-                          >
-                            {priorityLabels[task.priority] ?? "P2 - Medium"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <HelpTip
-                            label={
-                              task.assigned_to
-                                ? "The agent currently pinned to this task."
-                                : "No agent pinned — the orchestrator routes it by role and availability."
-                            }
-                          >
-                            <Badge variant="outline">
-                              {getAgentDisplayName(task.assigned_to)}
-                            </Badge>
-                          </HelpTip>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                          <HelpTip
-                            label={new Date(task.created_at).toLocaleString()}
-                          >
-                            <span>
-                              {formatDistanceToNow(new Date(task.created_at), {
-                                addSuffix: true,
-                              })}
-                            </span>
-                          </HelpTip>
-                        </TableCell>
-                        <TableCell>
-                          <TaskActions task={task} />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
+                  paginatedTasks.map((node) => (
+                    <TaskTableRow
+                      key={node.task.id}
+                      node={node}
+                      isExpanded={expandedIds.has(node.task.id)}
+                      childCount={childrenMap.get(node.task.id)?.length || 0}
+                      projectNames={projectNames}
+                      projectGitUrls={projectGitUrls}
+                      productNames={productNames}
+                      onToggleExpand={toggleExpand}
+                    />
+                  ))
                 )}
               </TableBody>
             </Table>
@@ -741,143 +907,18 @@ export function TaskTable({
               </ResponsiveTableCardEmpty>
             ) : (
               <ResponsiveTableCardList className="p-3">
-                {paginatedTasks.map((node) => {
-                  const task = node.task;
-                  const hasChildren = node.children.length > 0;
-                  const isExpanded = expandedIds.has(task.id);
-                  const childCount = childrenMap.get(task.id)?.length || 0;
-
-                  return (
-                    <ResponsiveTableCard
-                      key={task.id}
-                      style={{ marginLeft: `${node.depth * 1}rem` }}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            {hasChildren && (
-                              <HelpTip
-                                label={
-                                  isExpanded
-                                    ? "Hides this task's subtasks"
-                                    : "Shows this task's subtasks inline"
-                                }
-                              >
-                                <Button
-                                  onClick={() => toggleExpand(task.id)}
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="h-5 w-5 shrink-0 p-0.5"
-                                  aria-label={isExpanded ? "Collapse" : "Expand"}
-                                >
-                                  {isExpanded ? (
-                                    <ChevronDown className="h-4 w-4" />
-                                  ) : (
-                                    <ChevronRightIcon className="h-4 w-4" />
-                                  )}
-                                </Button>
-                              </HelpTip>
-                            )}
-                            <Link
-                              prefetch={false}
-                              href={"/tasks/" + task.id}
-                              className="min-w-0 truncate font-medium hover:underline"
-                              title={task.title}
-                            >
-                              {task.title}
-                            </Link>
-                          </div>
-                          {(task.batch_id && !task.parent_task_id) ||
-                          childCount > 0 ? (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {task.batch_id && !task.parent_task_id && (
-                                <HelpTip label="A multi-task batch — this is the umbrella task for a set of related tasks">
-                                  <Badge
-                                    variant="outline"
-                                    className="border-primary/50 text-xs text-primary"
-                                  >
-                                    MegaTask
-                                  </Badge>
-                                </HelpTip>
-                              )}
-                              {childCount > 0 && (
-                                <HelpTip label="Direct subtasks under this task, regardless of their current status.">
-                                  <Badge variant="secondary" className="text-xs">
-                                    {childCount} subtask
-                                    {childCount !== 1 ? "s" : ""}
-                                  </Badge>
-                                </HelpTip>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
-                        <TaskActions task={task} />
-                      </div>
-
-                      <div className="mt-3 divide-y">
-                        <ResponsiveTableCardRow label="Status">
-                          <TaskStatusBadge status={task.status} />
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Git">
-                          <GitStatusBadge
-                            task={task}
-                            repoUrl={
-                              task.project_id
-                                ? projectGitUrls[task.project_id]
-                                : undefined
-                            }
-                          />
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Team">
-                          <span className="capitalize">
-                            {task.team.replace(/_/g, " ")}
-                          </span>
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Project">
-                          {task.project_id && projectNames[task.project_id]
-                            ? projectNames[task.project_id]
-                            : task.product_id && productNames[task.product_id]
-                              ? `${productNames[task.product_id]} (product)`
-                              : "—"}
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Priority">
-                          <Badge
-                            className={
-                              (priorityColors[task.priority] ??
-                                priorityColors[2]) + " text-xs"
-                            }
-                          >
-                            {priorityLabels[task.priority] ?? "P2 - Medium"}
-                          </Badge>
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Assigned">
-                          <HelpTip
-                            label={
-                              task.assigned_to
-                                ? "The agent currently pinned to this task."
-                                : "No agent pinned — the orchestrator routes it by role and availability."
-                            }
-                          >
-                            <Badge variant="outline">
-                              {getAgentDisplayName(task.assigned_to)}
-                            </Badge>
-                          </HelpTip>
-                        </ResponsiveTableCardRow>
-                        <ResponsiveTableCardRow label="Created">
-                          <HelpTip
-                            label={new Date(task.created_at).toLocaleString()}
-                          >
-                            <span>
-                              {formatDistanceToNow(new Date(task.created_at), {
-                                addSuffix: true,
-                              })}
-                            </span>
-                          </HelpTip>
-                        </ResponsiveTableCardRow>
-                      </div>
-                    </ResponsiveTableCard>
-                  );
-                })}
+                {paginatedTasks.map((node) => (
+                  <TaskTableCard
+                    key={node.task.id}
+                    node={node}
+                    isExpanded={expandedIds.has(node.task.id)}
+                    childCount={childrenMap.get(node.task.id)?.length || 0}
+                    projectNames={projectNames}
+                    projectGitUrls={projectGitUrls}
+                    productNames={productNames}
+                    onToggleExpand={toggleExpand}
+                  />
+                ))}
               </ResponsiveTableCardList>
             )
           }

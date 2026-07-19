@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useRef } from "react";
 import { Task, TaskStatus } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,7 +13,13 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { taskStatusDescription } from "@/components/tasks/task-status-badge";
 import { KanbanCard } from "./kanban-card";
 import { useDroppable } from "@dnd-kit/core";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "@/lib/utils";
+
+// Rough collapsed-card height (title + badges + assign row) used as the
+// virtualizer's initial estimate — corrected per-card via measureElement
+// once mounted, so a wrong guess only costs one extra frame of scroll jitter.
+const ESTIMATED_CARD_HEIGHT = 132;
 
 interface KanbanColumnProps {
   id: string;
@@ -27,7 +34,11 @@ interface KanbanColumnProps {
   className?: string;
 }
 
-export function KanbanColumn({
+// Memoized: KanbanBoard renders one of these per lifecycle-status column, and
+// a column's `tasks` slice is stabilized upstream (kanban-board.tsx's
+// tasksByStatus useMemo) so an unrelated board re-render (dialogs, drag
+// state) skips every column that didn't actually change.
+function KanbanColumnImpl({
   id: _id,
   title,
   status,
@@ -41,6 +52,20 @@ export function KanbanColumn({
   void _id; // Reserved for future use
   const { setNodeRef, isOver } = useDroppable({
     id: status,
+  });
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // A column can carry hundreds of cards (every task in a status, across a
+  // whole team's history) — window the DOM to roughly what's on screen
+  // instead of mounting every dnd-kit draggable card at once. Safe with
+  // dnd-kit here because the drop target is the column itself
+  // (useDroppable above), not per-card — cards only register useDraggable,
+  // no sortable reordering depends on every card's DOM node existing.
+  const rowVirtualizer = useVirtualizer({
+    count: tasks.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_CARD_HEIGHT,
+    overscan: 6,
+    getItemKey: (index) => tasks[index]?.id ?? index,
   });
 
   return (
@@ -88,8 +113,9 @@ export function KanbanColumn({
       </div>
       {/* Native overflow scroll: Radix ScrollArea's display:table viewport
           let cards grow past the column width and clip — a plain div keeps
-          content constrained to the column. */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+          content constrained to the column. Also the virtualizer's scroll
+          container. */}
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-2">
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-24" />
@@ -101,22 +127,37 @@ export function KanbanColumn({
             No tasks
           </div>
         ) : (
-          <div className="space-y-2 pr-2">
-            {tasks.map((task) => (
-              <KanbanCard
-                key={task.id}
-                task={task}
-                onAction={onAction}
-                showQaActions={
-                  showQaActions &&
-                  (status === TaskStatus.AWAITING_QA ||
-                    status === TaskStatus.VERIFYING)
-                }
-              />
-            ))}
+          <div
+            className="relative w-full"
+            style={{ height: rowVirtualizer.getTotalSize() }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const task = tasks[virtualRow.index];
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute top-0 left-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <KanbanCard
+                    task={task}
+                    onAction={onAction}
+                    showQaActions={
+                      showQaActions &&
+                      (status === TaskStatus.AWAITING_QA ||
+                        status === TaskStatus.VERIFYING)
+                    }
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+export const KanbanColumn = memo(KanbanColumnImpl);

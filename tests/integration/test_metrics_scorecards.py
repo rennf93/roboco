@@ -293,6 +293,162 @@ async def test_member_scorecard_404_and_guards(
     assert card.utilization is None
 
 
+_DEV2_OVERLAY_TURNS = 7
+
+
+@pytest.mark.asyncio
+async def test_all_member_scorecards_matches_single_agent_and_excludes_ceo_system(
+    svc: MetricsService, db_session: AsyncSession
+) -> None:
+    """get_all_member_scorecards (the N+1 batch fix) must return the exact
+    same derived numbers get_member_scorecard would for the same agent, plus:
+    CEO/SYSTEM excluded, and a rollup-less agent still appears zeroed instead
+    of silently dropped."""
+    # Unique slugs throughout: the suite shares one DB per run, so a fixed
+    # "ceo"/"system" slug collides with other tests' seeds (ix_agents_slug).
+    dev1 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")
+    dev2 = _agent(AgentRole.QA, f"be-qa-{uuid4().hex[:6]}")
+    dev3 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")  # no rollup rows
+    ceo = _agent(AgentRole.CEO, f"ceo-{uuid4().hex[:6]}")
+    system = _agent(AgentRole.SYSTEM, f"system-{uuid4().hex[:6]}")
+    db_session.add_all([dev1, dev2, dev3, ceo, system])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            _daily(
+                dev1.slug,
+                tasks_completed=2,
+                tasks_first_pass=1,
+                active_runtime_seconds=1800,
+                turns=6,
+                qa_reviews_total=3,
+                qa_reviews_passed=2,
+                idle_seconds=600,
+            ),
+            _daily(dev2.slug, tasks_completed=1, tasks_first_pass=1),
+        ]
+    )
+    await db_session.flush()
+
+    cards = await svc.get_all_member_scorecards(team=Team.BACKEND, days=30)
+    by_id = {c.id: c for c in cards}
+    # Delta assertions, not a global count: the one-process suite shares
+    # this DB, so other tests' agents may be on the roster too.
+    for seeded in (dev1, dev2, dev3):
+        assert str(seeded.id) in by_id
+    assert str(ceo.id) not in by_id
+    assert str(system.id) not in by_id
+
+    single = await svc.get_member_scorecard(cast("UUID", dev1.id), days=30)
+    assert single is not None
+    batch_dev1 = by_id[str(dev1.id)]
+    assert batch_dev1.tasks_completed == single.tasks_completed
+    assert batch_dev1.turns == single.turns
+    assert batch_dev1.first_pass_yield == single.first_pass_yield
+    assert batch_dev1.qa_pass_rate == single.qa_pass_rate
+    assert batch_dev1.utilization == single.utilization
+
+    # A roster member with no rollup rows still appears (zeroed), not dropped.
+    zeroed = by_id[str(dev3.id)]
+    assert zeroed.tasks_completed == 0
+    assert zeroed.first_pass_yield is None
+    assert zeroed.utilization is None
+
+
+@pytest.mark.asyncio
+async def test_all_member_scorecards_attributes_live_overlay_per_agent(
+    svc: MetricsService, db_session: AsyncSession
+) -> None:
+    """The batched overlay query must attribute each agent's OPEN spawn
+    session to that agent alone — not merge every in-flight agent's effort
+    into one bucket."""
+    dev1 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")
+    dev2 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")
+    db_session.add_all([dev1, dev2])
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=dev1.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            _daily(dev1.slug, tasks_completed=1, active_runtime_seconds=100),
+            _daily(dev2.slug, tasks_completed=1, active_runtime_seconds=200),
+        ]
+    )
+
+    def _inflight(owner_id: UUID) -> TaskTable:
+        return TaskTable(
+            id=uuid4(),
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            status=TaskStatus.IN_PROGRESS,
+            team=Team.BACKEND,
+            project_id=project.id,
+            created_by=owner_id,
+            assigned_to=owner_id,
+            estimated_complexity=Complexity.MEDIUM,
+            started_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+
+    t1 = _inflight(cast("UUID", dev1.id))
+    t2 = _inflight(cast("UUID", dev2.id))
+    db_session.add_all([t1, t2])
+    await db_session.flush()
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            AgentSpawnSessionTable(
+                id=uuid4(),
+                agent_slug=dev1.slug,
+                team="backend",
+                role="developer",
+                model="claude",
+                task_id=str(t1.id),
+                started_at=now - timedelta(seconds=200),
+                ended_at=None,
+                turns=_OVERLAY_TURNS,
+                tool_calls=4,
+                tokens_input=10,
+                tokens_output=5,
+                estimated_cost_usd=0.2,
+            ),
+            AgentSpawnSessionTable(
+                id=uuid4(),
+                agent_slug=dev2.slug,
+                team="backend",
+                role="developer",
+                model="claude",
+                task_id=str(t2.id),
+                started_at=now - timedelta(seconds=500),
+                ended_at=None,
+                turns=_DEV2_OVERLAY_TURNS,
+                tool_calls=9,
+                tokens_input=20,
+                tokens_output=8,
+                estimated_cost_usd=0.5,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    cards = {c.id: c for c in await svc.get_all_member_scorecards(days=30)}
+    c1, c2 = cards[str(dev1.id)], cards[str(dev2.id)]
+    assert c1.includes_live_inflight is True
+    assert c2.includes_live_inflight is True
+    assert c1.turns == _OVERLAY_TURNS
+    assert c2.turns == _DEV2_OVERLAY_TURNS
+
+
 @pytest.mark.asyncio
 async def test_org_scorecard_aggregates_members(
     svc: MetricsService, db_session: AsyncSession

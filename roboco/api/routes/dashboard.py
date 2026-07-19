@@ -631,6 +631,20 @@ async def get_member_scorecard(
     return card.to_dict()
 
 
+@router.get("/metrics/members")
+async def get_all_member_scorecards(
+    db: DbSession,
+    team: Team | None = None,
+    days: int = Query(default=30, ge=1, le=90),
+) -> list[dict[str, Any]]:
+    """Every (non-CEO, non-system) agent's rollup scorecard in one batch —
+    backs the panel's Members table without an N+1 (one request here instead
+    of one `/metrics/member/{id}` request per agent on the roster)."""
+    metrics_service = get_metrics_service(db)
+    cards = await metrics_service.get_all_member_scorecards(team=team, days=days)
+    return [card.to_dict() for card in cards]
+
+
 @router.get("/metrics/org")
 async def get_org_scorecard(
     db: DbSession,

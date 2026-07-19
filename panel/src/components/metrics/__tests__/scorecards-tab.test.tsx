@@ -14,7 +14,7 @@ const { mockOrg, mockCeo, mockMember, mockAgents } = vi.hoisted(() => ({
 vi.mock("@/hooks/use-observability", () => ({
   useOrgScorecard: mockOrg,
   useCeoScorecard: mockCeo,
-  useMemberScorecard: mockMember,
+  useAllMemberScorecards: mockMember,
 }));
 
 vi.mock("@/hooks/use-agents", () => ({
@@ -96,18 +96,21 @@ describe("ScorecardsTabContent", () => {
       isLoading: false,
     });
     mockMember.mockReturnValue({
-      data: member({
-        id: "dev1",
-        name: "be-dev-1",
-        tasks_completed: 7,
-        first_pass_yield: 0.8,
-        active_runtime_hours: 4.2,
-        qa_pass_rate: 0.9,
-        escalations: 1,
-        blocked_others: 2,
-        utilization: 0.6,
-      }),
+      data: [
+        member({
+          id: "dev1",
+          name: "be-dev-1",
+          tasks_completed: 7,
+          first_pass_yield: 0.8,
+          active_runtime_hours: 4.2,
+          qa_pass_rate: 0.9,
+          escalations: 1,
+          blocked_others: 2,
+          utilization: 0.6,
+        }),
+      ],
       isLoading: false,
+      isError: false,
     });
     mockAgents.mockReturnValue({
       data: [
@@ -164,8 +167,10 @@ describe("ScorecardsTabContent", () => {
     expect(
       screen.getByText(/failed to load organization metrics/i),
     ).toBeInTheDocument();
-    // The member row shows a failed marker rather than a perpetual skeleton
-    // (exact lowercase text, distinct from the org card's message).
-    expect(screen.getByText("failed to load")).toBeInTheDocument();
+    // The batched member-scorecard fetch surfaces one table-level banner
+    // rather than a per-row error (or an endless per-row skeleton).
+    expect(
+      screen.getByText(/failed to load member scorecards/i),
+    ).toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -13,12 +14,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  useAllMemberScorecards,
   useCeoScorecard,
-  useMemberScorecard,
   useOrgScorecard,
 } from "@/hooks/use-observability";
 import { useAgents } from "@/hooks/use-agents";
-import { AgentRole, type Agent } from "@/types";
+import { AgentRole, type Agent, type MemberScorecard } from "@/types";
 
 function pctOrNa(rate: number | null): string {
   return rate === null ? "n/a" : (rate * 100).toFixed(0) + "%";
@@ -32,20 +33,18 @@ function hoursOrDash(seconds: number): string {
   return (seconds / 3600).toFixed(1) + "h";
 }
 
-/** One member's row — each row self-fetches its rollup scorecard. */
-function MemberRow({ agent }: { agent: Agent }) {
-  const { data, isLoading, isError } = useMemberScorecard(agent.id);
-  if (isError) {
-    return (
-      <TableRow>
-        <TableCell>{agent.name || agent.slug}</TableCell>
-        <TableCell colSpan={8} className="text-muted-foreground text-xs">
-          failed to load
-        </TableCell>
-      </TableRow>
-    );
-  }
-  if (isLoading || !data) {
+/** One member's row. Data comes from the batched useAllMemberScorecards
+ * fetch (one request for the whole table) rather than each row self-fetching
+ * — ~20 agents used to mean ~20 parallel `/metrics/member/{id}` requests
+ * (each 3 DB queries) on every table poll. */
+function MemberRow({
+  agent,
+  data,
+}: {
+  agent: Agent;
+  data: MemberScorecard | undefined;
+}) {
+  if (!data) {
     return (
       <TableRow>
         <TableCell>{agent.name || agent.slug}</TableCell>
@@ -172,6 +171,12 @@ export function ScorecardsTabContent() {
   const members = (agents ?? []).filter(
     (a) => a.role !== AgentRole.CEO && a.role !== AgentRole.SYSTEM,
   );
+  const { data: scorecards, isError: scorecardsError } =
+    useAllMemberScorecards();
+  const scorecardById = useMemo(
+    () => new Map((scorecards ?? []).map((s) => [s.id, s])),
+    [scorecards],
+  );
   return (
     <div className="space-y-6">
       <Card>
@@ -197,6 +202,11 @@ export function ScorecardsTabContent() {
           <CardTitle>Members</CardTitle>
         </CardHeader>
         <CardContent>
+          {scorecardsError && (
+            <p className="text-muted-foreground mb-2 text-sm">
+              Failed to load member scorecards.
+            </p>
+          )}
           <Table>
             <TableHeader>
               <TableRow>
@@ -245,7 +255,7 @@ export function ScorecardsTabContent() {
             </TableHeader>
             <TableBody>
               {members.map((a) => (
-                <MemberRow key={a.id} agent={a} />
+                <MemberRow key={a.id} agent={a} data={scorecardById.get(a.id)} />
               ))}
             </TableBody>
           </Table>

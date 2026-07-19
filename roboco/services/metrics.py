@@ -21,7 +21,7 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.foundation.policy.stage_effort import compute_stage_effort
-from roboco.models.base import TaskStatus, Team
+from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.metrics import (
     CEO_APPROVAL_DECISIONS,
     CEO_UNBLOCK_DECISIONS,
@@ -1117,25 +1117,25 @@ class MetricsService(BaseService):
         """Guarded ratio → None when the denominator is 0."""
         return round(numerator / denominator, 4) if denominator else None
 
-    async def get_member_scorecard(
-        self, agent_id: UUID, days: int = 30
-    ) -> MemberScorecard | None:
-        """Per-member rollup scorecard + live in-flight overlay, or None if no
-        such agent."""
-        agent = (
-            await self.session.execute(
-                select(AgentTable.slug, AgentTable.name).where(
-                    AgentTable.id == agent_id
-                )
-            )
-        ).one_or_none()
-        if agent is None:
-            return None
-        slug, name = agent
-        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
-        sums, _ = await self._rollup_sums(since_date, agent_slug=slug, team=None)
+    _EMPTY_OVERLAY: ClassVar[dict[str, float]] = {
+        "active_runtime_seconds": 0.0,
+        "turns": 0.0,
+        "tool_calls": 0.0,
+        "tokens": 0.0,
+        "cost_usd": 0.0,
+    }
 
-        overlay = await self._live_inflight_overlay(agent_id)
+    def _assemble_member_scorecard(
+        self,
+        *,
+        agent_id: UUID,
+        name: str,
+        sums: dict[str, float],
+        overlay: dict[str, float],
+    ) -> MemberScorecard:
+        """Shared rollup+overlay -> MemberScorecard builder for both the
+        single-agent (`get_member_scorecard`) and batch
+        (`get_all_member_scorecards`) paths — one derivation, no duplication."""
         includes_live = any(v for v in overlay.values())
         active_runtime = (
             sums["active_runtime_seconds"] + overlay["active_runtime_seconds"]
@@ -1174,6 +1174,166 @@ class MetricsService(BaseService):
             ),
             includes_live_inflight=includes_live,
         )
+
+    async def get_member_scorecard(
+        self, agent_id: UUID, days: int = 30
+    ) -> MemberScorecard | None:
+        """Per-member rollup scorecard + live in-flight overlay, or None if no
+        such agent."""
+        agent = (
+            await self.session.execute(
+                select(AgentTable.slug, AgentTable.name).where(
+                    AgentTable.id == agent_id
+                )
+            )
+        ).one_or_none()
+        if agent is None:
+            return None
+        slug, name = agent
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        sums, _ = await self._rollup_sums(since_date, agent_slug=slug, team=None)
+        overlay = await self._live_inflight_overlay(agent_id)
+        return self._assemble_member_scorecard(
+            agent_id=agent_id, name=name, sums=sums, overlay=overlay
+        )
+
+    async def _rollup_sums_by_agent(
+        self, since_date: Any, *, team: Team | None
+    ) -> dict[str, dict[str, float]]:
+        """Batch counterpart of `_rollup_sums`: one query grouped by
+        agent_slug instead of one query per agent filtered to that slug."""
+        cols = [
+            func.coalesce(
+                func.sum(getattr(MemberPerformanceDailyTable, name)), 0
+            ).label(name)
+            for name in self._ROLLUP_SUM_COLUMNS
+        ]
+        conds: list[Any] = [
+            MemberPerformanceDailyTable.member_kind == "agent",
+            MemberPerformanceDailyTable.date >= since_date,
+        ]
+        if team is not None:
+            conds.append(MemberPerformanceDailyTable.team == team.value)
+        rows = (
+            await self.session.execute(
+                select(MemberPerformanceDailyTable.agent_slug, *cols)
+                .where(and_(*conds))
+                .group_by(MemberPerformanceDailyTable.agent_slug)
+            )
+        ).all()
+        return {
+            row.agent_slug: {
+                name: float(getattr(row, name) or 0)
+                for name in self._ROLLUP_SUM_COLUMNS
+            }
+            for row in rows
+        }
+
+    async def _live_inflight_overlay_by_agent(
+        self, agent_ids: Sequence[UUID]
+    ) -> dict[UUID, dict[str, float]]:
+        """Batch counterpart of `_live_inflight_overlay`: one non-terminal-task
+        lookup + one grouped session-sum query across the whole roster,
+        instead of a per-agent task lookup + per-agent sum — the scorecard
+        N+1 (~20 agents meant ~40 extra queries on every panel Members-tab
+        poll).
+        """
+        if not agent_ids:
+            return {}
+        task_rows = (
+            await self.session.execute(
+                select(TaskTable.id, TaskTable.assigned_to).where(
+                    TaskTable.assigned_to.in_(agent_ids),
+                    TaskTable.status.notin_(
+                        [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
+                    ),
+                )
+            )
+        ).all()
+        if not task_rows:
+            return {}
+        task_to_agent = {str(task_id): agent_id for task_id, agent_id in task_rows}
+
+        s = AgentSpawnSessionTable
+        session_rows = (
+            await self.session.execute(
+                select(
+                    s.task_id,
+                    func.coalesce(
+                        func.sum(func.extract("epoch", func.now() - s.started_at)), 0
+                    ),
+                    func.coalesce(func.sum(s.turns), 0),
+                    func.coalesce(func.sum(s.tool_calls), 0),
+                    func.coalesce(
+                        func.sum(
+                            s.tokens_input
+                            + s.tokens_output
+                            + s.tokens_cache_read
+                            + s.tokens_cache_write
+                        ),
+                        0,
+                    ),
+                    func.coalesce(func.sum(s.estimated_cost_usd), 0),
+                )
+                .where(
+                    s.task_id.in_(list(task_to_agent.keys())),
+                    s.ended_at.is_(None),
+                )
+                .group_by(s.task_id)
+            )
+        ).all()
+
+        # Each SQL column is already func.coalesce(..., 0)'d, so no Python-side
+        # `or 0` fallback is needed here (keeps this loop's branch count low).
+        overlays: dict[UUID, dict[str, float]] = {}
+        for task_id, runtime, turns, tool_calls, tokens, cost in session_rows:
+            agent_id = task_to_agent.get(task_id)
+            if agent_id is None:
+                continue
+            bucket = overlays.setdefault(agent_id, dict(self._EMPTY_OVERLAY))
+            bucket["active_runtime_seconds"] += float(runtime)
+            bucket["turns"] += float(turns)
+            bucket["tool_calls"] += float(tool_calls)
+            bucket["tokens"] += float(tokens)
+            bucket["cost_usd"] += float(cost)
+        return overlays
+
+    async def get_all_member_scorecards(
+        self, team: Team | None = None, days: int = 30
+    ) -> list[MemberScorecard]:
+        """Every (non-CEO, non-system) agent's rollup scorecard in one batch —
+        the N+1 fix for the panel's Members table, which used to fire one
+        `/metrics/member/{id}` request (3 queries) per agent on the roster on
+        every poll instead of 3 queries total."""
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        conds: list[Any] = [AgentTable.role.notin_([AgentRole.CEO, AgentRole.SYSTEM])]
+        if team is not None:
+            conds.append(AgentTable.team == team)
+        agents = (
+            await self.session.execute(
+                select(AgentTable.id, AgentTable.slug, AgentTable.name).where(
+                    and_(*conds)
+                )
+            )
+        ).all()
+        if not agents:
+            return []
+
+        sums_by_slug = await self._rollup_sums_by_agent(since_date, team=team)
+        overlay_by_agent = await self._live_inflight_overlay_by_agent(
+            [agent_id for agent_id, _, _ in agents]
+        )
+        empty_sums = dict.fromkeys(self._ROLLUP_SUM_COLUMNS, 0.0)
+
+        return [
+            self._assemble_member_scorecard(
+                agent_id=agent_id,
+                name=name,
+                sums=sums_by_slug.get(slug, empty_sums),
+                overlay=overlay_by_agent.get(agent_id, self._EMPTY_OVERLAY),
+            )
+            for agent_id, slug, name in agents
+        ]
 
     async def get_org_scorecard(
         self, team: Team | None = None, days: int = 30
