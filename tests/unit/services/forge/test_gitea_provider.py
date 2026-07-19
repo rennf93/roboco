@@ -241,3 +241,22 @@ async def test_ensure_label_prefixes_hash_on_color(
     await GiteaProvider("gitea.example.com").ensure_label(REF, "t", "root", "8250df")
 
     assert b"#8250df" in recorder.requests[0].content
+
+
+@pytest.mark.asyncio
+async def test_slash_branch_segments_are_url_encoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every RoboCo branch carries slashes (feature/backend/...) — an
+    unencoded segment 404s at Gitea's router (caught by the live suite)."""
+    recorder = _Recorder(lambda _r: httpx.Response(200, json={"state": "success"}))
+    _patch_client(monkeypatch, recorder)
+    provider = GiteaProvider("gitea.example.com")
+
+    await provider.list_ci_runs(
+        REF, "t", workflow=None, branch="feature/backend/ABC", head_sha=None, per_page=5
+    )
+    await provider.delete_branch_ref(REF, "t", "feature/backend/ABC")
+
+    assert "/commits/feature%2Fbackend%2FABC/status" in str(recorder.requests[0].url)
+    assert "/branches/feature%2Fbackend%2FABC" in str(recorder.requests[1].url)

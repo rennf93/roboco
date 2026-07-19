@@ -28,8 +28,11 @@ if TYPE_CHECKING:
     from roboco.services.forge.base import GitProvider
 
 # host (lowercase) → provider name ("github" | "gitea"). github.com is
-# implicit and never needs registering.
+# implicit and never needs registering. _HOST_SCHEMES remembers a plain-http
+# host (LAN instance with no TLS terminator) so the API base matches the
+# git_url's own scheme; absent = https.
 _HOST_PROVIDERS: dict[str, str] = {}
+_HOST_SCHEMES: dict[str, str] = {}
 
 
 def host_of(git_url: str | None) -> str | None:
@@ -39,6 +42,10 @@ def host_of(git_url: str | None) -> str | None:
     return extract_host(git_url)
 
 
+def _scheme_of(git_url: str) -> str:
+    return "http" if git_url.strip().lower().startswith("http://") else "https"
+
+
 def register_project_forge(git_url: str | None, git_provider: str | None) -> None:
     """Record a project's host→provider mapping for per-call routing.
 
@@ -46,10 +53,11 @@ def register_project_forge(git_url: str | None, git_provider: str | None) -> Non
     missing provider records nothing (GitHub is the router's default).
     """
     host = host_of(git_url)
-    if host is None or host == "github.com":
+    if host is None or host == "github.com" or git_url is None:
         return
     if git_provider in ("github", "gitea"):
         _HOST_PROVIDERS[host] = git_provider
+        _HOST_SCHEMES[host] = _scheme_of(git_url)
 
 
 def provider_name_for_host(host: str) -> str | None:
@@ -57,6 +65,12 @@ def provider_name_for_host(host: str) -> str | None:
     if host == "github.com":
         return "github"
     return _HOST_PROVIDERS.get(host.lower())
+
+
+def scheme_for_host(host: str) -> str:
+    """The registered scheme for a host — https unless the project's git_url
+    said otherwise."""
+    return _HOST_SCHEMES.get(host.lower(), "https")
 
 
 def provider_for(project: Any | None = None) -> GitProvider:
@@ -80,7 +94,7 @@ def provider_for(project: Any | None = None) -> GitProvider:
                 "gitea project has no parseable git_url host",
                 {"git_provider": provider_name},
             )
-        return GiteaProvider(host)
+        return GiteaProvider(host, scheme=scheme_for_host(host))
     raise GitError(
         f"Unsupported git_provider {provider_name!r} — GitLab support "
         "is not implemented yet.",

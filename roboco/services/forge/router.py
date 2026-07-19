@@ -42,7 +42,7 @@ class ForgeRouter(GitProvider):
             return GitHubProvider()
         provider_name = registry.provider_name_for_host(ref.host)
         if provider_name == "gitea":
-            return GiteaProvider(ref.host)
+            return GiteaProvider(ref.host, scheme=registry.scheme_for_host(ref.host))
         if provider_name in (None, "github"):
             # A GHE host registered as github (or parsed before registration)
             # rides the GitHub transport with its configured base URL.
@@ -57,7 +57,9 @@ class ForgeRouter(GitProvider):
             return GitHubProvider().parse_repo_ref(git_url)
         host = registry.host_of(git_url)
         if host is not None and registry.provider_name_for_host(host) == "gitea":
-            return GiteaProvider(host).parse_repo_ref(git_url)
+            return GiteaProvider(
+                host, scheme=registry.scheme_for_host(host)
+            ).parse_repo_ref(git_url)
         raise GitError(
             "Could not resolve a forge for this remote URL — a non-GitHub "
             "host must belong to a registered project with git_provider set "
@@ -132,9 +134,7 @@ class ForgeRouter(GitProvider):
     async def ensure_label(
         self, repo: RepoRef, token: str, name: str, color: str
     ) -> Any:
-        return await self._provider_for_ref(repo).ensure_label(
-            repo, token, name, color
-        )
+        return await self._provider_for_ref(repo).ensure_label(repo, token, name, color)
 
     async def add_labels(
         self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
@@ -158,9 +158,7 @@ class ForgeRouter(GitProvider):
         )
 
     async def create_release(self, repo: RepoRef, token: str, **kwargs: Any) -> Any:
-        return await self._provider_for_ref(repo).create_release(
-            repo, token, **kwargs
-        )
+        return await self._provider_for_ref(repo).create_release(repo, token, **kwargs)
 
     async def create_org_repo(
         self,

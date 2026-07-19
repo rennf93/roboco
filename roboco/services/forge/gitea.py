@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import quote
 
 import httpx
 
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.services.forge.base import GitProvider, RepoRef
+from roboco.services.forge.shaping import ShapedResponse
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -50,52 +52,24 @@ def _default_timeout() -> int:
     return settings.git_command_timeout_seconds
 
 
-class ShapedResponse:
-    """An httpx.Response stand-in with translated status/body.
+class GiteaProvider(GitProvider):
+    """Self-hosted Gitea transport, addressed by instance host.
 
-    Callers only ever read ``status_code`` / ``is_success`` / ``text`` /
-    ``json()`` (the seam's documented contract), so that is the whole
-    surface. Wraps the real response for ``text`` fidelity while letting the
-    adapter override the JSON payload and/or status code.
+    ``scheme`` comes from the project's git_url via the registry — a LAN
+    instance serving plain http (no TLS terminator) is a real deployment
+    shape, not just a test convenience.
     """
 
-    def __init__(
-        self,
-        real: httpx.Response,
-        *,
-        json_payload: Any | None = None,
-        status_code: int | None = None,
-    ) -> None:
-        self._real = real
-        self._json = json_payload
-        self.status_code = status_code if status_code is not None else real.status_code
-
-    @property
-    def is_success(self) -> bool:
-        return httpx.codes.is_success(self.status_code)
-
-    @property
-    def text(self) -> str:
-        return self._real.text
-
-    def json(self) -> Any:
-        if self._json is not None:
-            return self._json
-        return self._real.json()
-
-
-class GiteaProvider(GitProvider):
-    """Self-hosted Gitea transport, addressed by instance host."""
-
-    def __init__(self, host: str) -> None:
+    def __init__(self, host: str, scheme: str = "https") -> None:
         self._host = host.strip().rstrip("/")
+        self._scheme = scheme
         self._repo_url_re = re.compile(
             re.escape(self._host)
             + r"[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
         )
 
     def _api_base(self) -> str:
-        return f"https://{self._host}/api/v1"
+        return f"{self._scheme}://{self._host}/api/v1"
 
     def _repo_url(self, repo: RepoRef, *segments: str) -> str:
         base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
@@ -311,7 +285,9 @@ class GiteaProvider(GitProvider):
         _ = (workflow, head_sha, per_page)
         resp = await self._send(
             "get",
-            self._repo_url(repo, "commits", branch, "status"),
+            # Branch names carry slashes (feature/backend/...) — encode or
+            # Gitea's router 404s on the extra path segments.
+            self._repo_url(repo, "commits", quote(branch, safe=""), "status"),
             headers=self._headers(token),
         )
         if not resp.is_success:
@@ -429,7 +405,7 @@ class GiteaProvider(GitProvider):
     ) -> Any:
         return await self._send(
             "delete",
-            self._repo_url(repo, "branches", branch),
+            self._repo_url(repo, "branches", quote(branch, safe="")),
             headers=self._headers(token),
             timeout=timeout,
         )
