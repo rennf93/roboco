@@ -121,3 +121,6 @@ docs/internal/
 
 # Private per-repo uv cache (see Makefile UV_CACHE_DIR)
 .uv-cache/
+
+# Local uv python pin (machine-specific)
+.python-version
