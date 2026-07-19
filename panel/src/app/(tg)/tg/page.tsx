@@ -61,7 +61,11 @@ export default function TelegramMiniAppPage() {
       if (!webApp?.initData && process.env.NODE_ENV === "development") {
         webApp = createDevMockWebApp();
       }
-      if (!webApp) {
+      // No bridge, or a bridge with empty initData that didn't become the
+      // dev mock (a plain browser at this URL in production) — show the
+      // "Open from Telegram" wall instead of posting an empty payload that
+      // 422s into a "Couldn't sign in" error.
+      if (!webApp || (!webApp.initData && !isDevMockWebApp(webApp))) {
         setState({ kind: "not_in_telegram" });
         return;
       }

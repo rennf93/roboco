@@ -83,6 +83,20 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
+  it("shows the Open-from-Telegram wall in production when the CDN bridge has empty initData", async () => {
+    // A plain browser at /tg: the telegram.org script defines WebApp but
+    // with no initData. Production must not post the empty payload (422) —
+    // it shows the wall, same as no bridge at all.
+    waitForTelegramWebApp.mockResolvedValue(mockWebApp(""));
+
+    render(<TelegramMiniAppPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/open from telegram/i)).toBeInTheDocument(),
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("calls ready/expand, posts initData, and renders the cockpit on success", async () => {
     const webApp = mockWebApp("real-init-data");
     waitForTelegramWebApp.mockResolvedValue(webApp);
