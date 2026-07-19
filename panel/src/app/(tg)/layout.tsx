@@ -11,6 +11,12 @@ import Script from "next/script";
  * `afterInteractive` strategy instead — `waitForTelegramWebApp` (in
  * lib/telegram/webapp.ts) briefly polls for `window.Telegram.WebApp` to
  * absorb the resulting load race rather than assuming it's present on mount.
+ *
+ * Height reads `--tg-viewport-stable-height`, a :root variable the Telegram
+ * script itself maintains (steady during keyboard/panel animations, unlike
+ * dvh inside the webview); outside Telegram it's unset and 100dvh applies.
+ * `#tg-shell` is the hook the page uses to scope Telegram theme variables
+ * to this surface only.
  */
 export default function TelegramLayout({
   children,
@@ -18,7 +24,11 @@ export default function TelegramLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+    <div
+      id="tg-shell"
+      className="mx-auto flex w-full max-w-[430px] flex-col overflow-hidden bg-background text-foreground sm:border-x"
+      style={{ height: "var(--tg-viewport-stable-height, 100dvh)" }}
+    >
       <Script
         src="https://telegram.org/js/telegram-web-app.js"
         strategy="afterInteractive"

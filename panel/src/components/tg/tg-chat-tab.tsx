@@ -1,12 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
+  a2aLiveKeys,
   useA2AConversations,
   useA2AMessages,
   useCreateCeoConversation,
   useSendCeoMessage,
 } from "@/hooks/use-a2a-live";
+import { useA2ALiveStream } from "@/hooks/use-websocket";
 import { CEO_SLUG } from "@/components/a2a/a2a-utils";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { EXCLUDE_NON_DM_ROLES } from "@/components/a2a/a2a-new-dm-dialog";
@@ -20,8 +23,8 @@ import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-/** Thread polling cadence — the /tg cockpit has no WS wiring (unlike the
- * desktop A2A page), so the actively-viewed thread polls instead. */
+/** Fallback cadence for the actively-viewed thread when the /ws/system
+ * socket is down — live frames drive refresh whenever it's connected. */
 const THREAD_POLL_MS = 10_000;
 
 function ConversationList({
@@ -61,18 +64,18 @@ function ConversationList({
               key={c.id}
               type="button"
               onClick={() => onSelect(c.id, peerLabel)}
-              className="flex w-full flex-col gap-0.5 rounded-lg border p-3 text-left"
+              className="flex w-full flex-col gap-0.5 rounded-xl border bg-card p-3 text-left text-card-foreground transition-colors active:bg-muted"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{peerLabel}</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm font-medium">{peerLabel}</span>
                 {c.last_message_at && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                     {formatDistanceToNow(new Date(c.last_message_at))} ago
                   </span>
                 )}
               </div>
               {c.last_message_preview && (
-                <p className="truncate text-xs text-muted-foreground">
+                <p className="truncate text-xs leading-snug text-muted-foreground">
                   {c.last_message_preview}
                 </p>
               )}
@@ -146,14 +149,16 @@ function ComposeNewChat({
 function ThreadView({
   conversationId,
   peerLabel,
+  live,
   onBack,
 }: {
   conversationId: string;
   peerLabel: string;
+  live: boolean;
   onBack: () => void;
 }) {
   const { data, isLoading } = useA2AMessages(conversationId, {
-    refetchInterval: THREAD_POLL_MS,
+    refetchInterval: live ? false : THREAD_POLL_MS,
   });
   const [draft, setDraft] = useState("");
   const send = useSendCeoMessage();
@@ -240,6 +245,33 @@ type ChatView =
  */
 export function TgChatTab() {
   const [view, setView] = useState<ChatView>({ mode: "list" });
+  const queryClient = useQueryClient();
+
+  // Live wiring (the desktop A2A idiom): every persisted message announces
+  // itself on /ws/system; invalidate-on-frame keeps REST the source of
+  // truth. While the socket is up the thread poll switches off entirely.
+  const { lastMessage, isConnected } = useA2ALiveStream();
+  useEffect(() => {
+    if (lastMessage?.type !== "a2a.message") return;
+    void queryClient.invalidateQueries({
+      queryKey: a2aLiveKeys.conversations,
+    });
+    if (lastMessage.conversation_id) {
+      void queryClient.invalidateQueries({
+        queryKey: a2aLiveKeys.messages(lastMessage.conversation_id),
+      });
+    }
+  }, [lastMessage, queryClient]);
+
+  // Events missed during a disconnect never replay — refetch everything on
+  // reconnect (false → true only; initial mount doesn't fire).
+  const prevConnected = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (prevConnected.current === false && isConnected) {
+      void queryClient.invalidateQueries({ queryKey: a2aLiveKeys.all });
+    }
+    prevConnected.current = isConnected;
+  }, [isConnected, queryClient]);
 
   if (view.mode === "compose") {
     return (
@@ -257,6 +289,7 @@ export function TgChatTab() {
       <ThreadView
         conversationId={view.id}
         peerLabel={view.peer}
+        live={isConnected}
         onBack={() => setView({ mode: "list" })}
       />
     );

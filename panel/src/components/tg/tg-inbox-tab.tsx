@@ -21,7 +21,7 @@ function TgNotificationRow({ notification }: { notification: Notification }) {
   return (
     <div
       className={cn(
-        "rounded-lg border p-3",
+        "rounded-xl border bg-card p-3 text-card-foreground",
         notification.is_read ? "opacity-70" : "border-l-4 border-l-primary",
       )}
     >

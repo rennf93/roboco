@@ -1,15 +1,16 @@
 "use client";
 
-import { CheckSquare, Bell, Kanban, MessageSquare } from "lucide-react";
+import { Gauge, CheckSquare, Bell, Kanban, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type TgTab = "approvals" | "inbox" | "board" | "chat";
+export type TgTab = "today" | "approvals" | "inbox" | "board" | "chat";
 
 const TABS: ReadonlyArray<{
   id: TgTab;
   label: string;
   icon: typeof CheckSquare;
 }> = [
+  { id: "today", label: "Today", icon: Gauge },
   { id: "approvals", label: "Approvals", icon: CheckSquare },
   { id: "inbox", label: "Inbox", icon: Bell },
   { id: "board", label: "Board", icon: Kanban },
@@ -30,7 +31,7 @@ export function TgTabBar({ active, onChange }: TgTabBarProps) {
   return (
     <nav
       aria-label="Cockpit"
-      className="fixed inset-x-0 bottom-0 z-40 flex border-t bg-background pb-[env(safe-area-inset-bottom)]"
+      className="fixed inset-x-0 bottom-0 z-40 mx-auto flex w-full max-w-[430px] border-t bg-background/90 pb-[env(safe-area-inset-bottom)] backdrop-blur"
     >
       {TABS.map((tab) => {
         const isActive = active === tab.id;
@@ -41,11 +42,14 @@ export function TgTabBar({ active, onChange }: TgTabBarProps) {
             aria-current={isActive ? "page" : undefined}
             onClick={() => onChange(tab.id)}
             className={cn(
-              "flex flex-1 flex-col items-center gap-1 py-2.5 text-xs font-medium transition-colors",
-              isActive ? "text-primary" : "text-muted-foreground",
+              "flex flex-1 flex-col items-center gap-0.5 pb-2 pt-2.5 text-[10px] font-medium tracking-wide transition-colors",
+              isActive ? "text-primary" : "text-muted-foreground/70",
             )}
           >
-            <tab.icon className="h-6 w-6" />
+            <tab.icon
+              className="h-5 w-5"
+              strokeWidth={isActive ? 2.25 : 1.75}
+            />
             {tab.label}
           </button>
         );

@@ -95,7 +95,7 @@ async def test_authorized_chat_message_dispatches_command(
         {"chat": {"id": 777}, "text": "/status"}, CREDS, client
     )
 
-    dispatch.assert_awaited_once_with("status", "", client)
+    dispatch.assert_awaited_once_with("status", "", client, chat_id="777", creds=CREDS)
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_message_with_matching_sender_dispatches(
         {"chat": {"id": 777}, "from": {"id": 777}, "text": "/status"}, CREDS, client
     )
 
-    dispatch.assert_awaited_once_with("status", "", client)
+    dispatch.assert_awaited_once_with("status", "", client, chat_id="777", creds=CREDS)
 
 
 @pytest.mark.asyncio
@@ -173,7 +173,7 @@ async def test_message_without_from_keeps_prior_behavior(
         {"chat": {"id": 777}, "text": "/status"}, CREDS, client
     )
 
-    dispatch.assert_awaited_once_with("status", "", client)
+    dispatch.assert_awaited_once_with("status", "", client, chat_id="777", creds=CREDS)
 
 
 @pytest.mark.asyncio
