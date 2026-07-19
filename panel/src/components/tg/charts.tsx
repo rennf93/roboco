@@ -41,15 +41,17 @@ export function Sparkline({ values }: { values: number[] }) {
           <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={area} fill={`url(#${gradId})`} />
+      <path d={area} fill={`url(#${gradId})`} className="tg-backdrop" />
       <polyline
         points={line}
+        pathLength={1}
         fill="none"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
         vectorEffect="non-scaling-stroke"
+        className="tg-draw-line"
       />
       <circle cx={lastX} cy={lastY} r="3.5" fill="currentColor" />
     </svg>

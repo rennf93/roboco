@@ -48,6 +48,12 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
 export default function TelegramMiniAppPage() {
   const [state, setState] = useState<BootstrapState>({ kind: "validating" });
   const [tab, setTab] = useState<TgTab>("today");
+  // Today's Ship action deep-focuses the release proposal in Approvals.
+  const [approvalsFocus, setApprovalsFocus] = useState<"release" | undefined>();
+  const navigate = (next: TgTab, intent?: "release") => {
+    setApprovalsFocus(next === "approvals" ? intent : undefined);
+    setTab(next);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -137,13 +143,18 @@ export default function TelegramMiniAppPage() {
 
   return (
     <TgWebAppProvider webApp={state.webApp}>
-      <div className="p-3 pb-20">
-        {tab === "today" && <TgTodayTab onNavigate={setTab} />}
-        {tab === "approvals" && <TgApprovalsTab />}
-        {tab === "inbox" && <TgInboxTab />}
-        {tab === "board" && <TgBoardTab />}
-        {tab === "chat" && <TgChatTab />}
-        <TgTabBar active={tab} onChange={setTab} />
+      <div className="p-3 pb-24">
+        {/* Keyed by tab so every switch replays the rise-in entrance. */}
+        <div key={tab} className="tg-tab-in">
+          {tab === "today" && <TgTodayTab onNavigate={navigate} />}
+          {tab === "approvals" && (
+            <TgApprovalsTab initialFocus={approvalsFocus} />
+          )}
+          {tab === "inbox" && <TgInboxTab />}
+          {tab === "board" && <TgBoardTab />}
+          {tab === "chat" && <TgChatTab />}
+        </div>
+        <TgTabBar active={tab} onChange={navigate} />
       </div>
     </TgWebAppProvider>
   );

@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   useNotifications,
   useAcknowledgeNotification,
 } from "@/hooks/use-notifications";
+import { isTgDemoMode } from "@/lib/telegram/demo";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import type { Notification } from "@/types";
@@ -55,8 +57,7 @@ function TgNotificationRow({ notification }: { notification: Notification }) {
           {notification.body}
         </p>
         <p className="mt-1.5 text-[11px] text-muted-foreground">
-          {sender} ·{" "}
-          {formatDistanceToNow(new Date(notification.timestamp))} ago
+          {sender} · {formatDistanceToNow(new Date(notification.timestamp))} ago
         </p>
       </div>
     </div>
@@ -67,9 +68,22 @@ function TgNotificationRow({ notification }: { notification: Notification }) {
  * Notification inbox for the /tg cockpit — every notification, newest
  * first, with an Ack button on the ones that require it. Polling rides
  * useNotifications' own 30s refetchInterval; no extra wiring needed here.
+ * Demo mode renders the canned fixtures instead (the live query still
+ * mounts — dev-only noise, same trade as the Board tab).
  */
 export function TgInboxTab() {
-  const { data, isLoading } = useNotifications();
+  const { data: fetched, isLoading: fetchLoading } = useNotifications();
+  const [demoItems, setDemoItems] = useState<Notification[] | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!isTgDemoMode()) return;
+    void import("@/lib/telegram/demo-data").then((m) =>
+      setDemoItems(m.DEMO_NOTIFICATIONS),
+    );
+  }, []);
+  const data = demoItems ? { items: demoItems } : fetched;
+  const isLoading = demoItems ? false : fetchLoading;
 
   if (isLoading) {
     return (

@@ -1,4 +1,16 @@
 import Script from "next/script";
+import localFont from "next/font/local";
+
+// The brand display face — the same vendored Share Tech Mono the motion/
+// video compositions use for their headline moments. Exposed as a CSS
+// variable on the shell so `.tg-display` (globals.css) can reach it; body
+// text stays the root layout's Inter.
+const shareTechMono = localFont({
+  src: "./fonts/ShareTechMono-Regular.woff2",
+  weight: "400",
+  variable: "--font-share-tech",
+  display: "swap",
+});
 
 /**
  * Slim shell for the Telegram Mini App surface (`/tg`) — no Sidebar/Header/
@@ -26,7 +38,7 @@ export default function TelegramLayout({
   return (
     <div
       id="tg-shell"
-      className="mx-auto flex w-full max-w-[430px] flex-col overflow-hidden bg-background text-foreground sm:border-x"
+      className={`${shareTechMono.variable} mx-auto flex w-full max-w-[430px] flex-col overflow-hidden bg-background text-foreground sm:border-x`}
       style={{ height: "var(--tg-viewport-stable-height, 100dvh)" }}
     >
       <Script

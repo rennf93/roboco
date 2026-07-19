@@ -95,13 +95,29 @@ function Detail({ item, onDone }: { item: ApprovalItem; onDone: () => void }) {
  * vanishes from the refetched queue, which pops the view back to the list
  * by construction.
  */
-export function TgApprovalsTab() {
+export function TgApprovalsTab({
+  initialFocus,
+}: {
+  /** Auto-focus the first item of this kind once — Today's Ship deep link. */
+  initialFocus?: "release";
+} = {}) {
   const { items, isLoading, anyFailed } = useApprovalQueue();
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [initialConsumed, setInitialConsumed] = useState(false);
   const webApp = useTgWebApp();
 
-  const focused = items.find((i) => i.id === focusedId) ?? null;
-  const back = () => setFocusedId(null);
+  // Derived, not an effect: the deep link focuses the first matching item
+  // until the user backs out of it once.
+  const autoTarget =
+    initialFocus && !initialConsumed && focusedId === null
+      ? items.find((i) => i.kind === initialFocus)
+      : undefined;
+  const focused =
+    items.find((i) => i.id === focusedId) ?? autoTarget ?? null;
+  const back = () => {
+    setInitialConsumed(true);
+    setFocusedId(null);
+  };
   useBackButton(focused ? back : null);
 
   if (isLoading) {

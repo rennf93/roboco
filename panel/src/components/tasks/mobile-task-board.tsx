@@ -43,9 +43,15 @@ const DEFAULT_OPEN = new Set<TaskStatus>([
   TaskStatus.AWAITING_CEO_APPROVAL,
 ]);
 
-function TaskRow({ task }: { task: Task }) {
-  return (
-    <div className="flex items-center justify-between gap-2 border-t px-3 py-2 first:border-t-0">
+function TaskRow({
+  task,
+  onPress,
+}: {
+  task: Task;
+  onPress?: (task: Task) => void;
+}) {
+  const content = (
+    <>
       <div className="min-w-0">
         <p className="truncate text-sm">{task.title}</p>
         <p className="truncate text-xs text-muted-foreground">
@@ -53,6 +59,22 @@ function TaskRow({ task }: { task: Task }) {
         </p>
       </div>
       <TaskStatusBadge status={task.status} />
+    </>
+  );
+  if (onPress) {
+    return (
+      <button
+        type="button"
+        onClick={() => onPress(task)}
+        className="flex w-full items-center justify-between gap-2 border-t px-3 py-2 text-left transition-colors first:border-t-0 active:bg-muted"
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between gap-2 border-t px-3 py-2 first:border-t-0">
+      {content}
     </div>
   );
 }
@@ -61,10 +83,12 @@ function StatusSection({
   status,
   tasks,
   defaultOpen,
+  onTaskPress,
 }: {
   status: TaskStatus;
   tasks: Task[];
   defaultOpen: boolean;
+  onTaskPress?: (task: Task) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -87,7 +111,7 @@ function StatusSection({
       </CollapsibleTrigger>
       <CollapsibleContent>
         {tasks.map((t) => (
-          <TaskRow key={t.id} task={t} />
+          <TaskRow key={t.id} task={t} onPress={onTaskPress} />
         ))}
       </CollapsibleContent>
     </Collapsible>
@@ -100,8 +124,18 @@ function StatusSection({
  * drag-and-drop — that's the desktop kanban columns' job; this is a
  * glance-and-tap surface for the /tg Mini App.
  */
-export function MobileTaskBoard() {
-  const { data, isLoading } = useTasks({ limit: 200 });
+export function MobileTaskBoard({
+  tasks: tasksOverride,
+  onTaskPress,
+}: {
+  /** Bypass the live fetch (the /tg demo fixtures). The list query still
+   * mounts — dev-only demo noise, not worth a conditional-hook dance. */
+  tasks?: Task[];
+  onTaskPress?: (task: Task) => void;
+} = {}) {
+  const { data: fetched, isLoading: fetchLoading } = useTasks({ limit: 200 });
+  const data = tasksOverride ?? fetched;
+  const isLoading = tasksOverride ? false : fetchLoading;
 
   const grouped = useMemo(() => {
     const byStatus = new Map<TaskStatus, Task[]>();
@@ -143,6 +177,7 @@ export function MobileTaskBoard() {
           status={status}
           tasks={tasks}
           defaultOpen={DEFAULT_OPEN.has(status)}
+          onTaskPress={onTaskPress}
         />
       ))}
     </div>
