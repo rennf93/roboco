@@ -15,15 +15,16 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import httpx
 import jwt as _jwt
 import pytest
-from fastapi import HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response
 from fastapi_users.password import PasswordHelper
 from roboco.agents_config import CEO_AGENT_ID, issue_agent_token
 from roboco.api import websocket as ws_module
 from roboco.api.auth import revocation
 from roboco.api.auth.backend import SESSION_COOKIE_NAME, get_jwt_strategy
-from roboco.api.auth.routes import auth_status
+from roboco.api.auth.routes import auth_status, mount_cloud_auth
 from roboco.api.auth.seed import ensure_seed_user
 from roboco.api.deps import _slide_session_cookie, get_agent_context
 from roboco.config import settings
@@ -576,3 +577,38 @@ async def test_read_token_accepts_unrevoked_jti(
     manager.get = AsyncMock(return_value=user)
     result = await get_jwt_strategy().read_token(token, manager)
     assert result is not None and str(result.id) == str(user.id)
+
+
+# ---------------------------------------------------------------------------
+# Login route wire contract — the REAL router, no dependency overrides.
+# ---------------------------------------------------------------------------
+
+
+_HTTP_400 = 400
+
+
+@pytest.mark.asyncio
+async def test_login_route_parses_oauth2_form_not_query_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (caught live on the NAS, 2026-07-19): a TYPE_CHECKING-only
+    AsyncSession import in auth.manager broke FastAPI's postponed-annotation
+    resolution for get_user_db, silently demoting `db` to a REQUIRED QUERY
+    parameter — every /auth/login 422'd (loc ["query", "db"]) regardless of
+    credentials. Mount the real router (dependency overrides would mask the
+    resolution path) and post the OAuth2 form: wrong credentials must yield
+    400 LOGIN_BAD_CREDENTIALS, never a 422 validation error.
+    """
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    app = FastAPI()
+    mount_cloud_auth(app, "/api/auth")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        resp = await client.post(
+            "/api/auth/login",
+            data={"username": "nobody@example.com", "password": "wrong"},
+        )
+    assert resp.status_code == _HTTP_400, resp.text
+    assert resp.json()["detail"] == "LOGIN_BAD_CREDENTIALS"
