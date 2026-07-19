@@ -633,14 +633,16 @@ services:
       # that would respawn forever. Default-OFF in config; ARMED here (inert in
       # practice: every real delivery role is gateway-enabled). OFF in registry.
       ROBOCO_SPAWN_PREFLIGHT_ENABLED: ${ROBOCO_SPAWN_PREFLIGHT_ENABLED:-true}
-      # fastapi-guard HTTP security layer (v0.16.0). ARMED here in PASSIVE /
-      # log-only calibration mode: guard mounts + observes + logs what it WOULD
-      # block, but blocks nothing until PASSIVE_MODE is flipped off after the
-      # false-positive review. FAIL_SECURE=false so a guard-internal error never
-      # 500s this personal deploy. Left OFF entirely in the registry compose.
+      # fastapi-guard HTTP security layer (v0.16.0). ACTIVE enforcement: passive
+      # / log-only calibration (WAF false-positive review, see
+      # docs/rag/architecture/http-security-guard.md) came back clean, CEO
+      # approved flipping to active now that cloud auth + Tailscale are armed.
+      # Guard mounts, observes, AND BLOCKS matching requests. FAIL_SECURE=false
+      # so a guard-internal error never 500s this personal deploy. Left OFF
+      # entirely in the registry compose.
       # enforce_https follows ROBOCO_ENVIRONMENT (dev on the NAS → not enforced).
       ROBOCO_GUARD_ENABLED: ${ROBOCO_GUARD_ENABLED:-true}
-      ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-true}
+      ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-false}
       ROBOCO_GUARD_FAIL_SECURE: ${ROBOCO_GUARD_FAIL_SECURE:-false}
     volumes:
       # Docker socket - allows spawning agent containers

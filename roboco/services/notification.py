@@ -6,12 +6,14 @@ Sends notifications through the API with proper enforcement.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
 from sqlalchemy import select
 
+from roboco.config import settings
 from roboco.db.base import get_db_context
 from roboco.db.tables import AgentTable, NotificationTable
 from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
@@ -847,6 +849,32 @@ class NotificationService:
                 if created:
                     await db.commit()
 
+    def _ack_and_expiry(
+        self, params: CreateNotificationParams
+    ) -> tuple[bool, datetime | None]:
+        """(requires_ack, expires_at) for a new notification row.
+
+        requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
+        informational) with default True for unmapped types; a per-row
+        override (params.requires_ack) wins when set — used by
+        send_a2a_notification's CEO-wake path. expires_at feeds
+        sweep_expired_notifications' re-escalation: only ack-required rows
+        are ever swept, so only they get a deadline, and
+        notification_ack_ttl_hours=0 disables stamping (NULL, never
+        expires).
+        """
+        requires_ack = (
+            params.requires_ack
+            if params.requires_ack is not None
+            else ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
+        )
+        expires_at = (
+            datetime.now(UTC) + timedelta(hours=settings.notification_ack_ttl_hours)
+            if requires_ack and settings.notification_ack_ttl_hours > 0
+            else None
+        )
+        return requires_ack, expires_at
+
     async def _create_notification_with_session(
         self, params: CreateNotificationParams, db: AsyncSession
     ) -> bool:
@@ -903,6 +931,7 @@ class NotificationService:
             to_agents_uuids=to_agents_uuids,
         ):
             return False
+        requires_ack, expires_at = self._ack_and_expiry(params)
         notification = NotificationTable(
             type=params.notification_type,
             priority=params.priority,
@@ -911,18 +940,8 @@ class NotificationService:
             subject=params.subject,
             body=params.body,
             related_task_id=params.related_task_id,
-            # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
-            # informational), not the column's True default; default True
-            # for an unmapped type preserves the safe action-required bias.
-            # A per-row override (params.requires_ack) wins when set — used
-            # by send_a2a_notification's CEO-wake path so that row is
-            # visible under pending_ack_only even though A2A_REQUEST's type
-            # default is False.
-            requires_ack=(
-                params.requires_ack
-                if params.requires_ack is not None
-                else ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
-            ),
+            requires_ack=requires_ack,
+            expires_at=expires_at,
         )
         db.add(notification)
         await db.flush()

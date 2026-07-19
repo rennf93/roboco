@@ -2494,21 +2494,36 @@ async def test_agent_reply_to_ceo_creates_no_wake(a2a_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ceo_dm_to_non_a2a_role_creates_no_wake(a2a_setup: dict) -> None:
-    """A CEO DM to a role with no read_a2a on its manifest (pr_reviewer,
-    auditor) must NOT create a wake row — the recipient could never ack it,
-    so it would be immortal, permanently suppress future wakes via the dedup
-    pre-check, and drive futile respawns."""
+async def test_ceo_dm_to_non_a2a_role_denied_at_conversation_creation(
+    a2a_setup: dict,
+) -> None:
+    """A CEO DM to a role with no dm/read_a2a on its manifest (pr_reviewer,
+    auditor) must be refused outright at conversation creation — the root-
+    cause fix (can_a2a_direct's CEO branch now excludes NO_COMMS_ROLES)
+    supersedes the old symptom-level fix of letting the conversation exist
+    and only suppressing the wake notification (the recipient could never
+    ack it, so it would be immortal, permanently suppress future wakes via
+    the dedup pre-check, and drive futile respawns)."""
     svc: A2AService = a2a_setup["svc"]
-    conv = await svc.get_or_create_conversation(agent_a="ceo", agent_b="pr-reviewer-1")
-    conv_id = UUID(conv.id)
+    with pytest.raises(A2AAccessDeniedError, match="no agent-comms surface"):
+        await svc.get_or_create_conversation(agent_a="ceo", agent_b="pr-reviewer-1")
 
+
+@pytest.mark.asyncio
+async def test_maybe_wake_ceo_recipient_still_noops_for_no_comms_role(
+    a2a_setup: dict,
+) -> None:
+    """Defense-in-depth: _maybe_wake_ceo_recipient's own read_a2a manifest
+    check independently no-ops for a no-comms role — unreachable through the
+    normal send path now that conversation creation refuses it first, but
+    it must stay safe if ever called directly (e.g. on a pre-fix row)."""
+    svc: A2AService = a2a_setup["svc"]
     mock_ns = AsyncMock()
     mock_ns.send_a2a_notification = AsyncMock(return_value=None)
     with patch(
         "roboco.services.notification.NotificationService", return_value=mock_ns
     ):
-        await svc.send_chat_message(conv_id, "ceo", "review status?")
+        await svc._maybe_wake_ceo_recipient("ceo", "pr-reviewer-1", None)
 
     mock_ns.send_a2a_notification.assert_not_awaited()
 
