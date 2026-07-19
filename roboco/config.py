@@ -567,6 +567,23 @@ class Settings(BaseSettings):
         default=True,
         description="Whether provisioned repos are created private.",
     )
+    provisioning_provider: Literal["github", "gitlab", "gitea"] = Field(
+        default="github",
+        description=(
+            "Forge that pitch auto-provisioning targets (default 'github', "
+            "byte-for-byte unchanged behavior). 'gitlab'/'gitea' additionally "
+            "require ROBOCO_PROVISIONING_HOST — without it provisioning stays "
+            "disabled exactly like a missing token/org."
+        ),
+    )
+    provisioning_host: str = Field(
+        default="",
+        description=(
+            "Self-hosted forge instance host for gitlab/gitea provisioning "
+            "(e.g. 'gitlab.example.com'). Ignored when provisioning_provider "
+            "is 'github'."
+        ),
+    )
 
     # ==========================================================================
     # Autonomous strategy engine ("engine 2") — DORMANT by default

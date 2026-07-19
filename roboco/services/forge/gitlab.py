@@ -20,9 +20,11 @@ Deliberate Phase-3 postures (per the spec):
 - ``request_reviewers`` needs numeric GitLab user ids RoboCo does not store
   (only usernames/slugs) — mirroring is skipped with a synthetic 200 rather
   than failing the PR-open flow over a best-effort reviewer nudge.
-- ``create_org_repo`` (provisioning) is explicitly out of Phase 3 scope
-  (Phase 4) — a synthetic 501 keeps the interface implementable without
-  faking GitLab's namespace-model POST here.
+- ``create_org_repo`` (provisioning, Phase 4) resolves ``org`` — a group's
+  full path, subgroups included — to a numeric namespace id via ``GET
+  /groups/{path}`` and POSTs ``/projects`` under it; a 404 group lookup
+  falls back to the token's own (user) namespace by omitting
+  ``namespace_id``.
 - Plain git (clone/fetch/push) needs no provider work: GitLab, like GitHub
   and Gitea, accepts a PAT as the Basic-auth password with the username
   ignored, so the existing ``x-access-token:<token>`` extraheader works.
@@ -65,9 +67,19 @@ _DIFF_PAGE_SIZE = 100
 # can't be a valid remote (no owner-less repos on GitLab).
 _MIN_PATH_SEGMENTS = 2
 
+# GitLab project ``path`` charset is stricter than a display ``name`` —
+# lowercase alnum/dot/underscore/dash. RoboCo repo names are already slugs
+# (pitch.slug-derived) so this is normally a no-op.
+_PATH_INVALID_CHARS_RE = re.compile(r"[^a-z0-9._-]+")
+
 
 def _default_timeout() -> int:
     return settings.git_command_timeout_seconds
+
+
+def _project_path(name: str) -> str:
+    slug = _PATH_INVALID_CHARS_RE.sub("-", name.strip().lower()).strip("-")
+    return slug or "project"
 
 
 class GitLabProvider(GitProvider):
@@ -582,14 +594,86 @@ class GitLabProvider(GitProvider):
         client: httpx.AsyncClient | None = None,
         timeout: float | None = None,
     ) -> Any:
-        """GitLab project provisioning (the namespace-model POST) is Phase 4
-        — a synthetic 501 keeps the interface implementable without faking
-        it here."""
-        _ = (token, org, name, description, private, auto_init, client, timeout)
-        request = httpx.Request("post", f"{self._scheme}://{self._host}/synthetic")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "GitLab provisioning is Phase 4"},
+        """GitLab has no ``/orgs/{org}/repos`` — resolve ``org`` (a group's
+        full path, subgroups included) to its numeric namespace id and POST
+        ``/projects`` under it. A 404 group lookup means ``org`` is a
+        personal namespace instead: the project lands under the token's own
+        namespace by omitting ``namespace_id`` entirely.
+
+        Reshapes the 201 body onto the GitHub fields callers read
+        (``full_name``/``clone_url``/``html_url``), mirroring ``get_repo``.
+        GitLab signals a duplicate project path as 400 "has already been
+        taken" where GitHub uses 422 "already exists" — reshaped to 422 so
+        the status code lines up; the text is left untouched (the
+        provisioning service's already-exists match covers both phrases).
+        """
+        headers = self._headers(token)
+        base = f"{self._scheme}://{self._host}/api/v4"
+        namespace_id = await self._resolve_namespace_id(
+            org, headers=headers, client=client, timeout=timeout
         )
-        return ShapedResponse(real)
+        if isinstance(namespace_id, httpx.Response | ShapedResponse):
+            return namespace_id  # group lookup itself errored (not a 404)
+
+        payload: dict[str, Any] = {
+            "name": name,
+            "path": _project_path(name),
+            "description": description,
+            "visibility": "private" if private else "internal",
+            "initialize_with_readme": auto_init,
+        }
+        if namespace_id is not None:
+            payload["namespace_id"] = namespace_id
+        resp = await self._send(
+            "post",
+            f"{base}/projects",
+            headers=headers,
+            json_body=payload,
+            client=client,
+            timeout=timeout,
+        )
+        return self._shape_create_project(resp)
+
+    async def _resolve_namespace_id(
+        self,
+        org: str,
+        *,
+        headers: dict[str, str],
+        client: httpx.AsyncClient | None,
+        timeout: float | None,
+    ) -> int | None | httpx.Response | ShapedResponse:
+        """The group's numeric id, ``None`` for a personal (404) namespace,
+        or the raw error response for anything else."""
+        group_resp = await self._send(
+            "get",
+            f"{self._scheme}://{self._host}/api/v4/groups/{quote(org, safe='')}",
+            headers=headers,
+            client=client,
+            timeout=timeout,
+        )
+        if group_resp.is_success:
+            group_data = group_resp.json()
+            return group_data.get("id") if isinstance(group_data, dict) else None
+        if group_resp.status_code == httpx.codes.NOT_FOUND:
+            return None
+        return group_resp
+
+    @staticmethod
+    def _shape_create_project(resp: httpx.Response) -> Any:
+        """Reshape a project-create response onto the GitHub fields callers
+        read, and GitLab's duplicate-path 400 onto GitHub's 422."""
+        if (
+            resp.status_code == httpx.codes.BAD_REQUEST
+            and "has already been taken" in resp.text
+        ):
+            return ShapedResponse(resp, status_code=httpx.codes.UNPROCESSABLE_ENTITY)
+        if not resp.is_success:
+            return resp
+        data = resp.json()
+        if not isinstance(data, dict):
+            return resp
+        shaped = dict(data)
+        shaped["full_name"] = data.get("path_with_namespace") or ""
+        shaped["html_url"] = data.get("web_url") or ""
+        shaped["clone_url"] = data.get("http_url_to_repo") or ""
+        return ShapedResponse(resp, json_payload=shaped)
