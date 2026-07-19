@@ -5,23 +5,25 @@ package never depends on the deps module — deps depends on auth, not the
 other way around.
 """
 
-from __future__ import annotations
+# No `from __future__ import annotations` here, deliberately: FastAPI must
+# resolve get_user_db's Annotated[AsyncSession, Depends(...)] at runtime,
+# and with postponed annotations plus a TYPE_CHECKING-only AsyncSession the
+# resolution failed silently — FastAPI demoted `db` to a REQUIRED QUERY
+# parameter and every /auth/login 422'd (caught live on the NAS,
+# 2026-07-19). Eager evaluation makes an unresolvable annotation loud.
 
-from typing import TYPE_CHECKING, Annotated
+from collections.abc import AsyncGenerator
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends
 from fastapi_users import BaseUserManager, UUIDIDMixin
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.db.tables import UserTable
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 # Placeholder used only while cloud auth is off — BaseUserManager requires a
 # non-empty secret attribute, but the reset-password/verify flows it signs
