@@ -471,7 +471,6 @@ class _GitReleaseOps:
         # binary, so the CLI path fails at publish time with a missing binary.
         import httpx
 
-        from roboco.services.forge import RepoRef
         from roboco.services.forge.github import GitHubProvider
         from roboco.services.git import GitService
         from roboco.services.project import ProjectService
@@ -482,10 +481,10 @@ class _GitReleaseOps:
         )
         if not token:
             raise RuntimeError(f"release publish failed: no git token for {self._slug}")
-        owner, repo = GitService._parse_git_url(self._git_url)
+        repo_ref = GitService._parse_git_url(self._git_url)
         try:
             resp = await GitHubProvider().create_release(
-                RepoRef(owner, repo),
+                repo_ref,
                 token,
                 tag_name=tag,
                 name=tag,

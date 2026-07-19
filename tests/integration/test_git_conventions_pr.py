@@ -10,6 +10,7 @@ from uuid import uuid4
 from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
+from roboco.services.forge import RepoRef
 from roboco.services.git import _ConventionsPr, get_git_service
 
 if TYPE_CHECKING:
@@ -144,7 +145,9 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
 
     monkeypatch.setattr(git, "_token_for_project", _fake_token)
     monkeypatch.setattr(git, "push", _fake_push)
-    monkeypatch.setattr(git, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        git, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+    )
 
     _pr_number = 42
     _pr_url = "https://github.com/owner/repo/pull/42"
@@ -155,7 +158,7 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
         def json(self) -> dict[str, object]:
             return {"number": _pr_number, "html_url": _pr_url}
 
-    async def _fake_post_pr(_owner: str, _repo: str, _token: str, _body: Any) -> _Resp:
+    async def _fake_post_pr(_repo_ref: RepoRef, _token: str, _body: Any) -> _Resp:
         return _Resp()
 
     monkeypatch.setattr(git, "_post_pr", _fake_post_pr)

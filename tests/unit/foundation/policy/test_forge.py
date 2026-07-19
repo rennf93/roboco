@@ -102,11 +102,12 @@ def test_explicit_gitlab_provider_rejected_as_not_yet_supported() -> None:
     assert "gitlab" in error.lower()
 
 
-def test_explicit_gitea_provider_rejected_as_not_yet_supported() -> None:
-    error = validate_project_forge("https://gitea.example.com/owner/repo.git", "gitea")
-    assert error is not None
-    assert "not yet" in error.lower()
-    assert "gitea" in error.lower()
+def test_explicit_gitea_provider_accepted() -> None:
+    """Phase 2: the Gitea transport is live — explicit gitea validates."""
+    assert (
+        validate_project_forge("https://gitea.example.com/owner/repo.git", "gitea")
+        is None
+    )
 
 
 def test_unknown_host_no_explicit_provider_rejected() -> None:

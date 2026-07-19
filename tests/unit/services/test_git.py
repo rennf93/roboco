@@ -18,6 +18,7 @@ import pytest
 from roboco.config import settings
 from roboco.exceptions import GitCommandError, GitError, MergeConflictError
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -442,7 +443,7 @@ async def test_pr_target_returns_base_ref() -> None:
 
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="token"))
 
     fake_response = MagicMock()
@@ -490,7 +491,7 @@ async def test_create_pr_returns_pr_dict() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_record_pr_atomically", AsyncMock())
     # parent == default → _ensure_base_on_remote short-circuits (no git call)
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
@@ -532,7 +533,7 @@ async def test_create_pr_records_pr_despite_cancellation_after_post() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
 
     recorded = {"done": False}
@@ -590,7 +591,7 @@ async def test_create_pr_cancellation_waits_out_record_before_reraising() -> Non
     _bind(svc, "_task_for_branch", AsyncMock(return_value=fake_task))
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
 
     order: list[str] = []
@@ -737,7 +738,7 @@ async def test_ensure_label_exists_swallows_non_httpx_error() -> None:
         "roboco.services.git.httpx.AsyncClient",
         return_value=_non_httpx_raising_client(),
     ):
-        await svc._ensure_label_exists("acme", "repo", "tok", "cell/backend")
+        await svc._ensure_label_exists(RepoRef("acme", "repo"), "tok", "cell/backend")
 
 
 @pytest.mark.asyncio
@@ -748,7 +749,7 @@ async def test_apply_pr_labels_swallows_non_httpx_error() -> None:
         "roboco.services.git.httpx.AsyncClient",
         return_value=_non_httpx_raising_client(),
     ):
-        await svc._apply_pr_labels("acme", "repo", "tok", 11, ["cell/backend"])
+        await svc._apply_pr_labels(RepoRef("acme", "repo"), "tok", 11, ["cell/backend"])
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +775,7 @@ async def test_pr_merge_returns_merge_commit_dict() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
 
     fake_resp = MagicMock(is_success=True, status_code=200)
     _bind(svc, "_call_merge_api", AsyncMock(return_value=fake_resp))
@@ -805,7 +806,7 @@ async def test_pr_merge_into_default_branch_is_ceo_only() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
     merge_api = AsyncMock()
     _bind(svc, "_call_merge_api", merge_api)
@@ -1302,7 +1303,7 @@ async def test_pr_is_merged_returns_none_on_httpx_error() -> None:
         "roboco.services.git.httpx.AsyncClient",
         return_value=_httpx_raising_client(),
     ):
-        out = await svc._pr_is_merged("acme", "repo", 11, "tok")
+        out = await svc._pr_is_merged(RepoRef("acme", "repo"), 11, "tok")
     assert out is None
 
 
@@ -1317,8 +1318,7 @@ async def test_merge_with_retry_none_does_not_raise_merge_conflict() -> None:
     _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
 
     ctx = GitService._MergeContext(
-        owner="acme",
-        repo="repo",
+        repo_ref=RepoRef("acme", "repo"),
         pr_number=11,
         git_token="tok",
         workspace=Path("/tmp/ws"),
@@ -1340,8 +1340,7 @@ async def test_merge_with_retry_false_raises_merge_conflict() -> None:
     _bind(svc, "_pr_is_merged", AsyncMock(return_value=False))
 
     ctx = GitService._MergeContext(
-        owner="acme",
-        repo="repo",
+        repo_ref=RepoRef("acme", "repo"),
         pr_number=11,
         git_token="tok",
         workspace=Path("/tmp/ws"),
@@ -1356,7 +1355,7 @@ async def test_merge_pull_request_none_does_not_raise_git_error() -> None:
     """CEO merge path: indeterminate (None) falls through to cleanup, not GitError."""
     svc = _service()
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc123sha"))
@@ -1381,7 +1380,7 @@ async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
     svc = _service(execute_returns=result)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
     _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
     _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
@@ -1451,7 +1450,7 @@ async def test_update_pr_for_task_threads_actor_agent_id() -> None:
         return Path("/tmp/ws")
 
     _bind(svc, "get_workspace", AsyncMock(side_effect=_capture_workspace))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
 
     fake_task_service = MagicMock()

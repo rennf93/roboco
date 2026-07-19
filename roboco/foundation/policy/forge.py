@@ -24,10 +24,11 @@ KNOWN_PROVIDERS: tuple[str, ...] = ("github", "gitlab", "gitea")
 _SCP_HOST_RE = re.compile(r"^(?:[^@/]+@)?(?P<host>[^/:]+):")
 
 
-def _extract_host(git_url: str) -> str | None:
+def extract_host(git_url: str) -> str | None:
     """Pull the host out of an https, ssh://, or scp-like git URL.
 
-    Returns None when no host can be found (unparseable input).
+    Returns None when no host can be found (unparseable input). Public —
+    the forge registry keys its host→provider routing map on this.
     """
     url = git_url.strip()
     if not url:
@@ -50,7 +51,7 @@ def detect_provider(git_url: str) -> str | None:
     those apart. A project on a non-SaaS host must set ``git_provider``
     explicitly (a one-click choice in the panel's project dialog).
     """
-    host = _extract_host(git_url)
+    host = extract_host(git_url)
     if host == "github.com":
         return "github"
     if host == "gitlab.com":
@@ -67,13 +68,14 @@ def validate_project_forge(git_url: str | None, git_provider: str | None) -> str
     - an unknown ``git_provider`` string -> error naming ``KNOWN_PROVIDERS``.
     - explicit ``git_provider="github"`` -> OK regardless of host (the GitHub
       Enterprise escape hatch — current behavior preserved).
-    - explicit ``git_provider`` of "gitlab"/"gitea" -> error: recognized but
-      not yet supported.
+    - explicit ``git_provider="gitea"`` -> OK (Phase 2: the Gitea transport
+      is live; the host comes from the git_url).
+    - explicit ``git_provider="gitlab"`` -> error: recognized but not yet
+      supported.
     - no explicit ``git_provider``, host detects to "github" -> OK.
-    - no explicit ``git_provider``, anything else (unknown host, or a detected
-      but unsupported host like gitlab.com) -> error steering the operator to
-      either a GitHub host or the explicit ``git_provider="github"`` escape
-      hatch for GHE.
+    - no explicit ``git_provider``, anything else (unknown host, or a
+      detected but unsupported host like gitlab.com) -> error steering the
+      operator to an explicit provider choice.
     """
     if not git_url:
         return None
@@ -84,17 +86,18 @@ def validate_project_forge(git_url: str | None, git_provider: str | None) -> str
                 f"Unknown git_provider {git_provider!r}; must be one of "
                 f"{', '.join(KNOWN_PROVIDERS)}."
             )
-        if git_provider == "github":
+        if git_provider in ("github", "gitea"):
             return None
         return (
             f"git_provider={git_provider!r} is recognized but not yet "
-            "supported — RoboCo is GitHub-only today; GitLab/Gitea support "
-            "is planned."
+            "supported — RoboCo supports GitHub and Gitea today; GitLab "
+            "support is planned."
         )
 
     if detect_provider(git_url) == "github":
         return None
     return (
-        "RoboCo currently supports GitHub-hosted repos only. If this is a "
-        'GitHub Enterprise host, set git_provider="github" explicitly.'
+        "RoboCo supports GitHub-hosted repos by default. For a self-hosted "
+        'forge set git_provider explicitly: "gitea" for a Gitea instance, '
+        'or "github" for GitHub Enterprise.'
     )

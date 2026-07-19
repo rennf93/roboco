@@ -186,6 +186,10 @@ Git authentication is managed **per-project** through encrypted GitHub PATs:
 
 **HTTPS URLs require tokens** - attempting to clone without a token will raise `WorkspaceError`.
 
+### Forge providers (GitHub + Gitea)
+
+The REST surface (PRs, CI status, reviews, labels, releases) is provider-routed (`roboco/services/forge/`): `GitProvider` is the ~20-method transport contract, `GitHubProvider` and `GiteaProvider` implement it, and `GitService._forge` returns a `ForgeRouter` that picks the transport per call from `RepoRef.host` — `None` (github.com/GHE) rides GitHub, a registered Gitea host rides that instance's provider, so `GitService`'s call sites never know which forge they're on. A project opts in via `projects.git_provider` (`"gitea"` for self-hosted Gitea; `"github"` doubles as the GHE escape hatch with `ROBOCO_GITHUB_API_BASE_URL`; GitLab is recognized but still rejected at registration) — panel: the Forge select in the edit-project dialog. The host→provider map is in-memory per process, self-healing: `ProjectService.get`/`get_by_slug` re-register on every read. `GiteaProvider` adapts Gitea's wire contract back into the GitHub shapes `GitService` classifies (`token` auth scheme, duplicate-PR 409→422, commit statuses reshaped into `check_runs`/`workflow_runs`, merge-method key mapping, `Do`-keyed POST merge); deliberate Phase-2 postures: zero-workflows fail-open (`no_ci_configured` for a statuses-free repo) and no server-side branch merge (the env-sync cascade's `merge_branch` lands on `missing_ref`). Plain git (clone/fetch/push) is forge-agnostic — the Basic-auth `x-access-token:<token>` extraheader works on Gitea unchanged.
+
 ## Task Lifecycle
 
 ### Task States

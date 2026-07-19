@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 
@@ -111,7 +112,7 @@ async def test_rebase_pr_for_task_rebases_in_worktree_not_clone() -> None:
 
     state = _stub_rebase_common(svc, clone)
     object.__setattr__(
-        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
     )
     object.__setattr__(
         svc,

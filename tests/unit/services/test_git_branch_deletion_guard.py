@@ -15,6 +15,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 
@@ -48,7 +49,7 @@ async def test_delete_skips_branch_with_open_dependents() -> None:
     client = _fake_client()
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
         await svc._delete_remote_branch_best_effort(
-            "acme", "repo", "feature/main_pm/abc123", "tok"
+            RepoRef("acme", "repo"), "feature/main_pm/abc123", "tok"
         )
     client.delete.assert_not_awaited()
 
@@ -60,7 +61,7 @@ async def test_delete_removes_leaf_branch_with_no_dependents() -> None:
     client = _fake_client()
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
         await svc._delete_remote_branch_best_effort(
-            "acme", "repo", "feature/backend/abc--cell--leaf", "tok"
+            RepoRef("acme", "repo"), "feature/backend/abc--cell--leaf", "tok"
         )
     client.delete.assert_awaited_once()
 
@@ -72,7 +73,9 @@ async def test_delete_skips_default_branch_before_checking_dependents() -> None:
     _bind(svc, "_branch_has_open_dependents", dep)
     client = _fake_client()
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
-        await svc._delete_remote_branch_best_effort("acme", "repo", "master", "tok")
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "master", "tok"
+        )
     client.delete.assert_not_awaited()
     dep.assert_not_awaited()
 
@@ -89,7 +92,7 @@ async def test_has_open_dependents_true_when_open_pr_targets_base() -> None:
     client.get = AsyncMock(return_value=resp)
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
         out = await svc._branch_has_open_dependents(
-            "acme", "repo", "feature/main_pm/abc123", "tok"
+            RepoRef("acme", "repo"), "feature/main_pm/abc123", "tok"
         )
     assert out is True
 
@@ -103,7 +106,7 @@ async def test_has_open_dependents_false_when_none() -> None:
     client.get = AsyncMock(return_value=resp)
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
         out = await svc._branch_has_open_dependents(
-            "acme", "repo", "feature/x--leaf", "tok"
+            RepoRef("acme", "repo"), "feature/x--leaf", "tok"
         )
     assert out is False
 
@@ -116,6 +119,6 @@ async def test_has_open_dependents_fails_safe_on_non_success() -> None:
     client.get = AsyncMock(return_value=resp)
     with patch("roboco.services.git.httpx.AsyncClient", return_value=client):
         out = await svc._branch_has_open_dependents(
-            "acme", "repo", "feature/main_pm/abc123", "tok"
+            RepoRef("acme", "repo"), "feature/main_pm/abc123", "tok"
         )
     assert out is True
