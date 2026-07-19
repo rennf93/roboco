@@ -31,6 +31,14 @@ export const observabilityKeys = {
     [...observabilityKeys.all, "scorecard", "ceo", days] as const,
   memberScorecard: (agentId: string, days: number) =>
     [...observabilityKeys.all, "scorecard", "member", agentId, days] as const,
+  allMemberScorecards: (days: number, team?: string) =>
+    [
+      ...observabilityKeys.all,
+      "scorecard",
+      "members",
+      team ?? "all",
+      days,
+    ] as const,
   orgScorecard: (days: number, team?: string) =>
     [
       ...observabilityKeys.all,
@@ -111,6 +119,16 @@ export function useMemberScorecard(agentId: string, days = 30) {
     queryKey: observabilityKeys.memberScorecard(agentId, days),
     queryFn: () => observabilityApi.getMemberScorecard(agentId, days),
     enabled: isScorecardMemberId(agentId),
+    refetchInterval: SCORECARD_REFETCH_INTERVAL,
+  });
+}
+
+/** Every agent's rollup scorecard in one batch — replaces the N+1 pattern of
+ * calling useMemberScorecard once per row in a member list/table. */
+export function useAllMemberScorecards(days = 30, team?: string) {
+  return useQuery<MemberScorecard[]>({
+    queryKey: observabilityKeys.allMemberScorecards(days, team),
+    queryFn: () => observabilityApi.getAllMemberScorecards(days, team),
     refetchInterval: SCORECARD_REFETCH_INTERVAL,
   });
 }

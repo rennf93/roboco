@@ -453,6 +453,45 @@ async def test_org_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_all_member_scorecards_endpoint(
+    dashboard_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The batch scorecard route (N+1 fix) returns one MemberScorecard per
+    non-CEO/non-system agent — the CEO seeded by the fixture is excluded."""
+    dev = AgentTable(
+        id=uuid4(),
+        name="be-dev-1",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(dev)
+    await db_session.flush()
+
+    resp = await dashboard_client.get("/api/dashboard/metrics/members", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert isinstance(body, list)
+    ids = {card["id"] for card in body}
+    assert str(dev.id) in ids
+    ceo_id = (
+        await db_session.execute(
+            select(AgentTable.id).where(AgentTable.role == AgentRole.CEO)
+        )
+    ).scalar_one()
+    assert str(ceo_id) not in ids
+    for card in body:
+        assert card["scope"] == "member"
+        assert card["member_kind"] == "agent"
+
+
+@pytest.mark.asyncio
 async def test_task_metrics_404_for_missing_task(
     dashboard_client: AsyncClient,
 ) -> None:

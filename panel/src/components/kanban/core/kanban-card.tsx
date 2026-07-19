@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Task, TaskStatus } from "@/types";
 import { useUpdateTask } from "@/hooks/use-tasks";
 import { Card, CardContent } from "@/components/ui/card";
@@ -44,7 +44,12 @@ interface KanbanCardProps {
   isDragging?: boolean;
 }
 
-export function KanbanCard({
+// Memoized: a kanban column can mount hundreds of these across all statuses.
+// `task` stays referentially stable across React Query refetches for
+// unchanged rows (structural sharing), and `onAction` is stabilized by the
+// board — so the default shallow prop comparison actually skips re-renders
+// instead of every card re-rendering on any board-level state change.
+function KanbanCardImpl({
   task,
   onAction,
   showQaActions,
@@ -302,3 +307,5 @@ export function KanbanCard({
     </Card>
   );
 }
+
+export const KanbanCard = memo(KanbanCardImpl);

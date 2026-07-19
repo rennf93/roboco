@@ -28,7 +28,7 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KanbanCard } from "./kanban-card";
 import { RequiredNotesDialog } from "@/components/tasks/task-detail/task-action-dialogs";
 import { skippedPreconditions } from "./bypass-preconditions";
@@ -104,6 +104,23 @@ export function KanbanBoard({
   const updateTask = useUpdateTask();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
 
+  // Latest tasks snapshot for handleAction below, read via ref instead of a
+  // closure — React Query hands back a new array reference on every refetch
+  // even when the underlying rows are unchanged, which would otherwise bust
+  // handleAction's identity (and, through it, KanbanCard's memoization) every
+  // 30s regardless of whether anything actually changed.
+  const tasksRef = useRef<Task[]>([]);
+  tasksRef.current = tasks || [];
+
+  // useMutation's mutate/mutateAsync are bound once per observer and stay
+  // referentially stable across renders (query-core binds them in the
+  // constructor) — pulling them out lets handleAction's useCallback below
+  // stay stable even though `lifecycle` itself is a fresh object every render.
+  const claimMutateAsync = lifecycle.claim.mutateAsync;
+  const startMutateAsync = lifecycle.start.mutateAsync;
+  const submitQaMutateAsync = lifecycle.submitQa.mutateAsync;
+  const unblockMutateAsync = lifecycle.unblock.mutateAsync;
+
   const { register, unregister } = usePageRefresh();
 
   useEffect(() => {
@@ -127,13 +144,21 @@ export function KanbanBoard({
     }),
   );
 
-  // Group tasks by status
-  const tasksByStatus = columns.reduce(
-    (acc, col) => {
-      acc[col.status] = (tasks || []).filter((t) => t.status === col.status);
-      return acc;
-    },
-    {} as Record<TaskStatus, Task[]>,
+  // Group tasks by status. Memoized so each column's `tasks` prop keeps a
+  // stable reference across renders that don't actually change the data —
+  // required for KanbanColumn/KanbanCard's React.memo to skip re-rendering.
+  const tasksByStatus = useMemo(
+    () =>
+      columns.reduce(
+        (acc, col) => {
+          acc[col.status] = (tasks || []).filter(
+            (t) => t.status === col.status,
+          );
+          return acc;
+        },
+        {} as Record<TaskStatus, Task[]>,
+      ),
+    [tasks, columns],
   );
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -223,57 +248,66 @@ export function KanbanBoard({
     }
   };
 
-  const handleAction = async (action: string, taskId: string) => {
-    try {
-      switch (action) {
-        case "move-forward":
-          // Determine next action based on current status
-          const task = tasks?.find((t) => t.id === taskId);
-          if (!task) return;
+  const handleAction = useCallback(
+    async (action: string, taskId: string) => {
+      try {
+        switch (action) {
+          case "move-forward":
+            // Determine next action based on current status
+            const task = tasksRef.current.find((t) => t.id === taskId);
+            if (!task) return;
 
-          switch (task.status) {
-            case TaskStatus.BACKLOG:
-              // BACKLOG tasks need session before activation - PM only
-              toast.info(
-                "Backlog tasks must be activated by PM with a session",
-              );
-              break;
-            case TaskStatus.PENDING:
-              await lifecycle.claim.mutateAsync(taskId);
-              toast.success("Task claimed");
-              break;
-            case TaskStatus.CLAIMED:
-              await lifecycle.start.mutateAsync(taskId);
-              toast.success("Task started");
-              break;
-            case TaskStatus.IN_PROGRESS:
-              await lifecycle.submitQa.mutateAsync({ taskId });
-              toast.success("Submitted for QA");
-              break;
-            case TaskStatus.BLOCKED:
-              await lifecycle.unblock.mutateAsync(taskId);
-              toast.success("Task unblocked");
-              break;
-            case TaskStatus.AWAITING_QA:
-              setPendingNotesAction({ kind: "pass-qa", taskId });
-              return; // Dialog collects the required note
-            case TaskStatus.AWAITING_DOCUMENTATION:
-              setPendingNotesAction({ kind: "complete", taskId });
-              return; // Dialog collects the required justification
-          }
-          break;
-        case "pass-qa":
-          setPendingNotesAction({ kind: "pass-qa", taskId });
-          return; // Dialog collects the required note
-        case "fail-qa":
-          setPendingNotesAction({ kind: "fail-qa", taskId });
-          return; // Dialog collects the required note
+            switch (task.status) {
+              case TaskStatus.BACKLOG:
+                // BACKLOG tasks need session before activation - PM only
+                toast.info(
+                  "Backlog tasks must be activated by PM with a session",
+                );
+                break;
+              case TaskStatus.PENDING:
+                await claimMutateAsync(taskId);
+                toast.success("Task claimed");
+                break;
+              case TaskStatus.CLAIMED:
+                await startMutateAsync(taskId);
+                toast.success("Task started");
+                break;
+              case TaskStatus.IN_PROGRESS:
+                await submitQaMutateAsync({ taskId });
+                toast.success("Submitted for QA");
+                break;
+              case TaskStatus.BLOCKED:
+                await unblockMutateAsync(taskId);
+                toast.success("Task unblocked");
+                break;
+              case TaskStatus.AWAITING_QA:
+                setPendingNotesAction({ kind: "pass-qa", taskId });
+                return; // Dialog collects the required note
+              case TaskStatus.AWAITING_DOCUMENTATION:
+                setPendingNotesAction({ kind: "complete", taskId });
+                return; // Dialog collects the required justification
+            }
+            break;
+          case "pass-qa":
+            setPendingNotesAction({ kind: "pass-qa", taskId });
+            return; // Dialog collects the required note
+          case "fail-qa":
+            setPendingNotesAction({ kind: "fail-qa", taskId });
+            return; // Dialog collects the required note
+        }
+        refetch();
+      } catch {
+        toast.error("Action failed");
       }
-      refetch();
-    } catch {
-      toast.error("Action failed");
-    }
-  };
+    },
+    [
+      claimMutateAsync,
+      startMutateAsync,
+      submitQaMutateAsync,
+      unblockMutateAsync,
+      refetch,
+    ],
+  );
 
   const handleNotesConfirm = async (text: string) => {
     if (!pendingNotesAction) return;
