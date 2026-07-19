@@ -13,11 +13,11 @@ import { useBackButton, useTgWebApp } from "@/lib/telegram/hooks";
 import { haptics } from "@/lib/telegram/webapp";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { TgRow, TgRowIcon } from "@/components/tg/ui";
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
-  ChevronRight,
   Clapperboard,
   Map as MapIcon,
   MessageCircle,
@@ -56,20 +56,15 @@ function ItemRow({
 }) {
   const meta = KIND_META[item.kind];
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-lg border bg-card p-3 text-left text-card-foreground"
-    >
-      <meta.icon className="h-5 w-5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          {meta.label}
-        </p>
-        <p className="line-clamp-2 text-sm leading-snug">{itemTitle(item)}</p>
-      </div>
-      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </button>
+    <div className="rounded-xl border bg-card text-card-foreground">
+      <TgRow
+        leading={<TgRowIcon icon={meta.icon} />}
+        title={itemTitle(item)}
+        lines={2}
+        meta={meta.label}
+        onPress={onOpen}
+      />
+    </div>
   );
 }
 
@@ -132,13 +127,14 @@ export function TgApprovalsTab() {
     const meta = KIND_META[focused.kind];
     return (
       <div className="space-y-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {!webApp?.BackButton && (
-            <Button variant="ghost" size="sm" className="px-1.5" onClick={back}>
+            <Button variant="ghost" size="sm" className="-ml-1.5 px-1.5" onClick={back}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
           )}
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <meta.icon className="h-3.5 w-3.5 text-muted-foreground" />
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
             {meta.label}
           </p>
         </div>

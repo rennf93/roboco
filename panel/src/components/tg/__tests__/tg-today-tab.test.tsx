@@ -65,7 +65,7 @@ describe("TgTodayTab", () => {
     expect(screen.getByText(/1\.2M tokens/)).toBeInTheDocument();
     expect(screen.getByText("v0.25.0")).toBeInTheDocument();
     expect(screen.getByText(/no release pending/i)).toBeInTheDocument();
-    expect(screen.getByText("3 agents")).toBeInTheDocument();
+    expect(screen.getByText(/3 agents/)).toBeInTheDocument();
   });
 
   it("renders needs-you items and deep-links taps into the right tab", async () => {

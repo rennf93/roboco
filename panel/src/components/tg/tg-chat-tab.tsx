@@ -64,18 +64,18 @@ function ConversationList({
               key={c.id}
               type="button"
               onClick={() => onSelect(c.id, peerLabel)}
-              className="flex w-full flex-col gap-0.5 rounded-lg border p-3 text-left"
+              className="flex w-full flex-col gap-0.5 rounded-xl border bg-card p-3 text-left text-card-foreground transition-colors active:bg-muted"
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{peerLabel}</span>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm font-medium">{peerLabel}</span>
                 {c.last_message_at && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                     {formatDistanceToNow(new Date(c.last_message_at))} ago
                   </span>
                 )}
               </div>
               {c.last_message_preview && (
-                <p className="truncate text-xs text-muted-foreground">
+                <p className="truncate text-xs leading-snug text-muted-foreground">
                   {c.last_message_preview}
                 </p>
               )}

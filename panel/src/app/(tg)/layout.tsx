@@ -26,7 +26,7 @@ export default function TelegramLayout({
   return (
     <div
       id="tg-shell"
-      className="flex flex-col overflow-hidden bg-background text-foreground"
+      className="mx-auto flex w-full max-w-[430px] flex-col overflow-hidden bg-background text-foreground sm:border-x"
       style={{ height: "var(--tg-viewport-stable-height, 100dvh)" }}
     >
       <Script

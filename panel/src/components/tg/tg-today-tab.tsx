@@ -8,10 +8,10 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TgRow, TgSection, TgStat } from "@/components/tg/ui";
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronRight,
   CircleDollarSign,
   Rocket,
   Users,
@@ -67,50 +67,12 @@ const compactNumber = new Intl.NumberFormat("en", {
   maximumFractionDigits: 1,
 });
 
-function SectionCard({
-  icon: Icon,
-  title,
-  children,
-}: {
-  icon: typeof Users;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-lg border bg-card p-3 text-card-foreground">
-      <h2 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" />
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-function TaskRow({
-  task,
-  onOpen,
-}: {
-  task: TodayTaskItem;
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex w-full items-center gap-2 rounded-md py-1.5 text-left"
-    >
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm leading-snug">{task.title}</p>
-        <p className="text-[11px] text-muted-foreground">
-          {task.team ?? "—"}
-          {task.updated_at &&
-            ` · ${formatDistanceToNow(new Date(task.updated_at))} ago`}
-        </p>
-      </div>
-      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-    </button>
-  );
+function taskMeta(task: TodayTaskItem): string {
+  const parts = [task.team ?? "—"];
+  if (task.updated_at) {
+    parts.push(`${formatDistanceToNow(new Date(task.updated_at))} ago`);
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -174,90 +136,125 @@ export function TgTodayTab({
   );
 
   return (
-    <div className="space-y-3">
-      <SectionCard icon={CheckCircle2} title="Needs you">
+    <div className="space-y-2.5">
+      <TgSection
+        icon={CheckCircle2}
+        title="Needs you"
+        trailing={
+          needs.total > 0 ? (
+            <span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
+              {needs.total}
+            </span>
+          ) : undefined
+        }
+      >
         {needs.total === 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">
+          <p className="py-1.5 text-sm text-muted-foreground">
             All clear — nothing is waiting on you.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {heldEntries.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-1.5 pb-0.5">
                 {heldEntries.map(([key, count]) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => go("approvals")}
-                    className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+                    className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium tabular-nums text-primary transition-colors active:bg-primary/20"
                   >
                     {DRAFT_LABELS[key] ?? key} · {count}
                   </button>
                 ))}
               </div>
             )}
-            {needs.awaiting_ceo.map((t) => (
-              <TaskRow key={t.id} task={t} onOpen={() => go("board")} />
-            ))}
-            {needs.blocked_count > 0 && (
-              <p className="text-[11px] font-medium text-destructive">
-                {needs.blocked_count} blocked
-              </p>
-            )}
-            {needs.blocked.map((t) => (
-              <TaskRow key={t.id} task={t} onOpen={() => go("board")} />
-            ))}
+            <div className="-mx-1.5 divide-y divide-border/60">
+              {needs.awaiting_ceo.map((t) => (
+                <TgRow
+                  key={t.id}
+                  title={t.title}
+                  meta={taskMeta(t)}
+                  onPress={() => go("board")}
+                />
+              ))}
+              {needs.blocked.map((t) => (
+                <TgRow
+                  key={t.id}
+                  title={t.title}
+                  meta={
+                    <>
+                      <span className="font-medium text-destructive">
+                        blocked
+                      </span>
+                      {" · "}
+                      {taskMeta(t)}
+                    </>
+                  }
+                  onPress={() => go("board")}
+                />
+              ))}
+            </div>
           </div>
         )}
-      </SectionCard>
+      </TgSection>
 
-      <SectionCard icon={Users} title="Fleet">
-        <div className="mb-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          <span>{fleet.total} agents</span>
-          {Object.entries(fleet.by_status).map(([status, count]) => (
-            <span key={status}>
-              {count} {status}
-            </span>
-          ))}
-        </div>
+      <TgSection
+        icon={Users}
+        title="Fleet"
+        trailing={
+          <span className="text-[11px] tabular-nums text-muted-foreground">
+            {fleet.total} agents
+            {Object.entries(fleet.by_status).map(
+              ([status, count]) => ` · ${count} ${status}`,
+            )}
+          </span>
+        }
+      >
         {fleet.working.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No one is mid-task.</p>
+          <p className="py-1 text-sm text-muted-foreground">
+            No one is mid-task.
+          </p>
         ) : (
-          <ul className="space-y-1">
+          <ul className="space-y-1.5">
             {fleet.working.map((agent) => (
-              <li key={agent.name} className="text-sm leading-snug">
-                <span className="font-medium">{agent.name}</span>
+              <li
+                key={agent.name}
+                className="flex items-baseline gap-2 text-[13px] leading-snug"
+              >
+                <span className="shrink-0 font-mono text-xs font-medium">
+                  {agent.name}
+                </span>
                 {agent.task_title && (
-                  <span className="text-muted-foreground">
-                    {" "}
-                    — {agent.task_title}
+                  <span className="truncate text-muted-foreground">
+                    {agent.task_title}
                   </span>
                 )}
               </li>
             ))}
           </ul>
         )}
-      </SectionCard>
+      </TgSection>
 
-      <div className="grid grid-cols-2 gap-3">
-        <SectionCard icon={CircleDollarSign} title="Spend today">
-          <p className="text-lg font-semibold tabular-nums">
-            ${spend.cost_today_usd.toFixed(2)}
-          </p>
-          <p className="text-xs text-muted-foreground tabular-nums">
-            {compactNumber.format(spend.tokens_today)} tokens
-          </p>
-        </SectionCard>
-        <SectionCard icon={Rocket} title="Ship">
-          <p className="text-lg font-semibold tabular-nums">v{ship.version}</p>
-          <p className="text-xs text-muted-foreground">
-            {ship.open_release_proposal
-              ? "Release proposal waiting"
-              : ship.ci_fix_tasks > 0
-                ? `${ship.ci_fix_tasks} CI fix open`
-                : "No release pending"}
-          </p>
-        </SectionCard>
+      <div className="grid grid-cols-2 gap-2.5">
+        <TgSection icon={CircleDollarSign} title="Spend today">
+          <TgStat
+            value={`$${spend.cost_today_usd.toFixed(2)}`}
+            caption={`${compactNumber.format(spend.tokens_today)} tokens`}
+          />
+        </TgSection>
+        <TgSection icon={Rocket} title="Ship">
+          <TgStat
+            value={`v${ship.version}`}
+            tone={ship.open_release_proposal ? "attention" : "default"}
+            caption={
+              ship.open_release_proposal
+                ? "Release proposal waiting"
+                : ship.ci_fix_tasks > 0
+                  ? `${ship.ci_fix_tasks} CI fix open`
+                  : "No release pending"
+            }
+          />
+        </TgSection>
       </div>
     </div>
   );
