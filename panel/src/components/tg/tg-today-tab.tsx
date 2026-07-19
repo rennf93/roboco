@@ -1,8 +1,10 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api/client";
 import { isTgDemoMode } from "@/lib/telegram/demo";
+import { useWebSocket } from "@/hooks/use-websocket";
 import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -122,6 +124,7 @@ export function TgTodayTab({
 }: {
   onNavigate: (tab: TgTab) => void;
 }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError } = useQuery<TodayBrief>({
     queryKey: ["tg-today"],
     queryFn: async () => {
@@ -132,6 +135,15 @@ export function TgTodayTab({
     },
     refetchInterval: REFETCH_MS,
   });
+
+  // Rides the shared /ws/system socket (ref-counted — no extra connection):
+  // each USAGE_SNAPSHOT push refreshes the brief so the spend line tracks
+  // the sweeper live; the poll above stays as the socket-down fallback.
+  const { lastMessage } = useWebSocket<{ type?: string }>("/system");
+  useEffect(() => {
+    if (lastMessage?.type !== "USAGE_SNAPSHOT") return;
+    void queryClient.invalidateQueries({ queryKey: ["tg-today"] });
+  }, [lastMessage, queryClient]);
 
   if (isLoading) {
     return (
