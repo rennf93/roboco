@@ -5,7 +5,7 @@ and degrades to an all-zeros brief on an empty company.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
@@ -161,7 +161,7 @@ async def test_today_composes_needs_you_fleet_and_ship(
             ],
         },
     )
-    await _seed_working_agent(db_session, awaiting.id)
+    await _seed_working_agent(db_session, cast("UUID", awaiting.id))
 
     brief = await get_tg_cockpit_service(db_session).today()
 
