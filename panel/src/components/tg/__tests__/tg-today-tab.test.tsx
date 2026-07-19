@@ -52,14 +52,26 @@ describe("TgTodayTab", () => {
   // vitest call it as an after-test teardown hook.
   beforeEach(() => {
     get.mockReset();
+    // Reduced motion → the spend count-up lands instantly; these tests
+    // assert content, not animation timing.
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
   });
 
   it("shows skeletons while loading", () => {
     get.mockReturnValue(new Promise(() => {}));
     renderTab();
-    expect(document.querySelectorAll("[data-slot=skeleton]").length).toBeGreaterThan(
-      0,
-    );
+    expect(
+      document.querySelectorAll("[data-slot=skeleton]").length,
+    ).toBeGreaterThan(0);
   });
 
   it("renders the all-clear state and the spend/ship numbers", async () => {
@@ -67,7 +79,8 @@ describe("TgTodayTab", () => {
     renderTab();
 
     expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
-    expect(screen.getByText("$12.34")).toBeInTheDocument();
+    // The spend hero counts up to the target, so wait for the final frame.
+    expect(await screen.findByText("$12.34")).toBeInTheDocument();
     expect(screen.getByText(/1\.2M tokens/)).toBeInTheDocument();
     expect(screen.getByText("v0.25.0")).toBeInTheDocument();
     expect(screen.getByText(/no release pending/i)).toBeInTheDocument();
@@ -108,6 +121,58 @@ describe("TgTodayTab", () => {
 
     await userEvent.click(screen.getByText("Root PR ready"));
     expect(onNavigate).toHaveBeenCalledWith("board");
+  });
+
+  it("opens the fleet sheet with the full working roster", async () => {
+    get.mockResolvedValue({
+      data: brief({
+        fleet: {
+          total: 26,
+          by_status: { active: 5, idle: 21 },
+          working: [
+            {
+              name: "be-dev-1",
+              role: "developer",
+              team: "backend",
+              task_title: "Task A",
+            },
+            {
+              name: "be-dev-2",
+              role: "developer",
+              team: "backend",
+              task_title: "Task B",
+            },
+            {
+              name: "fe-dev-1",
+              role: "developer",
+              team: "frontend",
+              task_title: "Task C",
+            },
+            {
+              name: "fe-qa",
+              role: "qa",
+              team: "frontend",
+              task_title: "Task D",
+            },
+            {
+              name: "ux-dev-1",
+              role: "developer",
+              team: "ux_ui",
+              task_title: "Task E",
+            },
+          ],
+        },
+      }),
+    });
+    renderTab();
+
+    // The section previews 3 of 5; tapping it opens the full-roster sheet.
+    await userEvent.click(
+      await screen.findByText(/\+2 more · tap for the full roster/),
+    );
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("Task E")).toBeInTheDocument();
+    expect(screen.getByText(/idle · 21/)).toBeInTheDocument();
   });
 
   it("shows an error state when the brief fails to load", async () => {

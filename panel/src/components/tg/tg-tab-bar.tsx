@@ -42,14 +42,21 @@ export function TgTabBar({ active, onChange }: TgTabBarProps) {
             aria-current={isActive ? "page" : undefined}
             onClick={() => onChange(tab.id)}
             className={cn(
-              "flex flex-1 flex-col items-center gap-0.5 pb-2 pt-2.5 text-[10px] font-medium tracking-wide transition-colors",
+              "tg-display flex flex-1 flex-col items-center gap-0.5 pb-2 pt-1.5 text-[9px] uppercase tracking-[0.08em] transition-colors",
               isActive ? "text-primary" : "text-muted-foreground/70",
             )}
           >
-            <tab.icon
-              className="h-5 w-5"
-              strokeWidth={isActive ? 2.25 : 1.75}
-            />
+            <span
+              className={cn(
+                "flex h-7 w-12 items-center justify-center rounded-full transition-all duration-200 ease-out",
+                isActive ? "bg-primary/15" : "bg-transparent",
+              )}
+            >
+              <tab.icon
+                className="h-5 w-5"
+                strokeWidth={isActive ? 2.25 : 1.75}
+              />
+            </span>
             {tab.label}
           </button>
         );

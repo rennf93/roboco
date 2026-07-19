@@ -137,12 +137,15 @@ export default function TelegramMiniAppPage() {
 
   return (
     <TgWebAppProvider webApp={state.webApp}>
-      <div className="p-3 pb-20">
-        {tab === "today" && <TgTodayTab onNavigate={setTab} />}
-        {tab === "approvals" && <TgApprovalsTab />}
-        {tab === "inbox" && <TgInboxTab />}
-        {tab === "board" && <TgBoardTab />}
-        {tab === "chat" && <TgChatTab />}
+      <div className="p-3 pb-24">
+        {/* Keyed by tab so every switch replays the rise-in entrance. */}
+        <div key={tab} className="tg-tab-in">
+          {tab === "today" && <TgTodayTab onNavigate={setTab} />}
+          {tab === "approvals" && <TgApprovalsTab />}
+          {tab === "inbox" && <TgInboxTab />}
+          {tab === "board" && <TgBoardTab />}
+          {tab === "chat" && <TgChatTab />}
+        </div>
         <TgTabBar active={tab} onChange={setTab} />
       </div>
     </TgWebAppProvider>

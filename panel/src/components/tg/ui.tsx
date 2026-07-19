@@ -42,10 +42,10 @@ export function TgCircleAction({
     >
       <span
         className={cn(
-          "relative flex h-12 w-12 items-center justify-center rounded-full transition-transform active:scale-95",
+          "relative flex h-12 w-12 items-center justify-center rounded-full transition-all duration-200 ease-out active:scale-90",
           accent
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-foreground",
+            ? "bg-gradient-to-b from-primary to-primary/80 text-primary-foreground shadow-[0_8px_20px_-8px] shadow-primary/60"
+            : "bg-gradient-to-b from-muted to-muted/60 text-foreground ring-1 ring-inset ring-white/5",
         )}
       >
         <Icon className="h-5 w-5" />
@@ -55,7 +55,7 @@ export function TgCircleAction({
           </span>
         )}
       </span>
-      <span className="text-[11px] font-medium text-muted-foreground">
+      <span className="tg-display text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
         {label}
       </span>
     </button>
@@ -86,7 +86,7 @@ export function TgAvatar({ name, active }: { name: string; active?: boolean }) {
     <span className="relative inline-flex h-9 w-9 items-center justify-center">
       <span
         className={cn(
-          "flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-semibold",
+          "flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-semibold ring-1 ring-inset ring-white/10",
           hue,
         )}
       >
@@ -120,7 +120,7 @@ export function TgSection({
       )}
     >
       <header className="flex items-center justify-between gap-2 px-3 pb-1 pt-2.5">
-        <h2 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <h2 className="tg-display flex items-center gap-1.5 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
           {Icon && <Icon className="h-3.5 w-3.5" />}
           {title}
         </h2>
@@ -181,11 +181,15 @@ export function TgRow({
  * tints it per row kind so a list of mixed items reads as color-coded
  * rather than a monochrome column. */
 const _TILE_TONES: Record<string, string> = {
-  amber: "bg-amber-500/15 text-amber-400",
-  sky: "bg-sky-500/15 text-sky-400",
-  violet: "bg-violet-500/15 text-violet-400",
-  emerald: "bg-emerald-500/15 text-emerald-400",
-  muted: "bg-muted text-muted-foreground",
+  amber:
+    "bg-gradient-to-br from-amber-400/25 to-amber-500/5 text-amber-300 ring-1 ring-inset ring-amber-400/20",
+  sky: "bg-gradient-to-br from-sky-400/25 to-sky-500/5 text-sky-300 ring-1 ring-inset ring-sky-400/20",
+  violet:
+    "bg-gradient-to-br from-violet-400/25 to-violet-500/5 text-violet-300 ring-1 ring-inset ring-violet-400/20",
+  emerald:
+    "bg-gradient-to-br from-emerald-400/25 to-emerald-500/5 text-emerald-300 ring-1 ring-inset ring-emerald-400/20",
+  rose: "bg-gradient-to-br from-rose-400/25 to-rose-500/5 text-rose-300 ring-1 ring-inset ring-rose-400/20",
+  muted: "bg-muted text-muted-foreground ring-1 ring-inset ring-white/5",
 };
 
 export function TgRowIcon({
@@ -198,7 +202,7 @@ export function TgRowIcon({
   return (
     <span
       className={cn(
-        "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+        "flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]",
         _TILE_TONES[tone] ?? _TILE_TONES.muted,
       )}
     >
@@ -220,7 +224,7 @@ export function TgStat({
     <div>
       <p
         className={cn(
-          "text-[22px] font-semibold leading-tight tracking-tight tabular-nums",
+          "tg-display text-[22px] leading-tight tabular-nums",
           tone === "attention" && "text-primary",
         )}
       >

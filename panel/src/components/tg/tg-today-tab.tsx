@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api/client";
 import { isTgDemoMode } from "@/lib/telegram/demo";
@@ -8,12 +8,8 @@ import { useWebSocket } from "@/hooks/use-websocket";
 import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  TgAvatar,
-  TgCircleAction,
-  TgRow,
-  TgSection,
-} from "@/components/tg/ui";
+import { TgAvatar, TgCircleAction, TgRow, TgSection } from "@/components/tg/ui";
+import { TgSheet, useCountUp } from "@/components/tg/motion";
 import { DayBars, Sparkline } from "@/components/tg/charts";
 import {
   AlertTriangle,
@@ -106,15 +102,16 @@ function weekdayLabels(count: number): string[] {
 function SpendHero({ spend }: { spend: TodayBrief["spend"] }) {
   const delta = spend.delta_pct;
   const up = (delta ?? 0) >= 0;
+  const cost = useCountUp(spend.cost_today_usd);
   return (
     <div className="overflow-hidden rounded-2xl border bg-gradient-to-b from-primary/[0.07] to-transparent p-4">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+      <p className="tg-display text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
         Spend today
       </p>
       <div className="mt-1 flex items-end justify-between gap-3">
         <div className="flex items-baseline gap-2">
-          <span className="text-[40px] font-semibold leading-none tracking-tight tabular-nums">
-            ${spend.cost_today_usd.toFixed(2)}
+          <span className="tg-display text-[40px] leading-none tabular-nums">
+            ${cost.toFixed(2)}
           </span>
           {delta !== null && (
             <span
@@ -177,7 +174,7 @@ function NeedsYouBanner({
         onClick={onApprovals}
         className="flex w-full items-center justify-between"
       >
-        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
+        <span className="tg-display text-[11px] uppercase tracking-[0.14em] text-primary">
           Needs you
         </span>
         <span className="flex items-center gap-1 text-primary">
@@ -204,7 +201,12 @@ function NeedsYouBanner({
       {(needs.awaiting_ceo.length > 0 || needs.blocked.length > 0) && (
         <div className="-mx-1.5 divide-y divide-primary/10">
           {needs.awaiting_ceo.slice(0, 2).map((t) => (
-            <TgRow key={t.id} title={t.title} meta={taskMeta(t)} onPress={onBoard} />
+            <TgRow
+              key={t.id}
+              title={t.title}
+              meta={taskMeta(t)}
+              onPress={onBoard}
+            />
           ))}
           {needs.blocked.slice(0, 2).map((t) => (
             <TgRow
@@ -226,6 +228,52 @@ function NeedsYouBanner({
   );
 }
 
+/** Full working-roster sheet — every mid-task agent with its live task,
+ * opened from the Fleet section's (truncated) preview. */
+function FleetSheet({
+  fleet,
+  open,
+  onClose,
+}: {
+  fleet: TodayBrief["fleet"];
+  open: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <TgSheet open={open} onClose={onClose} title="Fleet">
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {Object.entries(fleet.by_status).map(([status, count]) => (
+          <span
+            key={status}
+            className="rounded-full bg-muted px-2.5 py-1 text-xs tabular-nums text-muted-foreground"
+          >
+            {status} · {count}
+          </span>
+        ))}
+      </div>
+      <ul className="divide-y">
+        {fleet.working.map((agent) => (
+          <li key={agent.name} className="flex items-center gap-3 py-2.5">
+            <TgAvatar name={agent.name} active />
+            <div className="min-w-0 flex-1">
+              <p className="tg-display text-[13px]">{agent.name}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {agent.task_title ??
+                  `${agent.role}${agent.team ? ` · ${agent.team}` : ""}`}
+              </p>
+            </div>
+          </li>
+        ))}
+        {fleet.working.length === 0 && (
+          <li className="py-4 text-center text-sm text-muted-foreground">
+            No one is mid-task.
+          </li>
+        )}
+      </ul>
+    </TgSheet>
+  );
+}
+
 /**
  * The cockpit home: a spend hero with a live 7-day trend, a quick-action
  * ring, the needs-you banner, the fleet as live avatars, and the week's
@@ -237,6 +285,7 @@ export function TgTodayTab({
   onNavigate: (tab: TgTab) => void;
 }) {
   const queryClient = useQueryClient();
+  const [fleetOpen, setFleetOpen] = useState(false);
   const { data, isLoading, isError } = useQuery<TodayBrief>({
     queryKey: ["tg-today"],
     queryFn: async () => {
@@ -279,11 +328,15 @@ export function TgTodayTab({
     onNavigate(tab);
   };
   const idle = fleet.by_status.idle ?? 0;
-  const active =
-    fleet.by_status.active ?? Math.max(fleet.working.length, 0);
+  const active = fleet.by_status.active ?? Math.max(fleet.working.length, 0);
 
   return (
-    <div className="space-y-3">
+    <div className="tg-stagger space-y-3">
+      <header className="flex items-center justify-between px-1 pt-0.5">
+        <p className="tg-display text-[13px] tracking-[0.24em] text-muted-foreground">
+          ROBOCO<span className="tg-cursor text-primary">_</span>
+        </p>
+      </header>
       <SpendHero spend={spend} />
 
       <div className="flex items-stretch gap-2 px-1">
@@ -294,7 +347,11 @@ export function TgTodayTab({
           accent
           onPress={() => go("approvals")}
         />
-        <TgCircleAction icon={Kanban} label="Board" onPress={() => go("board")} />
+        <TgCircleAction
+          icon={Kanban}
+          label="Board"
+          onPress={() => go("board")}
+        />
         <TgCircleAction icon={Bell} label="Inbox" onPress={() => go("inbox")} />
         <TgCircleAction
           icon={MessageSquare}
@@ -318,9 +375,18 @@ export function TgTodayTab({
         }
       >
         {fleet.working.length === 0 ? (
-          <p className="py-1 text-sm text-muted-foreground">No one is mid-task.</p>
+          <p className="py-1 text-sm text-muted-foreground">
+            No one is mid-task.
+          </p>
         ) : (
-          <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              haptics.tap();
+              setFleetOpen(true);
+            }}
+            className="w-full space-y-2 text-left"
+          >
             <div className="flex -space-x-1.5 overflow-hidden">
               {fleet.working.map((a) => (
                 <TgAvatar key={a.name} name={a.name} active />
@@ -332,7 +398,7 @@ export function TgTodayTab({
                   key={agent.name}
                   className="flex items-baseline gap-2 text-[13px] leading-snug"
                 >
-                  <span className="shrink-0 font-mono text-xs font-medium">
+                  <span className="tg-display shrink-0 text-xs">
                     {agent.name}
                   </span>
                   {agent.task_title && (
@@ -343,7 +409,12 @@ export function TgTodayTab({
                 </li>
               ))}
             </ul>
-          </div>
+            {fleet.working.length > 3 && (
+              <p className="text-[11px] text-muted-foreground">
+                +{fleet.working.length - 3} more · tap for the full roster
+              </p>
+            )}
+          </button>
         )}
       </TgSection>
 
@@ -369,7 +440,7 @@ export function TgTodayTab({
           >
             <p
               className={cn(
-                "text-[22px] font-semibold leading-tight tracking-tight tabular-nums",
+                "tg-display text-[22px] leading-tight tabular-nums",
                 ship.open_release_proposal && "text-primary",
               )}
             >
@@ -385,6 +456,12 @@ export function TgTodayTab({
           </button>
         </TgSection>
       </div>
+
+      <FleetSheet
+        fleet={fleet}
+        open={fleetOpen}
+        onClose={() => setFleetOpen(false)}
+      />
     </div>
   );
 }
