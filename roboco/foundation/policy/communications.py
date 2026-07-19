@@ -56,6 +56,23 @@ NOTIFY_SENDER_ROLES: frozenset[Role] = frozenset(
 )
 
 
+# Roles with no agent-comms surface at all: auditor (silent observer, no dm/
+# read_a2a on its manifest), pr_reviewer (posts findings on the PR itself),
+# and the human-only prompter/secretary (note + evidence only). A DM to any
+# of these is a black hole — nothing on the other end can read or answer it.
+# Canonical set consumed by both the dm() sender-side guard
+# (services.gateway.content_actions) and the CEO's asymmetric target check
+# (agents_config.can_a2a_direct) so the two never drift apart.
+NO_COMMS_ROLES: frozenset[Role] = frozenset(
+    {
+        Role.AUDITOR,
+        Role.PR_REVIEWER,
+        Role.PROMPTER,
+        Role.SECRETARY,
+    }
+)
+
+
 # NotificationType -> requires_ack mapping.
 # Convention from spec §5.5:
 #   - Action-required (CEO/PM acks needed) -> True

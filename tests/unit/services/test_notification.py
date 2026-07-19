@@ -9,6 +9,7 @@ without spinning up a Postgres + Redis stack.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
@@ -412,6 +414,74 @@ async def test_create_notification_requires_ack_derives_from_type(
     assert (
         rows[0].requires_ack is ACK_REQUIRED_BY_TYPE[NotificationType.KNOWLEDGE_SHARE]
     )
+
+
+# ---------------------------------------------------------------------------
+# expires_at stamping (notification_ack_ttl_hours) — feeds
+# NotificationDeliveryService.sweep_expired_notifications' re-escalation.
+# Column existed but was never written, so the sweep query always matched
+# zero rows.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ack_required_notification_gets_expires_at(
+    svc: NotificationService,
+) -> None:
+    """An ack-required row (BLOCKER_ESCALATION) is stamped expires_at ~=
+    now + notification_ack_ttl_hours."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    before = datetime.now(UTC)
+    with _patch_db_context(db):
+        await svc.send_blocker_notification(
+            task_id="t1", blocker_reason="r", from_agent="system", to_pm="cell-pm"
+        )
+    after = datetime.now(UTC)
+    rows = [r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION]
+    assert rows
+    expires_at = rows[0].expires_at
+    assert expires_at is not None
+    ttl = timedelta(hours=settings.notification_ack_ttl_hours)
+    assert before + ttl <= expires_at <= after + ttl
+
+
+@pytest.mark.asyncio
+async def test_informational_notification_gets_no_expires_at(
+    svc: NotificationService,
+) -> None:
+    """A non-ack-required row (REVIEW_REQUEST) never gets a deadline — the
+    sweep only ever re-escalates ack-required rows, so stamping one would be
+    dead weight."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_qa_ready_notification(
+            task_id="t1", from_agent="be-dev-1", to_qa="be-qa"
+        )
+    rows = [r for r in db.added if r.type == NotificationType.REVIEW_REQUEST]
+    assert rows
+    assert rows[0].expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_ack_required_notification_expires_at_disabled_by_zero_ttl(
+    svc: NotificationService,
+) -> None:
+    """notification_ack_ttl_hours=0 disables stamping entirely (legacy: NULL,
+    never expires) even for an ack-required type."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with (
+        patch("roboco.services.notification.settings.notification_ack_ttl_hours", 0),
+        _patch_db_context(db),
+    ):
+        await svc.send_blocker_notification(
+            task_id="t1", blocker_reason="r", from_agent="system", to_pm="cell-pm"
+        )
+    rows = [r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION]
+    assert rows
+    assert rows[0].expires_at is None
 
 
 # ---------------------------------------------------------------------------
