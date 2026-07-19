@@ -987,6 +987,26 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Docs-site identity — the user-facing docs repo/URL a documenter is
+    # steered toward when refusing a doc_type="user_facing" write_doc call
+    # (roboco/services/docs.py). Distinct from docs_sync_* above (that engine
+    # stays roboco-only by design); this pair just keeps the refusal message
+    # itself deployer-configurable instead of hardcoding our own docs site.
+    docs_site_project_slug: str = Field(
+        default="roboco-website",
+        description=(
+            "Project slug of the deployer's user-facing docs-site repo, named "
+            "in the write_doc(doc_type='user_facing') refusal message."
+        ),
+    )
+    docs_site_public_url: str = Field(
+        default="docs.roboco.tech",
+        description=(
+            "Public URL of the deployer's docs site, named in the "
+            "write_doc(doc_type='user_facing') refusal message."
+        ),
+    )
+
     # Organizational-memory loop — distill a high-signal lesson at task
     # completion, index journal reflections, and auto-inject similar past
     # lessons/playbooks into the agent briefing on claim. Default-off; when off

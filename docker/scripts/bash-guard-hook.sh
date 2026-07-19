@@ -389,11 +389,16 @@ fi
 # present, denying raw uv/pip/conda/poetry and remediating to the make targets.
 # The Makefile sets UV_NO_SYNC=1 + a private UV_CACHE_DIR for consistent gate
 # behaviour; bare `uv run` bypasses both. Skipped when no Makefile exists so
-# Makefile-less projects aren't blocked. `make`-internal uv (hook inspects the
-# agent's command string, not subprocesses) and WorkspaceService's uv sync
-# (subprocess, not the agent Bash tool) are untouched. On grok a deny cancels
-# the whole run, so ROBOCO_GUARD_SKIP_PM=1 nudges (exit 0) instead.
-if test -f Makefile && echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+(run|sync|pip[[:space:]]+(install|uninstall)|lock|add|remove)|pip3?[[:space:]]+(install|uninstall)|conda[[:space:]]+(install|create|run)|poetry[[:space:]]+(run|install|add))([[:space:]]|$)'; then
+# Makefile-less projects aren't blocked, AND skipped when a Makefile exists but
+# declares none of the remediation targets (e.g. a Go/Rust Makefile with only
+# `build`/`run`) — existence alone isn't enough, or the remediation below sends
+# the agent into a dead-end loop calling a target that doesn't exist.
+# `make`-internal uv (hook inspects the agent's command string, not
+# subprocesses) and WorkspaceService's uv sync (subprocess, not the agent Bash
+# tool) are untouched. On grok a deny cancels the whole run, so
+# ROBOCO_GUARD_SKIP_PM=1 nudges (exit 0) instead.
+if test -f Makefile && grep -qE '^(quality|gate|lint|test):' Makefile && \
+   echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+(run|sync|pip[[:space:]]+(install|uninstall)|lock|add|remove)|pip3?[[:space:]]+(install|uninstall)|conda[[:space:]]+(install|create|run)|poetry[[:space:]]+(run|install|add))([[:space:]]|$)'; then
     if [ -n "${ROBOCO_GUARD_SKIP_PM:-}" ]; then
         echo "Nudge: raw package-manager commands are blocked — use \`make quality\` / \`make gate\` / \`make lint\` / \`make test\`. The Makefile sets UV_NO_SYNC=1 + a private cache; bare \`uv run\` bypasses that." >&2
         exit 0
