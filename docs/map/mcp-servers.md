@@ -17,6 +17,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `roboco/mcp/do_server.py` | `roboco-do` MCP server — content tools (commit, note, pitch, propose_roadmap, dm, notify, evidence, progress, playbook curation, pr_update). Manifest-scoped; fixed `/api/v1/do/<verb>` path; mirror circuit breaker. | 976 |
 | `roboco/mcp/optimal_server.py` | `roboco-optimal` MCP server — RAG / KB / mentor / error / decision / standards / learnings / index-mgmt / proactive-context. Factory `create_optimal_mcp_server(agent_id)`; calls `/optimal/*`. | 1102 |
 | `roboco/mcp/docs_server.py` | `roboco-docs` MCP server — docs write/read/list/delete via `/docs/*`. Factory `create_docs_mcp_server(agent_id)`. RAG-based dedup on write. | 251 |
+| `roboco/services/docs.py` | `DocsService` — the `/docs/*` route handlers' backing service; refuses `write_doc(doc_type="user_facing")` with a message naming the deployer's docs-site project/URL | 785 |
 | `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 123 |
 | `roboco/mcp/intake_server.py` | `roboco-intake` MCP server — grok intake path only: `propose_draft` / `propose_batch` POST directly to the prompter-live relay. | 215 |
 | `roboco/mcp/secretary_server.py` | `roboco-secretary` MCP server — grok secretary path only: `read_company_state` / `read_task` / `submit_directive`, delegating to `agent_sdk.secretary_driver`. | 64 |
@@ -75,6 +76,8 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `roboco_get_proactive_context` | tool | `optimal_server.py:1000` | Stored-then-fresh proactive context for a task. |
 | `normalize_index_types` | func | `optimal_server.py:53` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:160` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
+| `DocsService.write_doc` | method | `services/docs.py:192` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
+| `_refused_doc_types` | func | `services/docs.py:84` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
 | `WriteDocInput` | pydantic | `schemas/__init__.py:12` | Docs write input (task_id, filename, doc_type, title, content). |
 | `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:45–119` | Read-only git views via `/api/git/*`. |
 | `propose_draft` / `propose_batch` | tools | `intake_server.py:104–215` | Grok intake: POST draft/batch to prompter-live relay; `propose_batch` drops malformed (no string `title` or `name`) entries via `_normalize_batch_drafts` and refuses empty batches. |
@@ -257,6 +260,8 @@ Env vars read in this slice (all `ROBOCO_*`):
 | `ROBOCO_PROJECT_SLUG` / `ROBOCO_BRANCH` | set by orchestrator into `mcp_env` (consumed indirectly by `/api/git/*`) | Git context. |
 | `settings.research_enabled` | orchestrator mount gate for `roboco-search` (not read inside the slice) | Web-research server armed only when true AND role in research_roles. |
 | `settings.internal_api_url` | utils `ApiClient.base_url` | Base URL for optimal/docs/search async calls. |
+| `ROBOCO_DOCS_SITE_PROJECT_SLUG` (default `"roboco-website"`) | `services/docs.py` `_refused_doc_types` | Deployer-configurable project slug named in the `write_doc(doc_type="user_facing")` refusal message — distinct from `docs_sync_*` (which stays RoboCo-only by design for the docs-divergence sync engine, see `docs/map/engine-docs-sync.md`); defaults to RoboCo's own value so behavior is unchanged until overridden. |
+| `ROBOCO_DOCS_SITE_PUBLIC_URL` (default `"docs.roboco.tech"`) | `services/docs.py` `_refused_doc_types` | Deployer-configurable public docs URL, same refusal message. |
 | `ROBOCO_ALLOW_FULL_TOOLSET` | flow `_register_tools`, do `_register_tools` | Dev/test escape hatch: when set, a missing manifest registers the full tool set instead of raising `RuntimeError`. Never set in production — the full-toolset path was the original bug this policy replaced. |
 
 No default-off feature flag is armed *inside* this slice; the only flag-gated server here is `roboco-search` (gated upstream by `ROBOCO_RESEARCH_ENABLED` in the orchestrator mount).
@@ -326,6 +331,7 @@ No other commits in this slice since baseline.
 >   - **`intake_server.py`**: `_post_event` captures relay response body under `detail` on non-success so the grok intake agent sees the real failure reason instead of an opaque `http_422` token (#57).
 >
 > - **v0.18.0** (2026-07-04): No commit touched `roboco/mcp/` for the X feature-spotlight workstream — `do_server.py`'s `_TOOLS` dict (21 content tools) is unchanged, which is itself the finding: `propose_feature_spotlight` was wired at the role-config + content-actions layers but never registered here. See Regression Risks below.
+> - **`a0baf94b`** ("agnosticism-residue", audit item B8): `services/docs.py`'s `write_doc(doc_type="user_facing")` refusal message stops hardcoding "roboco-website"/"docs.roboco.tech" — the module-level `REFUSED_DOC_TYPES` constant becomes `_refused_doc_types()`, a function reading the new `ROBOCO_DOCS_SITE_PROJECT_SLUG`/`ROBOCO_DOCS_SITE_PUBLIC_URL` settings live on every call (both default to RoboCo's own values, so behavior is unchanged for this deployment). This `services/docs.py` file was previously undocumented in this slice's Files table — added above alongside the fix since it's the `docs_server.py` MCP server's sole backing service.
 
 ## Regression Risks
 
