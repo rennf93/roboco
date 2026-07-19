@@ -480,12 +480,19 @@ async def test_all_member_scorecards_endpoint(
     assert isinstance(body, list)
     ids = {card["id"] for card in body}
     assert str(dev.id) in ids
-    ceo_id = (
-        await db_session.execute(
-            select(AgentTable.id).where(AgentTable.role == AgentRole.CEO)
+    # The shared per-run DB can hold several CEO rows (other tests seed
+    # their own); every one of them must be excluded from the batch.
+    ceo_ids = (
+        (
+            await db_session.execute(
+                select(AgentTable.id).where(AgentTable.role == AgentRole.CEO)
+            )
         )
-    ).scalar_one()
-    assert str(ceo_id) not in ids
+        .scalars()
+        .all()
+    )
+    assert ceo_ids
+    assert ids.isdisjoint({str(cid) for cid in ceo_ids})
     for card in body:
         assert card["scope"] == "member"
         assert card["member_kind"] == "agent"

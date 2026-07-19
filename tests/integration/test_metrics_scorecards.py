@@ -293,7 +293,6 @@ async def test_member_scorecard_404_and_guards(
     assert card.utilization is None
 
 
-_ALL_MEMBERS_EXPECTED = 3
 _DEV2_OVERLAY_TURNS = 7
 
 
@@ -305,11 +304,13 @@ async def test_all_member_scorecards_matches_single_agent_and_excludes_ceo_syste
     same derived numbers get_member_scorecard would for the same agent, plus:
     CEO/SYSTEM excluded, and a rollup-less agent still appears zeroed instead
     of silently dropped."""
+    # Unique slugs throughout: the suite shares one DB per run, so a fixed
+    # "ceo"/"system" slug collides with other tests' seeds (ix_agents_slug).
     dev1 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")
     dev2 = _agent(AgentRole.QA, f"be-qa-{uuid4().hex[:6]}")
     dev3 = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")  # no rollup rows
-    ceo = _agent(AgentRole.CEO, "ceo")
-    system = _agent(AgentRole.SYSTEM, "system")
+    ceo = _agent(AgentRole.CEO, f"ceo-{uuid4().hex[:6]}")
+    system = _agent(AgentRole.SYSTEM, f"system-{uuid4().hex[:6]}")
     db_session.add_all([dev1, dev2, dev3, ceo, system])
     await db_session.flush()
     db_session.add_all(
@@ -331,7 +332,10 @@ async def test_all_member_scorecards_matches_single_agent_and_excludes_ceo_syste
 
     cards = await svc.get_all_member_scorecards(team=Team.BACKEND, days=30)
     by_id = {c.id: c for c in cards}
-    assert len(cards) == _ALL_MEMBERS_EXPECTED
+    # Delta assertions, not a global count: the one-process suite shares
+    # this DB, so other tests' agents may be on the roster too.
+    for seeded in (dev1, dev2, dev3):
+        assert str(seeded.id) in by_id
     assert str(ceo.id) not in by_id
     assert str(system.id) not in by_id
 
