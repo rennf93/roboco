@@ -3657,6 +3657,44 @@ class GitService(BaseService):
             repo_ref, branch_name, git_token
         )
 
+    async def close_task_pr_best_effort(
+        self, project_slug: str, pr_number: int
+    ) -> bool:
+        """Close a task's still-open PR on cancel/discard. Best-effort.
+
+        Called by `TaskService` on cancellation so a task that never lands
+        doesn't leave its PR open on the forge forever. Mirrors
+        ``delete_task_branch``: resolves owner/repo straight off the
+        project's ``git_url`` rather than a workspace checkout, so closing
+        never depends on a live agent clone existing (unlike
+        ``close_pull_request``, which needs one to read the remote). A no-op
+        when the token/project lookup fails or the PR is already
+        closed/merged. Returns whether a close request was actually issued.
+        """
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return False
+        try:
+            project_service = get_project_service(self.session)
+            project = await project_service.get_by_slug(project_slug)
+            if not project or not project.git_url:
+                return False
+            repo_ref = self._parse_git_url(project.git_url)
+        except Exception:
+            return False
+        try:
+            existing = await self._forge.get_pr(
+                repo_ref, git_token, pr_number, timeout=10.0
+            )
+            if not existing.is_success or existing.json().get("state") != "open":
+                return False
+            resp = await self._forge.update_pr(
+                repo_ref, git_token, pr_number, payload={"state": "closed"}
+            )
+            return bool(resp.is_success)
+        except httpx.HTTPError:
+            return False
+
     # Per-call cap on the stale-branch sweep so one request can't hang on an
     # unbounded fan-out of remote-delete calls.
     _CLEANUP_BRANCH_LIMIT = 200
@@ -3668,7 +3706,11 @@ class GitService(BaseService):
 
         Candidates are TERMINAL (completed/cancelled) tasks with a
         ``branch_name`` that isn't an environment-ladder rung (a ladder branch
-        outlives any one task — see ``roboco.models.env_branches``). Capped at
+        outlives any one task — see ``roboco.models.env_branches``) and isn't
+        still load-bearing for a live task — either a NON-terminal task still
+        records this exact branch as its own, or a NON-terminal task is a
+        direct child of the branch's owning task (see
+        ``_live_task_dependents``). Capped at
         ``_CLEANUP_BRANCH_LIMIT`` per call; the window is deterministic
         (``ORDER BY id``) and cursor-resumable via ``after_task_id`` — task
         rows never change as a side effect of the sweep, so without a cursor a
@@ -3734,14 +3776,18 @@ class GitService(BaseService):
         branch-cleanup candidates for ``cleanup_stale_branches``.
 
         Returns ``(candidates, truncated, next_cursor)`` — ladder-branch rows
-        stay in the window (and so still advance the cursor) but are excluded
-        from ``candidates``, matching the caller's docstring.
+        and still-load-bearing rows (see ``_live_task_dependents``) stay in
+        the window (and so still advance the cursor) but are excluded from
+        ``candidates``, matching the caller's docstring.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable
 
         ladder_branches = {rung.branch for rung in effective_environments(project)}
+        live_branches, live_parent_ids = await self._live_task_dependents(
+            cast("UUID", project.id)
+        )
         query = (
             select(TaskTable)
             .where(TaskTable.project_id == project.id)
@@ -3757,8 +3803,45 @@ class GitService(BaseService):
         truncated = len(window) > self._CLEANUP_BRANCH_LIMIT
         window = window[: self._CLEANUP_BRANCH_LIMIT]
         next_cursor = str(window[-1].id) if truncated and window else None
-        candidates = [t for t in window if str(t.branch_name) not in ladder_branches]
+        candidates = [
+            t
+            for t in window
+            if str(t.branch_name) not in ladder_branches
+            and str(t.branch_name) not in live_branches
+            and t.id not in live_parent_ids
+        ]
         return candidates, truncated, next_cursor
+
+    async def _live_task_dependents(
+        self, project_id: UUID
+    ) -> tuple[set[str], set[UUID]]:
+        """Non-terminal tasks' own branches + parent ids, scoped to one project.
+
+        Feeds the stale-branch guard: a terminal candidate is still load-
+        bearing when either a NON-terminal task still records this exact
+        branch as its own (a defensive check against a task row reusing a
+        spent branch name), or a NON-terminal task is a direct child of the
+        candidate's owning task — that child's PR base resolves to the
+        parent's own ``branch_name`` (``resolve_parent_branch`` in
+        ``gateway/merge_chain.py``), even before the child has opened a PR
+        (so ``_branch_has_open_dependents``, which only sees OPEN PRs, can't
+        catch it). Mirrors the env-ladder rung exclusion in the same window
+        builder — one query, sets checked in Python.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable
+
+        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        result = await self.session.execute(
+            select(TaskTable.branch_name, TaskTable.parent_task_id)
+            .where(TaskTable.project_id == project_id)
+            .where(TaskTable.status.notin_(terminal))
+        )
+        rows = result.all()
+        live_branches = {str(branch) for branch, _ in rows if branch}
+        live_parent_ids = {parent_id for _, parent_id in rows if parent_id is not None}
+        return live_branches, live_parent_ids
 
     async def _cleanup_one_stale_branch(
         self,

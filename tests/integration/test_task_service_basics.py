@@ -321,6 +321,21 @@ async def test_list_recent_for_project_scoped_to_project(
     assert out_of_scope.id not in ids
 
 
+@pytest.mark.asyncio
+async def test_list_recent_for_project_excludes_cancelled(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    db = task_setup["db"]
+    live = await svc.create(_req(task_setup, title="live"))
+    cancelled = await svc.create(_req(task_setup, title="cancelled"))
+    cancelled.status = TaskStatus.CANCELLED
+    await db.flush()
+
+    rows = await svc.list_recent_for_project(task_setup["project_id"])
+    ids = {t.id for t in rows}
+    assert live.id in ids
+    assert cancelled.id not in ids
+
+
 # ---------------------------------------------------------------------------
 # Subtask hierarchy
 # ---------------------------------------------------------------------------

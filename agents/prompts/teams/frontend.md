@@ -73,3 +73,20 @@ In anything you write for an end user — copy, demo data, layout — not your o
 
 ### Where this applies
 Building or touching the RoboCo control panel or any dense admin/dashboard surface: work within the project's existing design system for structural chrome (nav, tables, forms, theme tokens); apply the rules above on top of it. taste-skill's landing-page-specific hard caps (hero word/line limits, eyebrow-per-3-sections, bento cell-count, marquee-max-one) are for marketing/landing/portfolio surfaces, not dashboards. Check the task brief if you're unsure which mode you're in.
+
+## Niche aesthetic vocabularies
+
+Also distilled from `Leonxlnx/taste-skill` (MIT) — three named visual systems, opt-in when a task brief explicitly calls for one, not a default to reach for on ordinary work. Each still reads onto the three dials above; a vocabulary changes *what* the dials produce, not whether they apply.
+
+### Industrial brutalist
+Rigid `display: grid; gap: 1px` with contrasting parent/child backgrounds standing in for dividers — zero `border-radius`, 90-degree corners only. Heavy uppercase sans at extreme scale (tight/negative tracking) for macro type; monospace at generous tracking for micro/metadata (IDs, timestamps, coordinates). One hazard-red accent, nothing else — no gradients, no soft shadows. ASCII bracket framing for labels (`[ DELIVERY SYSTEMS ]`, `>>>`). Pick ONE substrate — light Swiss-print (off-white paper, carbon ink) or dark CRT-terminal (near-black, phosphor white) — and never mix them in one interface. Reads as roughly `DESIGN_VARIANCE 5-7 / MOTION_INTENSITY 1-3 / VISUAL_DENSITY 7-9`.
+
+### Minimalist editorial
+Warm monochrome, never pure `#000`/`#fff`: off-black body text, warm off-white/bone background. One editorial serif for headings (tight tracking/line-height), one geometric sans for body/UI, monospace for code/keystrokes. Accent color limited to washed-out pastels (pale red/blue/green/yellow) for tags and badges — no primary-colored blocks or hero sections. 1px hairline borders (`#EAEAEA`-class), shadows near-invisible (<0.05 opacity) or absent. Bento-grid cards with generous internal padding (24-40px), crisp small radii (8-12px max). Motion stays quiet: gentle scroll-fade-up, no ambient spectacle. Reads as roughly `DESIGN_VARIANCE 3-5 / MOTION_INTENSITY 1-3 / VISUAL_DENSITY 3-5`.
+
+### Premium agency
+Nested "double-bezel" card architecture: an outer shell (subtle tint, hairline ring, large radius) wrapping an inner core (its own background, inner highlight, a smaller concentric radius) — never a flat card straight on the background. Pill CTAs with a trailing icon nested in its own circular sub-wrapper, never bare next to the label. One vibe picked and held per project: ethereal glass (OLED black, mesh-gradient orbs, heavy blur), editorial luxury (warm cream/espresso, variable serif display type, film-grain overlay), or soft structuralism (silver-white, bold grotesk, diffused ambient shadows). Motion runs on custom cubic-beziers, never `linear`/`ease-in-out`; section padding runs heavy (`py-24` to `py-40`). Reads as roughly `DESIGN_VARIANCE 6-8 / MOTION_INTENSITY 5-7 / VISUAL_DENSITY 3-5`.
+
+Mixing vocabularies inside one surface — ASCII brackets next to pastel pill tags — reads as indecisive, not eclectic. Hold the pick for the whole task; a real style change gets its own task, same rule as the font/color/radius decision above.
+
+Producing or directing a visual asset (icon, hero image, mockup)? UX/UI owns that surface — see `ux_ui.md`'s Image direction section for the vocabulary; this team's tasks rarely touch it.
