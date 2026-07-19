@@ -47,6 +47,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from roboco.config import settings as _settings
 from roboco.db import tables as roboco_tables
 from roboco.db.base import Base, close_db
@@ -94,6 +95,32 @@ async def _dispose_global_db_engine() -> AsyncIterator[None]:
     yield
     with contextlib.suppress(Exception):
         await close_db()
+
+
+_TEST_FERNET_KEY = Fernet.generate_key().decode()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never depend on the operator's ambient config (.env / shell).
+
+    A developer machine may carry a production-flavored .env (real deploy
+    values) or nothing at all; both skewed the suite — a missing
+    ROBOCO_ENCRYPTION_KEY failed every crypto-touching test with
+    EncryptionError, and environment=production flips the GHSA-4f7g
+    fail-closed auth gate so header-trust tests 401. Pin both: development
+    environment and a per-process Fernet key (crypto round-trips within
+    the run). Tests exercising production behavior monkeypatch it
+    per-test, which overrides this baseline.
+    """
+    monkeypatch.setattr(_settings, "environment", "development")
+    monkeypatch.setattr(_settings, "encryption_key", _TEST_FERNET_KEY)
+    # Auth/guard posture rides ambient flags too: an armed cloud_auth 401s
+    # every header-trust request, an armed guard rate-limits the suite.
+    # Pin both to their config-schema defaults; the cloud-auth and guard
+    # suites arm them per-test.
+    monkeypatch.setattr(_settings, "cloud_auth_enabled", False)
+    monkeypatch.setattr(_settings, "guard_enabled", False)
 
 
 @pytest.fixture(autouse=True)
