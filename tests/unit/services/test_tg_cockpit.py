@@ -1,6 +1,10 @@
 """TgCockpitService coverage: the /telegram/today aggregate composes
-needs-you counts, fleet snapshot, spend, and ship state from seeded rows —
-and degrades to an all-zeros brief on an empty company.
+needs-you counts, fleet snapshot, spend, and ship state from seeded rows.
+
+Assertions are DELTAS against a pre-seed baseline, never absolute counts —
+CI runs the whole test tree in one process against one database, so other
+suites' committed rows are visible here and an "empty company" cannot be
+assumed.
 """
 
 from __future__ import annotations
@@ -70,13 +74,15 @@ def _task(
     source: str | None = None,
     team: Team = Team.BACKEND,
 ) -> TaskTable:
+    # priority 0 (critical) sorts seeded rows ahead of any leaked ones, so
+    # they stay inside the brief's per-section item caps.
     return TaskTable(
         id=uuid4(),
         title=title,
         description="A description long enough to satisfy any length floor.",
         acceptance_criteria=["it is visible on the Today brief"],
         status=task_status,
-        priority=2,
+        priority=0,
         task_type=TT.ADMINISTRATIVE,
         nature=TN.NON_TECHNICAL,
         estimated_complexity=Complexity.LOW,
@@ -87,12 +93,13 @@ def _task(
     )
 
 
-async def _seed_working_agent(session: AsyncSession, current_task_id: UUID) -> None:
+async def _seed_working_agent(session: AsyncSession, current_task_id: UUID) -> str:
+    slug = f"be-dev-{uuid4().hex[:6]}"
     session.add(
         AgentTable(
             id=uuid4(),
-            name="be-dev-1",
-            slug="be-dev-1",
+            name=slug,
+            slug=slug,
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             status=AgentStatus.ACTIVE,
@@ -105,22 +112,24 @@ async def _seed_working_agent(session: AsyncSession, current_task_id: UUID) -> N
         )
     )
     await session.flush()
+    return slug
 
 
 @pytest.mark.asyncio
-async def test_today_is_all_zeros_on_an_empty_company(
-    db_session: AsyncSession,
-) -> None:
+async def test_today_brief_shape(db_session: AsyncSession) -> None:
+    """Structure + invariants that hold regardless of shared-DB residue."""
     brief = await get_tg_cockpit_service(db_session).today()
 
-    assert brief["needs_you"]["total"] == 0
-    assert brief["needs_you"]["awaiting_ceo"] == []
-    assert brief["needs_you"]["blocked"] == []
-    assert brief["fleet"]["working"] == []
-    assert brief["spend"] == {"tokens_today": 0, "cost_today_usd": 0.0}
+    assert set(brief) == {"needs_you", "fleet", "spend", "ship"}
+    needs = brief["needs_you"]
+    assert needs["total"] == (
+        needs["awaiting_ceo_count"]
+        + needs["blocked_count"]
+        + sum(needs["held_drafts"].values())
+    )
+    assert isinstance(brief["spend"]["tokens_today"], int)
+    assert isinstance(brief["spend"]["cost_today_usd"], float)
     assert brief["ship"]["version"] == settings.app_version
-    assert brief["ship"]["open_release_proposal"] is False
-    assert brief["ship"]["ci_fix_tasks"] == 0
 
 
 @pytest.mark.asyncio
@@ -128,6 +137,7 @@ async def test_today_composes_needs_you_fleet_and_ship(
     db_session: AsyncSession,
 ) -> None:
     await _seed_system_agent(db_session)
+    baseline = await get_tg_cockpit_service(db_session).today()
 
     awaiting = _task("Root PR ready", TS.AWAITING_CEO_APPROVAL)
     blocked = _task("Stuck on infra", TS.BLOCKED)
@@ -161,27 +171,25 @@ async def test_today_composes_needs_you_fleet_and_ship(
             ],
         },
     )
-    await _seed_working_agent(db_session, cast("UUID", awaiting.id))
+    agent_slug = await _seed_working_agent(db_session, cast("UUID", awaiting.id))
 
     brief = await get_tg_cockpit_service(db_session).today()
 
-    needs = brief["needs_you"]
-    assert needs["awaiting_ceo_count"] == 1
-    assert needs["awaiting_ceo"][0]["title"] == "Root PR ready"
-    assert needs["awaiting_ceo"][0]["status"] == "awaiting_ceo_approval"
-    assert needs["blocked_count"] == 1
-    assert needs["held_drafts"] == {
-        "release_proposals": 1,
-        "x_posts": 1,
-        "video_posts": 1,
-        "roadmap_items": 1,
-    }
-    assert needs["total"] == EXPECTED_NEEDS_YOU_TOTAL
+    needs, base_needs = brief["needs_you"], baseline["needs_you"]
+    assert needs["awaiting_ceo_count"] == base_needs["awaiting_ceo_count"] + 1
+    seeded = next(
+        item for item in needs["awaiting_ceo"] if item["title"] == "Root PR ready"
+    )
+    assert seeded["status"] == "awaiting_ceo_approval"
+    assert needs["blocked_count"] == base_needs["blocked_count"] + 1
+    for key in ("release_proposals", "x_posts", "video_posts", "roadmap_items"):
+        assert needs["held_drafts"][key] == base_needs["held_drafts"][key] + 1
+    assert needs["total"] == base_needs["total"] + EXPECTED_NEEDS_YOU_TOTAL
 
-    working = brief["fleet"]["working"]
-    assert len(working) == 1
-    assert working[0]["name"] == "be-dev-1"
-    assert working[0]["task_title"] == "Root PR ready"
+    workers = {
+        agent["name"]: agent.get("task_title") for agent in brief["fleet"]["working"]
+    }
+    assert workers.get(agent_slug) == "Root PR ready"
 
     assert brief["ship"]["open_release_proposal"] is True
-    assert brief["ship"]["ci_fix_tasks"] == 1
+    assert brief["ship"]["ci_fix_tasks"] == baseline["ship"]["ci_fix_tasks"] + 1
