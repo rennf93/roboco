@@ -120,7 +120,9 @@ async def test_today_brief_shape(db_session: AsyncSession) -> None:
     """Structure + invariants that hold regardless of shared-DB residue."""
     brief = await get_tg_cockpit_service(db_session).today()
 
-    assert set(brief) == {"needs_you", "fleet", "spend", "ship"}
+    assert set(brief) == {"needs_you", "fleet", "spend", "velocity", "ship"}
+    assert len(brief["spend"]["series"]) == 7  # noqa: PLR2004
+    assert len(brief["velocity"]["series"]) == 7  # noqa: PLR2004
     needs = brief["needs_you"]
     assert needs["total"] == (
         needs["awaiting_ceo_count"]

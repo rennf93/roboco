@@ -71,6 +71,13 @@ class TodayFleet(BaseModel):
 class TodaySpend(BaseModel):
     tokens_today: int
     cost_today_usd: float
+    series: list[float] = []
+    delta_pct: float | None = None
+
+
+class TodayVelocity(BaseModel):
+    series: list[int] = []
+    week_total: int = 0
 
 
 class TodayShip(BaseModel):
@@ -85,4 +92,5 @@ class TelegramTodayResponse(BaseModel):
     needs_you: TodayNeedsYou
     fleet: TodayFleet
     spend: TodaySpend
+    velocity: TodayVelocity
     ship: TodayShip

@@ -15,6 +15,90 @@ import { cn } from "@/lib/utils";
 import { ChevronRight } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
+/**
+ * A circular icon action — the cockpit's primary verbs (New task, Approve,
+ * Chat, Board), styled like a native wallet's Transfer/Deposit row. An
+ * optional badge count sits on the ring; `accent` fills the ring with the
+ * RoboCo amber for the one action that most wants attention.
+ */
+export function TgCircleAction({
+  icon: Icon,
+  label,
+  badge,
+  accent = false,
+  onPress,
+}: {
+  icon: LucideIcon;
+  label: string;
+  badge?: number;
+  accent?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPress}
+      className="flex flex-1 flex-col items-center gap-1.5"
+    >
+      <span
+        className={cn(
+          "relative flex h-12 w-12 items-center justify-center rounded-full transition-transform active:scale-95",
+          accent
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-foreground",
+        )}
+      >
+        <Icon className="h-5 w-5" />
+        {badge !== undefined && badge > 0 && (
+          <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-white">
+            {badge}
+          </span>
+        )}
+      </span>
+      <span className="text-[11px] font-medium text-muted-foreground">
+        {label}
+      </span>
+    </button>
+  );
+}
+
+const _AVATAR_HUES = [
+  "bg-sky-500/20 text-sky-300",
+  "bg-emerald-500/20 text-emerald-300",
+  "bg-violet-500/20 text-violet-300",
+  "bg-amber-500/20 text-amber-300",
+  "bg-rose-500/20 text-rose-300",
+];
+
+/** Initials avatar with a stable per-name hue and an optional live pulse
+ * dot — the fleet strip's agent tokens. */
+export function TgAvatar({ name, active }: { name: string; active?: boolean }) {
+  const initials = name
+    .split(/[-_\s]/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join("");
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash + name.charCodeAt(i)) | 0;
+  const hue = _AVATAR_HUES[Math.abs(hash) % _AVATAR_HUES.length];
+  return (
+    <span className="relative inline-flex h-9 w-9 items-center justify-center">
+      <span
+        className={cn(
+          "flex h-9 w-9 items-center justify-center rounded-full text-[11px] font-semibold",
+          hue,
+        )}
+      >
+        {initials || "?"}
+      </span>
+      {active && (
+        <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-card bg-emerald-400" />
+      )}
+    </span>
+  );
+}
+
 export function TgSection({
   icon: Icon,
   title,

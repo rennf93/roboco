@@ -34,8 +34,14 @@ function brief(overrides: Record<string, unknown> = {}) {
         roadmap_items: 0,
       },
     },
-    fleet: { total: 3, by_status: { active: 3 }, working: [] },
-    spend: { tokens_today: 1_234_000, cost_today_usd: 12.34 },
+    fleet: { total: 3, by_status: { active: 3, idle: 0 }, working: [] },
+    spend: {
+      tokens_today: 1_234_000,
+      cost_today_usd: 12.34,
+      series: [1, 2, 3, 4, 5, 6, 12.34],
+      delta_pct: 10,
+    },
+    velocity: { series: [1, 2, 0, 3, 1, 4, 2], week_total: 13 },
     ship: { version: "0.25.0", open_release_proposal: false, ci_fix_tasks: 0 },
     ...overrides,
   };
@@ -65,7 +71,7 @@ describe("TgTodayTab", () => {
     expect(screen.getByText(/1\.2M tokens/)).toBeInTheDocument();
     expect(screen.getByText("v0.25.0")).toBeInTheDocument();
     expect(screen.getByText(/no release pending/i)).toBeInTheDocument();
-    expect(screen.getByText(/3 agents/)).toBeInTheDocument();
+    expect(screen.getByText(/3 active/)).toBeInTheDocument();
   });
 
   it("renders needs-you items and deep-links taps into the right tab", async () => {
