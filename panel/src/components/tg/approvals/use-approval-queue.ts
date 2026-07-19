@@ -13,6 +13,9 @@ import { releaseApi, type ReleaseProposal } from "@/lib/api/release";
 import { xApi, type XPost } from "@/lib/api/x";
 import { videoApi, type VideoPost } from "@/lib/api/video";
 import { roadmapApi, type RoadmapItem } from "@/lib/api/roadmap";
+import { isTgDemoMode } from "@/lib/telegram/demo";
+
+const demo = () => import("@/lib/telegram/demo-data");
 
 export type ApprovalItem =
   | { kind: "release"; id: string; proposal: ReleaseProposal }
@@ -25,22 +28,26 @@ const REFETCH_MS = 30_000;
 export function useApprovalQueue() {
   const release = useQuery({
     queryKey: ["release", "proposal"],
-    queryFn: () => releaseApi.getProposal(),
+    queryFn: async () =>
+      isTgDemoMode() ? (await demo()).DEMO_RELEASE : releaseApi.getProposal(),
     refetchInterval: REFETCH_MS,
   });
   const xPosts = useQuery({
     queryKey: ["x", "posts"],
-    queryFn: () => xApi.listPosts(),
+    queryFn: async () =>
+      isTgDemoMode() ? (await demo()).DEMO_X_POSTS : xApi.listPosts(),
     refetchInterval: REFETCH_MS,
   });
   const videoPosts = useQuery({
     queryKey: ["video", "posts"],
-    queryFn: () => videoApi.listPosts(),
+    queryFn: async () =>
+      isTgDemoMode() ? (await demo()).DEMO_VIDEO_POSTS : videoApi.listPosts(),
     refetchInterval: REFETCH_MS,
   });
   const roadmap = useQuery({
     queryKey: ["roadmap", "cycles"],
-    queryFn: () => roadmapApi.listCycles(),
+    queryFn: async () =>
+      isTgDemoMode() ? (await demo()).DEMO_ROADMAP : roadmapApi.listCycles(),
     refetchInterval: REFETCH_MS,
   });
 

@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api/client";
+import { isTgDemoMode } from "@/lib/telegram/demo";
 import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,7 +16,7 @@ import {
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
-interface TodayTaskItem {
+export interface TodayTaskItem {
   id: string;
   title: string;
   status: string;
@@ -23,7 +24,7 @@ interface TodayTaskItem {
   updated_at: string | null;
 }
 
-interface TodayBrief {
+export interface TodayBrief {
   needs_you: {
     total: number;
     awaiting_ceo_count: number;
@@ -123,7 +124,12 @@ export function TgTodayTab({
 }) {
   const { data, isLoading, isError } = useQuery<TodayBrief>({
     queryKey: ["tg-today"],
-    queryFn: async () => (await api.get<TodayBrief>("/telegram/today")).data,
+    queryFn: async () => {
+      if (isTgDemoMode()) {
+        return (await import("@/lib/telegram/demo-data")).DEMO_TODAY;
+      }
+      return (await api.get<TodayBrief>("/telegram/today")).data;
+    },
     refetchInterval: REFETCH_MS,
   });
 
