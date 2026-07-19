@@ -25,8 +25,9 @@ class DocType(StrEnum):
     ARCHITECTURE = "architecture"  # /docs/{team}/architecture/
     DESIGN = "design"  # /docs/{team}/design/ (UX/UI)
     # Recognized but refused by DocsService.write_doc with actionable guidance
-    # (see REFUSED_DOC_TYPES) — this store's buckets never publish, so a
-    # user-facing page belongs in the roboco-website project instead.
+    # (see docs.py's _refused_doc_types) — this store's buckets never
+    # publish, so a user-facing page belongs in the deployer's docs-site
+    # project instead (roboco/config.py docs_site_project_slug).
     USER_FACING = "user_facing"
 
 

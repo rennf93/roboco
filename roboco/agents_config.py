@@ -632,6 +632,24 @@ def _check_main_pm_a2a(to_role: str, to_team: str | None) -> tuple[bool, str | N
     return False, f"Main PM cannot A2A {to_role}s. Route through {pm or 'cell-pm'}."
 
 
+def _check_ceo_a2a(to_role: str) -> tuple[bool, str | None]:
+    """Check A2A permissions for the CEO's asymmetric send-to-anyone reach.
+
+    A target with no agent-comms surface (no dm/read_a2a on its manifest —
+    auditor, pr_reviewer, prompter, secretary) can never read or answer a
+    DM regardless of who sends it; the panel's New-DM dialog already
+    excludes these roles client-side (EXCLUDE_NON_DM_ROLES), this is the
+    server-side backstop so a direct API/A2A-service call can't bypass it.
+    """
+    if to_role in _comms.NO_COMMS_ROLES:
+        return (
+            False,
+            f"'{to_role}' has no agent-comms surface (no dm/read_a2a) and "
+            "cannot receive a DM.",
+        )
+    return True, None
+
+
 def _check_pr_reviewer_a2a(to_role: str) -> tuple[bool, str | None]:
     """Check A2A permissions for a PR reviewer.
 
@@ -659,9 +677,9 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
 
     # The CEO (human, via the panel) may chime into any agent's A2A thread —
     # the one asymmetric rule in this matrix: CEO may send, nobody may
-    # target CEO.
+    # target CEO (except a no-comms target, see _check_ceo_a2a).
     if from_role == "ceo":
-        return True, None
+        return _check_ceo_a2a(to_role)
 
     # CEO is human - agents can never INITIATE with the CEO. The only path in
     # is a reply inside a conversation the CEO itself opened (enforced

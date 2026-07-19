@@ -11,7 +11,7 @@ RoboCo's HTTP request layer is protected by `fastapi-guard` (v7.2.1), implemente
 | `ROBOCO_GUARD_ENABLED` | `false` | Master switch. Off = completely inert — no middleware is mounted, the request path is entirely unchanged, and nothing is logged or blocked. |
 | `ROBOCO_GUARD_PASSIVE_MODE` | see below | When the guard is enabled, controls whether it blocks matching requests or only logs them. |
 
-As of 2026-07-01 the guard is built on the `feature/fastapi-guard-hardening` branch, gated off by default, and wherever it is enabled at all it is running in passive/log-only mode — so no agent request is currently being blocked by it anywhere.
+As of 2026-07-19 the guard is gated off by default in config, but the NAS build compose arms it ON in ACTIVE enforcement (`ROBOCO_GUARD_PASSIVE_MODE=false`) — passive/log-only calibration came back clean, and the CEO approved the flip now that cloud auth + Tailscale are armed. A matching request on that deploy is actually blocked, not just logged. The registry compose still ships it fully off (see Enforcement Posture below).
 
 ## When Armed
 
@@ -27,7 +27,7 @@ On top of those generic checks, three RoboCo-specific custom validators run agai
 
 ## Enforcement Posture
 
-`ROBOCO_GUARD_PASSIVE_MODE` decides what happens on a match: `true` (passive) detects and logs only, and never blocks a request — this is how the NAS production deploy is armed today. `false` (enforce) actually blocks the matching request.
+`ROBOCO_GUARD_PASSIVE_MODE` decides what happens on a match: `true` (passive) detects and logs only, and never blocks a request. `false` (enforce) actually blocks the matching request — this is how the NAS build compose is armed today (its default flipped from `true` to `false` once passive-mode calibration reviewed clean). The registry compose omits the guard trio entirely, leaving a fresh third-party deploy on the safe config default (guard off).
 
 A blocked request gets a generic `400` or `403` response — no rule or signature detail is returned, so the response body can't be used to fingerprint what tripped the guard.
 

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
@@ -24,6 +25,7 @@ from roboco.services.base import (
 from roboco.services.docs import (
     DocsService,
     WriteDocInput,
+    _refused_doc_types,
     get_docs_service,
 )
 from sqlalchemy import select
@@ -181,6 +183,33 @@ async def test_write_doc_user_facing_refused(docs_setup: dict) -> None:
         )
     assert "Unknown doc_type" not in str(exc_info.value)
     assert "docs.roboco.tech" in str(exc_info.value)
+
+
+def test_refused_doc_types_uses_configured_docs_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployer's own docs-site slug/URL (ROBOCO_DOCS_SITE_*) reaches the
+    refusal message instead of RoboCo's own docs site."""
+    monkeypatch.setattr(settings, "docs_site_project_slug", "acme-docs")
+    monkeypatch.setattr(settings, "docs_site_public_url", "docs.acme.example")
+    message = _refused_doc_types()["user_facing"]
+    assert "acme-docs" in message
+    assert "docs.acme.example" in message
+    assert "roboco-website" not in message
+    assert "docs.roboco.tech" not in message
+
+
+def test_refused_doc_types_falls_back_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty docs-site slug/URL degrades to a generic message, never a
+    bare empty string spliced into the refusal text."""
+    monkeypatch.setattr(settings, "docs_site_project_slug", "")
+    monkeypatch.setattr(settings, "docs_site_public_url", "")
+    message = _refused_doc_types()["user_facing"]
+    assert "your docs-site project" in message
+    assert "roboco-website" not in message
+    assert "docs.roboco.tech" not in message
 
 
 @pytest.mark.asyncio
