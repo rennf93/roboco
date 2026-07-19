@@ -55,7 +55,7 @@ class TgCockpitService(BaseService):
         needs_you = await self._needs_you(tasks)
         return {
             "needs_you": needs_you,
-            "fleet": await self._fleet(),
+            "fleet": await self.fleet(),
             "spend": await self._spend(),
             "ship": {
                 "version": settings.app_version,
@@ -95,7 +95,9 @@ class TgCockpitService(BaseService):
             )
         return pending
 
-    async def _fleet(self) -> dict[str, Any]:
+    async def fleet(self) -> dict[str, Any]:
+        """Live-agent snapshot with per-agent task titles — shared by the
+        Today brief and the bot's ``/agents`` command."""
         snapshot = await get_dashboard_service(self.session).get_all_agent_status()
         agents: list[dict[str, Any]] = snapshot.get("agents", [])
         working = [a for a in agents if a.get("current_task_id")][:_WORKING_AGENT_CAP]

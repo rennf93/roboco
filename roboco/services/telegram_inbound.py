@@ -39,7 +39,7 @@ import html
 import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
@@ -63,8 +63,10 @@ from roboco.services.settings import get_settings_service
 from roboco.services.task import get_task_service
 from roboco.services.telegram_client import TelegramClient, build_telegram_client
 from roboco.services.telegram_credentials import get_telegram_credentials_service
+from roboco.services.tg_cockpit import get_tg_cockpit_service
 from roboco.services.tiktok_client import build_tiktok_poster
 from roboco.services.tiktok_credentials import get_tiktok_credentials_service
+from roboco.services.usage import get_usage_service
 from roboco.services.video_post_service import TaskAlreadyCompletedError as _VideoDone
 from roboco.services.video_post_service import (
     VideoCaptionTooLongError,
@@ -87,6 +89,7 @@ logger = structlog.get_logger()
 # Reuses the system_settings KV store instead of a dedicated table (see
 # `roboco.services.settings._VALIDATORS` for the write-side int validator).
 _OFFSET_KEY = "telegram_last_update_id"
+
 _CEO_UUID = UUID(AGENT_UUIDS["ceo"])
 
 _QUEUE_ITEM_CAP = 10
@@ -135,13 +138,25 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "task": ("📋", "Task"),
 }
 
-_HELP_TEXT = (
-    "<b>RoboCo commands</b>\n"
-    "/status — fleet snapshot\n"
-    "/queue — approvals with one-tap buttons\n"
-    "/task — task detail (id prefix or title)\n"
-    "/help — this list"
+# The bot's command menu — single source for /help AND the Bot API
+# ``setMyCommands`` registration (synced once per process on the first poll
+# cycle), so the Telegram menu can never drift from what's implemented.
+BOT_COMMANDS: tuple[dict[str, str], ...] = (
+    {"command": "status", "description": "Task pipeline snapshot"},
+    {"command": "queue", "description": "Approvals with one-tap buttons"},
+    {"command": "agents", "description": "Who's working on what"},
+    {"command": "blocked", "description": "Blocked + awaiting-you tasks"},
+    {"command": "usage", "description": "Today's token spend"},
+    {"command": "task", "description": "Task detail (id prefix or title)"},
+    {"command": "help", "description": "This list"},
 )
+
+_HELP_TEXT = "<b>RoboCo commands</b>\n" + "\n".join(
+    f"/{c['command']} — {c['description']}" for c in BOT_COMMANDS
+)
+
+# Line caps for the /blocked reply — a phone screen, not a report.
+_BLOCKED_CAP = 8
 
 
 def _esc(value: object) -> str:
@@ -369,11 +384,22 @@ class TelegramInboundEngine(BaseService):
 
     service_name = "telegram_inbound"
 
+    # Once-per-process latch for the setMyCommands menu sync — class-level
+    # because the engine is re-instantiated every poll cycle.
+    _commands_synced: ClassVar[bool] = False
+
     def __init__(
         self, session: AsyncSession, client: TelegramClient | None = None
     ) -> None:
         super().__init__(session)
         self._injected_client = client
+
+    async def _ensure_commands_menu(self, client: TelegramClient) -> None:
+        """Sync the bot's command menu from BOT_COMMANDS, once per process."""
+        if TelegramInboundEngine._commands_synced:
+            return
+        await client.set_my_commands(list(BOT_COMMANDS))
+        TelegramInboundEngine._commands_synced = True
 
     async def _client(self, creds: TelegramCredentialsData) -> TelegramClient:
         if self._injected_client is not None:
@@ -395,6 +421,7 @@ class TelegramInboundEngine(BaseService):
         client = await self._client(creds)
         if not client.configured:
             return
+        await self._ensure_commands_menu(client)
         offset = await get_settings_service(self.session).get_int(_OFFSET_KEY, 0)
         cap = settings.telegram_max_updates_per_cycle
         updates = await client.get_updates(
@@ -481,6 +508,16 @@ class TelegramInboundEngine(BaseService):
                 parse_mode="HTML",
                 disable_link_preview=True,
             )
+        elif cmd == "agents":
+            await client.send_message(await self._render_agents(), parse_mode="HTML")
+        elif cmd == "usage":
+            await client.send_message(await self._render_usage(), parse_mode="HTML")
+        elif cmd == "blocked":
+            await client.send_message(
+                await self._render_blocked(),
+                parse_mode="HTML",
+                disable_link_preview=True,
+            )
         else:
             await client.send_message(
                 f"Unknown command /{_esc(cmd)}.\n\n{_HELP_TEXT}", parse_mode="HTML"
@@ -510,6 +547,58 @@ class TelegramInboundEngine(BaseService):
             for status in _STATUS_ORDER
             if counts.get(status.value)
         ]
+        return _truncate("\n".join(lines))
+
+    async def _render_agents(self) -> str:
+        """Who's mid-task right now — the Today brief's fleet block as text."""
+        fleet = await get_tg_cockpit_service(self.session).fleet()
+        by_status = ", ".join(
+            f"{count} {status}"
+            for status, count in sorted(fleet.get("by_status", {}).items())
+        )
+        header = f"<b>🤖 Agents</b> — {fleet.get('total', 0)} total"
+        if by_status:
+            header += f" ({_esc(by_status)})"
+        lines = [header]
+        working = fleet.get("working", [])
+        if not working:
+            lines.append("No one is mid-task.")
+        for agent in working:
+            task_title = agent.get("task_title")
+            suffix = f" — {_esc(task_title)}" if task_title else ""
+            lines.append(f"• <b>{_esc(agent.get('name', ''))}</b>{suffix}")
+        return _truncate("\n".join(lines))
+
+    async def _render_usage(self) -> str:
+        """Today's spend from the day rollup — the Today brief's number."""
+        summary = await get_usage_service(self.session).get_today_summary()
+        tokens = int(summary.get("tokens_today", 0))
+        cost = float(summary.get("cost_today_usd", 0.0))
+        return f"<b>💸 Spend today</b>\n${cost:,.2f} · {tokens:,} tokens"
+
+    def _task_link_line(self, task: TaskTable) -> str:
+        id8 = str(task.id)[:8]
+        link = _deep_link("task", id8)
+        title = _esc(task.title)
+        label = f'<a href="{_esc_attr(link)}">{title}</a>' if link else title
+        return f"• {label} <code>{id8}</code>"
+
+    async def _render_blocked(self) -> str:
+        """Blocked + awaiting-CEO tasks, deep-linked, capped per section."""
+        tasks = get_task_service(self.session)
+        awaiting = await tasks.list_awaiting_ceo_approval()
+        blocked = await tasks.list_blocked()
+        if not awaiting and not blocked:
+            return "Nothing is blocked or awaiting you. 🎉"
+        lines: list[str] = []
+        if awaiting:
+            lines.append("<b>🖊️ Awaiting you</b>")
+            lines += [self._task_link_line(t) for t in awaiting[:_BLOCKED_CAP]]
+        if blocked:
+            if lines:
+                lines.append("")
+            lines.append("<b>⛔ Blocked</b>")
+            lines += [self._task_link_line(t) for t in blocked[:_BLOCKED_CAP]]
         return _truncate("\n".join(lines))
 
     async def _collect_queue_items(self) -> list[tuple[str, str, str, str]]:

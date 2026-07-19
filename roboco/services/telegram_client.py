@@ -90,6 +90,13 @@ class TelegramClient(ABC):
     ) -> None: ...
 
     @abstractmethod
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        """Register the bot's command menu (``setMyCommands``) so the
+        Telegram client UI lists exactly what the code implements.
+        Best-effort — a failure only leaves the old menu in place."""
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         """Release transport resources; no-op when no transport exists."""
 
@@ -99,6 +106,9 @@ class NullTelegramClient(TelegramClient):
 
     async def close(self) -> None:
         return None
+
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        _ = commands
 
     @property
     def configured(self) -> bool:
@@ -241,6 +251,12 @@ class LiveTelegramClient(TelegramClient):
         data = resp.json()
         result = data.get("result") if isinstance(data, dict) else None
         return result if isinstance(result, list) else []
+
+    async def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        url = f"{_API_BASE}/bot{self._creds.bot_token}/setMyCommands"
+        client = await self._http()
+        with contextlib.suppress(httpx.HTTPError):
+            await client.post(url, json={"commands": commands}, timeout=self._timeout)
 
     async def answer_callback_query(
         self, callback_query_id: str, text: str = ""
