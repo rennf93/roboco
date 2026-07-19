@@ -10,7 +10,10 @@
 
 import type { TelegramThemeParams, TelegramWebApp } from "./webapp";
 
-/** [Telegram key, panel CSS variable] — applied in order. */
+/** [Telegram key, panel CSS variable] — applied in order. Surfaces only:
+ * the accent tokens (--primary/--ring) deliberately stay RoboCo's amber
+ * (the #tg-shell skin in globals.css) so the cockpit keeps its identity
+ * inside any Telegram theme — Telegram's surfaces, RoboCo's voice. */
 const THEME_VAR_MAP: ReadonlyArray<[keyof TelegramThemeParams, string]> = [
   ["bg_color", "--background"],
   ["secondary_bg_color", "--background"],
@@ -23,9 +26,6 @@ const THEME_VAR_MAP: ReadonlyArray<[keyof TelegramThemeParams, string]> = [
   ["text_color", "--popover-foreground"],
   ["hint_color", "--muted-foreground"],
   ["subtitle_text_color", "--muted-foreground"],
-  ["button_color", "--primary"],
-  ["button_color", "--ring"],
-  ["button_text_color", "--primary-foreground"],
   ["destructive_text_color", "--destructive"],
   ["section_separator_color", "--border"],
 ];

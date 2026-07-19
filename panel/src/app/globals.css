@@ -126,6 +126,34 @@
   }
 }
 
+/* Telegram Mini App cockpit skin. #tg-shell carries RoboCo's own look —
+   deep slate surfaces with a constant amber accent — independent of the
+   dashboard theme. Inside Telegram, the themeParams bridge inline-overrides
+   the SURFACE tokens (background/card/text/hint/border) to the user's own
+   Telegram palette, while the accent tokens stay RoboCo's: Telegram's
+   surfaces, RoboCo's voice. */
+#tg-shell {
+  color-scheme: dark;
+  --background: oklch(0.16 0.015 260);
+  --foreground: oklch(0.93 0.005 260);
+  --card: oklch(0.205 0.02 260);
+  --card-foreground: oklch(0.93 0.005 260);
+  --popover: oklch(0.205 0.02 260);
+  --popover-foreground: oklch(0.93 0.005 260);
+  --primary: oklch(0.8 0.13 78);
+  --primary-foreground: oklch(0.22 0.04 78);
+  --secondary: oklch(0.26 0.02 260);
+  --secondary-foreground: oklch(0.93 0.005 260);
+  --muted: oklch(0.26 0.02 260);
+  --muted-foreground: oklch(0.68 0.012 260);
+  --accent: oklch(0.26 0.02 260);
+  --accent-foreground: oklch(0.93 0.005 260);
+  --destructive: oklch(0.68 0.19 25);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.8 0.13 78);
+}
+
 /* Collapse/expand and other transform/opacity transitions (animate-in,
    animate-out, transition-transform, ...) become instant for users who
    asked the OS for reduced motion — the content still opens/closes, it

@@ -20,7 +20,7 @@ describe("applyTelegramTheme", () => {
     expect(el.classList.contains("dark")).toBe(false);
   });
 
-  it("maps themeParams onto the panel CSS variables", () => {
+  it("maps surface themeParams onto the panel CSS variables — never the accent", () => {
     const el = document.createElement("div");
     applyTelegramTheme(
       webAppWith({
@@ -38,8 +38,10 @@ describe("applyTelegramTheme", () => {
     expect(el.style.getPropertyValue("--card")).toBe("#17212b");
     expect(el.style.getPropertyValue("--foreground")).toBe("#f5f5f5");
     expect(el.style.getPropertyValue("--muted-foreground")).toBe("#708499");
-    expect(el.style.getPropertyValue("--primary")).toBe("#5288c1");
-    expect(el.style.getPropertyValue("--primary-foreground")).toBe("#ffffff");
+    // The accent stays RoboCo's (#tg-shell skin) — button colors are
+    // deliberately not adopted.
+    expect(el.style.getPropertyValue("--primary")).toBe("");
+    expect(el.style.getPropertyValue("--primary-foreground")).toBe("");
   });
 
   it("prefers the more specific section/secondary keys when present", () => {

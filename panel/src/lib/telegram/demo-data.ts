@@ -63,35 +63,35 @@ export const DEMO_VIDEO_POSTS: VideoPost[] = [
 export const DEMO_ROADMAP: RoadmapCycle[] = [
   {
     task_id: "demo-cycle-1",
-    title: "Roadmap cycle — reduce CEO toil",
+    title: "Roadmap cycle — operational polish",
     status: "pending",
-    goal: "Every daily CEO chore reachable from the phone in under 10 seconds",
+    goal: "Close the small frictions the metrics keep surfacing",
     items: [
       {
-        id: "item-cmd",
-        title: "Bot command tier (/agents, /usage, /blocked)",
+        id: "item-digest",
+        title: "Weekly cost digest email",
         description:
-          "Deterministic half-second reads over the fleet, spend, and stuck work, straight from the Telegram keyboard.",
+          "One Monday-morning email: last week's spend by team, top burners, and the trend line.",
         acceptance_criteria: [
-          "Commands registered via setMyCommands at startup",
-          "Every reply deep-links into the Mini App",
+          "Digest renders from existing usage rollups",
+          "Opt-out via panel settings",
         ],
         project_slug: "roboco",
         team: "backend",
-        priority: 1,
-        rationale: "The Mini App covers depth; commands cover glances.",
+        priority: 2,
+        rationale: "The usage dashboard exists but nobody opens it on Mondays.",
         status: "proposed",
       },
       {
-        id: "item-intake",
-        title: "/newtask → live Intake interview in-thread",
+        id: "item-export",
+        title: "Task history CSV export",
         description:
-          "Dictate an idea from the phone; the Prompter interviews you in the chat thread and the draft rides board review.",
-        acceptance_criteria: ["Interview happens as Telegram messages"],
+          "Export a project's completed-task history with cycle times for offline analysis.",
+        acceptance_criteria: ["One-click export from the project page"],
         project_slug: "roboco",
-        team: "backend",
-        priority: 2,
-        rationale: "Idea capture is the CEO's most mobile moment.",
+        team: "frontend",
+        priority: 3,
+        rationale: "Asked for twice during board reviews.",
         status: "proposed",
       },
     ],
@@ -105,7 +105,7 @@ export const DEMO_TODAY: TodayBrief = {
     awaiting_ceo: [
       {
         id: "demo-t1",
-        title: "Forge Phase 2 — GitLab/Gitea transports",
+        title: "Webhook rate limiting — root PR",
         status: "awaiting_ceo_approval",
         team: "backend",
         updated_at: new Date(Date.now() - 40 * 60_000).toISOString(),
@@ -115,7 +115,7 @@ export const DEMO_TODAY: TodayBrief = {
     blocked: [
       {
         id: "demo-t2",
-        title: "Panel scorecards N+1 sweep",
+        title: "Docs search index rebuild",
         status: "blocked",
         team: "frontend",
         updated_at: new Date(Date.now() - 3 * 3600_000).toISOString(),
@@ -132,7 +132,7 @@ export const DEMO_TODAY: TodayBrief = {
     total: 26,
     by_status: { active: 4, idle: 22 },
     working: [
-      { name: "be-dev-1", role: "developer", team: "backend", task_title: "GitProvider seam — Gitea transport" },
+      { name: "be-dev-1", role: "developer", team: "backend", task_title: "Webhook rate limiting" },
       { name: "fe-qa", role: "qa", team: "frontend", task_title: "Metrics time-series review" },
       { name: "ux-dev-2", role: "developer", team: "ux_ui", task_title: "v0.26.0 release motion" },
     ],
