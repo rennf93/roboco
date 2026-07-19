@@ -3,8 +3,10 @@ MR→PR shape adaptation (iid→number, source/target_branch→head/base, merged
 bool), payload-key translation (create_pr duplicate 409→422, update_pr
 close→state_event), squash-flag merge, approve-vs-note review routing, diff
 reassembly, pipelines→workflow_runs / statuses→check_runs CI classification,
-merge-method mapping, and the deliberate Phase-3 synthetic postures
-(request_reviewers, create_org_repo, merge_branch).
+merge-method mapping, Phase-4 project provisioning (group→namespace_id
+resolution, user-namespace fallback, visibility mapping, duplicate-path
+400→422 reshape), and the deliberate Phase-3 synthetic postures
+(request_reviewers, merge_branch).
 
 Uses httpx.MockTransport through the provider's own ``_send`` — same seam
 ``test_gitea_provider.py`` exercises.
@@ -597,10 +599,115 @@ async def test_merge_branch_is_shaped_not_implemented() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_org_repo_is_synthetic_501() -> None:
+async def test_create_org_repo_resolves_group_and_posts_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            assert str(request.url).endswith("/api/v4/groups/acme%2Fsub")
+            return httpx.Response(200, json={"id": 42})
+        assert request.url.path == "/api/v4/projects"
+        return httpx.Response(
+            201,
+            json={
+                "path_with_namespace": "acme/sub/widgets",
+                "web_url": "https://gitlab.example.com/acme/sub/widgets",
+                "http_url_to_repo": "https://gitlab.example.com/acme/sub/widgets.git",
+            },
+        )
+
+    recorder = _Recorder(responder)
+    _patch_client(monkeypatch, recorder)
+
+    resp = await GitLabProvider("gitlab.example.com").create_org_repo(
+        "t", "acme/sub", name="Widgets", description="d", private=True, auto_init=True
+    )
+
+    post_body = recorder.requests[1].content
+    assert b'"name": "Widgets"' in post_body or b'"name":"Widgets"' in post_body
+    assert b'"path": "widgets"' in post_body or b'"path":"widgets"' in post_body
+    assert b'"namespace_id": 42' in post_body or b'"namespace_id":42' in post_body
+    assert (
+        b'"visibility": "private"' in post_body
+        or b'"visibility":"private"' in post_body
+    )
+    assert (
+        b'"initialize_with_readme": true' in post_body
+        or b'"initialize_with_readme":true' in post_body
+    )
+    shaped = resp.json()
+    assert shaped["full_name"] == "acme/sub/widgets"
+    assert shaped["clone_url"].endswith("widgets.git")
+    assert shaped["html_url"] == "https://gitlab.example.com/acme/sub/widgets"
+
+
+@pytest.mark.asyncio
+async def test_create_org_repo_falls_back_to_user_namespace_on_missing_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(404)
+        return httpx.Response(
+            201,
+            json={
+                "path_with_namespace": "renzo/widgets",
+                "web_url": "https://gitlab.example.com/renzo/widgets",
+                "http_url_to_repo": "https://gitlab.example.com/renzo/widgets.git",
+            },
+        )
+
+    recorder = _Recorder(responder)
+    _patch_client(monkeypatch, recorder)
+
+    resp = await GitLabProvider("gitlab.example.com").create_org_repo(
+        "t", "renzo", name="widgets", description="", private=True, auto_init=True
+    )
+
+    post_body = recorder.requests[1].content
+    assert b"namespace_id" not in post_body
+    assert resp.json()["full_name"] == "renzo/widgets"
+
+
+@pytest.mark.asyncio
+async def test_create_org_repo_visibility_maps_public_to_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder(
+        lambda r: (
+            httpx.Response(404) if r.method == "GET" else httpx.Response(201, json={})
+        )
+    )
+    _patch_client(monkeypatch, recorder)
+
+    await GitLabProvider("gitlab.example.com").create_org_repo(
+        "t", "acme", name="widgets", description="", private=False, auto_init=False
+    )
+
+    post_body = recorder.requests[1].content
+    assert (
+        b'"visibility": "internal"' in post_body
+        or b'"visibility":"internal"' in post_body
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_org_repo_duplicate_reshapes_400_to_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": 1})
+        return httpx.Response(
+            400, json={"message": {"path": ["has already been taken"]}}
+        )
+
+    recorder = _Recorder(responder)
+    _patch_client(monkeypatch, recorder)
+
     resp = await GitLabProvider("gitlab.example.com").create_org_repo(
         "t", "acme", name="widgets", description="", private=True, auto_init=True
     )
-    assert isinstance(resp, ShapedResponse)
-    assert resp.status_code == httpx.codes.NOT_IMPLEMENTED
-    assert "Phase 4" in resp.json()["message"]
+
+    assert resp.status_code == httpx.codes.UNPROCESSABLE_ENTITY
+    assert "has already been taken" in resp.text

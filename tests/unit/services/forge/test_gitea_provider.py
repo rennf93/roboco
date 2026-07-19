@@ -263,3 +263,35 @@ async def test_slash_branch_segments_are_url_encoded(
 
     assert "/commits/feature%2Fbackend%2FABC/status" in str(recorder.requests[0].url)
     assert "/branches/feature%2Fbackend%2FABC" in str(recorder.requests[1].url)
+
+
+@pytest.mark.asyncio
+async def test_create_org_repo_posts_to_org_repos_with_token_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _Recorder(
+        lambda _r: httpx.Response(
+            201,
+            json={
+                "full_name": "acme/widgets",
+                "clone_url": "https://gitea.example.com/acme/widgets.git",
+                "html_url": "https://gitea.example.com/acme/widgets",
+            },
+        )
+    )
+    _patch_client(monkeypatch, recorder)
+
+    resp = await GiteaProvider("gitea.example.com").create_org_repo(
+        "SECRET", "acme", name="widgets", description="d", private=True, auto_init=True
+    )
+
+    request = recorder.requests[0]
+    assert request.method == "POST"
+    assert str(request.url) == "https://gitea.example.com/api/v1/orgs/acme/repos"
+    assert request.headers["Authorization"] == "token SECRET"
+    body = request.content
+    assert b'"name": "widgets"' in body or b'"name":"widgets"' in body
+    assert b'"description": "d"' in body or b'"description":"d"' in body
+    assert b'"private": true' in body or b'"private":true' in body
+    assert b'"auto_init": true' in body or b'"auto_init":true' in body
+    assert resp.json()["full_name"] == "acme/widgets"
