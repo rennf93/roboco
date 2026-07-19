@@ -18,6 +18,7 @@ import { getErrorMessage } from "@/lib/api/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TgAvatar } from "@/components/tg/ui";
 import { ArrowLeft, MessageSquarePlus, Send } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -64,21 +65,24 @@ function ConversationList({
               key={c.id}
               type="button"
               onClick={() => onSelect(c.id, peerLabel)}
-              className="flex w-full flex-col gap-0.5 rounded-xl border bg-card p-3 text-left text-card-foreground transition-colors active:bg-muted"
+              className="flex w-full items-center gap-3 rounded-2xl border bg-card p-3 text-left text-card-foreground transition-colors active:bg-muted"
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">{peerLabel}</span>
-                {c.last_message_at && (
-                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                    {formatDistanceToNow(new Date(c.last_message_at))} ago
-                  </span>
+              <TgAvatar name={peerLabel} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm font-medium">{peerLabel}</span>
+                  {c.last_message_at && (
+                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                      {formatDistanceToNow(new Date(c.last_message_at))} ago
+                    </span>
+                  )}
+                </div>
+                {c.last_message_preview && (
+                  <p className="truncate text-xs leading-snug text-muted-foreground">
+                    {c.last_message_preview}
+                  </p>
                 )}
               </div>
-              {c.last_message_preview && (
-                <p className="truncate text-xs leading-snug text-muted-foreground">
-                  {c.last_message_preview}
-                </p>
-              )}
             </button>
           );
         })
