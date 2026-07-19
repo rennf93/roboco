@@ -1,6 +1,13 @@
 "use client";
 
-import { Gauge, CheckSquare, Bell, Kanban, MessageSquare } from "lucide-react";
+import {
+  IconBoard,
+  IconChat,
+  IconInbox,
+  IconSeal,
+  IconToday,
+  type TgIconProps,
+} from "@/components/tg/tg-icons";
 import { cn } from "@/lib/utils";
 
 export type TgTab = "today" | "approvals" | "inbox" | "board" | "chat";
@@ -8,13 +15,13 @@ export type TgTab = "today" | "approvals" | "inbox" | "board" | "chat";
 const TABS: ReadonlyArray<{
   id: TgTab;
   label: string;
-  icon: typeof CheckSquare;
+  icon: React.ComponentType<TgIconProps>;
 }> = [
-  { id: "today", label: "Today", icon: Gauge },
-  { id: "approvals", label: "Approvals", icon: CheckSquare },
-  { id: "inbox", label: "Inbox", icon: Bell },
-  { id: "board", label: "Board", icon: Kanban },
-  { id: "chat", label: "Chat", icon: MessageSquare },
+  { id: "today", label: "Today", icon: IconToday },
+  { id: "approvals", label: "Approvals", icon: IconSeal },
+  { id: "inbox", label: "Inbox", icon: IconInbox },
+  { id: "board", label: "Board", icon: IconBoard },
+  { id: "chat", label: "Chat", icon: IconChat },
 ];
 
 interface TgTabBarProps {
@@ -52,10 +59,7 @@ export function TgTabBar({ active, onChange }: TgTabBarProps) {
                 isActive ? "bg-primary/15" : "bg-transparent",
               )}
             >
-              <tab.icon
-                className="h-5 w-5"
-                strokeWidth={isActive ? 2.25 : 1.75}
-              />
+              <tab.icon className="h-5 w-5" />
             </span>
             {tab.label}
           </button>

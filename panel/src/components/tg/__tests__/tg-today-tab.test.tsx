@@ -4,8 +4,22 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TgTodayTab } from "../tg-today-tab";
 
-const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("@/lib/api/client", () => ({ default: { get } }));
+const { get, ackMock, notifItems } = vi.hoisted(() => ({
+  get: vi.fn(),
+  ackMock: vi.fn(),
+  notifItems: { current: [] as Array<Record<string, unknown>> },
+}));
+vi.mock("@/lib/api/client", () => ({
+  default: { get },
+  getErrorMessage: () => "error",
+}));
+vi.mock("@/hooks/use-notifications", () => ({
+  notificationKeys: { all: ["notifications"] },
+  useNotifications: () => ({ data: { items: notifItems.current } }),
+}));
+vi.mock("@/lib/api/notifications", () => ({
+  notificationsApi: { acknowledge: ackMock },
+}));
 
 function renderTab(onNavigate = vi.fn()) {
   const client = new QueryClient({
@@ -52,6 +66,8 @@ describe("TgTodayTab", () => {
   // vitest call it as an after-test teardown hook.
   beforeEach(() => {
     get.mockReset();
+    ackMock.mockReset();
+    notifItems.current = [];
     // Reduced motion → the spend count-up lands instantly; these tests
     // assert content, not animation timing.
     window.matchMedia = ((query: string) => ({
@@ -121,6 +137,39 @@ describe("TgTodayTab", () => {
 
     await userEvent.click(screen.getByText("Root PR ready"));
     expect(onNavigate).toHaveBeenCalledWith("board");
+  });
+
+  it("renders the operations ring and deep-links Ship into the release", async () => {
+    get.mockResolvedValue({
+      data: brief({
+        ship: { version: "0.25.0", open_release_proposal: true, ci_fix_tasks: 0 },
+      }),
+    });
+    const onNavigate = vi.fn();
+    renderTab(onNavigate);
+
+    await userEvent.click(await screen.findByRole("button", { name: /ship/i }));
+    expect(onNavigate).toHaveBeenCalledWith("approvals", "release");
+    expect(screen.getByRole("button", { name: /sweep/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /fleet/i })).toBeInTheDocument();
+  });
+
+  it("ack-all acknowledges every pending notification", async () => {
+    get.mockResolvedValue({ data: brief() });
+    notifItems.current = [
+      { id: "n1", requires_ack: true, is_acknowledged: false },
+      { id: "n2", requires_ack: true, is_acknowledged: false },
+      { id: "n3", requires_ack: false, is_acknowledged: false },
+    ];
+    ackMock.mockResolvedValue({});
+    renderTab();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /ack all/i }),
+    );
+    await waitFor(() => expect(ackMock).toHaveBeenCalledTimes(2));
+    expect(ackMock).toHaveBeenCalledWith("n1");
+    expect(ackMock).toHaveBeenCalledWith("n2");
   });
 
   it("opens the fleet sheet with the full working roster", async () => {

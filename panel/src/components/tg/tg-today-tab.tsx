@@ -2,26 +2,38 @@
 
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import api from "@/lib/api/client";
+import api, { getErrorMessage } from "@/lib/api/client";
 import { isTgDemoMode } from "@/lib/telegram/demo";
 import { useWebSocket } from "@/hooks/use-websocket";
+import {
+  notificationKeys,
+  useNotifications,
+} from "@/hooks/use-notifications";
+import { notificationsApi } from "@/lib/api/notifications";
+import { projectsApi } from "@/lib/api/projects";
+import { gitApi } from "@/lib/api/git";
 import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { TgAvatar, TgCircleAction, TgRow, TgSection } from "@/components/tg/ui";
 import { TgSheet, useCountUp } from "@/components/tg/motion";
+import {
+  IconAckAll,
+  IconFleet,
+  IconShip,
+  IconSweep,
+} from "@/components/tg/tg-icons";
 import { DayBars, Sparkline } from "@/components/tg/charts";
 import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
-  Bell,
   CheckSquare,
   ChevronRight,
-  Kanban,
-  MessageSquare,
   Rocket,
 } from "lucide-react";
+import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
 
@@ -282,10 +294,72 @@ function FleetSheet({
 export function TgTodayTab({
   onNavigate,
 }: {
-  onNavigate: (tab: TgTab) => void;
+  /** `intent: "release"` deep-focuses the release proposal in Approvals. */
+  onNavigate: (tab: TgTab, intent?: "release") => void;
 }) {
   const queryClient = useQueryClient();
   const [fleetOpen, setFleetOpen] = useState(false);
+  const [sweepOpen, setSweepOpen] = useState(false);
+  const [ackBusy, setAckBusy] = useState(false);
+  const [sweepBusy, setSweepBusy] = useState(false);
+
+  // Shares the Inbox tab's query cache; powers the Ack-all badge + action.
+  const { data: notifData } = useNotifications();
+  const pendingAcks = (notifData?.items ?? []).filter(
+    (n) => n.requires_ack && !n.is_acknowledged,
+  );
+
+  const runAckAll = async () => {
+    haptics.tap();
+    if (pendingAcks.length === 0) {
+      toast.info("Nothing is waiting for an ack");
+      return;
+    }
+    setAckBusy(true);
+    const results = await Promise.allSettled(
+      pendingAcks.map((n) => notificationsApi.acknowledge(n.id)),
+    );
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    await queryClient.invalidateQueries({ queryKey: notificationKeys.all });
+    setAckBusy(false);
+    if (ok === results.length) {
+      haptics.success();
+      toast.success(`Acknowledged ${ok} notification${ok === 1 ? "" : "s"}`);
+    } else {
+      haptics.error();
+      toast.warning(`Acknowledged ${ok} of ${results.length}`);
+    }
+  };
+
+  const runSweep = async () => {
+    setSweepBusy(true);
+    try {
+      const projects = (await projectsApi.list()).filter(
+        (p) => p.has_git_token,
+      );
+      let deleted = 0;
+      let errors = 0;
+      for (const p of projects) {
+        try {
+          const res = await gitApi.cleanupBranches({ project_slug: p.slug });
+          deleted += res.remote_deleted;
+          errors += res.errors;
+        } catch {
+          errors += 1;
+        }
+      }
+      haptics.success();
+      toast.success(
+        `Swept ${projects.length} project${projects.length === 1 ? "" : "s"}: ${deleted} stale branch${deleted === 1 ? "" : "es"} deleted${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`,
+      );
+    } catch (err) {
+      haptics.error();
+      toast.error(getErrorMessage(err));
+    } finally {
+      setSweepBusy(false);
+      setSweepOpen(false);
+    }
+  };
   const { data, isLoading, isError } = useQuery<TodayBrief>({
     queryKey: ["tg-today"],
     queryFn: async () => {
@@ -323,9 +397,10 @@ export function TgTodayTab({
   }
 
   const { needs_you: needs, fleet, spend, velocity, ship } = data;
-  const go = (tab: TgTab) => {
+  const go = (tab: TgTab, intent?: "release") => {
     haptics.tap();
-    onNavigate(tab);
+    if (intent) onNavigate(tab, intent);
+    else onNavigate(tab);
   };
   const idle = fleet.by_status.idle ?? 0;
   const active = fleet.by_status.active ?? Math.max(fleet.working.length, 0);
@@ -339,24 +414,38 @@ export function TgTodayTab({
       </header>
       <SpendHero spend={spend} />
 
+      {/* Operations, not navigation — the tab bar already navigates. */}
       <div className="flex items-stretch gap-2 px-1">
         <TgCircleAction
-          icon={CheckSquare}
-          label="Approve"
-          badge={needs.total}
-          accent
-          onPress={() => go("approvals")}
+          icon={IconShip}
+          label="Ship"
+          badge={ship.open_release_proposal ? 1 : undefined}
+          accent={ship.open_release_proposal}
+          onPress={() => go("approvals", "release")}
         />
         <TgCircleAction
-          icon={Kanban}
-          label="Board"
-          onPress={() => go("board")}
+          icon={IconAckAll}
+          label="Ack all"
+          badge={pendingAcks.length}
+          busy={ackBusy}
+          onPress={() => void runAckAll()}
         />
-        <TgCircleAction icon={Bell} label="Inbox" onPress={() => go("inbox")} />
         <TgCircleAction
-          icon={MessageSquare}
-          label="Chat"
-          onPress={() => go("chat")}
+          icon={IconSweep}
+          label="Sweep"
+          busy={sweepBusy}
+          onPress={() => {
+            haptics.tap();
+            setSweepOpen(true);
+          }}
+        />
+        <TgCircleAction
+          icon={IconFleet}
+          label="Fleet"
+          onPress={() => {
+            haptics.tap();
+            setFleetOpen(true);
+          }}
         />
       </div>
 
@@ -462,6 +551,29 @@ export function TgTodayTab({
         open={fleetOpen}
         onClose={() => setFleetOpen(false)}
       />
+
+      <TgSheet
+        open={sweepOpen}
+        onClose={() => {
+          if (!sweepBusy) setSweepOpen(false);
+        }}
+        title="Sweep branches"
+      >
+        <div className="space-y-3 pb-1">
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            Deletes the remote and local branches of every completed or
+            cancelled task, across every project with git configured. Live
+            branches and environment rungs are spared.
+          </p>
+          <Button
+            className="w-full"
+            disabled={sweepBusy}
+            onClick={() => void runSweep()}
+          >
+            {sweepBusy ? "Sweeping…" : "Sweep stale branches"}
+          </Button>
+        </div>
+      </TgSheet>
     </div>
   );
 }

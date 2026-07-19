@@ -26,7 +26,8 @@ describe("useCountUp", () => {
 
   it("settles on the exact target when animating", async () => {
     const { result } = renderHook(() => useCountUp(12.34, 50));
-    await waitFor(() => expect(result.current).toBe(12.34));
+    // Generous timeout: rAF frames starve under parallel test workers.
+    await waitFor(() => expect(result.current).toBe(12.34), { timeout: 4000 });
   });
 });
 

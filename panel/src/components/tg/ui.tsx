@@ -26,19 +26,23 @@ export function TgCircleAction({
   label,
   badge,
   accent = false,
+  busy = false,
   onPress,
 }: {
-  icon: LucideIcon;
+  icon: React.ComponentType<{ className?: string }>;
   label: string;
   badge?: number;
   accent?: boolean;
+  /** Disables the button and spins the icon while an operation runs. */
+  busy?: boolean;
   onPress: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onPress}
-      className="flex flex-1 flex-col items-center gap-1.5"
+      disabled={busy}
+      className="flex flex-1 flex-col items-center gap-1.5 disabled:opacity-60"
     >
       <span
         className={cn(
@@ -48,7 +52,7 @@ export function TgCircleAction({
             : "bg-gradient-to-b from-muted to-muted/60 text-foreground ring-1 ring-inset ring-white/5",
         )}
       >
-        <Icon className="h-5 w-5" />
+        <Icon className={cn("h-5 w-5", busy && "animate-pulse")} />
         {badge !== undefined && badge > 0 && (
           <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-white">
             {badge}
