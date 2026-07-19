@@ -132,26 +132,31 @@ async def test_create_project_github_enterprise_escape_hatch(
 
 
 @pytest.mark.asyncio
-async def test_create_project_rejects_gitlab_url(project_setup: dict) -> None:
-    """A gitlab.com git_url with no explicit git_provider is rejected loud and
-    early — Phase 0's whole point (was a silent multi-step-deep GitError)."""
+async def test_create_project_accepts_gitlab_url(project_setup: dict) -> None:
+    """A gitlab.com git_url auto-detects the gitlab provider — GitLab is a
+    first-class forge since the provider landed; Phase 0's loud-rejection
+    contract now only covers genuinely unknown hosts."""
     svc = project_setup["svc"]
     payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
     payload_dict["git_url"] = "https://gitlab.com/group/project.git"
-    with pytest.raises(ValidationError):
-        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+    project = await svc.create(
+        ProjectCreate(**payload_dict), project_setup["creator_id"]
+    )
+    assert project.git_url == "https://gitlab.com/group/project.git"
 
 
 @pytest.mark.asyncio
-async def test_create_project_rejects_explicit_gitlab_provider(
+async def test_create_project_accepts_explicit_gitlab_provider(
     project_setup: dict,
 ) -> None:
     svc = project_setup["svc"]
     payload_dict = _project_payload(uuid4().hex[:6]).model_dump()
     payload_dict["git_url"] = "https://gitlab.com/group/project.git"
     payload_dict["git_provider"] = "gitlab"
-    with pytest.raises(ValidationError):
-        await svc.create(ProjectCreate(**payload_dict), project_setup["creator_id"])
+    project = await svc.create(
+        ProjectCreate(**payload_dict), project_setup["creator_id"]
+    )
+    assert project.git_provider == "gitlab"
 
 
 @pytest.mark.asyncio
@@ -175,16 +180,19 @@ async def test_create_project_rejects_unknown_provider_string(
 
 
 @pytest.mark.asyncio
-async def test_update_rejects_git_url_changed_to_gitlab(project_setup: dict) -> None:
+async def test_update_accepts_git_url_changed_to_gitlab(
+    project_setup: dict,
+) -> None:
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    with pytest.raises(ValidationError):
-        await svc.update(
-            project.id,
-            ProjectUpdate(git_url="https://gitlab.com/group/project.git"),
-        )
+    updated = await svc.update(
+        project.id,
+        ProjectUpdate(git_url="https://gitlab.com/group/project.git"),
+    )
+    assert updated is not None
+    assert updated.git_url == "https://gitlab.com/group/project.git"
 
 
 @pytest.mark.asyncio
@@ -204,13 +212,16 @@ async def test_update_git_url_unrelated_field_does_not_reraise_forge(
 
 
 @pytest.mark.asyncio
-async def test_update_git_provider_to_gitlab_rejected(project_setup: dict) -> None:
+async def test_update_git_provider_to_gitlab_accepted(
+    project_setup: dict,
+) -> None:
     svc = project_setup["svc"]
     project = await svc.create(
         _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
     )
-    with pytest.raises(ValidationError):
-        await svc.update(project.id, ProjectUpdate(git_provider="gitlab"))
+    updated = await svc.update(project.id, ProjectUpdate(git_provider="gitlab"))
+    assert updated is not None
+    assert updated.git_provider == "gitlab"
 
 
 @pytest.mark.asyncio

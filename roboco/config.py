@@ -267,6 +267,18 @@ class Settings(BaseSettings):
             "unacknowledged. 0 disables the damper (legacy every-tick respawn)."
         ),
     )
+    notification_ack_ttl_hours: int = Field(
+        default=48,
+        ge=0,
+        description=(
+            "Hours until an ack-required notification's expires_at is stamped "
+            "at creation. sweep_expired_notifications re-escalates a still-"
+            "unacked row past that deadline to the recipient's up-role. "
+            "Informational (non-ack-required) notifications never get a "
+            "deadline regardless of this setting. 0 disables stamping "
+            "(legacy: expires_at stays NULL, notifications never expire)."
+        ),
+    )
     audit_interval_seconds: int = Field(
         default=21600,
         ge=0,
@@ -984,6 +996,26 @@ class Settings(BaseSettings):
             "Max docs-sync tasks the engine may originate in one invocation. "
             "A release publish is a single invocation, so this bounds it to "
             "one task per publish event."
+        ),
+    )
+
+    # Docs-site identity — the user-facing docs repo/URL a documenter is
+    # steered toward when refusing a doc_type="user_facing" write_doc call
+    # (roboco/services/docs.py). Distinct from docs_sync_* above (that engine
+    # stays roboco-only by design); this pair just keeps the refusal message
+    # itself deployer-configurable instead of hardcoding our own docs site.
+    docs_site_project_slug: str = Field(
+        default="roboco-website",
+        description=(
+            "Project slug of the deployer's user-facing docs-site repo, named "
+            "in the write_doc(doc_type='user_facing') refusal message."
+        ),
+    )
+    docs_site_public_url: str = Field(
+        default="docs.roboco.tech",
+        description=(
+            "Public URL of the deployer's docs site, named in the "
+            "write_doc(doc_type='user_facing') refusal message."
         ),
     )
 

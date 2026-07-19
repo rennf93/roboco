@@ -36,6 +36,7 @@ Redis isolation:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -48,7 +49,7 @@ import pytest
 import pytest_asyncio
 from roboco.config import settings as _settings
 from roboco.db import tables as roboco_tables
-from roboco.db.base import Base
+from roboco.db.base import Base, close_db
 from roboco.db.tables import (
     AgentTable,
     AuditLogTable,
@@ -76,6 +77,23 @@ from sqlalchemy.ext.asyncio import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _dispose_global_db_engine() -> AsyncIterator[None]:
+    """Never let the lazy global engine outlive the test that created it.
+
+    Production code reaching ``get_db_context()``/``get_engine()`` creates
+    the process-global ``_DbHolder`` engine bound to the CURRENT event loop.
+    With function-scoped test loops, any later test touching that global
+    path inherits an engine from a dead loop and crashes with ``Future
+    attached to a different loop`` — an order-dependent failure class that
+    moves around whenever test collection shifts. Disposing after every
+    test keeps the global path loop-local; a no-op when nothing touched it.
+    """
+    yield
+    with contextlib.suppress(Exception):
+        await close_db()
 
 
 @pytest.fixture(autouse=True)

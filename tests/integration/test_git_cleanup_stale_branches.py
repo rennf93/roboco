@@ -166,6 +166,61 @@ async def test_env_ladder_branch_is_excluded(cleanup_setup: dict[str, Any]) -> N
 
 
 @pytest.mark.asyncio
+async def test_live_child_branch_dependent_is_excluded(
+    cleanup_setup: dict[str, Any],
+) -> None:
+    """GAP B: a completed root's branch is still the merge base a live cell
+    task's PR would target (``resolve_parent_branch`` reads the parent's own
+    ``branch_name``) — deleting it out from under an in-progress child that
+    hasn't opened a PR yet (so ``_branch_has_open_dependents`` can't see it)
+    would strand the child. The sweep must skip it."""
+    root = _task(
+        cleanup_setup, branch="feature/main_pm/root", status=TaskStatus.COMPLETED
+    )
+    await cleanup_setup["db"].flush()
+    child = _task(
+        cleanup_setup,
+        branch="feature/backend/root--cell",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    child.parent_task_id = root.id
+    _task(
+        cleanup_setup, branch="feature/backend/unrelated", status=TaskStatus.COMPLETED
+    )
+    await cleanup_setup["db"].flush()
+
+    result = await cleanup_setup["svc"].cleanup_stale_branches(
+        cleanup_setup["project"].slug
+    )
+
+    # Only the unrelated completed task's branch is a candidate — the root's
+    # branch is still load-bearing for its live child.
+    assert result == (1, 1, 0, 0, False, None)
+    call = cleanup_setup["ws_svc"].delete_local_branch.await_args
+    assert call is not None
+    assert call.args[1] == "feature/backend/unrelated"
+
+
+@pytest.mark.asyncio
+async def test_branch_still_claimed_by_a_live_task_is_excluded(
+    cleanup_setup: dict[str, Any],
+) -> None:
+    """Defensive case: a NON-terminal task still recording this exact branch
+    as its own must never be swept out from under it, even though the
+    candidate is a *different*, terminal task row."""
+    _task(cleanup_setup, branch="feature/backend/reused", status=TaskStatus.COMPLETED)
+    _task(cleanup_setup, branch="feature/backend/reused", status=TaskStatus.IN_PROGRESS)
+    await cleanup_setup["db"].flush()
+
+    result = await cleanup_setup["svc"].cleanup_stale_branches(
+        cleanup_setup["project"].slug
+    )
+
+    assert result == (0, 0, 0, 0, False, None)
+    cleanup_setup["ws_svc"].delete_local_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_task_force_deletes_local_branch(
     cleanup_setup: dict[str, Any],
 ) -> None:

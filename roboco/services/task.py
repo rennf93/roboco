@@ -6764,6 +6764,39 @@ class TaskService(BaseService):
                 error=str(e),
             )
 
+    async def _close_task_pr_best_effort(self, task: TaskTable) -> None:
+        """Close the task's still-open PR on cancel, if it recorded one.
+
+        Best-effort, never raises — mirrors ``_delete_task_branch_best_effort``.
+        Cancellation already force-deletes the branch/worktree, but left an
+        open PR on the forge forever since nothing ever closed it. Skipped
+        for tasks that never opened one; a no-op if it's already
+        closed/merged (``GitService.close_task_pr_best_effort``).
+        """
+        pr_number = task.pr_number
+        if not pr_number:
+            return
+        try:
+            project_result = await self.session.execute(
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+            )
+            project_slug = project_result.scalar_one_or_none()
+            if not project_slug:
+                return
+            from roboco.services.git import get_git_service
+
+            git_service = get_git_service(self.session)
+            await git_service.close_task_pr_best_effort(project_slug, int(pr_number))
+        except Exception as e:
+            # Cleanup is best-effort — don't fail the cancel if the
+            # remote is unreachable or the PR is already gone.
+            self.log.warning(
+                "PR close skipped",
+                task_id=str(task.id),
+                pr_number=pr_number,
+                error=str(e),
+            )
+
     async def _remove_task_worktree_best_effort(
         self, task: TaskTable, project: ProjectTable, *, force_branch_delete: bool
     ) -> None:
@@ -6993,6 +7026,7 @@ class TaskService(BaseService):
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
             )
+            await self._close_task_pr_best_effort(descendant)
             await self._delete_task_branch_best_effort(descendant)
 
         if cancelled_count > 0:
@@ -7006,6 +7040,7 @@ class TaskService(BaseService):
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
+        await self._close_task_pr_best_effort(task)
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
 
@@ -7384,13 +7419,14 @@ class TaskService(BaseService):
     async def list_recent_for_project(
         self, project_id: UUID, limit: int = 15
     ) -> list[TaskTable]:
-        """Recent tasks for a project, most-recently-active first.
+        """Recent non-cancelled tasks for a project, most-recently-active first.
 
         Backs the prompter's history digest: the intake agent gets a compact
         chronological view of what's already been built/attempted in this repo.
         "Recent" = highest of completed_at / updated_at / created_at, so a
         just-touched-but-not-completed task still surfaces ahead of an old
-        completed one.
+        completed one. Cancelled tasks are excluded — abandoned work is not
+        precedent an intake agent should treat as shipped or in-flight.
         """
         activity = func.coalesce(
             TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
@@ -7398,6 +7434,7 @@ class TaskService(BaseService):
         stmt = (
             select(TaskTable)
             .where(TaskTable.project_id == project_id)
+            .where(TaskTable.status != TaskStatus.CANCELLED)
             .order_by(activity.desc())
             .limit(limit)
         )

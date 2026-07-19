@@ -243,7 +243,6 @@ def test_get_agent_skills_unknown_agent() -> None:
 def test_issue_agent_token_returns_unsigned_when_secret_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
     assert issue_agent_token("be-dev-1", "developer", "backend") == "UNSIGNED"
 
@@ -262,7 +261,6 @@ def test_issue_agent_token_signs_when_secret_present(
 
 
 def test_verify_agent_token_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
-
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "rt-secret")
     tok = issue_agent_token("be-dev-1", "developer", "backend")
     assert verify_agent_token(tok, "be-dev-1", "developer", "backend") is True
@@ -271,7 +269,6 @@ def test_verify_agent_token_round_trips(monkeypatch: pytest.MonkeyPatch) -> None
 def test_verify_agent_token_rejects_when_secret_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
     assert verify_agent_token("anything", "be-dev-1", "developer", "backend") is False
 
@@ -279,7 +276,6 @@ def test_verify_agent_token_rejects_when_secret_missing(
 def test_verify_agent_token_rejects_unsigned_sentinel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "any-secret")
     assert verify_agent_token("UNSIGNED", "be-dev-1", "developer", "backend") is False
 
@@ -287,7 +283,6 @@ def test_verify_agent_token_rejects_unsigned_sentinel(
 def test_verify_agent_token_rejects_empty_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "any-secret")
     assert verify_agent_token("", "be-dev-1", "developer", "backend") is False
 
@@ -295,7 +290,6 @@ def test_verify_agent_token_rejects_empty_token(
 def test_verify_agent_token_rejects_mismatched_signature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "real-secret")
     tok = issue_agent_token("be-dev-1", "developer", "backend")
     # Verify with different role → mismatch.
@@ -539,10 +533,10 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
 # A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
 # ---------------------------------------------------------------------------
 
-_EXPECTED_PAIR_COUNT = 93
+_EXPECTED_PAIR_COUNT = 88
 _EXPECTED_GROUP_COUNTS = {
     "board": 3,
-    "ceo": 23,
+    "ceo": 18,
     "cell-backend": 15,
     "cell-frontend": 15,
     "cell-ux_ui": 15,
@@ -579,15 +573,23 @@ def test_a2a_allowed_pairs_excludes_non_participants_keeps_ceo() -> None:
     assert "ceo" in slugs
 
 
-def test_a2a_allowed_pairs_ceo_paired_with_every_agent() -> None:
-    """CEO → anyone is always allowed, so every non-CEO switchboard slug
+def test_a2a_allowed_pairs_ceo_paired_with_every_dm_capable_agent() -> None:
+    """CEO → anyone with an agent-comms surface is allowed, so every non-CEO
+    switchboard slug EXCEPT the no-comms roles (auditor, pr_reviewer — no
+    dm/read_a2a on their manifest, so a CEO DM to them is a black hole)
     appears in exactly one ``ceo``-group pair."""
     ceo_pairs = [p for p in A2A_ALLOWED_PAIRS if "ceo" in (p.agent_a, p.agent_b)]
     non_ceo_slugs = (
         {p.agent_a for p in A2A_ALLOWED_PAIRS} | {p.agent_b for p in A2A_ALLOWED_PAIRS}
     ) - {"ceo"}
+    dm_capable_slugs = {
+        s for s in non_ceo_slugs if get_agent_role(s) not in ("auditor", "pr_reviewer")
+    }
     assert all(p.group_key == "ceo" for p in ceo_pairs)
-    assert len(ceo_pairs) == len(non_ceo_slugs)
+    assert len(ceo_pairs) == len(dm_capable_slugs)
+    # And the no-comms roles are confirmed absent from any ceo-group pair.
+    ceo_slugs = {p.agent_a for p in ceo_pairs} | {p.agent_b for p in ceo_pairs}
+    assert ceo_slugs.isdisjoint(non_ceo_slugs - dm_capable_slugs)
 
 
 def test_a2a_allowed_pairs_group_key_counts() -> None:
