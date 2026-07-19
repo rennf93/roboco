@@ -1,21 +1,16 @@
 """PR-label derivation — pure predicates from task/PR shape to GitHub labels.
 
 The org-structure label vocabulary every fleet PR carries so a human can triage
-the queue at a glance: which tree a PR targets (``to master`` / ``to slave``),
-whether it is an assembled root PR (``root``), a MegaTask member (``MegaTask``),
-and which layer owns it (``main-pm`` / ``cell/{team}`` / ``subtask/{team}``).
+the queue at a glance: which branch a PR targets (``to {base_branch}``, the
+PR's REAL base — e.g. ``to master``, ``to slave``, or any project-specific
+env-ladder rung), whether it is an assembled root PR (``root``), a MegaTask
+member (``MegaTask``), and which layer owns it (``main-pm`` / ``cell/{team}`` /
+``subtask/{team}``).
 
 Pure + DB-free so it is unit-testable; the git service's best-effort
 ``_apply_pr_labels`` helper posts the result to the GitHub labels API. Inputs are
 typed ``object | None`` because callers pass ORM enum members or ``.value``
 strings (mirrors ``batch.py``).
-
-``to master`` / ``to slave`` is correct-by-construction today — every root PR
-targets the default branch (``to master``) and every cell/leaf PR targets an
-integration/parent branch (``to slave``), so ``is_root_pr`` is the discriminator.
-Full slave-targeting semantics land with the slave/master fleet wiring (W-H); when
-that arrives the call sites can pass the PR base vs the project default branch and
-this predicate grows a ``base_branch``/``default_branch`` pair then.
 """
 
 from __future__ import annotations
@@ -45,6 +40,7 @@ def _layer_label(team: str, has_children: bool) -> str:
 
 def derive_pr_labels(
     *,
+    base_branch: str,
     is_root_pr: bool,
     task_team: object | None,
     batch_id: object | None,
@@ -52,16 +48,16 @@ def derive_pr_labels(
 ) -> list[str]:
     """The org-structure labels for a PR, in a stable order, de-duplicated.
 
-    - ``to master`` vs ``to slave`` — today the only master-targeting PRs are the
-      assembled root->master PRs, so ``is_root_pr`` is the discriminator; real
-      slave-branch targeting lands with the slave/master fleet wiring (W-H).
+    - ``to {base_branch}`` — the PR's REAL target branch, verbatim (e.g.
+      ``to master``, ``to slave``, or any project-specific env-ladder rung) —
+      never assumes a root PR targets "master" and everything else "slave".
     - ``root`` — an assembled root->master PR (``is_root_pr``).
     - ``MegaTask`` — the task carries a ``batch_id``.
     - layer label — ``main-pm`` for a Main-PM coordination root, ``cell/{team}``
       for a cell-assembled PR (``has_children``), else ``subtask/{team}`` for a
       leaf dev PR. Absent when the PR has no task (a freeform PR).
     """
-    labels: list[str] = ["to master" if is_root_pr else "to slave"]
+    labels: list[str] = [f"to {base_branch}"]
     if is_root_pr:
         labels.append("root")
     if batch_id is not None:

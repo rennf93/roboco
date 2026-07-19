@@ -2481,7 +2481,7 @@ class GitService(BaseService):
             },
         )
 
-        labels = await self._labels_for_pr_request(request)
+        labels = await self._labels_for_pr_request(request, target_branch)
 
         existing = await self._existing_pr_tuple(
             resp, repo_ref, (source_branch, target_branch), git_token, pr_title
@@ -2728,12 +2728,15 @@ class GitService(BaseService):
     async def _labels_for_pr_request(
         self,
         request: GitCreatePRRequest,
+        base_branch: str,
     ) -> list[str]:
         """The org-structure labels for the REST/task PR path. A task PR derives
         team / batch / has_children from the task; a freeform PR (``task_id``
-        None) carries only the tree + root flags."""
+        None) carries only the tree + root flags. ``base_branch`` is the PR's
+        REAL resolved target (post default-branch fallback), never assumed."""
         if request.task_id is None:
             return derive_pr_labels(
+                base_branch=base_branch,
                 is_root_pr=request.is_root_pr,
                 task_team=None,
                 batch_id=None,
@@ -2742,12 +2745,14 @@ class GitService(BaseService):
         task = await get_task_service(self.session).get(request.task_id)
         if task is None:
             return derive_pr_labels(
+                base_branch=base_branch,
                 is_root_pr=request.is_root_pr,
                 task_team=None,
                 batch_id=None,
                 has_children=False,
             )
         return derive_pr_labels(
+            base_branch=base_branch,
             is_root_pr=request.is_root_pr,
             task_team=task.team,
             batch_id=task.batch_id,
@@ -4389,7 +4394,10 @@ class GitService(BaseService):
 
         # Org-structure labels: create_pr is always an assembled PM PR
         # (cell->root or root->master), so has_children is True by construction.
+        # `parent` is the REAL resolved base (post _ensure_base_on_remote), not
+        # assumed from is_root_pr.
         labels = derive_pr_labels(
+            base_branch=parent,
             is_root_pr=is_root_pr,
             task_team=task.team,
             batch_id=task.batch_id,

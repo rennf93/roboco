@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import get_agent_role, get_agent_team
+from roboco.config import settings
 from roboco.db.tables import TaskTable
 from roboco.models.task import DocRef
 from roboco.services.base import (
@@ -72,6 +73,7 @@ TYPE_SUBFOLDERS: dict[str, str] = {
     "design": "design",
 }
 
+
 # doc_type values that are recognized (not an "Unknown doc_type") but this
 # store structurally cannot serve: it only writes team-facing docs into
 # docs/<team>/... (all `exclude_docs`, never published — see the 2026-07-03
@@ -79,18 +81,29 @@ TYPE_SUBFOLDERS: dict[str, str] = {
 # an agent gets this actionable guidance instead of a generic error and
 # instead of quietly reaching for a nearby valid type (e.g. "guide") that
 # silently lands the write in an unpublished bucket.
-REFUSED_DOC_TYPES: dict[str, str] = {
-    "user_facing": (
-        "doc_type='user_facing' is refused: this store only writes "
-        "team-facing docs into docs/<team>/... — excluded from the published "
-        "site. User-facing docs ship at docs.roboco.tech and are authored as "
-        "normal tasks in the 'roboco-website' project: MDX under "
-        "src/content/docs/, a route wrapper under src/app/docs/, and a "
-        "src/content/docs/nav.ts entry (the 3-edit pattern, PR-reviewed like "
-        "any other change). Open or claim a documentation task on "
-        "roboco-website instead of calling write_doc with this doc_type."
-    ),
-}
+def _refused_doc_types() -> dict[str, str]:
+    """Rebuilt per call from the live ``docs_site_project_slug`` /
+    ``docs_site_public_url`` settings, so a deployer's own docs-site repo/URL
+    reaches the refusal message instead of RoboCo's own docs site — with a
+    generic fallback when either is left unset (never a bare empty string)."""
+    slug = settings.docs_site_project_slug.strip()
+    url = settings.docs_site_public_url.strip()
+    site_ref = f"the '{slug}' project" if slug else "your docs-site project"
+    url_ref = f"ship at {url}" if url else "ship on your docs site"
+    open_ref = slug or "your docs-site project"
+    return {
+        "user_facing": (
+            "doc_type='user_facing' is refused: this store only writes "
+            "team-facing docs into docs/<team>/... — excluded from the "
+            f"published site. User-facing docs {url_ref} and are authored as "
+            f"normal tasks in {site_ref}: MDX under src/content/docs/, a "
+            "route wrapper under src/app/docs/, and a src/content/docs/"
+            "nav.ts entry (the 3-edit pattern, PR-reviewed like any other "
+            f"change). Open or claim a documentation task on {open_ref} "
+            "instead of calling write_doc with this doc_type."
+        ),
+    }
+
 
 # Roles that can write documentation
 WRITE_ROLES: frozenset[str] = frozenset({"documenter", "cell_pm"})
@@ -223,8 +236,9 @@ class DocsService(BaseService):
         # 2. Validate doc_type — a recognized-but-refused type (e.g.
         # "user_facing") short-circuits with actionable guidance before the
         # generic "unknown type" branch below.
-        if doc_type in REFUSED_DOC_TYPES:
-            raise ValidationError(REFUSED_DOC_TYPES[doc_type], field="doc_type")
+        refused_doc_types = _refused_doc_types()
+        if doc_type in refused_doc_types:
+            raise ValidationError(refused_doc_types[doc_type], field="doc_type")
 
         if doc_type not in TYPE_SUBFOLDERS:
             valid_types = list(TYPE_SUBFOLDERS.keys())
