@@ -4,7 +4,7 @@
 
 PRs are opened **before** QA review, not during `awaiting_documentation`. The choreographer creates the PR as a side-effect of the developer's `open_pr(task_id)` transition (`verifying → awaiting_qa`).
 
-This is by design: QA reviews the real PR diff on GitHub, and the downstream PM/CEO approval chain operates on a PR that already exists.
+This is by design: QA reviews the real PR diff on the project's forge, and the downstream PM/CEO approval chain operates on a PR that already exists.
 
 You do **not** call any tool to create a PR. There is no `roboco_git_create_pr` MCP tool.
 
@@ -64,9 +64,13 @@ There is no `roboco_git_merge_pr` MCP tool.
 
 ## Prerequisites
 
-- **Git token:** the project must have an encrypted GitHub PAT set on `projects.git_token_encrypted`. Without it, the workspace clone — and therefore everything downstream — fails with `WorkspaceError`.
-- **Token scope:** `repo` (for branch push, PR create, PR merge).
-- **Merge target:** the root→master PR targets the project's env-ladder **head** rung (`roboco.models.env_branches.head_branch`, typically `master`) — a project with no declared environment ladder resolves this straight from `projects.default_branch` via the read-time shim, so this is unchanged for every project that hasn't opted into a multi-rung ladder.
+- **Git token:** the project must have an encrypted token set on `projects.git_token_encrypted`. Without it, the workspace clone — and therefore everything downstream — fails with `WorkspaceError`. The field is historically named for GitHub PATs but works for any forge a project is registered against (GitHub, Gitea, GitLab — `projects.git_provider`); see "Forge-agnostic git" below.
+- **Token scope:** `repo` on GitHub/Gitea; an equivalent `api`/`write_repository` scope on GitLab (for branch push, PR/MR create, PR/MR merge).
+- **Merge target:** every dev/cell/root PR — never just the root→master one — targets the project's env-ladder **head** rung (`roboco.models.env_branches.head_branch`, typically `master`) — a project with no declared environment ladder resolves this straight from `projects.default_branch` via the read-time shim, so this is unchanged for every project that hasn't opted into a multi-rung ladder. A middle ladder rung (e.g. `qa`/`stag`) is never a PR target for dev/cell/root work — the only thing that ever lands a PR on a middle or prod rung is the `EnvSyncEngine` cascade (see `CLAUDE.md` "Env-branches ladder"), which is a platform-authored sync, not something you open. `sync_branch` and `submit_up` resolve their target from the task's own parent hierarchy (`resolve_parent_branch`), not the ladder directly — the ladder only surfaces at the two edge cases where a task has no branched ancestor: a project-root task's branch cut, and `submit_root`'s PR target.
+
+## Forge-agnostic git
+
+The PR/CI/review surface is provider-routed (`roboco/services/forge/`) — GitHub, Gitea, and GitLab are all supported per-project (`projects.git_provider`), and `GitService` never branches on which one a project uses. From your side, `pr_number` and `pr_url` are always real values regardless of forge — `pr_url` is the actual forge URL (a Gitea/GitLab instance host, never assumed to be `github.com`). One real asymmetry: GitLab has no "request changes" review primitive, so a `pr_fail`/change-request verdict on a GitLab-backed project posts as a plain MR note rather than a blocking review — the task still moves to `needs_revision` normally either way, only the PR-visible signal differs. Don't hardcode `github.com` in any URL you construct or reason about.
 
 ## Troubleshooting
 

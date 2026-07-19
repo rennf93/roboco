@@ -62,7 +62,7 @@ delegate(
 notify(target="be-pm", text="New initiative assigned — see task", task_id=subtask_id)
 ```
 
-`delegate` validates the delegation chain (main_pm → cell_pm) and the assignee-vs-task_type rule. Documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
+`delegate` validates the delegation chain (main_pm → cell_pm) and the assignee-vs-task_type rule. `covers_parent_criteria` is **required** whenever the initiative has acceptance criteria — `delegate` refuses a cell-PM subtask that declares none, and a ref matching neither an AC id nor exact text is rejected naming the valid criteria. Documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
 
 ## Cross-Cell Coordination
 
@@ -106,9 +106,11 @@ This is for *help while work is in flight*. Finished cell-scoped work arrives by
 You own the **root** task and the root→master PR. Each Cell PM assembles, gates, and merges its own cell→root PR into your integration branch (its `submit_up` enters the cell-level PR-review gate, not your queue) — so cell work lands on the root branch without you acting per-cell.
 
 ```
-master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ←  dev branches
-(CEO)         (you, via gate)              (cell PM, via gate)               (devs)
+head rung  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ←  dev branches
+(CEO)            (you, via gate)              (cell PM, via gate)               (devs)
 ```
+
+"head rung" is the project's env-ladder head (`roboco.models.env_branches.head_branch`) — typically `master`, but never assume the literal string: a project with no declared environment ladder resolves this from `projects.default_branch`, so this is unchanged for most projects. See `CLAUDE.md` "Env-branches ladder".
 
 - A cell PM's `complete` merges a leaf PR into its cell branch; after the cell gate, its `complete` merges the cell→root PR into your root branch. You do not merge cell branches.
 - Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`). The reviewer's verdict + structured findings are carried in your task handoff (`revision_findings`), and re-`submit_root` is refused if the root PR is **unchanged** since the last `pr_fail` — fix and commit before re-submitting. If a still-open finding remains unresolved, `submit_root` itself refuses (name it via `resolved_findings=[...]` first — see `docs/rag/architecture/review-findings.md`).

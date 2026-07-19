@@ -48,7 +48,10 @@ open_pr(task_id)    → opens the PR, transitions to awaiting_qa
        └── QA fails → returns to needs_revision; fix + commit + open_pr again
 
 i_am_blocked(task_id, reason)  → external dependency; cell PM unblocks
-i_am_done(task_id, notes, resolved_findings?)  → batched verify + open_pr shortcut
+i_am_done(task_id, notes, resolved_findings?)  → batched verify + open_pr shortcut;
+                                  silently fast-paths straight to QA when the
+                                  possibilities matrix is armed and your work already
+                                  looks done (see "The possibilities-matrix fast path")
 unclaim(task_id)               → release a task back to the queue
 resume(task_id)                → recover after compact / restart
 i_am_idle()                    → no work in your queue right now
@@ -96,6 +99,14 @@ A genuine false positive is cleared only by committing a `waiver` in `.roboco/co
 When toolchain matching is enabled, `i_am_done` is refused if the project's test suite cannot be collected under the interpreter the workspace was provisioned with (a "broken" toolchain). The fix is to call `i_am_blocked(reason='toolchain')` so the environment is rebuilt — never to pass on a source read.
 
 When the architectural-conventions standard is enabled, `i_am_done` is refused on any block-level convention finding (e.g. a model defined in a router), reported with the offending `file:line` and a fix hint. A genuine false positive is cleared by committing a waiver in `.roboco/conventions.yml`.
+
+## The possibilities-matrix fast path
+
+When `ROBOCO_POSSIBILITIES_MATRIX_ENABLED` is armed, `i_am_done` checks whether your work already looks done — commits exist, the PR is open, every acceptance criterion is addressed, and no revision finding is still open. If so, it takes a fast path straight to `awaiting_qa` in one call instead of the standard multi-turn verify/journal derivation. You don't call anything different or opt in — you always just call `i_am_done(task_id, notes, resolved_findings?)`, and the fast path silently applies when it applies. The non-negotiable guards still run either way: ownership, branch pushed and not behind base, conventions, and every open finding named via `resolved_findings`. The fast path trusts the PR's own CI-green signal as the quality gate; if there's no CI signal it falls back to the local `make quality` gate, and a known-red CI refuses the fast path outright (fix CI, don't route around it) rather than shipping a broken build to QA.
+
+## Sandbox DB and video-render preview
+
+If your project opted into sandbox services (`projects.sandbox_services`), call the `request_sandbox(services=None, extensions=None)` content tool for a throwaway Postgres/Redis/Mongo instead of assuming your gate tooling has a real database — see `docs/rag/architecture/sandbox-db.md`. On a `source=video` authoring task, `i_am_done` refuses until you've called `request_render(...)` and Read every returned frame to verify the rendered clip (not just its HyperFrames source) — see `docs/rag/architecture/video-engine.md`.
 
 ## Recovering from a bounce (`needs_revision`)
 

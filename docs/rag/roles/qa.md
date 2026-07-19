@@ -17,7 +17,7 @@
 ## What You CAN Do
 
 - Pull awaiting-QA tasks via `give_me_work()` / `claim_review(task_id)`
-- Pass via `pass(task_id, notes)` (transitions to `awaiting_documentation`)
+- Pass via `pass(task_id, notes, criteria_verified=[{criterion, evidence}, ...])` (transitions to `awaiting_documentation`) — one entry per task acceptance criterion, see "Passing QA" below
 - Fail via `fail(task_id, findings=[{file?, line?, severity, criterion?, expected, actual, fix?, evidence?}])` (returns to `needs_revision`) — see "Failing QA" below. The old `issues=[...]` (plain strings) form still works this release but is deprecated.
 - Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 - Search the knowledge base via `roboco_ask_mentor` / `roboco_kb_search`
@@ -39,7 +39,9 @@
 give_me_work()                     → returns an awaiting_qa task
 claim_review(task_id)              → claim for review
                                      (auto-checks-out the dev's branch)
-pass(task_id, notes)               → moves to awaiting_documentation
+pass(task_id, notes, criteria_verified=[{criterion, evidence}])
+                                    → moves to awaiting_documentation; one
+                                     criteria_verified entry per task AC
 fail(task_id, findings=[...])      → moves to needs_revision; the dev's
                                      original assignee gets it back
 i_am_blocked(task_id, reason=...)  → external blocker (broken env, can't
@@ -81,10 +83,17 @@ pass(
         "Redis TTL matches, tests cover the boundary. ruff + mypy "
         "clean. Journal logged."
     ),
+    criteria_verified=[
+        {"criterion": "429 fires at the 101st request", "evidence": "test_rate_limit_boundary passes; manually traced the >= vs > fix at rate_limit.py:88"},
+        {"criterion": "Redis key TTL matches the configured window", "evidence": "verified TTL=60 in test_ttl_matches_window"},
+        {"criterion": "AC #3 — Redis-down failover path", "evidence": "test_redis_down_failover covers the fallback branch"},
+    ],
 )
 ```
 
-`notes` must be substantive — the enforcement layer rejects empty or near-empty notes. The transition takes the task to `awaiting_documentation`; the documenter and the dev work in parallel from there.
+`notes` must be substantive — the enforcement layer rejects empty or near-empty notes. `criteria_verified` is **required whenever the task has acceptance criteria**: one `{criterion, evidence}` entry per criterion, `criterion` matched against the task's AC ids/exact text (the same fuzzy matcher the findings ledger uses) and `evidence` capped at 500 chars and soup-checked (no filler). Missing an entry, or naming a criterion the task doesn't have, is rejected — the error lists exactly which criteria are still unverified, so a gestalt "looks good" pass without a per-AC trace is structurally impossible. Each entry renders deterministically into `qa_notes` as its own line: `[AC] <criterion> — verified: <evidence>`, appended after your `notes`. A zero-AC task imposes no `criteria_verified` requirement.
+
+The transition takes the task to `awaiting_documentation`; the documenter and the dev work in parallel from there.
 
 Your pass/fail note is a mandatory structured note (a QaNote) carrying substantive findings, not an empty string. It is persisted structured, and the legacy `qa_notes` text column is derived from it.
 
@@ -93,6 +102,10 @@ Your pass/fail note is a mandatory structured note (a QaNote) carrying substanti
 When the architectural-conventions standard is enabled, the evidence returned on `claim_review` includes `convention_findings` for the work under review — surface them in your verdict alongside the acceptance-criteria check. `convention_findings` (architectural-standard violations) and the revision-findings ledger below (QA/PR-gate/PM/CEO bounce feedback) are two distinct concepts that can both be present at once — don't conflate them.
 
 On a round ≥2 review (a task that has bounced before), `claim_review` also carries `prior_findings` — the FULL revision-findings ledger for this task, every round, newest first. Check each prior finding against the current diff before you pass; one still unaddressed is a fail, not a pass with a note. See `docs/rag/architecture/review-findings.md`.
+
+## Collision Context in Review Evidence
+
+`claim_review` evidence also carries `collision_context` when this task has same-parent siblings that would collide with it — overlapping declared `intends_to_touch` globs, or both siblings adding a migration. Each entry names the sibling, the overlapping globs, and (when the diff's actual touched files are known) an `undeclared` list flagging files touched but never declared — a drift signal worth a second look, not an automatic fail. `collision_context` is `None` when the task has no parent or no colliding siblings. This is the same collision map the PR-gate reviewer and the delegating PM see (`docs/rag/architecture/review-findings.md` covers findings; the collision builder itself is `roboco/services/gateway/choreographer/collision.py`).
 
 ## Failing QA
 

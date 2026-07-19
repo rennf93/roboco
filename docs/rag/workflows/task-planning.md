@@ -47,7 +47,9 @@ delegate(
 
 ## Acceptance-Criteria Coverage
 
-When you decompose a parent task, declare which parent criteria each subtask is responsible for with **`covers_parent_criteria`** (a list of the parent's `acceptance_criteria_ids`). This is what lets the org prove a decomposition covers the parent's full intent — and it drives two gates and your coverage briefing.
+When you decompose a parent task, declare which parent criteria each subtask is responsible for with **`covers_parent_criteria`** (a list of the parent's `acceptance_criteria_ids`, or the criterion's exact text). This is what lets the org prove a decomposition covers the parent's full intent — and it drives two gates and your coverage briefing.
+
+**`covers_parent_criteria` is required, not optional, whenever the parent has any acceptance criteria.** `delegate` refuses a child with no `covers_parent_criteria` declared — "'<title>' declares no covers_parent_criteria, but the parent has acceptance criteria to decompose" — and a ref that resolves to neither an AC id nor exact text is rejected too, naming the valid criteria so you don't have to guess. It's only optional when the parent itself carries zero acceptance criteria. You don't have to cover everything in one `delegate` call — a wave may deliberately leave criteria for a later delegate — but every subtask you DO create must name what it covers.
 
 After `i_will_plan` and after each `delegate`, your envelope carries a coverage view of the parent so you can see what is still unmapped:
 
@@ -59,7 +61,9 @@ Two gates build on the coverage link:
 - **Decomposition floor** — you cannot go `i_am_idle` on a parent while a criterion is still unclaimed. Delegate (or `reassign`) subtasks until every criterion is covered.
 - **Roll-up gate** — a parent cannot `complete`, `submit_up`, or `escalate_to_ceo` unless every criterion traces to a child that **passed QA** on it.
 
-Both gates are **safe-by-construction**: they stay inert until you start declaring `covers_parent_criteria`, so a decomposition that never declares coverage is never blocked. Declaring coverage is how you opt your parent into the guarantee.
+Since `delegate` now requires `covers_parent_criteria` on every child of a parent with acceptance criteria, both gates are live from the first subtask on for any such parent — there's no longer a way to decompose without opting in. A parent with zero acceptance criteria is exempt from both, since there's nothing to trace coverage to.
+
+The `verified` half of `parent_ac_coverage` isn't automatic — QA's `pass_review` (called via the `pass` tool) requires its own `criteria_verified` on the SUBTASK's own acceptance criteria before it can move a child to `awaiting_documentation`. Two distinct requirements on the same coverage chain: `covers_parent_criteria` (down, at delegate time — this subtask maps to those parent criteria) and `criteria_verified` (up, at QA pass time — each of THIS task's own criteria has concrete evidence). See `docs/rag/roles/qa.md` for the QA-side requirement.
 
 ## Delegating Code Work: Per-Dev Queues
 
@@ -89,8 +93,8 @@ The task hierarchy is capped at `MAX_TASK_DEPTH = 4` levels (depths 0–3). The 
 
 All code tasks follow the git workflow:
 - **Branches are auto-created when a developer claims the task** via `i_will_work_on` — no manual branch creation
-- Root tasks: branch created from the default branch (main/master)
-- Subtasks: branch forked from the parent's branch
+- Root tasks: branch created from the project's env-ladder **head rung** (typically `master`/`main`) — a project with no declared environment ladder resolves this from `projects.default_branch` via the read-time shim, so nothing changes for a project that hasn't opted into a multi-rung ladder
+- Subtasks: branch forked from the parent's branch (unaffected by the env ladder — this is pure task-hierarchy resolution)
 
 Coordination/parent tasks that only plan and delegate (no code) do not need a branch of their own.
 
