@@ -58,8 +58,11 @@ _PROMPT_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"(?:pretend|act|roleplay|simulate)\s+(?:you\s+are|as\s+if|to\s+be)",
         r"do\s+not\s+(?:follow|obey|respect)\s+(?:your|the)\s+"
         r"(?:instructions?|rules|guidelines)",
+        # "your" is required: injections address the model ("bypass your
+        # safety"); neutral engineering prose about the guard subsystem
+        # ("disable the security guard for testing") must not block.
         r"(?:override|bypass|circumvent|disable|turn\s+off)\s+"
-        r"(?:your\s+)?(?:safety|guard|filter|restriction|guardrail)",
+        r"your\s+(?:safety|guard|filter|restriction|guardrail)",
         r"<\|(?:im_start|im_end|system|user|assistant)\|>",
         r"\[/?INST\]|\[\[SYSTEM\]\]",
     )
@@ -74,8 +77,11 @@ _SECRET_EXFIL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         r"xai-[a-z0-9]{20,}",
         r"postgres(?:ql)?://[^\s:]+:[^\s@]{4,}@",
         r"redis://:[^\s@]{4,}@",
+        # The value must look like a real key (b64-ish, 20+ chars), so the
+        # documented placeholder lines (`ROBOCO_ENCRYPTION_KEY=<your-fernet-
+        # key>` in CLAUDE.md/.env.example) and `${VAR}` interpolations pass.
         r"(?:roboco_encryption_key|roboco_agent_auth_secret|fernet[_-]?key)"
-        r"\s*[=:]\s*\S{10,}",
+        r"\s*[=:]\s*[A-Za-z0-9+/_\-]{20,}={0,2}",
         r"(?:reveal|show|print|leak|exfiltrate|send\s+me)\s+(?:your|the|all)\s+"
         r"(?:api[_\s-]?keys?|tokens?|secrets?|credentials?|passwords?|"
         r"encryption\s+keys?)",
@@ -359,8 +365,11 @@ def build_security_config() -> SecurityConfig:
         rate_limit=120,
         rate_limit_window=60,
         auto_ban_duration=300,
-        # Env-driven: enforced only in production (localhost/NAS has no TLS here).
-        enforce_https=(settings.environment == "production"),
+        # Always off: nginx is the single entry point, so the app only ever
+        # sees proxy-HTTP — TLS (and any http->https redirect) is nginx's
+        # layer. Keying this off environment==production blocked the NAS's
+        # entire request stream the moment the guard went active (2026-07-19).
+        enforce_https=False,
         fail_secure=settings.guard_fail_secure,
         # Flip-on kill switch.
         emergency_mode=settings.guard_emergency,
