@@ -6,13 +6,17 @@ the stream consumer's turn/draft forwarding, idle sweep, and the engine's
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from roboco.services import telegram_bridge as bridge
 from roboco.services import telegram_inbound as ti
+from roboco.services.telegram_credentials import TelegramCredentialsData
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +39,7 @@ def _engine() -> ti.TelegramInboundEngine:
     return ti.TelegramInboundEngine(_fake_session_db())
 
 
-CREDS = SimpleNamespace(bot_token="123:ABC", chat_id="777")
+CREDS = TelegramCredentialsData(bot_token="123:ABC", chat_id="777")
 
 
 class FakeRegistry:
@@ -52,7 +56,7 @@ class FakeRegistry:
         self.parked.append((session_id, task_id))
         return True
 
-    async def stream(self, _session_id: str):
+    async def stream(self, _session_id: str) -> AsyncIterator[dict[str, Any]]:
         for event in self.events:
             yield event
 
@@ -150,7 +154,7 @@ async def test_consumer_accumulates_turns_and_surfaces_drafts(
     bridge._SESSIONS["777"] = sess
     await bridge._consume("777", sess)
 
-    calls = sess.client.send_message.await_args_list
+    calls = cast("AsyncMock", sess.client).send_message.await_args_list
     # Turn text, then the draft card, then the end-of-session note.
     assert calls[0].args[0] == "Hello CEO."
     assert "Fix &lt;thing&gt;" in calls[1].args[0]
@@ -161,7 +165,7 @@ async def test_consumer_accumulates_turns_and_surfaces_drafts(
     assert calls[-1].args[0] == "Session ended."
     # Stream ended → session evicted, client closed.
     assert "777" not in bridge._SESSIONS
-    sess.client.close.assert_awaited_once()
+    cast("AsyncMock", sess.client).close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -182,6 +186,7 @@ async def test_start_secretary_opens_session_and_consumer(
     orch.start_secretary_session.assert_awaited_once_with(
         sess.session_id, initial_message="plan my day"
     )
+    assert sess.consumer is not None
     await sess.consumer  # the mocked _consume task completes cleanly
 
 
@@ -299,6 +304,9 @@ async def test_intake_discard_keeps_session(
     assert parsed is not None
     await engine._handle_bridge_callback(parsed, "777", 5, CREDS, client)
 
-    assert sess.pending_draft is None
-    assert "777" in bridge._SESSIONS
-    assert finish.await_args.args[2] is True
+    # Fresh registry lookup — asserting on the narrowed local would read as
+    # always-false to mypy after the literal assignment above.
+    assert bridge._SESSIONS["777"].pending_draft is None
+    last_call = finish.await_args
+    assert last_call is not None
+    assert last_call.args[2] is True
