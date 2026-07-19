@@ -107,10 +107,10 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 # that refuses any call that bypassed the manifest (direct verb dispatch, test
 # harness, future routing change), so the no-comms invariant holds regardless of
 # how the call arrived. Matches the explicit role-frozenset gates on commit /
-# notify / pitch / playbook.
-_NO_COMMS_ROLES: frozenset[str] = frozenset(
-    {"auditor", "pr_reviewer", "prompter", "secretary"}
-)
+# notify / pitch / playbook. Derived from the canonical set in
+# foundation.policy.communications — agents_config.can_a2a_direct's CEO
+# target-side check reuses the same source.
+_NO_COMMS_ROLES: frozenset[str] = frozenset(r.value for r in _comms.NO_COMMS_ROLES)
 
 
 def _no_comms_remediate(role: str) -> str:

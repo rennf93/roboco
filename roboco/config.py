@@ -267,6 +267,18 @@ class Settings(BaseSettings):
             "unacknowledged. 0 disables the damper (legacy every-tick respawn)."
         ),
     )
+    notification_ack_ttl_hours: int = Field(
+        default=48,
+        ge=0,
+        description=(
+            "Hours until an ack-required notification's expires_at is stamped "
+            "at creation. sweep_expired_notifications re-escalates a still-"
+            "unacked row past that deadline to the recipient's up-role. "
+            "Informational (non-ack-required) notifications never get a "
+            "deadline regardless of this setting. 0 disables stamping "
+            "(legacy: expires_at stays NULL, notifications never expire)."
+        ),
+    )
     audit_interval_seconds: int = Field(
         default=21600,
         ge=0,

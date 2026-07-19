@@ -35,9 +35,11 @@
 #     stays conservative; the build compose arms most of them ON for the
 #     personal NAS deploy. ROBOCO_ROUTING_STRICT and the fastapi-guard trio
 #     (ROBOCO_GUARD_ENABLED/_PASSIVE_MODE/_FAIL_SECURE) are the exception:
-#     both are still mid-calibration on the personal deploy, so they're
-#     omitted entirely here rather than carried — their config defaults
-#     (graceful-degrade routing, guard off) are already the safe posture.
+#     ROUTING_STRICT is still mid-calibration, and guard is now ACTIVE
+#     enforcement on the personal deploy (passive calibration reviewed clean).
+#     Both stay omitted here rather than carried — a third-party deployer
+#     hasn't run that calibration against their own traffic, so their config
+#     defaults (graceful-degrade routing, guard off) are the safer posture.
 #   - Host path defaults differ (/opt/roboco vs /volume1/roboco, ${HOME}
 #     instead of a hardcoded /home/renzof) — registry targets a generic host.
 #   - MinIO (object storage for rendered videos) is intentionally omitted —
