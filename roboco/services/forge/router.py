@@ -28,6 +28,7 @@ from roboco.services.forge import registry
 from roboco.services.forge.base import GitProvider, RepoRef
 from roboco.services.forge.gitea import GiteaProvider
 from roboco.services.forge.github import _REPO_URL_RE, GitHubProvider
+from roboco.services.forge.gitlab import GitLabProvider
 
 if TYPE_CHECKING:
     import httpx
@@ -43,6 +44,8 @@ class ForgeRouter(GitProvider):
         provider_name = registry.provider_name_for_host(ref.host)
         if provider_name == "gitea":
             return GiteaProvider(ref.host, scheme=registry.scheme_for_host(ref.host))
+        if provider_name == "gitlab":
+            return GitLabProvider(ref.host, scheme=registry.scheme_for_host(ref.host))
         if provider_name in (None, "github"):
             # A GHE host registered as github (or parsed before registration)
             # rides the GitHub transport with its configured base URL.
@@ -56,14 +59,19 @@ class ForgeRouter(GitProvider):
         if _REPO_URL_RE.search(git_url):
             return GitHubProvider().parse_repo_ref(git_url)
         host = registry.host_of(git_url)
-        if host is not None and registry.provider_name_for_host(host) == "gitea":
+        provider_name = registry.provider_name_for_host(host) if host else None
+        if host is not None and provider_name == "gitea":
             return GiteaProvider(
+                host, scheme=registry.scheme_for_host(host)
+            ).parse_repo_ref(git_url)
+        if host is not None and provider_name == "gitlab":
+            return GitLabProvider(
                 host, scheme=registry.scheme_for_host(host)
             ).parse_repo_ref(git_url)
         raise GitError(
             "Could not resolve a forge for this remote URL — a non-GitHub "
             "host must belong to a registered project with git_provider set "
-            "(gitea today; GHE uses git_provider='github' with "
+            "(gitea/gitlab today; GHE uses git_provider='github' with "
             "ROBOCO_GITHUB_API_BASE_URL).",
             {"host": host or "unknown"},
         )

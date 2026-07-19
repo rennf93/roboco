@@ -323,9 +323,7 @@ function EditProjectForm({
               <SelectItem value="auto">Auto-detect (github.com)</SelectItem>
               <SelectItem value="github">GitHub / GitHub Enterprise</SelectItem>
               <SelectItem value="gitea">Gitea (self-hosted)</SelectItem>
-              <SelectItem value="gitlab" disabled>
-                GitLab — planned
-              </SelectItem>
+              <SelectItem value="gitlab">GitLab (gitlab.com / self-hosted)</SelectItem>
             </SelectContent>
           </Select>
         </div>

@@ -10,18 +10,21 @@ to inject the transport — the same seam the git-service suite patches).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 from roboco.services.forge.base import RepoRef
 from roboco.services.forge.gitea import GiteaProvider, ShapedResponse
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 REF = RepoRef("acme", "widgets", host="gitea.example.com")
 
 
 class _Recorder:
-    def __init__(self, responder: Any) -> None:
+    def __init__(self, responder: Callable[[httpx.Request], httpx.Response]) -> None:
         self.requests: list[httpx.Request] = []
         self._responder = responder
 

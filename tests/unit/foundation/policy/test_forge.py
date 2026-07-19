@@ -95,11 +95,11 @@ def test_explicit_github_provider_is_ok_regardless_of_host() -> None:
     assert validate_project_forge(url, "github") is None
 
 
-def test_explicit_gitlab_provider_rejected_as_not_yet_supported() -> None:
-    error = validate_project_forge("https://gitlab.com/group/project.git", "gitlab")
-    assert error is not None
-    assert "not yet" in error.lower()
-    assert "gitlab" in error.lower()
+def test_explicit_gitlab_provider_accepted() -> None:
+    """Phase 3: the GitLab transport is live — explicit gitlab validates."""
+    assert (
+        validate_project_forge("https://gitlab.com/group/project.git", "gitlab") is None
+    )
 
 
 def test_explicit_gitea_provider_accepted() -> None:
@@ -116,10 +116,9 @@ def test_unknown_host_no_explicit_provider_rejected() -> None:
     assert "github" in error.lower()
 
 
-def test_detected_gitlab_no_explicit_provider_rejected() -> None:
-    error = validate_project_forge("https://gitlab.com/group/project.git", None)
-    assert error is not None
-    assert "github" in error.lower()
+def test_detected_gitlab_no_explicit_provider_accepted() -> None:
+    """gitlab.com detection is unambiguous — auto-accepted like github.com."""
+    assert validate_project_forge("https://gitlab.com/group/project.git", None) is None
 
 
 def test_unknown_provider_string_rejected_naming_known_providers() -> None:

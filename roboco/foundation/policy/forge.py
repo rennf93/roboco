@@ -86,18 +86,14 @@ def validate_project_forge(git_url: str | None, git_provider: str | None) -> str
                 f"Unknown git_provider {git_provider!r}; must be one of "
                 f"{', '.join(KNOWN_PROVIDERS)}."
             )
-        if git_provider in ("github", "gitea"):
+        if git_provider in ("github", "gitea", "gitlab"):
             return None
-        return (
-            f"git_provider={git_provider!r} is recognized but not yet "
-            "supported — RoboCo supports GitHub and Gitea today; GitLab "
-            "support is planned."
-        )
+        return f"git_provider={git_provider!r} is recognized but not yet supported."
 
-    if detect_provider(git_url) == "github":
+    if detect_provider(git_url) in ("github", "gitlab"):
         return None
     return (
-        "RoboCo supports GitHub-hosted repos by default. For a self-hosted "
-        'forge set git_provider explicitly: "gitea" for a Gitea instance, '
-        'or "github" for GitHub Enterprise.'
+        "RoboCo supports GitHub- and GitLab-hosted repos by default. For a "
+        'self-hosted forge set git_provider explicitly ("gitea", "gitlab", '
+        'or "github" for GitHub Enterprise).'
     )

@@ -10,6 +10,7 @@ from roboco.services.forge import registry
 from roboco.services.forge.base import RepoRef
 from roboco.services.forge.gitea import GiteaProvider
 from roboco.services.forge.github import GitHubProvider
+from roboco.services.forge.gitlab import GitLabProvider
 from roboco.services.forge.registry import (
     provider_for,
     register_project_forge,
@@ -36,9 +37,7 @@ def test_gitea_host_registers_and_resolves() -> None:
 def test_router_resolves_provider_from_ref_host() -> None:
     register_project_forge("https://gitea.example.com/acme/widgets.git", "gitea")
     router = ForgeRouter()
-    assert isinstance(
-        router._provider_for_ref(RepoRef("a", "b")), GitHubProvider
-    )
+    assert isinstance(router._provider_for_ref(RepoRef("a", "b")), GitHubProvider)
     assert isinstance(
         router._provider_for_ref(RepoRef("a", "b", host="gitea.example.com")),
         GiteaProvider,
@@ -71,10 +70,21 @@ def test_provider_for_gitea_project_uses_git_url_host() -> None:
     assert isinstance(provider, GiteaProvider)
 
 
-def test_provider_for_gitlab_still_rejected() -> None:
+def test_provider_for_gitlab_project_uses_git_url_host() -> None:
     class _Project:
         git_provider = "gitlab"
         git_url = "https://gitlab.com/acme/widgets.git"
 
-    with pytest.raises(GitError, match="GitLab"):
-        provider_for(_Project())
+    assert isinstance(provider_for(_Project()), GitLabProvider)
+
+
+def test_router_routes_registered_gitlab_host() -> None:
+    register_project_forge("https://gitlab.example.com/g/sub/p.git", "gitlab")
+    router = ForgeRouter()
+    provider = router._provider_for_ref(
+        RepoRef("g/sub/p", "", host="gitlab.example.com")
+    )
+    assert isinstance(provider, GitLabProvider)
+    ref = router.parse_repo_ref("https://gitlab.example.com/g/sub/p.git")
+    assert ref.owner == "g/sub/p"
+    assert ref.host == "gitlab.example.com"

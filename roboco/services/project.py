@@ -105,11 +105,12 @@ class ProjectService(BaseService):
         self._assert_git_url_allowed(data.git_url)
         self._assert_forge_supported(data.git_url, data.git_provider)
 
-        # Null + a github.com git_url auto-stamps "github" so the column
-        # reflects reality without forcing every caller to set it explicitly.
+        # Null + a SaaS-detectable host auto-stamps the provider so the
+        # column reflects reality without forcing every caller to set it
+        # explicitly (github.com → github, gitlab.com → gitlab).
         git_provider = data.git_provider
-        if git_provider is None and detect_provider(data.git_url) == "github":
-            git_provider = "github"
+        if git_provider is None:
+            git_provider = detect_provider(data.git_url)
 
         # Encrypt git token if provided
         encrypted_token = None

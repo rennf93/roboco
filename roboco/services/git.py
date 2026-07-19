@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -2549,7 +2550,85 @@ class GitService(BaseService):
                 "env-sync merges API error", project=project_slug, error=str(exc)
             )
             return {"status": "missing_ref"}
+        if resp.status_code == httpx.codes.NOT_IMPLEMENTED:
+            # Gitea/GitLab have no server-side merges API — their providers
+            # return a shaped 501 and the shared local-git fallback runs.
+            return await self._local_merge_branch(
+                project.git_url, git_token, target_branch, source_branch
+            )
         return self._env_merge_status(resp, project_slug)
+
+    async def _local_merge_branch(
+        self,
+        git_url: str,
+        git_token: str,
+        target_branch: str,
+        source_branch: str,
+    ) -> dict[str, Any]:
+        """Local-git env-sync merge for forges without a merges API (the
+        forge spec's shared fallback): throwaway clone of the target rung,
+        merge the source rung, push. Same status vocabulary as
+        ``_env_merge_status``; a conflict aborts with the clone discarded,
+        so the remote is never touched on failure.
+        """
+        with tempfile.TemporaryDirectory(prefix="roboco-envsync-") as tmp:
+            workdir = Path(tmp)
+            clone_dir = workdir / "clone"
+            clone = await self._run_git(
+                workdir,
+                ["clone", "--branch", target_branch, git_url, str(clone_dir)],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if clone.returncode != 0:
+                return {"status": "missing_ref"}
+            for config_args in (
+                ["config", "user.email", "envsync@roboco.local"],
+                ["config", "user.name", "RoboCo Env Sync"],
+                ["config", "commit.gpgsign", "false"],
+            ):
+                await self._run_git(clone_dir, config_args)
+            fetch = await self._run_git(
+                clone_dir,
+                ["fetch", "origin", source_branch],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if fetch.returncode != 0:
+                return {"status": "missing_ref"}
+            ancestor = await self._run_git(
+                clone_dir,
+                ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+                check=False,
+            )
+            if ancestor.returncode == 0:
+                return {"status": "already_ancestor"}
+            merge = await self._run_git(
+                clone_dir,
+                [
+                    "merge",
+                    "--no-edit",
+                    "-m",
+                    f"sync: {source_branch} → {target_branch}",
+                    "FETCH_HEAD",
+                ],
+                check=False,
+            )
+            if merge.returncode != 0:
+                return {"status": "conflict"}
+            push = await self._run_git(
+                clone_dir,
+                ["push", "origin", f"HEAD:{target_branch}"],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if push.returncode != 0:
+                return {"status": "missing_ref"}
+            sha_result = await self._run_git(clone_dir, ["rev-parse", "HEAD"])
+            return {"status": "merged", "sha": sha_result.stdout.strip()}
 
     def _env_merge_status(
         self, resp: httpx.Response, project_slug: str
