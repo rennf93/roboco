@@ -177,10 +177,31 @@ export function TgRow({
   );
 }
 
-/** Leading icon tile for rows — the grouped-list glyph square. */
-export function TgRowIcon({ icon: Icon }: { icon: LucideIcon }) {
+/** Leading icon tile for rows — the grouped-list glyph square. A `tone`
+ * tints it per row kind so a list of mixed items reads as color-coded
+ * rather than a monochrome column. */
+const _TILE_TONES: Record<string, string> = {
+  amber: "bg-amber-500/15 text-amber-400",
+  sky: "bg-sky-500/15 text-sky-400",
+  violet: "bg-violet-500/15 text-violet-400",
+  emerald: "bg-emerald-500/15 text-emerald-400",
+  muted: "bg-muted text-muted-foreground",
+};
+
+export function TgRowIcon({
+  icon: Icon,
+  tone = "muted",
+}: {
+  icon: LucideIcon;
+  tone?: keyof typeof _TILE_TONES | string;
+}) {
   return (
-    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+    <span
+      className={cn(
+        "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+        _TILE_TONES[tone] ?? _TILE_TONES.muted,
+      )}
+    >
       <Icon className="h-4.5 w-4.5" />
     </span>
   );

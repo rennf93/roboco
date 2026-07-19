@@ -26,12 +26,12 @@ import {
 
 const KIND_META: Record<
   ApprovalItem["kind"],
-  { label: string; icon: typeof Rocket }
+  { label: string; icon: typeof Rocket; tone: string }
 > = {
-  release: { label: "Release", icon: Rocket },
-  x_post: { label: "X post", icon: MessageCircle },
-  video_post: { label: "Video", icon: Clapperboard },
-  roadmap: { label: "Roadmap", icon: MapIcon },
+  release: { label: "Release", icon: Rocket, tone: "amber" },
+  x_post: { label: "X post", icon: MessageCircle, tone: "sky" },
+  video_post: { label: "Video", icon: Clapperboard, tone: "violet" },
+  roadmap: { label: "Roadmap", icon: MapIcon, tone: "emerald" },
 };
 
 function itemTitle(item: ApprovalItem): string {
@@ -58,7 +58,7 @@ function ItemRow({
   return (
     <div className="rounded-xl border bg-card text-card-foreground">
       <TgRow
-        leading={<TgRowIcon icon={meta.icon} />}
+        leading={<TgRowIcon icon={meta.icon} tone={meta.tone} />}
         title={itemTitle(item)}
         lines={2}
         meta={meta.label}
