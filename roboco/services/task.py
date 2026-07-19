@@ -7419,13 +7419,14 @@ class TaskService(BaseService):
     async def list_recent_for_project(
         self, project_id: UUID, limit: int = 15
     ) -> list[TaskTable]:
-        """Recent tasks for a project, most-recently-active first.
+        """Recent non-cancelled tasks for a project, most-recently-active first.
 
         Backs the prompter's history digest: the intake agent gets a compact
         chronological view of what's already been built/attempted in this repo.
         "Recent" = highest of completed_at / updated_at / created_at, so a
         just-touched-but-not-completed task still surfaces ahead of an old
-        completed one.
+        completed one. Cancelled tasks are excluded — abandoned work is not
+        precedent an intake agent should treat as shipped or in-flight.
         """
         activity = func.coalesce(
             TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
@@ -7433,6 +7434,7 @@ class TaskService(BaseService):
         stmt = (
             select(TaskTable)
             .where(TaskTable.project_id == project_id)
+            .where(TaskTable.status != TaskStatus.CANCELLED)
             .order_by(activity.desc())
             .limit(limit)
         )
