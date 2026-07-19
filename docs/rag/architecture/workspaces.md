@@ -103,7 +103,7 @@ If `auto_clone=True` and workspace doesn't exist, it's created on first access.
 
 ## Authentication
 
-HTTPS repositories require a GitHub PAT configured on the project:
+HTTPS repositories require a git token configured on the project — the field is historically named for GitHub PATs but works unchanged for a project registered against Gitea or GitLab (`projects.git_provider`):
 
 - **Token configured**: Auto-clone works, git operations succeed
 - **Token missing**: Error "Project requires a git token for HTTPS repositories"

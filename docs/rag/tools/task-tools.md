@@ -23,21 +23,27 @@ resume(task_id)                 # recover a paused task after compact/restart
 i_am_idle()                     # no work in your queue right now
 ```
 
-There is no separate claim / start / pause verb — `i_will_work_on` composes claim + set-plan + start atomically, and `i_am_done` composes verify + submit-qa. Branches are auto-created on `i_will_work_on`; do not checkout by hand.
+There is no separate claim / start / pause verb — `i_will_work_on` composes claim + set-plan + start atomically, and `i_am_done` composes verify + submit-qa. Branches are auto-created on `i_will_work_on`; do not checkout by hand — every root task branches from the project's env-ladder **head rung**, not a hardcoded `default_branch`/`master` string (see `CLAUDE.md` "Env-branches ladder"; a project with no declared ladder resolves this identically to its `default_branch`, so nothing changes unless the project opted in).
+
+Call `i_am_done` exactly the same way whether or not the **possibilities matrix** fast path (`ROBOCO_POSSIBILITIES_MATRIX_ENABLED`) is armed — when your task already has commits, an open PR, every AC addressed, and no open findings, `i_am_done` silently takes a fast path straight to QA instead of the standard verify→plan→journal turn. You never call anything different; there's nothing to opt into.
 
 ## QA flow
 
 ```python
 give_me_work()                  # returns an awaiting_qa task
 claim_review(task_id)           # claim for review (auto-checks-out dev branch)
-pass_review(task_id, notes)     # awaiting_qa -> awaiting_documentation
-fail_review(task_id, findings=[{file?, line?, severity, criterion?, expected, actual, fix?, evidence?}])
+pass(task_id, notes, criteria_verified=[{criterion, evidence}, ...])
+                                # awaiting_qa -> awaiting_documentation; one
+                                # criteria_verified entry per task AC, required
+fail(task_id, findings=[{file?, line?, severity, criterion?, expected, actual, fix?, evidence?}])
                                 # awaiting_qa -> needs_revision (dev gets it back);
                                 # the deprecated issues=[str] shim still works this release
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
-`notes` (on pass_review) and each `findings` entry (on fail_review) must be substantive — the enforcement layer rejects empty or near-empty content. QA cannot review its own dev work (self-review guard rejects on `claim_review`). Every `fail_review` finding is persisted to the append-only revision-findings ledger and rendered into `qa_notes`; a soft nudge fires above 5 findings, a hard reject above 10. On a round ≥2 review, `claim_review` also returns `prior_findings` (the full ledger) so you check what was filed before. See `docs/rag/architecture/review-findings.md`.
+The callable MCP tool names are `pass` / `fail` (`pass`/`fail` are reserved words internally, so the IntentSpec/lifecycle layer calls them `pass_review`/`fail_review` — you call the short names).
+
+`notes` (on `pass`) and each `findings` entry (on `fail`) must be substantive — the enforcement layer rejects empty or near-empty content. `criteria_verified` is required whenever the task has acceptance criteria: name every one with concrete `evidence` (matched by AC id or exact text, capped 500 chars) or `pass` is rejected naming which criteria are still unverified; each entry renders into `qa_notes` as `[AC] <criterion> — verified: <evidence>`. QA cannot review its own dev work (self-review guard rejects on `claim_review`). Every `fail` finding is persisted to the append-only revision-findings ledger and rendered into `qa_notes`; a soft nudge fires above 5 findings, a hard reject above 10. On a round ≥2 review, `claim_review` also returns `prior_findings` (the full ledger) and `collision_context` (same-parent siblings that collide with this task's declared file globs or migrations, when any exist) so you check what was filed before and whether a sibling's work overlaps. See `docs/rag/architecture/review-findings.md`.
 
 ## Documenter flow
 
@@ -61,7 +67,11 @@ delegate(parent_task_id, title, description, assigned_to, team, task_type,
          nature, estimated_complexity, acceptance_criteria,
          covers_parent_criteria=[...])
                                 # create a subtask; covers_parent_criteria maps
-                                # it to the parent ACs it is responsible for
+                                # it to the parent ACs it is responsible for —
+                                # REQUIRED whenever the parent has any acceptance
+                                # criteria (a ref that matches neither an AC id
+                                # nor exact text is rejected, naming the valid
+                                # criteria); omit only when the parent has none
 reassign(task_id, assigned_to)  # move a subtask to a different agent
 unblock(task_id, reason)        # blocked -> in_progress (PM only); reason is
                                 # recorded as your journal:decision (no separate
@@ -79,7 +89,7 @@ request_changes(task_id, findings=[...])
 escalate_up(task_id, reason)    # escalate to your escalation target
 ```
 
-After `i_will_plan` and each `delegate`, the envelope includes a coverage view of the parent — `parent_ac_coverage` (per-criterion `id` / `text` / `claimed` / `verified`) and `unclaimed_parent_acs` (criteria no subtask covers yet). A parent cannot idle with unclaimed criteria, nor `complete` / `submit_up` / `escalate_to_ceo` until every criterion traces to a child that passed QA. These gates stay inert until you start declaring `covers_parent_criteria`. See `docs/rag/workflows/task-planning.md`.
+After `i_will_plan` and each `delegate`, the envelope includes a coverage view of the parent — `parent_ac_coverage` (per-criterion `id` / `text` / `claimed` / `verified`) and `unclaimed_parent_acs` (criteria no subtask covers yet). A parent cannot idle with unclaimed criteria, nor `complete` / `submit_up` / `escalate_to_ceo` until every criterion traces to a child that passed QA. `delegate` refusing a child with no `covers_parent_criteria` (above) is what puts every parent with acceptance criteria under this coverage discipline from its first subtask on — a decomposition can no longer opt out by never declaring. `i_will_plan`'s planning briefing also carries `collision_context` (in `context_briefing`, not `evidence`) surfacing any same-parent siblings that already collide on file globs or migrations, so you can sequence your delegation before you commit to it. See `docs/rag/workflows/task-planning.md`.
 
 **Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its team's devs`. Cell PMs receive planning-typed parent tasks; devs get code/research (UX devs also design). Always create subtasks via `delegate` with `parent_task_id` set — there is no standalone task-create verb for agents.
 
@@ -138,14 +148,15 @@ The same role also runs the **in-path PR-review gate** on the org's own assemble
 
 ```python
 claim_gate_review(task_id)      # claim an awaiting_pr_review task; returns the assembled
-                                # diff + (on round >=2) prior_findings, the full ledger
+                                # diff + collision_context (colliding siblings, if any) +
+                                # (on round >=2) prior_findings, the full ledger
 pr_pass(task_id, notes)         # assembled PR is correct -> awaiting_pm_review (the PM merges)
 pr_fail(task_id, findings=[...])
                                 # send it back -> needs_revision, like a QA fail;
                                 # the deprecated issues=[str] shim still works this release
 ```
 
-Both verdicts are also posted on the assembled PR itself as a GitHub review (server-side, bot account) so the decision is visible on the PR the PM merges: `pr_pass` → APPROVE, `pr_fail` → REQUEST_CHANGES — except the root→master PR, which only ever gets a plain COMMENT (only the CEO acts on `master`).
+Both verdicts are also posted on the assembled PR itself as a review (server-side, bot account) so the decision is visible on the PR the PM merges: `pr_pass` → APPROVE, `pr_fail` → REQUEST_CHANGES — except the root→master PR, which only ever gets a plain COMMENT (only the CEO acts on `master`). On a GitLab-backed project `pr_fail` posts as a plain MR note instead (GitLab has no request-changes review primitive) — the task still goes to `needs_revision` normally regardless of forge.
 
 A cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled cell→root PR; `pr-reviewer-1` reviews the root→master PR for the cross-cell integration seam, before the CEO sees it.
 

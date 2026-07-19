@@ -4,19 +4,20 @@
 
 **Error:** `Project requires a git token for HTTPS repositories` (also surfaces as `WorkspaceError` during clone)
 
-**Cause:** No encrypted GitHub PAT on `projects.git_token_encrypted` for this project.
+**Cause:** No encrypted token on `projects.git_token_encrypted` for this project.
 
 **Fix:**
 
 1. Open the project's settings tab in the panel
-2. Paste a GitHub Personal Access Token with `repo` scope
+2. Paste a Personal Access Token for the project's forge (`repo` scope on GitHub/Gitea; an equivalent `api`/`write_repository` scope on GitLab) — the Forge select on the project decides which provider `GitService` routes to
 3. Save — the panel encrypts and stores it; the API never returns the plaintext
 
 Notes:
 
 - Each project has its own token (no global fallback)
 - Tokens are encrypted at rest with Fernet
-- The token is injected only at the MCP layer (commit / clone / PR ops); `.git/config` is scrubbed post-clone so a leaked PAT from there is not a recovery path
+- The token is injected only at the MCP layer (commit / clone / PR ops); `.git/config` is scrubbed post-clone so a leaked token from there is not a recovery path
+- The field is historically named for GitHub PATs but works unchanged for a project registered against Gitea or GitLab (`projects.git_provider`)
 
 ## Workspace Not Found
 
@@ -95,13 +96,17 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 1. Nothing to push — no commits on the branch
 2. Branch is on the workspace but not pushed yet (rare; the choreographer pushes during `commit`, but a stale workspace can drift)
 3. Project has no git token configured
-4. The GitHub repo doesn't allow PRs from your branch (rare; usually org-level branch protection)
+4. The forge repo doesn't allow PRs from your branch (rare; usually org-level branch protection — applies on GitHub, Gitea, and GitLab alike)
 
 **Fix:**
 
 - Verify commits exist with `roboco_git_log(project_slug=...)`
 - Verify the project has a git token (Missing Git Token, above)
 - If the task is in a stuck state, `unclaim(task_id)` and re-`claim` to rebuild the branch
+
+## "GitHub API" wording in an error on a Gitea/GitLab project
+
+Some low-level git error messages still say "GitHub API" in their text regardless of which forge the project actually uses (a known wording gap, not a routing bug) — the underlying failure is real even when the vendor name in the message is wrong. Diagnose from the actual symptom (missing token, PR-not-found, merge conflict, etc.), not from the vendor name in the message.
 
 ## FORCE_PUSH_FORBIDDEN
 

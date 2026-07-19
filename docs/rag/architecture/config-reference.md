@@ -189,6 +189,14 @@ Weekly, the Product Owner explores the company's projects and proposes a themed 
 
 No dedicated migration — a cycle is marker-backed (`orchestration_markers` on the held exploration task), not a new table.
 
+## Possibilities Matrix
+
+The work-already-done fast path on `i_am_done`. Default-off, transparent to the dev (no verb change, no opt-in call). See `docs/rag/architecture/possibilities-matrix.md`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_POSSIBILITIES_MATRIX_ENABLED` | `false` | Master switch. Off = `i_am_done` behaves exactly as it always has. On = when a task already has commits, an open PR, every AC addressed, and no open findings, `i_am_done` submits straight to `awaiting_qa`, trusting the PR's own CI-green signal (falling back to the local `make quality` gate when there's no CI signal, and refusing outright on a known-red CI). |
+
 ## Cloud Auth
 
 **Not a panel feature flag** — unlike the flags above, `ROBOCO_CLOUD_AUTH_ENABLED` is env-only (deliberately absent from `roboco/services/settings.py`'s `FEATURE_FLAGS`, so it can't be flipped on for a deployment that isn't behind TLS). Lets the panel/API be exposed beyond localhost without changing the CEO's local no-login flow while off. See `docs/rag/architecture/cloud-auth.md`.

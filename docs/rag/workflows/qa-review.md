@@ -59,8 +59,15 @@ pass(
         "pytest 1635 passed; ruff and mypy clean. "
         "PR #123."
     ),
+    criteria_verified=[
+        {"criterion": "429 on the 101st request in the window", "evidence": "test_rate_limit_boundary passes at rate_limit.py:88"},
+        {"criterion": "Redis key TTL matches the configured window", "evidence": "test_ttl_matches_window asserts TTL=60"},
+        {"criterion": "Tests cover happy path + boundary", "evidence": "3 new tests in test_rate_limit.py, all pass"},
+    ],
 )
 ```
+
+`criteria_verified` is required whenever the task has acceptance criteria — one entry per criterion, matched by AC id or exact text, `evidence` non-empty and capped at 500 chars. Missing a criterion, or naming one the task doesn't have, is rejected with the still-unverified criteria listed. Each entry renders deterministically into `qa_notes` as `[AC] <criterion> — verified: <evidence>`, so a gestalt "looks good" pass with no per-criterion trace is structurally impossible. A zero-AC task imposes no requirement.
 
 Result:
 
@@ -103,6 +110,8 @@ Result:
 ## Re-reviewing a bounced task (round ≥2)
 
 If the task has failed before, `claim_review` returns `prior_findings` — the FULL ledger, every round, newest first — alongside the usual PR diff. Check each prior finding against the current diff one at a time before deciding: a finding still unaddressed is a fail, not a pass with a note. Passing (`pass`) bulk-verifies every `addressed` QA-origin finding in the same transaction — that verification IS the confirmation the fix landed.
+
+`claim_review` also returns `collision_context` whenever this task has same-parent siblings that collide with it (overlapping declared file globs, or both adding a migration) — worth a glance before you pass, since an overlap you don't expect can explain an otherwise-mysterious diff hunk.
 
 ## Reflect (recommended)
 

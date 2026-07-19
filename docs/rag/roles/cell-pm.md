@@ -18,7 +18,7 @@
 ## What You CAN Do
 
 - Pull pending parent tasks via `give_me_work()`
-- Plan and start a parent task via `i_will_plan(task_id, plan)` (this also auto-creates the parent branch)
+- Plan and start a parent task via `i_will_plan(task_id, plan)` (this also auto-creates the parent branch); its planning briefing carries `collision_context` when same-parent siblings already declare overlapping file globs or migrations, so you can sequence subtasks before you delegate them
 - Create subtasks via `delegate(parent_task_id, title, description, body)`
 - Triage your cell's queue via `triage()`
 - Unblock blocked tasks via `unblock(task_id, reason, restore=True)` — `reason` (why the block is cleared) is recorded as your `journal:decision`, so no separate `note(scope='decision')` call is needed
@@ -105,7 +105,7 @@ delegate(
 )
 ```
 
-The args are **flat keywords** (not a nested `body=` dict). `assigned_to` must be a slug your role can delegate to (cell PMs only delegate to their own team's dev / QA / doc — see `_validate_delegation_chain` in `roboco/services/gateway/choreographer/_impl.py`). `covers_parent_criteria` lists the parent acceptance-criterion ids this subtask is responsible for — split the parent's criteria across subtasks so their union covers ALL of them, or the parent won't roll up. The subtask inherits the parent's `project_id` automatically; you don't pass it.
+The args are **flat keywords** (not a nested `body=` dict). `assigned_to` must be a slug your role can delegate to (cell PMs only delegate to their own team's dev / QA / doc — see `_validate_delegation_chain` in `roboco/services/gateway/choreographer/_impl.py`). `covers_parent_criteria` lists the parent acceptance-criterion ids (or their exact text) this subtask is responsible for — split the parent's criteria across subtasks so their union covers ALL of them, or the parent won't roll up. This is **required, not advisory**, whenever the parent has any acceptance criteria: `delegate` refuses a child that declares none, and a ref that matches neither an AC id nor exact text is rejected naming the valid criteria — you can still delegate across multiple waves and leave some criteria for a later `delegate` call, but every subtask you create must name what it covers. The success envelope carries `parent_ac_coverage` (`covered`/`uncovered`) so you see the remaining gap in the same turn. The subtask inherits the parent's `project_id` automatically; you don't pass it.
 
 ## Completing Tasks
 

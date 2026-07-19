@@ -63,7 +63,11 @@ i_am_done(
 
 ## Verification (the reviewer's side)
 
-When the SAME origin's review passes on a later round, every `addressed` finding of that origin is bulk-promoted to `verified` in the same transaction — `pass` (QA) verifies `qa`-origin findings, `pr_pass` verifies `pr_gate`-origin, `complete` (PM) verifies `pm`-origin. `ceo_approve` does the same for `ceo`-origin findings, best-effort. A finding can also be `waived` (the repository supports it) but no verb currently calls that path — an unaddressed finding cannot yet be dismissed without actually resolving it.
+When the SAME origin's review passes on a later round, every `addressed` finding of that origin is bulk-promoted to `verified` in the same transaction — `pass` (QA) verifies `qa`-origin findings, `pr_pass` verifies `pr_gate`-origin, `complete` (PM) verifies `pm`-origin. `ceo_approve` does the same for `ceo`-origin findings, best-effort.
+
+## Waiving a finding (Auditor only)
+
+A finding can also be `waived` instead of fixed — but only by the Auditor, and only for non-blocking severity. `waive_finding(finding_id, note)` is a flow verb on the Auditor's manifest, severity-scoped: `blocker`/`major` findings are refused outright ("must be fixed, never waived"); only `minor`/`nit` findings still `open` are eligible, and a non-empty `note` explaining why is required. The ledger row moves `open -> waived` (no task status change) and a `task.finding_waived` audit event records the decision. See `docs/rag/roles/auditor.md`.
 
 ## `ceo_reject` specifically
 
@@ -80,6 +84,7 @@ The CEO acts through the panel, not a gateway verb — there is no agent-facing 
 - `docs/rag/roles/cell-pm.md` / `docs/rag/roles/main-pm.md` — `request_changes` in practice
 - `docs/rag/roles/developer.md` — resolving a bounce with `resolved_findings`
 - `docs/rag/roles/ceo.md` — `ceo_reject`
+- `docs/rag/roles/auditor.md` — `waive_finding`
 - `docs/rag/lifecycle/intent-verbs.md` — the canonical verb reference
 - `docs/rag/standards/conventions.md` — the unrelated `convention_findings` concept
 - `docs/map/review-findings.md` — the implementation map (code-facing, not agent-facing)
