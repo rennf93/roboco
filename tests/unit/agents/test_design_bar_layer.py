@@ -37,3 +37,31 @@ def test_design_bar_reaches_fe_qa_via_team_layer() -> None:
     reviewing/scoping design work, not just for the devs implementing it."""
     prompt = compose_prompt(AgentRole.QA, Team.FRONTEND, "fe-qa")
     assert "## Design bar" in prompt
+
+
+def test_niche_aesthetics_present_for_frontend_team() -> None:
+    prompt = compose_prompt(AgentRole.DEVELOPER, Team.FRONTEND, "fe-dev-1")
+    assert "## Niche aesthetic vocabularies" in prompt
+
+
+def test_niche_aesthetics_present_for_ux_ui_team() -> None:
+    prompt = compose_prompt(AgentRole.DEVELOPER, Team.UX_UI, "ux-dev-1")
+    assert "## Niche aesthetic vocabularies" in prompt
+
+
+def test_niche_aesthetics_absent_for_backend_team() -> None:
+    prompt = compose_prompt(AgentRole.DEVELOPER, Team.BACKEND, "be-dev-1")
+    assert "## Niche aesthetic vocabularies" not in prompt
+
+
+def test_image_direction_present_for_ux_ui_team_only() -> None:
+    """Image-gen guidance is ux_ui-only content: frontend gets a one-line
+    pointer to it (no dial/rule content), backend gets neither."""
+    ux_prompt = compose_prompt(AgentRole.DEVELOPER, Team.UX_UI, "ux-dev-1")
+    fe_prompt = compose_prompt(AgentRole.DEVELOPER, Team.FRONTEND, "fe-dev-1")
+    be_prompt = compose_prompt(AgentRole.DEVELOPER, Team.BACKEND, "be-dev-1")
+    assert "## Image direction" in ux_prompt
+    assert "## Image direction" not in fe_prompt
+    assert "## Image direction" not in be_prompt
+    assert "Image direction" in fe_prompt  # the pointer phrase itself
+    assert "Composition variety" not in fe_prompt  # not the technical content

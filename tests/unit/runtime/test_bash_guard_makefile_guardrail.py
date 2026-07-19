@@ -2,11 +2,13 @@
 
 CEO item: force agents to the Makefile. The existing hook deliberately allowed
 bare ``uv run`` (workspace .venv, cwd-relative); this guard overrides that by
-CEO direction when a ``Makefile`` is present, denying raw package-manager /
-test-runner commands and remediating to the make targets. Skipped when no
-Makefile exists so Makefile-less projects aren't blocked. On the grok path
-(``ROBOCO_GUARD_SKIP_PM=1``) a deny cancels the whole run, so it nudges (exit 0)
-instead.
+CEO direction when a ``Makefile`` is present AND declares at least one of the
+quality/gate/lint/test targets, denying raw package-manager / test-runner
+commands and remediating to the make targets. Skipped when no Makefile exists,
+or when one exists but declares none of those targets (a Go/Rust Makefile with
+only build/run — existence alone would remediate into a dead end). On the grok
+path (``ROBOCO_GUARD_SKIP_PM=1``) a deny cancels the whole run, so it nudges
+(exit 0) instead.
 """
 
 from __future__ import annotations
@@ -77,6 +79,24 @@ def test_allows_pnpm() -> None:
 def test_skips_deny_without_makefile(tmp_path: Path) -> None:
     rc, _ = _run_hook("uv run pytest", tmp_path)
     assert rc != _DENIED
+
+
+def test_skips_deny_when_makefile_lacks_remediation_targets(tmp_path: Path) -> None:
+    """A Go/Rust-style Makefile with only build/run targets — existence alone
+    must not deny+remediate to a `make quality`/`gate`/`lint`/`test` that
+    doesn't exist (the false-remediation dead-end loop the content check
+    closes)."""
+    (tmp_path / "Makefile").write_text("build:\n\tgo build ./...\nrun:\n\tgo run .\n")
+    rc, _ = _run_hook("uv run pytest", tmp_path)
+    assert rc != _DENIED
+
+
+def test_denies_when_makefile_has_only_one_remediation_target(tmp_path: Path) -> None:
+    """Just one of quality/gate/lint/test is enough to arm the deny — the
+    guard doesn't require all four."""
+    (tmp_path / "Makefile").write_text("lint:\n\truff check .\n")
+    rc, _ = _run_hook("uv run pytest", tmp_path)
+    assert rc == _DENIED
 
 
 def test_grok_path_nudges_not_denies() -> None:
