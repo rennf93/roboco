@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import roboco.services.git as git_module
 from roboco.exceptions import GitError
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 
@@ -71,7 +72,9 @@ async def test_first_allowed_skips_disabled_method(
     monkeypatch.setattr(
         git_module.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient(resp)
     )
-    method = await svc._first_allowed_merge_method("o", "r", "tok", exclude="squash")
+    method = await svc._first_allowed_merge_method(
+        RepoRef("o", "r"), "tok", exclude="squash"
+    )
     assert method == "merge"  # squash disabled + excluded -> next permitted
 
 
@@ -84,7 +87,7 @@ async def test_first_allowed_returns_none_when_lookup_fails(
     monkeypatch.setattr(
         git_module.httpx, "AsyncClient", lambda *_a, **_k: _FakeClient(resp)
     )
-    assert await svc._first_allowed_merge_method("o", "r", "tok") is None
+    assert await svc._first_allowed_merge_method(RepoRef("o", "r"), "tok") is None
 
 
 @pytest.mark.asyncio
@@ -95,7 +98,9 @@ async def test_merge_retries_with_allowed_method_on_405(
     monkeypatch.setattr(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
-    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+    )
     monkeypatch.setattr(
         svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
     )
@@ -109,9 +114,7 @@ async def test_merge_retries_with_allowed_method_on_405(
 
     calls: list[str] = []
 
-    async def fake_call(
-        _owner: str, _repo: str, _pr: int, _token: str, method: str
-    ) -> Any:
+    async def fake_call(_repo_ref: RepoRef, _pr: int, _token: str, method: str) -> Any:
         calls.append(method)
         return (
             _resp(200, is_success=True)
@@ -136,7 +139,9 @@ async def test_merge_does_not_retry_when_method_allowed(
     monkeypatch.setattr(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
-    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+    )
     monkeypatch.setattr(
         svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
     )
@@ -149,9 +154,7 @@ async def test_merge_does_not_retry_when_method_allowed(
 
     calls: list[str] = []
 
-    async def fake_call(
-        _owner: str, _repo: str, _pr: int, _token: str, method: str
-    ) -> Any:
+    async def fake_call(_repo_ref: RepoRef, _pr: int, _token: str, method: str) -> Any:
         calls.append(method)
         return _resp(200, is_success=True)
 
@@ -176,7 +179,9 @@ async def test_merge_already_merged_pr_is_idempotent_success(
     monkeypatch.setattr(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
-    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+    )
     delete_branch = AsyncMock(return_value=None)
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
     monkeypatch.setattr(
@@ -219,7 +224,9 @@ async def test_merge_raises_when_not_merged_and_refused(
     monkeypatch.setattr(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
-    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+    )
     delete_branch = AsyncMock(return_value=None)
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
     monkeypatch.setattr(

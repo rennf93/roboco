@@ -22,6 +22,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.exceptions import GitError, MergeConflictError
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 # Module-level constants kept local so the assertions stay readable and
@@ -101,7 +102,7 @@ async def test_pr_merge_retries_once_on_409_conflict() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
 
     call_seq = AsyncMock(side_effect=[_fake_response(409), _fake_response(200)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -145,7 +146,7 @@ async def test_pr_merge_raises_after_second_409() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
 
     call_seq = AsyncMock(side_effect=[_fake_response(409), _fake_response(409)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -182,7 +183,7 @@ async def test_pr_merge_does_not_retry_on_non_409_error() -> None:
     svc = GitService(_make_session(fake_task, fake_parent))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
 
     call_seq = AsyncMock(side_effect=[_fake_response(422)])
     _bind(svc, "_call_merge_api", call_seq)
@@ -220,7 +221,7 @@ async def test_pr_merge_locks_parent_task_with_for_update() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
@@ -268,7 +269,7 @@ async def test_pr_merge_skips_parent_lock_for_root_task() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
@@ -316,7 +317,7 @@ async def test_pr_merge_scopes_task_lookup_by_project_id() -> None:
     svc = GitService(session)
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
     _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="sha"))
@@ -342,8 +343,7 @@ _HTTP_METHOD_NOT_ALLOWED = 405
 
 def _merge_ctx(pr_number: int = 11) -> GitService._MergeContext:
     return GitService._MergeContext(
-        owner="acme",
-        repo="repo",
+        repo_ref=RepoRef("acme", "repo"),
         pr_number=pr_number,
         git_token="tok",
         workspace=Path("/tmp/ws"),

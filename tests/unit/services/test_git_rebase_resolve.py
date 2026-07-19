@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 
@@ -151,7 +152,7 @@ async def test_close_pull_request_patches_state_closed(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
 
@@ -233,7 +234,7 @@ async def test_close_pull_request_does_not_delete_branch_by_default(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
 
@@ -299,7 +300,7 @@ async def test_close_pull_request_idempotent_when_already_closed(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", AsyncMock())
 

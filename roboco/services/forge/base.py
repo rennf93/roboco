@@ -35,10 +35,15 @@ class RepoRef:
     every other method only ever receives a ``RepoRef`` back from
     ``parse_repo_ref``/construction, never assumes its internal shape beyond
     what THIS provider put there.
+
+    ``host`` carries the forge host for self-hosted providers (a Gitea
+    instance's API base derives from it); ``None`` means "the default GitHub
+    host" so every existing two-arg construction site keeps its meaning.
     """
 
     owner: str
     repo: str
+    host: str | None = None
 
 
 class GitProvider(ABC):

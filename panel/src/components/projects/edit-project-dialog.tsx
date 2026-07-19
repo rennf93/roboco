@@ -30,15 +30,6 @@ import { Team, type ProjectUpdate, type Project } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
 import { HelpTip } from "@/components/ui/help-tip";
-import { Badge } from "@/components/ui/badge";
-
-// A null git_provider means "not yet stamped" (pre-Phase-0 project or a
-// non-github.com host awaiting an explicit choice) — RoboCo is GitHub-only
-// today either way, so the badge falls back to "GitHub" rather than "Unknown".
-function forgeLabel(gitProvider: string | null): string {
-  if (!gitProvider) return "GitHub";
-  return gitProvider.charAt(0).toUpperCase() + gitProvider.slice(1);
-}
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -136,6 +127,7 @@ function EditProjectForm({
   // Initialize form state from project
   const [name, setName] = useState(project.name);
   const [gitUrl, setGitUrl] = useState(project.git_url);
+  const [gitProvider, setGitProvider] = useState(project.git_provider ?? "auto");
   const [assignedCell, setAssignedCell] = useState(project.assigned_cell);
   const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
   const [environments, setEnvironments] = useState(project.environments ?? null);
@@ -219,6 +211,7 @@ function EditProjectForm({
     const updates: ProjectUpdate = {
       name,
       git_url: gitUrl,
+      git_provider: gitProvider === "auto" ? null : gitProvider,
       assigned_cell: assignedCell,
       default_branch: defaultBranch || "main",
       environments,
@@ -317,17 +310,22 @@ function EditProjectForm({
           />
         </div>
 
-        {/* Forge (read-only — GitHub-only today) */}
+        {/* Forge provider */}
         <div className="grid gap-2">
-          <HelpTip label="Auto-detected from the Git URL's host; RoboCo's PR/CI/review surface is GitHub-only today. GitLab & Gitea support planned.">
+          <HelpTip label="Which forge API serves PR/CI/review operations. Auto-detect covers github.com; a self-hosted Gitea instance (or GitHub Enterprise) must be set explicitly — the host comes from the Git URL. GitLab support is planned.">
             <Label>Forge</Label>
           </HelpTip>
-          <div>
-            <Badge variant="secondary">{forgeLabel(project.git_provider)}</Badge>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            GitLab & Gitea support planned.
-          </p>
+          <Select value={gitProvider} onValueChange={setGitProvider}>
+            <SelectTrigger>
+              <SelectValue placeholder="Auto-detect" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Auto-detect (github.com)</SelectItem>
+              <SelectItem value="github">GitHub / GitHub Enterprise</SelectItem>
+              <SelectItem value="gitea">Gitea (self-hosted)</SelectItem>
+              <SelectItem value="gitlab">GitLab (gitlab.com / self-hosted)</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Git Token Section */}

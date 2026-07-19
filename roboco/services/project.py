@@ -19,6 +19,7 @@ from roboco.foundation.policy.forge import detect_provider, validate_project_for
 from roboco.models.base import TaskStatus, Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
+from roboco.services.forge import register_project_forge
 from roboco.utils.crypto import EncryptionError, decrypt_token, encrypt_token
 
 # Statuses that are NOT active progress: completed (done), cancelled
@@ -104,11 +105,12 @@ class ProjectService(BaseService):
         self._assert_git_url_allowed(data.git_url)
         self._assert_forge_supported(data.git_url, data.git_provider)
 
-        # Null + a github.com git_url auto-stamps "github" so the column
-        # reflects reality without forcing every caller to set it explicitly.
+        # Null + a SaaS-detectable host auto-stamps the provider so the
+        # column reflects reality without forcing every caller to set it
+        # explicitly (github.com → github, gitlab.com → gitlab).
         git_provider = data.git_provider
-        if git_provider is None and detect_provider(data.git_url) == "github":
-            git_provider = "github"
+        if git_provider is None:
+            git_provider = detect_provider(data.git_url)
 
         # Encrypt git token if provided
         encrypted_token = None
@@ -173,19 +175,29 @@ class ProjectService(BaseService):
                 error=str(exc),
             )
 
+    @staticmethod
+    def _register_forge(project: ProjectTable | None) -> ProjectTable | None:
+        """Record a loaded project's host→provider mapping for the forge
+        router (in-memory, per-process). Riding the getters makes the map
+        self-healing: any flow that touches a project re-registers it, so a
+        restart never leaves a gitea host unroutable past the first read."""
+        if project is not None:
+            register_project_forge(project.git_url, project.git_provider)
+        return project
+
     async def get(self, project_id: UUID) -> ProjectTable | None:
         """Get a project by ID."""
         result = await self.session.execute(
             select(ProjectTable).where(ProjectTable.id == project_id)
         )
-        return result.scalar_one_or_none()
+        return self._register_forge(result.scalar_one_or_none())
 
     async def get_by_slug(self, slug: str) -> ProjectTable | None:
         """Get a project by its URL-safe slug."""
         result = await self.session.execute(
             select(ProjectTable).where(ProjectTable.slug == slug)
         )
-        return result.scalar_one_or_none()
+        return self._register_forge(result.scalar_one_or_none())
 
     async def get_or_raise(self, project_id: UUID) -> ProjectTable:
         """Get a project by ID or raise NotFoundError."""

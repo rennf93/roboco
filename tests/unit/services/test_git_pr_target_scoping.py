@@ -21,6 +21,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.base import NotFoundError
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -130,7 +131,7 @@ async def test_pr_target_with_project_id_skips_wrong_repo_task() -> None:
     svc = GitService(session)
     _bind = object.__setattr__
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="token"))
 
     with _patch_project_service(MagicMock(slug="roboco")), pytest.raises(NotFoundError):

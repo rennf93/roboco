@@ -63,6 +63,7 @@ from roboco.db.tables import (
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.work_session import WorkSessionStatus
+from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
 from roboco.services.work_session import get_work_session_service
 from roboco.services.workspace import WorkspaceService
@@ -290,7 +291,7 @@ async def test_m38_pr_is_merged_returns_none_on_httperror() -> None:
         "roboco.services.git.httpx.AsyncClient",
         return_value=_httpx_raising_client(),
     ):
-        out = await svc._pr_is_merged("acme", "repo", 11, "tok")
+        out = await svc._pr_is_merged(RepoRef("acme", "repo"), 11, "tok")
     assert out is None
 
 
@@ -310,8 +311,7 @@ async def test_m38_merge_with_retry_none_does_not_raise_conflict() -> None:
     _bind(svc, "_sync_target_branch", AsyncMock())
 
     ctx = GitService._MergeContext(
-        owner="acme",
-        repo="repo",
+        repo_ref=RepoRef("acme", "repo"),
         pr_number=11,
         git_token="tok",
         workspace=Path("/tmp/ws"),

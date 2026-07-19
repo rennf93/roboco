@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -61,7 +62,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
-from roboco.services.forge import GitProvider, RepoRef, provider_for
+from roboco.services.forge import ForgeRouter, GitProvider, RepoRef
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.project import get_project_service
 from roboco.services.task import TaskService, get_task_service
@@ -372,12 +373,12 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _CiRunQuery:
-    """Bundle of per-project inputs to a CI-run fetch (owner/repo, branch, token,
+    """Bundle of per-project inputs to a CI-run fetch (repo ref, branch, token,
     slug for logging) so ``_fetch_latest_ci_run`` stays under the arg-count gate —
-    owner_repo alone was already bundled for the same reason."""
+    repo_ref alone was already bundled for the same reason."""
 
     project_slug: str
-    owner_repo: tuple[str, str]
+    repo_ref: RepoRef
     branch: str
     git_token: str
 
@@ -397,18 +398,18 @@ class GitService(BaseService):
 
     @property
     def _forge(self) -> GitProvider:
-        """The GitHub REST transport (Phase 1 of the forge-providers spec).
+        """The per-call forge router (Phase 2 of the forge-providers spec).
 
         A property, not an ``__init__``-set attribute: several unit tests
         build a ``GitService`` via ``GitService.__new__(GitService)`` to skip
         the DB-session constructor, and a plain instance attribute would be
-        unset on those. Every project resolves to ``GitHubProvider`` today
-        (registration-time validation in ``roboco/foundation/policy/forge.py``
-        rejects anything else) — no per-call project resolution is needed
-        until a second provider actually exists. Construction is cheap
-        (no I/O), so resolving fresh per access costs nothing.
+        unset on those. The router resolves the concrete transport per call
+        from ``RepoRef.host`` (None → GitHub; a registered gitea host → that
+        instance's ``GiteaProvider``), so every existing call site stays
+        byte-for-byte unchanged. Construction is cheap (no I/O), so
+        resolving fresh per access costs nothing.
         """
-        return provider_for()
+        return ForgeRouter()
 
     async def _run_git(
         self,
@@ -772,21 +773,21 @@ class GitService(BaseService):
     # =========================================================================
 
     @staticmethod
-    def _parse_git_url(url: str) -> tuple[str, str]:
-        """Extract (owner, repo) from any accepted GitHub URL form.
+    def _parse_git_url(url: str) -> RepoRef:
+        """Parse any accepted GitHub URL form into a :class:`RepoRef`.
 
         Handles tokened, plain-https, and SSH forms:
             https://x-access-token:TOKEN@github.com/owner/repo.git
             https://github.com/owner/repo.git
             git@github.com:owner/repo.git
 
-        Delegates to the provider's own URL parsing (``GitHubProvider`` today
-        — a future provider's shape may differ, e.g. GitLab subgroups).
+        Delegates to the router's URL parsing, which routes a registered
+        gitea host to its own provider and everything GitHub-shaped to
+        ``GitHubProvider``.
         """
-        ref = provider_for().parse_repo_ref(url)
-        return ref.owner, ref.repo
+        return ForgeRouter().parse_repo_ref(url)
 
-    def _parse_github_remote(self, workspace: Path) -> tuple[str, str]:
+    def _parse_github_remote(self, workspace: Path) -> RepoRef:
         """Read the origin remote URL from a workspace and parse owner/repo."""
         cfg = workspace / ".git" / "config"
         try:
@@ -2097,15 +2098,14 @@ class GitService(BaseService):
 
     async def _find_existing_pr(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         source_branch: str,
         target_branch: str,
         git_token: str,
     ) -> dict[str, Any] | None:
         """Return the first open PR for head→base, or None."""
         existing = await self._forge.list_pulls(
-            RepoRef(owner, repo),
+            repo_ref,
             git_token,
             head=source_branch,
             base=target_branch,
@@ -2131,26 +2131,24 @@ class GitService(BaseService):
         if project is None or not project.git_url:
             return []
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return []
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return []
-        raw = await self._fetch_open_prs(project_slug, owner, repo, git_token)
+        raw = await self._fetch_open_prs(project_slug, repo_ref, git_token)
         if raw is None:
             return []
-        base_full = f"{owner}/{repo}"
+        base_full = f"{repo_ref.owner}/{repo_ref.repo}"
         return [self._normalize_open_pr(pr, base_full) for pr in raw]
 
     async def _fetch_open_prs(
-        self, project_slug: str, owner: str, repo: str, git_token: str
+        self, project_slug: str, repo_ref: RepoRef, git_token: str
     ) -> list[dict[str, Any]] | None:
         """GET a repo's open PRs; return the raw list, or None on any error."""
         try:
-            resp = await self._forge.list_pulls(
-                RepoRef(owner, repo), git_token, per_page=100
-            )
+            resp = await self._forge.list_pulls(repo_ref, git_token, per_page=100)
         except httpx.HTTPError as e:
             self.log.warning(
                 "list_open_prs request failed", project=project_slug, error=str(e)
@@ -2220,7 +2218,7 @@ class GitService(BaseService):
         if project is None or not project.git_url:
             return None
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return None
         git_token = await self._token_for_project(project_slug)
@@ -2232,7 +2230,7 @@ class GitService(BaseService):
         branch = branch or head_branch(project)
         query = _CiRunQuery(
             project_slug=project_slug,
-            owner_repo=(owner, repo),
+            repo_ref=repo_ref,
             branch=branch,
             git_token=git_token,
         )
@@ -2272,10 +2270,9 @@ class GitService(BaseService):
         are retried a few times (inside the provider) before giving up so a
         single blip doesn't silently skip the cycle.
         """
-        owner, repo = query.owner_repo
         try:
             resp = await self._forge.list_ci_runs(
-                RepoRef(owner, repo),
+                query.repo_ref,
                 query.git_token,
                 workflow=workflow,
                 branch=query.branch,
@@ -2304,8 +2301,7 @@ class GitService(BaseService):
 
     async def _post_pr(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         git_token: str,
         payload: dict[str, Any],
     ) -> httpx.Response:
@@ -2314,7 +2310,7 @@ class GitService(BaseService):
             return cast(
                 "httpx.Response",
                 await self._forge.create_pr(
-                    RepoRef(owner, repo),
+                    repo_ref,
                     git_token,
                     head=str(payload.get("head", "")),
                     base=str(payload.get("base", "")),
@@ -2325,7 +2321,11 @@ class GitService(BaseService):
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while creating PR: {e}",
-                {"owner": owner, "repo": repo, "head": payload.get("head")},
+                {
+                    "owner": repo_ref.owner,
+                    "repo": repo_ref.repo,
+                    "head": payload.get("head"),
+                },
             ) from e
 
     # A single neutral color — labels are distinguished by name, not hue, and
@@ -2333,7 +2333,7 @@ class GitService(BaseService):
     _PR_LABEL_COLOR = "5e6ad2"
 
     async def _ensure_label_exists(
-        self, owner: str, repo: str, git_token: str, name: str
+        self, repo_ref: RepoRef, git_token: str, name: str
     ) -> None:
         """Create a repo label if missing (GitHub's add-label API 404s on an
         unknown label instead of auto-creating). Swallow 'already exists'
@@ -2341,7 +2341,7 @@ class GitService(BaseService):
         block PR creation."""
         try:
             resp = await self._forge.ensure_label(
-                RepoRef(owner, repo), git_token, name, self._PR_LABEL_COLOR
+                repo_ref, git_token, name, self._PR_LABEL_COLOR
             )
         except Exception as e:
             self.log.warning("PR label ensure HTTP error", label=name, error=str(e))
@@ -2358,8 +2358,7 @@ class GitService(BaseService):
 
     async def _apply_pr_labels(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         git_token: str,
         pr_number: int,
         labels: list[str],
@@ -2371,11 +2370,9 @@ class GitService(BaseService):
         if not labels:
             return
         for name in labels:
-            await self._ensure_label_exists(owner, repo, git_token, name)
+            await self._ensure_label_exists(repo_ref, git_token, name)
         try:
-            resp = await self._forge.add_labels(
-                RepoRef(owner, repo), git_token, pr_number, labels
-            )
+            resp = await self._forge.add_labels(repo_ref, git_token, pr_number, labels)
         except Exception as e:
             self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
             return
@@ -2472,10 +2469,9 @@ class GitService(BaseService):
             workspace, request, source_branch, default_branch, git_token
         )
 
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
         resp = await self._post_pr(
-            owner,
-            repo,
+            repo_ref,
             git_token,
             {
                 "title": pr_title or "",
@@ -2488,22 +2484,22 @@ class GitService(BaseService):
         labels = await self._labels_for_pr_request(request)
 
         existing = await self._existing_pr_tuple(
-            resp, (owner, repo), (source_branch, target_branch), git_token, pr_title
+            resp, repo_ref, (source_branch, target_branch), git_token, pr_title
         )
         if existing is not None:
-            await self._apply_pr_labels(owner, repo, git_token, existing[0], labels)
+            await self._apply_pr_labels(repo_ref, git_token, existing[0], labels)
             return existing
 
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR creation ({resp.status_code}): "
                 f"{resp.text[:200]}",
-                {"owner": owner, "repo": repo, "head": source_branch},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "head": source_branch},
             )
 
         pr_data = resp.json()
         pr_number = int(pr_data["number"])
-        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
+        await self._apply_pr_labels(repo_ref, git_token, pr_number, labels)
         return (
             pr_number,
             str(pr_data["html_url"]),
@@ -2538,12 +2534,12 @@ class GitService(BaseService):
         if not git_token:
             return {"status": "missing_ref"}
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return {"status": "missing_ref"}
         try:
             resp = await self._forge.merge_branch(
-                RepoRef(owner, repo),
+                repo_ref,
                 git_token,
                 base=target_branch,
                 head=source_branch,
@@ -2554,7 +2550,85 @@ class GitService(BaseService):
                 "env-sync merges API error", project=project_slug, error=str(exc)
             )
             return {"status": "missing_ref"}
+        if resp.status_code == httpx.codes.NOT_IMPLEMENTED:
+            # Gitea/GitLab have no server-side merges API — their providers
+            # return a shaped 501 and the shared local-git fallback runs.
+            return await self._local_merge_branch(
+                project.git_url, git_token, target_branch, source_branch
+            )
         return self._env_merge_status(resp, project_slug)
+
+    async def _local_merge_branch(
+        self,
+        git_url: str,
+        git_token: str,
+        target_branch: str,
+        source_branch: str,
+    ) -> dict[str, Any]:
+        """Local-git env-sync merge for forges without a merges API (the
+        forge spec's shared fallback): throwaway clone of the target rung,
+        merge the source rung, push. Same status vocabulary as
+        ``_env_merge_status``; a conflict aborts with the clone discarded,
+        so the remote is never touched on failure.
+        """
+        with tempfile.TemporaryDirectory(prefix="roboco-envsync-") as tmp:
+            workdir = Path(tmp)
+            clone_dir = workdir / "clone"
+            clone = await self._run_git(
+                workdir,
+                ["clone", "--branch", target_branch, git_url, str(clone_dir)],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if clone.returncode != 0:
+                return {"status": "missing_ref"}
+            for config_args in (
+                ["config", "user.email", "envsync@roboco.local"],
+                ["config", "user.name", "RoboCo Env Sync"],
+                ["config", "commit.gpgsign", "false"],
+            ):
+                await self._run_git(clone_dir, config_args)
+            fetch = await self._run_git(
+                clone_dir,
+                ["fetch", "origin", source_branch],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if fetch.returncode != 0:
+                return {"status": "missing_ref"}
+            ancestor = await self._run_git(
+                clone_dir,
+                ["merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD"],
+                check=False,
+            )
+            if ancestor.returncode == 0:
+                return {"status": "already_ancestor"}
+            merge = await self._run_git(
+                clone_dir,
+                [
+                    "merge",
+                    "--no-edit",
+                    "-m",
+                    f"sync: {source_branch} → {target_branch}",
+                    "FETCH_HEAD",
+                ],
+                check=False,
+            )
+            if merge.returncode != 0:
+                return {"status": "conflict"}
+            push = await self._run_git(
+                clone_dir,
+                ["push", "origin", f"HEAD:{target_branch}"],
+                token=git_token,
+                timeout=_network_git_timeout(),
+                check=False,
+            )
+            if push.returncode != 0:
+                return {"status": "missing_ref"}
+            sha_result = await self._run_git(clone_dir, ["rev-parse", "HEAD"])
+            return {"status": "merged", "sha": sha_result.stdout.strip()}
 
     def _env_merge_status(
         self, resp: httpx.Response, project_slug: str
@@ -2595,16 +2669,16 @@ class GitService(BaseService):
         if not git_token:
             return None
         try:
-            owner_repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return None
         return await self._post_sync_pr(
-            owner_repo, git_token, (source_branch, target_branch), body, project_slug
+            repo_ref, git_token, (source_branch, target_branch), body, project_slug
         )
 
     async def _post_sync_pr(
         self,
-        owner_repo: tuple[str, str],
+        repo_ref: RepoRef,
         git_token: str,
         branches: tuple[str, str],
         body: str,
@@ -2615,10 +2689,9 @@ class GitService(BaseService):
         Never raises into the engine loop: a missing existing PR, a rejected
         create, or a transport error all return None.
         """
-        owner, repo = owner_repo
         source_branch, target_branch = branches
         existing = await self._find_existing_pr(
-            owner, repo, source_branch, target_branch, git_token
+            repo_ref, source_branch, target_branch, git_token
         )
         if existing is not None:
             return {
@@ -2627,8 +2700,7 @@ class GitService(BaseService):
             }
         try:
             resp = await self._post_pr(
-                owner,
-                repo,
+                repo_ref,
                 git_token,
                 {
                     "title": f"sync: {source_branch} → {target_branch}",
@@ -2715,21 +2787,20 @@ class GitService(BaseService):
     async def _existing_pr_tuple(
         self,
         resp: httpx.Response,
-        owner_repo: tuple[str, str],
+        repo_ref: RepoRef,
         branches: tuple[str, str],
         git_token: str,
         pr_title: str | None,
     ) -> tuple[int, str, str, str, str] | None:
         """Idempotency: if the create hit an 'already exists' 422, return that PR.
 
-        ``owner_repo`` is (owner, repo); ``branches`` is (source, target).
+        ``branches`` is (source, target).
         """
         if resp.status_code != _GH_UNPROCESSABLE or "already exists" not in resp.text:
             return None
-        owner, repo = owner_repo
         source_branch, target_branch = branches
         found = await self._find_existing_pr(
-            owner, repo, source_branch, target_branch, git_token
+            repo_ref, source_branch, target_branch, git_token
         )
         if not found:
             return None
@@ -2743,8 +2814,7 @@ class GitService(BaseService):
 
     async def _patch_pr_title_body(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         pr_number: int,
         git_token: str,
         payload: dict[str, str],
@@ -2757,28 +2827,27 @@ class GitService(BaseService):
         """
         try:
             resp = await self._forge.update_pr(
-                RepoRef(owner, repo), git_token, pr_number, payload=payload
+                repo_ref, git_token, pr_number, payload=payload
             )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while updating PR #{pr_number}: {e}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             ) from e
         if resp.status_code == _HTTP_NOT_FOUND:
             raise GitError(
-                f"PR not found: #{pr_number} on {owner}/{repo}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                f"PR not found: #{pr_number} on {repo_ref.owner}/{repo_ref.repo}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR update ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
 
     async def _post_pr_reviewers(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         pr_number: int,
         git_token: str,
         reviewers: list[str],
@@ -2791,23 +2860,23 @@ class GitService(BaseService):
         """
         try:
             resp = await self._forge.request_reviewers(
-                RepoRef(owner, repo), git_token, pr_number, reviewers
+                repo_ref, git_token, pr_number, reviewers
             )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while adding reviewers to PR #{pr_number}: {e}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             ) from e
         if resp.status_code == _HTTP_NOT_FOUND:
             raise GitError(
-                f"PR not found: #{pr_number} on {owner}/{repo}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                f"PR not found: #{pr_number} on {repo_ref.owner}/{repo_ref.repo}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused reviewer request ({resp.status_code}): "
                 f"{resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
 
     async def post_pr_review(
@@ -2838,13 +2907,13 @@ class GitService(BaseService):
         project = await get_project_service(self.session).get_by_slug(project_slug)
         if project is None or not project.git_url:
             raise GitError(f"unknown project for PR review: {project_slug!r}", details)
-        owner, repo = self._parse_git_url(project.git_url)
+        repo_ref = self._parse_git_url(project.git_url)
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             raise GitError(f"no git token for project {project_slug!r}", details)
         try:
             resp = await self._forge.post_review(
-                RepoRef(owner, repo), git_token, pr_number, body=body, event=event
+                repo_ref, git_token, pr_number, body=body, event=event
             )
         except httpx.HTTPError as e:
             raise GitError(
@@ -2852,7 +2921,10 @@ class GitService(BaseService):
                 details,
             ) from e
         if resp.status_code == _HTTP_NOT_FOUND:
-            raise GitError(f"PR not found: #{pr_number} on {owner}/{repo}", details)
+            raise GitError(
+                f"PR not found: #{pr_number} on {repo_ref.owner}/{repo_ref.repo}",
+                details,
+            )
         if (
             resp.status_code == _GH_UNPROCESSABLE
             and event != "COMMENT"
@@ -2889,16 +2961,14 @@ class GitService(BaseService):
         if project is None or not project.git_url:
             return ""
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return ""
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return ""
         try:
-            resp = await self._forge.get_pr_diff(
-                RepoRef(owner, repo), git_token, pr_number
-            )
+            resp = await self._forge.get_pr_diff(repo_ref, git_token, pr_number)
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_diff request failed",
@@ -2937,14 +3007,14 @@ class GitService(BaseService):
         if project is None or not project.git_url:
             return None
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return None
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
         try:
-            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
             if not resp.is_success:
                 self.log.warning(
                     "get_pr_head_sha non-2xx",
@@ -3003,48 +3073,47 @@ class GitService(BaseService):
         config = await self._ci_status_config(project_slug)
         if isinstance(config, dict):
             return config
-        owner, repo, git_token = config
+        repo_ref, git_token = config
         head_sha_or_gap = await self._resolve_ci_head_sha(
-            project_slug, pr_number, owner, repo, git_token
+            project_slug, pr_number, repo_ref, git_token
         )
         if isinstance(head_sha_or_gap, dict):
             return head_sha_or_gap
         head_sha = head_sha_or_gap
         check_runs = await self._fetch_check_runs(
-            project_slug, owner, repo, head_sha, git_token
+            project_slug, repo_ref, head_sha, git_token
         )
         if isinstance(check_runs, dict):
             return check_runs
         if check_runs:
             return self._classify_check_runs(check_runs, head_sha)
         return await self._classify_zero_check_runs(
-            project_slug, owner, repo, head_sha, git_token
+            project_slug, repo_ref, head_sha, git_token
         )
 
     async def _ci_status_config(
         self, project_slug: str
-    ) -> tuple[str, str, str] | dict[str, Any]:
-        """Resolve ``(owner, repo, git_token)`` for a CI-status lookup, or a
+    ) -> tuple[RepoRef, str] | dict[str, Any]:
+        """Resolve ``(repo_ref, git_token)`` for a CI-status lookup, or a
         terminal ``no_ci_configured`` gap dict when the project, its
         git_url, or a git token is missing, or the git_url doesn't parse."""
         project = await get_project_service(self.session).get_by_slug(project_slug)
         if project is None or not project.git_url:
             return {"state": "no_ci_configured", "head_sha": None}
         try:
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except GitError:
             return {"state": "no_ci_configured", "head_sha": None}
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return {"state": "no_ci_configured", "head_sha": None}
-        return owner, repo, git_token
+        return repo_ref, git_token
 
     async def _resolve_ci_head_sha(
         self,
         project_slug: str,
         pr_number: int,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         git_token: str,
     ) -> str | dict[str, Any]:
         """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
@@ -3059,7 +3128,7 @@ class GitService(BaseService):
         treat as green.
         """
         try:
-            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_ci_status pr lookup unreachable",
@@ -3089,8 +3158,7 @@ class GitService(BaseService):
     async def _fetch_check_runs(
         self,
         project_slug: str,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         head_sha: str,
         git_token: str,
     ) -> list[dict[str, Any]] | dict[str, Any]:
@@ -3104,7 +3172,7 @@ class GitService(BaseService):
         """
         try:
             resp = await self._forge.list_check_runs(
-                RepoRef(owner, repo), git_token, head_sha, per_page=100
+                repo_ref, git_token, head_sha, per_page=100
             )
         except httpx.HTTPError as e:
             self.log.warning(
@@ -3160,8 +3228,7 @@ class GitService(BaseService):
     async def _classify_zero_check_runs(
         self,
         project_slug: str,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         head_sha: str,
         git_token: str,
     ) -> dict[str, Any]:
@@ -3172,9 +3239,7 @@ class GitService(BaseService):
         ``no_ci_configured``; any other failure is ``error``.
         """
         try:
-            resp = await self._forge.list_workflows(
-                RepoRef(owner, repo), git_token, per_page=1
-            )
+            resp = await self._forge.list_workflows(repo_ref, git_token, per_page=1)
         except httpx.HTTPError as e:
             self.log.warning(
                 "get_pr_ci_status workflows request failed",
@@ -3243,7 +3308,7 @@ class GitService(BaseService):
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
         pr_number = int(task.pr_number)
 
@@ -3257,10 +3322,10 @@ class GitService(BaseService):
             updated.append("body")
         if patch_payload:
             await self._patch_pr_title_body(
-                owner, repo, pr_number, git_token, patch_payload
+                repo_ref, pr_number, git_token, patch_payload
             )
         if reviewers is not None:
-            await self._post_pr_reviewers(owner, repo, pr_number, git_token, reviewers)
+            await self._post_pr_reviewers(repo_ref, pr_number, git_token, reviewers)
             updated.append("reviewers")
 
         return {
@@ -3379,8 +3444,7 @@ class GitService(BaseService):
 
     async def _call_merge_api(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         pr_number: int,
         git_token: str,
         merge_method: str,
@@ -3390,7 +3454,7 @@ class GitService(BaseService):
             return cast(
                 "httpx.Response",
                 await self._forge.merge_pr(
-                    RepoRef(owner, repo),
+                    repo_ref,
                     git_token,
                     pr_number,
                     merge_method=merge_method,
@@ -3399,7 +3463,7 @@ class GitService(BaseService):
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error while merging PR #{pr_number}: {e}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             ) from e
 
     async def _sync_target_branch(
@@ -3480,7 +3544,7 @@ class GitService(BaseService):
             return None
 
     async def _branch_has_open_dependents(
-        self, owner: str, repo: str, branch: str, git_token: str
+        self, repo_ref: RepoRef, branch: str, git_token: str
     ) -> bool:
         """True if any OPEN PR still targets ``branch`` as its base.
 
@@ -3493,7 +3557,7 @@ class GitService(BaseService):
         """
         try:
             resp = await self._forge.list_pulls(
-                RepoRef(owner, repo), git_token, base=branch, per_page=1, timeout=10.0
+                repo_ref, git_token, base=branch, per_page=1, timeout=10.0
             )
             if not resp.is_success:
                 return True
@@ -3502,7 +3566,7 @@ class GitService(BaseService):
             return True
 
     async def _delete_remote_branch_best_effort(
-        self, owner: str, repo: str, branch: str, git_token: str
+        self, repo_ref: RepoRef, branch: str, git_token: str
     ) -> bool:
         """Best-effort: delete a remote branch by name.
 
@@ -3516,24 +3580,24 @@ class GitService(BaseService):
         """
         if branch in ("main", "master", "develop", ""):
             return False
-        if await self._branch_has_open_dependents(owner, repo, branch, git_token):
+        if await self._branch_has_open_dependents(repo_ref, branch, git_token):
             self.log.info(
                 "branch delete skipped: open dependent PRs target it as base",
                 branch=branch,
-                owner=owner,
-                repo=repo,
+                owner=repo_ref.owner,
+                repo=repo_ref.repo,
             )
             return False
         try:
             await self._forge.delete_branch_ref(
-                RepoRef(owner, repo), git_token, branch, timeout=10.0
+                repo_ref, git_token, branch, timeout=10.0
             )
             return True
         except httpx.HTTPError:
             return False
 
     async def _delete_pr_branch_best_effort(
-        self, owner: str, repo: str, pr_number: int, git_token: str
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
     ) -> None:
         """Best-effort: delete the PR's source branch on the remote after merge.
 
@@ -3541,14 +3605,14 @@ class GitService(BaseService):
         """
         try:
             pr_resp = await self._forge.get_pr(
-                RepoRef(owner, repo), git_token, pr_number, timeout=10.0
+                repo_ref, git_token, pr_number, timeout=10.0
             )
             if not pr_resp.is_success:
                 return
             branch = (pr_resp.json().get("head") or {}).get("ref")
             if not branch:
                 return
-            await self._delete_remote_branch_best_effort(owner, repo, branch, git_token)
+            await self._delete_remote_branch_best_effort(repo_ref, branch, git_token)
         except httpx.HTTPError:
             return
 
@@ -3581,11 +3645,11 @@ class GitService(BaseService):
                 return False
             if branch_name in {r.branch for r in effective_environments(project)}:
                 return False
-            owner, repo = self._parse_git_url(project.git_url)
+            repo_ref = self._parse_git_url(project.git_url)
         except Exception:
             return False
         return await self._delete_remote_branch_best_effort(
-            owner, repo, branch_name, git_token
+            repo_ref, branch_name, git_token
         )
 
     # Per-call cap on the stale-branch sweep so one request can't hang on an
@@ -3722,8 +3786,7 @@ class GitService(BaseService):
 
     async def _first_allowed_merge_method(
         self,
-        owner: str,
-        repo: str,
+        repo_ref: RepoRef,
         git_token: str,
         *,
         exclude: str | None = None,
@@ -3735,7 +3798,7 @@ class GitService(BaseService):
         merge method in its settings.
         """
         try:
-            resp = await self._forge.get_repo(RepoRef(owner, repo), git_token)
+            resp = await self._forge.get_repo(repo_ref, git_token)
             if not resp.is_success:
                 return None
             data = resp.json()
@@ -3759,32 +3822,30 @@ class GitService(BaseService):
         Returns: (target_branch, merge_commit)
         """
         git_token = await self._get_project_token_or_raise(project_slug)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
         if merge_method not in {"merge", "squash", "rebase"}:
             merge_method = "squash"
 
-        resp = await self._call_merge_api(
-            owner, repo, pr_number, git_token, merge_method
-        )
+        resp = await self._call_merge_api(repo_ref, pr_number, git_token, merge_method)
         # A 405 means the repo disallows this merge method (e.g. "Squash merges
         # are not allowed on this repository" when that button is off). Fall back
         # to a method the repo permits and retry once, so a repo's merge-button
         # settings can't permanently wedge the PM on an open, mergeable PR.
         if resp.status_code == httpx.codes.METHOD_NOT_ALLOWED:
             fallback = await self._first_allowed_merge_method(
-                owner, repo, git_token, exclude=merge_method
+                repo_ref, git_token, exclude=merge_method
             )
             if fallback and fallback != merge_method:
                 self.log.info(
                     "Merge method refused by repo; retrying with a permitted one",
                     requested=merge_method,
                     fallback=fallback,
-                    owner=owner,
-                    repo=repo,
+                    owner=repo_ref.owner,
+                    repo=repo_ref.repo,
                     pr=pr_number,
                 )
                 resp = await self._call_merge_api(
-                    owner, repo, pr_number, git_token, fallback
+                    repo_ref, pr_number, git_token, fallback
                 )
         if not resp.is_success:
             # A merge PUT on an already-merged PR returns the same 405/409 as a
@@ -3798,22 +3859,22 @@ class GitService(BaseService):
             # already succeeded. None (HTTPError — indeterminate) is treated
             # as "assume merged" so a network blip can't surface a spurious
             # failure on the CEO-only master-merge path.
-            merged = await self._pr_is_merged(owner, repo, pr_number, git_token)
+            merged = await self._pr_is_merged(repo_ref, pr_number, git_token)
             if merged is False:
                 raise GitError(
                     f"GitHub API refused PR merge ({resp.status_code}):"
                     f" {resp.text[:200]}",
-                    {"owner": owner, "repo": repo, "pr": pr_number},
+                    {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
                 )
             self.log.info(
                 "PR already merged on GitHub; treating as idempotent success",
-                owner=owner,
-                repo=repo,
+                owner=repo_ref.owner,
+                repo=repo_ref.repo,
                 pr=pr_number,
                 status_code=resp.status_code,
             )
 
-        await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
+        await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
 
         target_branch = await self._project_default_branch(project_slug)
         # Default branch always exists on origin, so the plain sync is correct
@@ -4301,7 +4362,7 @@ class GitService(BaseService):
             branch_name, actor_agent_id=actor_agent_id
         )
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
 
         # `open_pr` targets an ancestor task's branch (e.g. the cell-PM
         # integration branch) that may not exist on origin — a PM paused
@@ -4316,8 +4377,7 @@ class GitService(BaseService):
         pr_body = task.description or ""
 
         resp = await self._post_pr(
-            owner,
-            repo,
+            repo_ref,
             git_token,
             {
                 "title": pr_title,
@@ -4338,7 +4398,7 @@ class GitService(BaseService):
 
         if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
             found = await self._find_existing_pr(
-                owner, repo, branch_name, parent, git_token
+                repo_ref, branch_name, parent, git_token
             )
             if found:
                 pr_number = int(found["number"])
@@ -4350,7 +4410,7 @@ class GitService(BaseService):
                 await _await_shielded(
                     self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
                 )
-                await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
+                await self._apply_pr_labels(repo_ref, git_token, pr_number, labels)
                 return {
                     "pr_number": pr_number,
                     "pr_url": pr_url,
@@ -4361,7 +4421,7 @@ class GitService(BaseService):
             raise GitError(
                 f"GitHub API refused PR creation ({resp.status_code}): "
                 f"{resp.text[:200]}",
-                {"owner": owner, "repo": repo, "head": branch_name},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "head": branch_name},
             )
 
         pr_data = resp.json()
@@ -4376,7 +4436,7 @@ class GitService(BaseService):
         await _await_shielded(
             self._record_pr_atomically(UUID(str(task.id)), pr_number, pr_url)
         )
-        await self._apply_pr_labels(owner, repo, git_token, pr_number, labels)
+        await self._apply_pr_labels(repo_ref, git_token, pr_number, labels)
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
     async def _lock_parent_task_for_merge(self, parent_task_id: UUID | None) -> None:
@@ -4424,8 +4484,7 @@ class GitService(BaseService):
     class _MergeContext:
         """Bundle of params for `_merge_with_retry` (keeps arg count under 5)."""
 
-        owner: str
-        repo: str
+        repo_ref: RepoRef
         pr_number: int
         git_token: str
         workspace: Path
@@ -4435,7 +4494,7 @@ class GitService(BaseService):
         """Single-retry merge: on 409 (race) sync target then retry; on 405
         (repo disallows the merge method) fall back to a permitted method."""
         resp = await self._call_merge_api(
-            ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
+            ctx.repo_ref, ctx.pr_number, ctx.git_token, "squash"
         )
         if resp.status_code == _HTTP_CONFLICT:
             # Another PM merged a sibling subtask first and our local target
@@ -4443,7 +4502,7 @@ class GitService(BaseService):
             # conflict the PM resolves manually.
             await self._sync_target_branch(ctx.workspace, ctx.target, ctx.git_token)
             resp = await self._call_merge_api(
-                ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
+                ctx.repo_ref, ctx.pr_number, ctx.git_token, "squash"
             )
         if resp.status_code == _HTTP_METHOD_NOT_ALLOWED:
             # The repo's settings disallow squash (the button is off). Try a
@@ -4453,19 +4512,19 @@ class GitService(BaseService):
             # A 405 with no permitted fallback (or a second 405) falls through
             # to the already-merged disambiguation / MergeConflictError below.
             fallback = await self._first_allowed_merge_method(
-                ctx.owner, ctx.repo, ctx.git_token, exclude="squash"
+                ctx.repo_ref, ctx.git_token, exclude="squash"
             )
             if fallback and fallback != "squash":
                 self.log.info(
                     "Merge method refused by repo; retrying with a permitted one",
                     requested="squash",
                     fallback=fallback,
-                    owner=ctx.owner,
-                    repo=ctx.repo,
+                    owner=ctx.repo_ref.owner,
+                    repo=ctx.repo_ref.repo,
                     pr=ctx.pr_number,
                 )
                 resp = await self._call_merge_api(
-                    ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, fallback
+                    ctx.repo_ref, ctx.pr_number, ctx.git_token, fallback
                 )
         if not resp.is_success:
             # A merge PUT on an ALREADY-MERGED PR returns the same 405 as a
@@ -4477,7 +4536,7 @@ class GitService(BaseService):
             # "assume merged" so a network blip can't respawn the PM against an
             # already-merged PR; only a clean False is a real conflict.
             merged = await self._pr_is_merged(
-                ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token
+                ctx.repo_ref, ctx.pr_number, ctx.git_token
             )
             if merged is False:
                 # A real merge refusal (typically 405 "not mergeable") means the
@@ -4488,13 +4547,17 @@ class GitService(BaseService):
                 raise MergeConflictError(
                     f"GitHub API refused PR merge ({resp.status_code}):"
                     f" {resp.text[:200]}",
-                    {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
+                    {
+                        "owner": ctx.repo_ref.owner,
+                        "repo": ctx.repo_ref.repo,
+                        "pr": ctx.pr_number,
+                    },
                 )
             return resp
         return resp
 
     async def _pr_is_merged(
-        self, owner: str, repo: str, pr_number: int, git_token: str
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
     ) -> bool | None:
         """True if PR ``pr_number`` is already merged on GitHub.
 
@@ -4508,7 +4571,7 @@ class GitService(BaseService):
         non-success response is still False (GitHub answered, just not merged).
         """
         try:
-            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
         except httpx.HTTPError:
             return None
         if not resp.is_success:
@@ -4542,8 +4605,8 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, None)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(workspace)
-        merged = await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+        repo_ref = self._parse_github_remote(workspace)
+        merged = await self._pr_is_merged(repo_ref, task.pr_number, git_token)
         return True if merged is None else bool(merged)
 
     async def pr_merge(
@@ -4593,7 +4656,7 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
 
         # CEO is the only one who merges into the project's head environment
         # branch (ladder index 0 — "master" only when no ladder is declared;
@@ -4620,15 +4683,14 @@ class GitService(BaseService):
 
         await self._merge_with_retry(
             self._MergeContext(
-                owner=owner,
-                repo=repo,
+                repo_ref=repo_ref,
                 pr_number=pr_number,
                 git_token=git_token,
                 workspace=workspace,
                 target=target,
             )
         )
-        await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
+        await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
         merge_commit = await self._sync_target_branch_best_effort(
             workspace, target, git_token
         )
@@ -4642,11 +4704,11 @@ class GitService(BaseService):
         return {"merge_commit_sha": merge_commit or None}
 
     async def _get_pr_refs(
-        self, owner: str, repo: str, pr_number: int, git_token: str
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
     ) -> tuple[str, str] | None:
         """Return ``(head_ref, base_ref)`` for a PR, or ``None`` if unavailable."""
         try:
-            resp = await self._forge.get_pr(RepoRef(owner, repo), git_token, pr_number)
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
         except httpx.HTTPError:
             return None
         if not resp.is_success:
@@ -4816,9 +4878,9 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(clone_root)
+        repo_ref = self._parse_github_remote(clone_root)
 
-        refs = await self._get_pr_refs(owner, repo, pr_number, git_token)
+        refs = await self._get_pr_refs(repo_ref, pr_number, git_token)
         if refs is None:
             return {"status": "unknown"}
         head_branch, base_branch = refs
@@ -5076,9 +5138,8 @@ class GitService(BaseService):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
 
-        repo_ref = RepoRef(owner, repo)
         existing = await self._forge.get_pr(repo_ref, git_token, pr_number)
         already_closed = (
             existing.is_success and existing.json().get("state") == "closed"
@@ -5095,10 +5156,10 @@ class GitService(BaseService):
                 raise GitError(
                     f"GitHub API refused PR close ({resp.status_code}): "
                     f"{resp.text[:200]}",
-                    {"owner": owner, "repo": repo, "pr": pr_number},
+                    {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
                 )
         if delete_branch:
-            await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
+            await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
 
     async def pr_target(
         self,
@@ -5140,28 +5201,28 @@ class GitService(BaseService):
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
-        owner, repo = self._parse_github_remote(workspace)
+        repo_ref = self._parse_github_remote(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
 
         try:
             resp = await self._forge.get_pr(
-                RepoRef(owner, repo), git_token, pr_number, include_api_version=False
+                repo_ref, git_token, pr_number, include_api_version=False
             )
         except httpx.HTTPError as e:
             raise GitError(
                 f"GitHub API error fetching PR #{pr_number}: {e}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             ) from e
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR fetch ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
         base_ref = (resp.json().get("base") or {}).get("ref")
         if not base_ref:
             raise GitError(
                 f"PR #{pr_number} has no base ref",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
             )
         return str(base_ref)
 
@@ -5697,10 +5758,9 @@ class GitService(BaseService):
             return unopened
         try:
             await self.push(workspace, force=True)
-            owner, repo = self._parse_github_remote(workspace)
+            repo_ref = self._parse_github_remote(workspace)
             resp = await self._post_pr(
-                owner,
-                repo,
+                repo_ref,
                 token,
                 {
                     "title": spec.title,
@@ -5719,7 +5779,7 @@ class GitService(BaseService):
             # Static label — a project-level scaffold/restore PR has no task or
             # org layer; best-effort, never blocks.
             await self._apply_pr_labels(
-                owner, repo, token, int(pr_number), CONVENTIONS_PR_LABELS
+                repo_ref, token, int(pr_number), CONVENTIONS_PR_LABELS
             )
         return {
             "branch": spec.branch,
