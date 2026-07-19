@@ -9,6 +9,7 @@ from roboco.enforcement.a2a_access import (
     get_a2a_allowed_targets,
     validate_a2a_access,
 )
+from roboco.foundation.policy.communications import NO_COMMS_ROLES
 
 
 def test_validate_a2a_self_a2a_denied() -> None:
@@ -94,3 +95,27 @@ def test_can_a2a_direct_to_ceo_message_explains_reply_only() -> None:
     assert allowed is False
     assert reason is not None
     assert "reply" in reason.lower()
+
+
+@pytest.mark.parametrize(
+    "target_slug",
+    ["auditor", "pr-reviewer-1", "intake-1", "secretary-1"],
+)
+def test_can_a2a_direct_ceo_to_no_comms_role_denied(target_slug: str) -> None:
+    """The CEO's asymmetric reach still can't target a role with no dm/
+    read_a2a on its manifest (auditor, pr_reviewer, prompter, secretary) —
+    nothing on the other end could ever read or answer the DM. The panel's
+    New-DM dialog already filters these client-side (EXCLUDE_NON_DM_ROLES);
+    this is the server-side backstop for a direct API/A2A-service call."""
+    allowed, reason = can_a2a_direct("ceo", target_slug)
+    assert allowed is False
+    assert reason is not None
+    assert "comms" in reason.lower()
+
+
+def test_can_a2a_direct_ceo_to_no_comms_role_reuses_canonical_set() -> None:
+    """The refusal set must be exactly foundation.policy.communications'
+    NO_COMMS_ROLES — the same set services.gateway.content_actions uses to
+    gate the dm() sender side — so the two never drift apart."""
+    expected = {"auditor", "pr_reviewer", "prompter", "secretary"}
+    assert {role.value for role in NO_COMMS_ROLES} == expected

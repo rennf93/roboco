@@ -729,11 +729,63 @@ async def test_cancel_with_branch_and_work_session(
     )
     fake_git = MagicMock()
     fake_git.delete_task_branch = AsyncMock()
+    fake_git.close_task_pr_best_effort = AsyncMock()
     monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
     out = await svc.cancel(task.id, agent_role="cell_pm")
     assert out is not None
     fake_ws.abandon.assert_awaited()
     fake_git.delete_task_branch.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_open_pr(
+    task_setup: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GAP A: cancelling a task with an open PR closes it on the forge —
+    previously ``cancel`` force-deleted the branch/worktree but left
+    ``pr_number`` PRs open forever."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/x"
+    task.pr_number = 42
+    task.pr_url = "https://example.com/r/pull/42"
+    await db_session.flush()
+
+    fake_git = MagicMock()
+    fake_git.delete_task_branch = AsyncMock()
+    fake_git.close_task_pr_best_effort = AsyncMock()
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
+
+    out = await svc.cancel(task.id, agent_role="cell_pm")
+
+    assert out is not None
+    fake_git.close_task_pr_best_effort.assert_awaited_once_with(
+        task_setup["project_slug"], 42
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_skips_pr_close_without_pr_number(
+    task_setup: dict,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/x"
+    await db_session.flush()
+
+    fake_git = MagicMock()
+    fake_git.delete_task_branch = AsyncMock()
+    fake_git.close_task_pr_best_effort = AsyncMock()
+    monkeypatch.setattr("roboco.services.git.get_git_service", lambda _s: fake_git)
+
+    out = await svc.cancel(task.id, agent_role="cell_pm")
+
+    assert out is not None
+    fake_git.close_task_pr_best_effort.assert_not_awaited()
 
 
 @pytest.mark.asyncio

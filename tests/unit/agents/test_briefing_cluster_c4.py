@@ -68,10 +68,14 @@ def test_main_pm_prompt_covers_both_monorepo_and_multirepo() -> None:
     assert "not" in prompt and "a separate repo" in prompt
 
 
-def test_main_pm_prompt_names_prompter_monorepo_case() -> None:
-    """The concrete Prompter case (all cells = one repo) is stated."""
+def test_main_pm_prompt_frames_monorepo_as_per_deployment_fact() -> None:
+    """The monorepo case is illustrated generically, not asserted as a fact
+    about a specific repo — the Main PM is told to confirm the shape from
+    each cell's ``project_slug``, never assume one deployment's config
+    (this repo's own `rennf93/roboco`) applies to every Product."""
     prompt = _composed_prompt_for(AgentRole.MAIN_PM)
-    assert "github.com/rennf93/roboco" in prompt
+    assert "per-deployment fact you confirm from each cell's" in prompt
+    assert "github.com/rennf93/roboco" not in prompt
 
 
 # --------------------------------------------------------------------------
