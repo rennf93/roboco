@@ -52,7 +52,9 @@ from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.models.base import AgentStatus, TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.services import telegram_bridge as bridge
 from roboco.services.base import BaseService, ValidationError
+from roboco.services.project import get_project_service
 from roboco.services.release_proposal import TaskAlreadyCompletedError as _ReleaseDone
 from roboco.services.release_proposal import (
     dispatch_approve,
@@ -95,7 +97,10 @@ _CEO_UUID = UUID(AGENT_UUIDS["ceo"])
 _QUEUE_ITEM_CAP = 10
 _MESSAGE_CHAR_LIMIT = 4096  # Telegram's own sendMessage text cap
 
-_VALID_KINDS = ("task", "release", "xpost", "video", "roadmap")
+_VALID_KINDS = ("task", "release", "xpost", "video", "roadmap", "intake", "proj")
+# "sel" is the project-picker tap for /newtask; apv/rej stay the approve/
+# reject pair everywhere else.
+_VALID_ACTIONS = ("apv", "rej", "sel")
 # Per-kind reject-reason floor, mirroring each HTTP route's request schema
 # (ReleaseRejectRequest min_length=10, XPostRejectRequest/VideoPostRejectRequest/
 # RoadmapRejectRequest min_length=4; ceo_reject has no route-level floor beyond
@@ -148,6 +153,9 @@ BOT_COMMANDS: tuple[dict[str, str], ...] = (
     {"command": "blocked", "description": "Blocked + awaiting-you tasks"},
     {"command": "usage", "description": "Today's token spend"},
     {"command": "task", "description": "Task detail (id prefix or title)"},
+    {"command": "secretary", "description": "Chat with the chief-of-staff"},
+    {"command": "newtask", "description": "Draft a task with Intake"},
+    {"command": "end", "description": "End the current chat session"},
     {"command": "help", "description": "This list"},
 )
 
@@ -281,7 +289,7 @@ def parse_callback(data: str) -> ParsedCallback | None:
     if len(parts) not in (_CALLBACK_PARTS_NO_EXTRA, _CALLBACK_PARTS_WITH_EXTRA):
         return None
     action, kind, id8 = parts[0], parts[1], parts[2]
-    if action not in ("apv", "rej") or kind not in _VALID_KINDS or not id8:
+    if action not in _VALID_ACTIONS or kind not in _VALID_KINDS or not id8:
         return None
     extra = parts[3] if len(parts) == _CALLBACK_PARTS_WITH_EXTRA else ""
     return ParsedCallback(action=action, kind=kind, id8=id8, extra=extra)
@@ -373,6 +381,18 @@ class _PendingAction:
 _PENDING_REPLIES: dict[tuple[str, int], _PendingAction] = {}
 
 
+def _callback_disposition(parsed: ParsedCallback) -> str:
+    """How a tapped button routes: "bridge" (intake confirm/discard + the
+    /newtask project pick — no reason prompt), "prompt" (every reject, and a
+    task approve, need free text a button can't carry → force_reply), or
+    "approve" (act immediately)."""
+    if parsed.kind in ("intake", "proj"):
+        return "bridge"
+    if parsed.action == "rej" or (parsed.action == "apv" and parsed.kind == "task"):
+        return "prompt"
+    return "approve"
+
+
 def _sweep_expired_replies() -> None:
     now = time.monotonic()
     for key in [k for k, v in _PENDING_REPLIES.items() if v.expires_at <= now]:
@@ -442,6 +462,7 @@ class TelegramInboundEngine(BaseService):
         if max_seen >= offset:
             await get_settings_service(self.session).set(_OFFSET_KEY, str(max_seen + 1))
             await self.session.commit()
+        await bridge.sweep_idle()
 
     async def _process_update(
         self,
@@ -490,12 +511,31 @@ class TelegramInboundEngine(BaseService):
                 return
         cmd, args = parse_command(text)
         if not cmd:
+            await self._route_free_text(chat_id, text, client)
             return
-        await self._dispatch_command(cmd, args, client)
+        await self._dispatch_command(cmd, args, client, chat_id=chat_id, creds=creds)
+
+    async def _route_free_text(
+        self, chat_id: str, text: str, client: TelegramClient
+    ) -> None:
+        """While a bridged /secretary or /newtask session is live, plain
+        messages ARE the conversation; otherwise free text stays ignored."""
+        routed = await bridge.deliver_text(chat_id, text)
+        if routed:
+            await client.send_message(_esc(routed), parse_mode="HTML")
 
     async def _dispatch_command(
-        self, cmd: str, args: str, client: TelegramClient
+        self,
+        cmd: str,
+        args: str,
+        client: TelegramClient,
+        chat_id: str = "",
+        creds: TelegramCredentialsData | None = None,
     ) -> None:
+        if creds is not None and await self._dispatch_bridge_command(
+            cmd, args, client, chat_id, creds
+        ):
+            return
         if cmd in ("start", "help"):
             await client.send_message(_HELP_TEXT, parse_mode="HTML")
         elif cmd == "status":
@@ -548,6 +588,147 @@ class TelegramInboundEngine(BaseService):
             if counts.get(status.value)
         ]
         return _truncate("\n".join(lines))
+
+    async def _dispatch_bridge_command(
+        self,
+        cmd: str,
+        args: str,
+        client: TelegramClient,
+        chat_id: str,
+        creds: TelegramCredentialsData,
+    ) -> bool:
+        """The /secretary, /newtask, and /end verbs — True when handled."""
+        if cmd == "secretary":
+            await client.send_message(
+                await self._cmd_secretary(chat_id, args.strip(), creds),
+                parse_mode="HTML",
+            )
+            return True
+        if cmd == "newtask":
+            await self._cmd_newtask(chat_id, args.strip(), creds, client)
+            return True
+        if cmd == "end":
+            await client.send_message(
+                _esc(await bridge.end_session(chat_id)), parse_mode="HTML"
+            )
+            return True
+        return False
+
+    async def _cmd_secretary(
+        self, chat_id: str, text: str, creds: TelegramCredentialsData
+    ) -> str:
+        sess = bridge.active_session(chat_id)
+        if sess is not None and sess.kind == "secretary":
+            if not text:
+                return "Already chatting — just type."
+            return await bridge.deliver_text(chat_id, text) or "Delivered."
+        if sess is not None:
+            return "You're mid /newtask interview — /end it first."
+        return await bridge.start_secretary(chat_id, text, creds)
+
+    async def _cmd_newtask(
+        self,
+        chat_id: str,
+        text: str,
+        creds: TelegramCredentialsData,
+        client: TelegramClient,
+    ) -> None:
+        if bridge.active_session(chat_id) is not None:
+            await client.send_message(
+                "A chat session is already active — /end it first.",
+            )
+            return
+        projects = await get_project_service(self.session).list_all()
+        if not projects:
+            await client.send_message("No projects registered yet.")
+            return
+        if len(projects) == 1:
+            message = await bridge.start_intake(
+                chat_id, text, creds, project=projects[0]
+            )
+            await client.send_message(message, parse_mode="HTML")
+            return
+        bridge.remember_newtask_text(chat_id, text)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": p.name,
+                        "callback_data": build_callback("sel", "proj", str(p.id)[:8]),
+                    }
+                ]
+                for p in projects[:_QUEUE_ITEM_CAP]
+            ]
+        }
+        await client.send_message("Which project?", reply_markup=keyboard)
+
+    async def _handle_bridge_callback(
+        self,
+        parsed: ParsedCallback,
+        chat_id: str,
+        origin_message_id: int | None,
+        creds: TelegramCredentialsData,
+        client: TelegramClient,
+    ) -> None:
+        """The intake draft confirm/discard + /newtask project-pick taps.
+        The callback_query is already answered by the caller."""
+        if parsed.kind == "proj":
+            await self._start_picked_intake(parsed.id8, chat_id, creds, client)
+            return
+        if parsed.action == "apv":
+            ok, text = await self._confirm_intake_draft(chat_id)
+            await self._finish_action(client, origin_message_id, ok, text)
+            return
+        bridge.discard_draft(chat_id)
+        await self._finish_action(
+            client,
+            origin_message_id,
+            True,
+            "Draft discarded — keep chatting to revise it, or /end.",
+        )
+
+    async def _start_picked_intake(
+        self,
+        id8: str,
+        chat_id: str,
+        creds: TelegramCredentialsData,
+        client: TelegramClient,
+    ) -> None:
+        projects = await get_project_service(self.session).list_all()
+        picked = next((p for p in projects if str(p.id).startswith(id8)), None)
+        if picked is None:
+            await client.send_message("That project no longer exists.")
+            return
+        message = await bridge.start_intake(
+            chat_id, bridge.pop_newtask_text(chat_id), creds, project=picked
+        )
+        await client.send_message(message, parse_mode="HTML")
+
+    async def _confirm_intake_draft(self, chat_id: str) -> tuple[bool, str]:
+        """Route the pending draft through the normal board-review confirm
+        (the panel's own service seam), then park the session so board
+        feedback streams back into this thread."""
+        from roboco.services.prompter import get_prompter_service
+
+        sess = bridge.active_session(chat_id)
+        if sess is None or sess.pending_draft is None:
+            return False, "No draft is pending."
+        try:
+            task_id = await get_prompter_service(self.session).confirm_live_draft(
+                sess.pending_draft,
+                _CEO_UUID,
+                project_id=UUID(sess.project_id) if sess.project_id else None,
+                route="board",
+            )
+            await self.session.commit()
+        except Exception as exc:
+            self.log.exception("telegram intake confirm failed", chat_id=chat_id)
+            return False, f"Confirm failed: {exc}"
+        bridge.mark_parked(chat_id, str(task_id))
+        return True, (
+            "Sent to Board review 📋 — the board's feedback will land right "
+            "here in this chat."
+        )
 
     async def _render_agents(self) -> str:
         """Who's mid-task right now — the Today brief's fleet block as text."""
@@ -777,14 +958,14 @@ class TelegramInboundEngine(BaseService):
         if parsed is None:
             await client.answer_callback_query(cq_id, "Unrecognized action")
             return
-        # Every reject, and a task approve (mirrors ceo-approve's own >=20
-        # char note requirement), need free text the button alone can't
-        # carry — force_reply-prompt and park a pending action instead of
-        # acting immediately.
-        needs_reply = parsed.action == "rej" or (
-            parsed.action == "apv" and parsed.kind == "task"
-        )
-        if needs_reply:
+        disposition = _callback_disposition(parsed)
+        if disposition == "bridge":
+            await client.answer_callback_query(cq_id, "Working...")
+            await self._handle_bridge_callback(
+                parsed, chat_id, origin_message_id, creds, client
+            )
+            return
+        if disposition == "prompt":
             await client.answer_callback_query(cq_id, "Reply with the reason")
             await self._prompt_for_reply(parsed, chat_id, origin_message_id, client)
             return
