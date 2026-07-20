@@ -470,7 +470,7 @@ export function TgTodayTab({
             }}
             className="w-full space-y-2 text-left"
           >
-            <div className="flex -space-x-1.5 overflow-hidden">
+            <div className="flex gap-2 overflow-hidden">
               {fleet.working.map((a) => (
                 <TgAvatar key={a.name} name={a.name} active />
               ))}
