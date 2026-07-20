@@ -1398,3 +1398,27 @@ async def test_draft_release_post_uses_project_name_when_set(
     assert body is not None
     assert "Acme Robotics" in body
     assert "RoboCo" not in body
+
+
+def test_changelog_highlights_extracts_feature_headlines() -> None:
+    entry = (
+        "## [0.26.0] - 2026-07-20\n\n"
+        "### Security\n\n"
+        "- **Orchestrator API is off the public internet (GHSA-4f7g).** Both "
+        "composes published :8000 on 0.0.0.0.\n\n"
+        "### Added\n\n"
+        "- **Telegram Mini App V5 — brand voice and an operations ring (#583).** "
+        "Share Tech Mono becomes the display face.\n"
+        "- **Forge program: GitHub, Gitea, and GitLab (#575, #581).** One API.\n"
+    )
+    hl = x_engine_module.changelog_highlights(entry)
+    assert hl[0] == "Orchestrator API is off the public internet (GHSA-4f7g)"
+    assert hl[1] == "Telegram Mini App V5 — brand voice and an operations ring"
+    assert hl[2] == "Forge program: GitHub, Gitea, and GitLab"
+    # No raw commit-subject noise, no trailing PR refs or periods.
+    assert all("#" not in h.split("(GHSA")[0] for h in hl)
+
+
+def test_changelog_highlights_empty_on_no_leads() -> None:
+    body = "## [0.26.0]\n\nplain prose, no bold leads\n"
+    assert x_engine_module.changelog_highlights(body) == []

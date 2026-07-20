@@ -103,6 +103,31 @@ def _fallback_release_body(
     return f"{product_name} v{version} is out: {lead}"
 
 
+# Bold feature leads in a Keep-a-Changelog release body: "- **Headline (#N).**"
+_CHANGELOG_LEAD_RE = re.compile(r"^- \*\*(?P<lead>.+?)\*\*", re.MULTILINE)
+_CHANGELOG_PR_REF_RE = re.compile(r"\s*\(#\d+(?:,\s*#\d+)*\)")
+
+
+def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
+    """Human-readable feature headlines from a curated CHANGELOG release body.
+
+    The release drafter's ``change_summary`` is raw per-commit subjects
+    ("docs: curate the full 0.26.0 Unreleased body (#601)") — feeding those to
+    the announcement model produces a lame parroted caption. The curated
+    changelog's bold leads ARE the feature story ("Telegram Mini App V5 — brand
+    voice…"), so use those instead. Pure + best-effort: a body with no bold
+    leads yields an empty list and the caller falls back to change_summary.
+    """
+    out: list[str] = []
+    for m in _CHANGELOG_LEAD_RE.finditer(entry):
+        lead = _CHANGELOG_PR_REF_RE.sub("", m.group("lead")).strip().rstrip(".").strip()
+        if lead:
+            out.append(lead)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _release_prompt(
     version: str, highlights: list[str], voice: str, product_name: str
 ) -> str:
