@@ -11286,10 +11286,16 @@ Start now: evidence(task_id="{task_id}")
                         error=str(exc),
                     )
                 else:
-                    await self._notify_stale_claim_reaped(task_id, reaped_agent, ts)
+                    await self._notify_stale_claim_reaped(
+                        task_id, reaped_agent, ts, getattr(t, "title", None)
+                    )
 
     async def _notify_stale_claim_reaped(
-        self, task_id: "UUID", reaped_agent: Any, last_heartbeat: datetime | None
+        self,
+        task_id: "UUID",
+        reaped_agent: Any,
+        last_heartbeat: datetime | None,
+        task_title: str | None = None,
     ) -> None:
         """Best-effort coordination notification for a reaped stale claim.
 
@@ -11307,6 +11313,7 @@ Start now: evidence(task_id="{task_id}")
                 task_id=str(task_id),
                 reaped_agent=str(reaped_agent),
                 last_heartbeat=last_heartbeat.isoformat() if last_heartbeat else None,
+                task_title=task_title,
             )
         except Exception as exc:
             logger.warning(
@@ -11637,7 +11644,19 @@ Start now: evidence(task_id="{task_id}")
         Best-effort: a notification failure must not wedge dispatch, so any
         error is logged and swallowed.
         """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
         from roboco.services.notification import NotificationService
+        from roboco.services.task import TaskService
+
+        task_title: str | None = None
+        try:
+            async with get_db_context() as db:
+                task = await TaskService(db).get(UUID(task_id))
+                task_title = task.title if task else None
+        except Exception:
+            task_title = None
 
         try:
             await NotificationService().send_stuck_agent_notification(
@@ -11645,6 +11664,7 @@ Start now: evidence(task_id="{task_id}")
                 agent_slug=agent_slug,
                 task_status=task_status or "unknown",
                 to_agent="ceo",
+                task_title=task_title,
             )
         except Exception as exc:
             logger.warning(
@@ -11900,10 +11920,13 @@ Start now: evidence(task_id="{task_id}")
 
         try:
             async with get_db_context() as db:
-                await TaskService(db).mark_board_review_complete(UUID(task_id))
+                task_service = TaskService(db)
+                task = await task_service.get(UUID(task_id))
+                await task_service.mark_board_review_complete(UUID(task_id))
                 await db.commit()
             await NotificationService().send_board_review_complete_notification(
                 task_id=task_id,
+                task_title=task.title if task else None,
             )
         except Exception as exc:
             # Don't wedge dispatch on a failure; allow a retry by clearing the

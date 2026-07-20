@@ -159,7 +159,8 @@ async def test_send_blocker_notification(svc: NotificationService) -> None:
             from_agent="system",
             to_pm="cell-pm",
         )
-    assert any("Task t1" in row.subject for row in db.added)
+    # No task_title passed → falls back to the short-id display, not the raw id.
+    assert any("Task #t1" in row.subject for row in db.added)
 
 
 @pytest.mark.asyncio

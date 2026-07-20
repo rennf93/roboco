@@ -20,6 +20,7 @@ from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.services.notification_dedup import all_recipients_recently_notified
+from roboco.services.notification_text import agent_display, task_display
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class NotificationService:
         blocker_reason: str,
         from_agent: str | None,
         to_pm: str,
+        task_title: str | None = None,
     ) -> None:
         """Send notification about a blocked task."""
         logger.info(
@@ -72,10 +74,11 @@ class NotificationService:
             task_id=task_id,
             to_pm=to_pm,
         )
+        display = task_display(task_title, task_id)
 
         # System notifications bypass normal permission checks
         body = (
-            f"Task {task_id} has been blocked.\n\n"
+            f"Task {display} has been blocked.\n\n"
             f"Reason: {blocker_reason}\n\n"
             "Please investigate and help resolve."
         )
@@ -85,7 +88,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent=from_agent or "system",
                 to_agents=[to_pm],
-                subject=f"Task {task_id} is blocked",
+                subject=f"Task {display} is blocked",
                 body=body,
                 related_task_id=task_id,
             )
@@ -97,6 +100,7 @@ class NotificationService:
         agent_slug: str,
         task_status: str,
         to_agent: str,
+        task_title: str | None = None,
     ) -> None:
         """Alert an overseer that an agent is wedged in an unproductive loop.
 
@@ -110,8 +114,9 @@ class NotificationService:
             agent=agent_slug,
             to_agent=to_agent,
         )
+        display = task_display(task_title, task_id)
         body = (
-            f"Agent {agent_slug} was repeatedly spawned on task {task_id} "
+            f"Agent {agent_slug} was repeatedly spawned on task {display} "
             f"(status: {task_status}) without advancing it, so further automatic "
             "spawns have been paused. Please investigate and intervene manually."
         )
@@ -121,7 +126,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent="system",
                 to_agents=[to_agent],
-                subject=f"Agent {agent_slug} stuck on task {task_id}",
+                subject=f"Agent {agent_slug} stuck on task {display}",
                 body=body,
                 related_task_id=task_id,
             )
@@ -132,6 +137,7 @@ class NotificationService:
         task_id: str,
         flip_count: int,
         to_agent: str = "ceo",
+        task_title: str | None = None,
     ) -> None:
         """Alert an overseer that a task keeps flip-flopping block/unblock.
 
@@ -144,8 +150,9 @@ class NotificationService:
         logger.info(
             "Sending block-flip notification", task_id=task_id, flip_count=flip_count
         )
+        display = task_display(task_title, task_id)
         body = (
-            f"Task {task_id} has been blocked and unblocked {flip_count} times. "
+            f"Task {display} has been blocked and unblocked {flip_count} times. "
             "This flip-flop usually means a structural wedge rather than a "
             "one-off block — please investigate."
         )
@@ -155,7 +162,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent="system",
                 to_agents=[to_agent],
-                subject=f"Task {task_id} flip-flopping block/unblock ({flip_count}x)",
+                subject=f"Task {display} flip-flopping block/unblock ({flip_count}x)",
                 body=body,
                 related_task_id=task_id,
             )
@@ -166,6 +173,7 @@ class NotificationService:
         task_id: str,
         from_agent: str | None,
         to_qa: str,
+        task_title: str | None = None,
     ) -> None:
         """Send notification that task is ready for QA."""
         logger.info(
@@ -174,8 +182,9 @@ class NotificationService:
             to_qa=to_qa,
         )
 
+        display = task_display(task_title, task_id)
         body = (
-            f"Task {task_id} is ready for QA review.\n\n"
+            f"Task {display} is ready for QA review.\n\n"
             "Please review and provide feedback."
         )
         await self._create_notification(
@@ -184,7 +193,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=[to_qa],
-                subject=f"Task {task_id} ready for QA",
+                subject=f"Task {display} ready for QA",
                 body=body,
                 related_task_id=task_id,
             )
@@ -195,6 +204,7 @@ class NotificationService:
         task_id: str,
         from_agent: str | None,
         to_documenter: str,
+        task_title: str | None = None,
     ) -> None:
         """Send notification that task is ready for documentation."""
         logger.info(
@@ -203,8 +213,9 @@ class NotificationService:
             to_documenter=to_documenter,
         )
 
+        display = task_display(task_title, task_id)
         body = (
-            f"Task {task_id} has passed QA and is ready for documentation.\n\n"
+            f"Task {display} has passed QA and is ready for documentation.\n\n"
             "Please create the required documentation."
         )
         await self._create_notification(
@@ -213,7 +224,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=[to_documenter],
-                subject=f"Task {task_id} needs documentation",
+                subject=f"Task {display} needs documentation",
                 body=body,
                 related_task_id=task_id,
             )
@@ -225,6 +236,7 @@ class NotificationService:
         handoff_id: str,
         from_agent: str | None,
         to_documenter: str,
+        task_title: str | None = None,
     ) -> None:
         """Send notification that task needs handoff documentation."""
         logger.info(
@@ -234,8 +246,9 @@ class NotificationService:
             to_documenter=to_documenter,
         )
 
+        display = task_display(task_title, task_id)
         body = (
-            f"Task {task_id} is ready for handoff (ID: {handoff_id}).\n\n"
+            f"Task {display} is ready for handoff (ID: {handoff_id}).\n\n"
             "Please review and create handoff documentation."
         )
         await self._create_notification(
@@ -244,7 +257,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=[to_documenter],
-                subject=f"Handoff required: Task {task_id}",
+                subject=f"Handoff required: Task {display}",
                 body=body,
                 related_task_id=task_id,
             )
@@ -255,6 +268,7 @@ class NotificationService:
         task_id: str,
         qa_notes: str,
         to_developer: str,
+        task_title: str | None = None,
     ) -> None:
         """Send notification that task failed QA."""
         logger.info(
@@ -263,8 +277,9 @@ class NotificationService:
             to_developer=to_developer,
         )
 
+        display = task_display(task_title, task_id)
         body = (
-            f"Task {task_id} has failed QA review.\n\n"
+            f"Task {display} has failed QA review.\n\n"
             f"Notes: {qa_notes}\n\n"
             "Please address the issues and resubmit."
         )
@@ -274,7 +289,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent="system",
                 to_agents=[to_developer],
-                subject=f"QA Failed: Task {task_id}",
+                subject=f"QA Failed: Task {display}",
                 body=body,
                 related_task_id=task_id,
             )
@@ -285,6 +300,7 @@ class NotificationService:
         task_id: str,
         from_agent: str | None = None,
         to_ceo: str = "ceo",
+        task_title: str | None = None,
     ) -> None:
         """Tell the CEO a board review is complete and ready for Approve & Start.
 
@@ -305,8 +321,9 @@ class NotificationService:
             to_ceo=to_ceo,
         )
 
+        display = task_display(task_title, task_id)
         body = (
-            f"Board review complete for task {task_id}.\n\n"
+            f"Board review complete for task {display}.\n\n"
             "The Product Owner and Head of Marketing have both reviewed and "
             "recorded their requirements. The task is ready for your "
             "Approve & Start decision (hand to Main PM) or rejection."
@@ -317,7 +334,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent=from_agent or "system",
                 to_agents=[to_ceo],
-                subject=f"Board review complete: Task {task_id}",
+                subject=f"Board review complete: Task {display}",
                 body=body,
                 related_task_id=task_id,
             )
@@ -357,6 +374,7 @@ class NotificationService:
         pr_url: str,
         from_agent: str | None = None,
         to_ceo: str = "ceo",
+        task_title: str | None = None,
     ) -> None:
         """Tell the CEO an inbound external PR has been reviewed — their call.
 
@@ -374,10 +392,12 @@ class NotificationService:
             pr_number=pr_number,
             to_ceo=to_ceo,
         )
+        display = task_display(task_title, task_id)
         body = (
-            f"External PR #{pr_number} has been reviewed and a change-request "
-            f"posted ({pr_url}).\n\nYour call: supersede it (the org takes the "
-            "contribution over and finishes it to our standards) or dismiss it."
+            f"External PR #{pr_number} on {display} has been reviewed and a "
+            f"change-request posted ({pr_url}).\n\nYour call: supersede it (the "
+            "org takes the contribution over and finishes it to our standards) "
+            "or dismiss it."
         )
         await self._create_notification(
             CreateNotificationParams(
@@ -399,6 +419,7 @@ class NotificationService:
         from_agent: str | None = None,
         to_ceo: str = "ceo",
         db_session: AsyncSession | None = None,
+        task_title: str | None = None,
     ) -> None:
         """Tell the outgoing + incoming owner (and the CEO) a task moved.
 
@@ -417,9 +438,12 @@ class NotificationService:
             previous_assignee=previous_assignee,
             new_assignee=new_assignee,
         )
+        display = task_display(task_title, task_id)
+        previous_label = await agent_display(previous_assignee, db_session)
+        new_label = await agent_display(new_assignee, db_session)
         body = (
-            f"Task {task_id} was reassigned from "
-            f"{previous_assignee or 'unassigned'} to {new_assignee or 'unassigned'}."
+            f"Task {display} was reassigned from "
+            f"{previous_label or 'unassigned'} to {new_label or 'unassigned'}."
         )
         await self._create_notification(
             CreateNotificationParams(
@@ -427,7 +451,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=recipients,
-                subject=f"Task {task_id} reassigned",
+                subject=f"Task {display} reassigned",
                 body=body,
                 related_task_id=task_id,
             ),
@@ -441,6 +465,8 @@ class NotificationService:
         held_back_assignee: str | None,
         from_agent: str | None = None,
         to_ceo: str = "ceo",
+        held_back_title: str | None = None,
+        blocking_title: str | None = None,
     ) -> None:
         """Tell the held-back task's owner (+ CEO) it now waits on a sibling.
 
@@ -456,9 +482,11 @@ class NotificationService:
             held_back_task_id=held_back_task_id,
             blocking_task_id=blocking_task_id,
         )
+        held_back_display = task_display(held_back_title, held_back_task_id)
+        blocking_display = task_display(blocking_title, blocking_task_id)
         body = (
-            f"Task {held_back_task_id} was held back by the collision-sequencing "
-            f"analyzer: it now depends on task {blocking_task_id}, which surfaced "
+            f"Task {held_back_display} was held back by the collision-sequencing "
+            f"analyzer: it now depends on task {blocking_display}, which surfaced "
             "an overlapping file/migration/shared-surface collision. It will "
             "resume once that task reaches a terminal state."
         )
@@ -468,7 +496,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=recipients,
-                subject=f"Task {held_back_task_id} sequenced behind a sibling",
+                subject=f"Task {held_back_display} sequenced behind a sibling",
                 body=body,
                 related_task_id=held_back_task_id,
             )
@@ -481,6 +509,7 @@ class NotificationService:
         from_agent: str | None = None,
         to_ceo: str = "ceo",
         db_session: AsyncSession | None = None,
+        task_title: str | None = None,
     ) -> None:
         """Tell the restored owner (+ CEO) a blocked task is workable again.
 
@@ -497,9 +526,11 @@ class NotificationService:
             task_id=task_id,
             restored_owner=restored_owner,
         )
+        display = task_display(task_title, task_id)
+        owner_label = await agent_display(restored_owner, db_session)
         body = (
-            f"Task {task_id} has been unblocked and handed back to "
-            f"{restored_owner or 'its owner'}. It is ready to resume."
+            f"Task {display} has been unblocked and handed back to "
+            f"{owner_label or 'its owner'}. It is ready to resume."
         )
         await self._create_notification(
             CreateNotificationParams(
@@ -507,7 +538,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=recipients,
-                subject=f"Task {task_id} unblocked",
+                subject=f"Task {display} unblocked",
                 body=body,
                 related_task_id=task_id,
             ),
@@ -522,6 +553,8 @@ class NotificationService:
         from_agent: str | None = None,
         to_ceo: str = "ceo",
         db_session: AsyncSession | None = None,
+        task_title: str | None = None,
+        completed_dependency_title: str | None = None,
     ) -> None:
         """Tell the revived task's owner (+ CEO) its last dependency landed.
 
@@ -544,9 +577,13 @@ class NotificationService:
             task_id=task_id,
             completed_dependency_id=completed_dependency_id,
         )
+        display = task_display(task_title, task_id)
+        dependency_display = task_display(
+            completed_dependency_title, completed_dependency_id
+        )
         body = (
-            f"Task {task_id} was revived: its dependency "
-            f"{completed_dependency_id} just completed and no other "
+            f"Task {display} was revived: its dependency "
+            f"{dependency_display} just completed and no other "
             "dependencies remain. It is ready to resume."
         )
         await self._create_notification(
@@ -555,7 +592,7 @@ class NotificationService:
                 priority=NotificationPriority.NORMAL,
                 from_agent=from_agent or "system",
                 to_agents=recipients,
-                subject=f"Task {task_id} revived by dependency completion",
+                subject=f"Task {display} revived by dependency completion",
                 body=body,
                 related_task_id=task_id,
             ),
@@ -569,6 +606,7 @@ class NotificationService:
         last_heartbeat: str | None = None,
         from_agent: str = "system",
         to_ceo: str = "ceo",
+        task_title: str | None = None,
     ) -> None:
         """Tell the reaped agent (+ CEO) its stale claim was released.
 
@@ -586,10 +624,12 @@ class NotificationService:
             task_id=task_id,
             reaped_agent=reaped_agent,
         )
+        display = task_display(task_title, task_id)
+        agent_label = await agent_display(reaped_agent)
         body = (
-            f"Task {task_id}'s claim went stale "
+            f"Task {display}'s claim went stale "
             f"(last heartbeat: {last_heartbeat or 'unknown'}) and was reaped "
-            f"back to pending, releasing it from {reaped_agent or 'its holder'}."
+            f"back to pending, releasing it from {agent_label or 'its holder'}."
         )
         await self._create_notification(
             CreateNotificationParams(
@@ -597,7 +637,7 @@ class NotificationService:
                 priority=NotificationPriority.HIGH,
                 from_agent=from_agent,
                 to_agents=recipients,
-                subject=f"Task {task_id}: stale claim reaped",
+                subject=f"Task {display}: stale claim reaped",
                 body=body,
                 related_task_id=task_id,
             )

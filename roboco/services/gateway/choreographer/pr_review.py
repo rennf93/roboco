@@ -210,6 +210,7 @@ class PRReviewerMixin(_Base):
                     task_id=str(task_id),
                     pr_number=pr_number,
                     pr_url=str(getattr(t, "pr_url", "") or ""),
+                    task_title=getattr(t, "title", None),
                 )
             except Exception:
                 logger.exception(
