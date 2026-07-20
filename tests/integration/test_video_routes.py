@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -46,6 +46,7 @@ UX_DEV_1_UUID = _foundation.AGENTS["ux-dev-1"].uuid
 UX_DEV_2_UUID = _foundation.AGENTS["ux-dev-2"].uuid
 HISTORY_LIMIT = 2
 RETRY_ATTEMPTS = 2
+PREVIEW_DURATION_SECONDS = 6.0
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -1284,3 +1285,192 @@ async def test_preview_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
         resp = await client.get(f"/api/video/preview/{task.id}/vertical.html")
     assert resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()
+
+
+# --- preview frames (CEO-facing request_render surface) -----------------------
+
+
+def _write_preview_frame(
+    root: Path, orientation: str, idx: int, count: int, timestamp: float
+) -> Path:
+    """One request_render-shaped frame file — filename encodes index/count/
+    timestamp exactly as video-renderer/render.js writes it."""
+    d = root / orientation
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"frame-{idx:02d}-of-{count}-at-{timestamp:.1f}s.png"
+    path.write_bytes(b"fake-png-bytes")
+    return path
+
+
+def _previews_dir(workspaces_root: Path, project_slug: str, task_id: UUID) -> Path:
+    return workspaces_root / project_slug / ".previews" / task_id.hex[:8]
+
+
+@pytest.mark.asyncio
+async def test_preview_frames_lists_both_orientations_with_marker_metadata(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "workspaces_root", str(tmp_path))
+    task = await _seed_authoring_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        draft_extra={"composition_id": "Intro"},
+    )
+    project = await db_session.get(ProjectTable, task.project_id)
+    assert project is not None
+    root = _previews_dir(tmp_path, project.slug, cast("UUID", task.id))
+    _write_preview_frame(root, "vertical", 1, 2, 1.5)
+    _write_preview_frame(root, "vertical", 2, 2, 4.5)
+    _write_preview_frame(root, "square", 1, 1, 3.0)
+    markers.set_render_preview(
+        task,
+        {
+            "at": "2026-07-20T00:00:00+00:00",
+            "composition_id": "Intro",
+            "orientation": "square",
+            "frame_count": 1,
+            "duration_seconds": PREVIEW_DURATION_SECONDS,
+            "frames": [],
+            "head_sha": "abc123",
+            "dirty": False,
+        },
+    )
+    await db_session.flush()
+
+    resp = await ceo_client.get(f"/api/video/preview-frames/{task.id}")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["composition_id"] == "Intro"
+    assert body["duration_seconds"] == PREVIEW_DURATION_SECONDS
+    assert body["head_sha"] == "abc123"
+    assert body["dirty"] is False
+    assert body["rendered_at"] == "2026-07-20T00:00:00+00:00"
+    vertical = body["frames"]["vertical"]
+    assert [f["index"] for f in vertical] == [1, 2]
+    assert [f["timestamp_seconds"] for f in vertical] == [1.5, 4.5]
+    assert body["frames"]["square"][0]["file"].startswith("frame-01-of-1-at-3.0s")
+
+
+@pytest.mark.asyncio
+async def test_preview_frames_no_render_yet_is_404(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source=video task with no request_render call yet has nothing under
+    .previews/ — 404, not an empty 200 the panel would render as a blank
+    section."""
+    monkeypatch.setattr(cfg, "workspaces_root", str(tmp_path))
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    resp = await ceo_client.get(f"/api/video/preview-frames/{task.id}")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_frames_missing_task_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.get(f"/api/video/preview-frames/{uuid4()}")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_frames_non_video_task_is_404(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_draft(db_session)  # source=video_post, not video
+    resp = await ceo_client.get(f"/api/video/preview-frames/{task.id}")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_frames_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/preview-frames/{task.id}")
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_preview_frame_streams_png_bytes(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "workspaces_root", str(tmp_path))
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    project = await db_session.get(ProjectTable, task.project_id)
+    assert project is not None
+    root = _previews_dir(tmp_path, project.slug, cast("UUID", task.id))
+    frame_path = _write_preview_frame(root, "vertical", 1, 1, 0.5)
+    resp = await ceo_client.get(
+        f"/api/video/preview-frames/{task.id}/vertical/{frame_path.name}"
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content == b"fake-png-bytes"
+
+
+@pytest.mark.asyncio
+async def test_preview_frame_bad_orientation_is_400(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    resp = await ceo_client.get(
+        f"/api/video/preview-frames/{task.id}/diagonal/frame-01-of-1-at-0.5s.png"
+    )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_preview_frame_missing_file_is_404(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "workspaces_root", str(tmp_path))
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    resp = await ceo_client.get(
+        f"/api/video/preview-frames/{task.id}/vertical/frame-01-of-1-at-0.5s.png"
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_preview_frame_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
+    task = await _seed_authoring_task(db_session, status=TaskStatus.IN_PROGRESS)
+    app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            f"/api/video/preview-frames/{task.id}/vertical/frame-01-of-1-at-0.5s.png"
+        )
+    assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+def test_resolve_preview_path_confines_frame_orientation_traversal(
+    tmp_path: Path,
+) -> None:
+    """The preview-frame route composes ``f"{orientation}/{filename}"`` before
+    calling ``_resolve_preview_path`` — same confinement the composition-HTML
+    proxy uses, applied to a task's .previews/ dir instead of its read-clone."""
+    root = (tmp_path / "roboco-x" / ".previews" / "abcd1234").resolve()
+    (root / "vertical").mkdir(parents=True)
+    frame = root / "vertical" / "frame-01-of-1-at-0.5s.png"
+    frame.write_bytes(b"png")
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"nope")
+    assert (
+        video_module._resolve_preview_path(root, "vertical/frame-01-of-1-at-0.5s.png")
+        == frame.resolve()
+    )
+    assert video_module._resolve_preview_path(root, "vertical/../../secret.png") is None
+    assert video_module._resolve_preview_path(root, "../secret.png") is None

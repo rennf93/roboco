@@ -87,6 +87,29 @@ export interface TikTokCredentialsStatus {
   has_credentials: boolean;
 }
 
+// One extracted request_render preview frame — GET /video/preview-frames/
+// {task_id} (roboco/api/routes/video.py). index/timestamp decoded server-side
+// from the sidecar's self-describing filename.
+export interface PreviewFrame {
+  index: number;
+  file: string;
+  timestamp_seconds: number;
+}
+
+// A video-authoring task's request_render preview — the CEO's only look at
+// the rendered artifact before the post-completion render loop produces the
+// real MP4 (an awaiting_ceo_approval task otherwise has nothing to watch).
+// frames keyed by orientation; an absent/empty key was never rendered.
+export interface VideoPreviewFrames {
+  task_id: string;
+  composition_id: string | null;
+  duration_seconds: number | null;
+  head_sha: string | null;
+  dirty: boolean | null;
+  rendered_at: string | null;
+  frames: Partial<Record<VideoCut, PreviewFrame[]>>;
+}
+
 // GET /video/posts/{id}/media (roboco/api/routes/video.py) serves one
 // rendered MP4 cut; VideoPost.mp4_paths (above) carries the server-side
 // paths per cut. This builds that route's URL — but a native
@@ -110,6 +133,18 @@ export function compositionPreviewUrl(
 ): string {
   const filePath = `motion/compositions/${compositionId}/${cut}.html`;
   return `${API_URL}/video/preview/${authoringTaskId}/${filePath}`;
+}
+
+// GET /video/preview-frames/{task_id}/{orientation}/{filename} streams one
+// frame's PNG bytes. Same auth-header problem as the MP4 media route (a
+// plain <img src> GET carries none of axios's headers), so the panel fetches
+// via videoApi.getPreviewFrameBlob instead — kept for direct-link use.
+export function previewFrameUrl(
+  taskId: string,
+  cut: VideoCut,
+  file: string,
+): string {
+  return `${API_URL}/video/preview-frames/${taskId}/${cut}/${encodeURIComponent(file)}`;
 }
 
 export const videoApi = {
@@ -173,6 +208,27 @@ export const videoApi = {
   // not the held draft's own task_id.
   rerender: async (authoringTaskId: string): Promise<void> => {
     await api.post(`/video/pipeline/${authoringTaskId}/rerender`);
+  },
+  // The task's request_render preview frames, per orientation. Callers
+  // treat a 404 (nothing rendered yet) as "no preview" rather than an error.
+  getPreviewFrames: async (taskId: string): Promise<VideoPreviewFrames> => {
+    const { data } = await api.get<VideoPreviewFrames>(
+      `/video/preview-frames/${taskId}`,
+    );
+    return data;
+  },
+  // Fetches one frame's PNG bytes as a Blob (carrying the auth headers a
+  // plain <img src> GET can't) — mirrors getMediaBlob's object-URL pattern.
+  getPreviewFrameBlob: async (
+    taskId: string,
+    cut: VideoCut,
+    file: string,
+  ): Promise<Blob> => {
+    const { data } = await api.get<Blob>(
+      `/video/preview-frames/${taskId}/${cut}/${encodeURIComponent(file)}`,
+      { responseType: "blob" },
+    );
+    return data;
   },
   getCredentialsStatus: async (): Promise<TikTokCredentialsStatus> => {
     const { data } = await api.get<TikTokCredentialsStatus>(

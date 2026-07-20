@@ -234,6 +234,9 @@ export interface Task {
   // MegaTask grouping: set on the umbrella (parent_task_id null) and every
   // root-subtask of a batch. null on ordinary tasks.
   batch_id?: string | null;
+  // Origin tag ("manual", "video", "video_post", "roadmap", ...) — gates the
+  // task-detail Video preview section for source=video authoring tasks.
+  source?: string;
   created_at: string;
   updated_at: string | null;
   claimed_at: string | null;
@@ -878,12 +881,7 @@ export interface CodeReviewResponse {
 export interface LearningRecordRequest {
   content: string;
   category:
-    | "error_handling"
-    | "performance"
-    | "testing"
-    | "pattern"
-    | "tool"
-    | "other";
+    "error_handling" | "performance" | "testing" | "pattern" | "tool" | "other";
   team?: "backend" | "frontend" | "ux_ui";
   shareable?: boolean;
   tags?: string[];
