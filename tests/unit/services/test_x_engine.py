@@ -18,6 +18,7 @@ from roboco.config import settings as cfg
 from roboco.db.tables import (
     AgentSpawnSessionTable,
     AgentTable,
+    NotificationTable,
     ProjectTable,
     TaskTable,
     XSeenFeatureTable,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
 HOM_UUID = _foundation.AGENTS["head-marketing"].uuid
+CEO_UUID = _foundation.AGENTS["ceo"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
@@ -100,6 +102,7 @@ async def _seed(session: AsyncSession) -> None:
         (SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
         (SECRETARY_UUID, "secretary-1", AgentRole.SECRETARY, None),
         (HOM_UUID, "head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD),
+        (CEO_UUID, "ceo", AgentRole.CEO, None),
     ):
         if await session.get(AgentTable, uuid) is None:
             session.add(
@@ -408,6 +411,24 @@ async def test_meaningful_mention_holds_reply_proposal(
     ref = markers.get_x_mention_ref(task)
     assert ref is not None
     assert ref["id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_reply_skipped_when_local_model_returns_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank/failed local-model reply draft originates nothing — no
+    generic "Thanks for the mention!" filler ships in its place."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, None)
+    engine = x_engine_module.XEngine(
+        db_session, client=_FakeClient(mentions=[_mention("m1")])
+    )
+    result = await engine.run_cycle()
+    assert result == []
+    open_posts = await get_task_service(db_session).list_open_x_posts()
+    assert open_posts == []
 
 
 @pytest.mark.asyncio
@@ -1422,3 +1443,63 @@ def test_changelog_highlights_extracts_feature_headlines() -> None:
 def test_changelog_highlights_empty_on_no_leads() -> None:
     body = "## [0.26.0]\n\nplain prose, no bold leads\n"
     assert x_engine_module.changelog_highlights(body) == []
+
+
+# --------------------------------------------------------------------------- #
+# Prompt quality (Wave G: slop-ban + length guidance in the drafting prompt)
+# --------------------------------------------------------------------------- #
+
+
+def test_release_prompt_contains_slop_ban_and_length_guidance() -> None:
+    voice = x_engine_module._hom_voice("RoboCo")
+    prompt = x_engine_module._release_prompt(
+        _VERSION, ["feat: new thing"], voice, "RoboCo"
+    )
+    assert "BANNED" in prompt
+    assert "Em dashes" in prompt
+    assert "game-changer" in prompt
+    assert "under 240 characters" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# Brand-voice nudge dedupe (Wave G)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_brand_voice_nudge_fires_once(db_session: AsyncSession) -> None:
+    """Drafting with an empty ``brand_voice`` nudges the CEO once — the
+    durable ``system_settings`` marker (not an in-memory/Redis TTL guard)
+    suppresses every later fire, across as many drafts as run."""
+    await _seed(db_session)
+    await get_company_goals_service(db_session).upsert({"brand_voice": ""})
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    await engine._voice_guide("RoboCo")
+    await engine._voice_guide("RoboCo")
+    await engine._voice_guide("RoboCo")
+    result = await db_session.execute(
+        select(NotificationTable).where(
+            NotificationTable.subject == "Set a brand voice for sharper X/video drafts"
+        )
+    )
+    assert len(result.scalars().all()) == ONE
+
+
+@pytest.mark.asyncio
+async def test_brand_voice_nudge_skipped_once_brand_voice_set(
+    db_session: AsyncSession,
+) -> None:
+    """No nudge at all once a brand-voice sample exists — nothing to nudge
+    about."""
+    await _seed(db_session)
+    await get_company_goals_service(db_session).upsert(
+        {"brand_voice": "Dry wit, never an exclamation point."}
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    await engine._voice_guide("RoboCo")
+    result = await db_session.execute(
+        select(NotificationTable).where(
+            NotificationTable.subject == "Set a brand voice for sharper X/video drafts"
+        )
+    )
+    assert result.scalars().all() == []

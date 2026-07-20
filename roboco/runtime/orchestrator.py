@@ -14388,6 +14388,15 @@ Read the vendored renderer doctrine in motion/skills/ (hyperframes-core,
 MCP) on this task: open your composition HTML (file://.../vertical.html)
 and watch it live while iterating — do not build blind between renders.
 
+Captions (x_caption / tiktok_caption, see motion/README.md "Captions"):
+- X: hook line naming the concrete capability, then 1-2 lines of specifics
+  (real feature names/numbers, not adjectives), short outro. No hashtag
+  spam. Target well under 240 characters.
+- TikTok: hook + 2-3 short punchy lines + 3-5 relevant niche hashtags max
+  (never generic filler tags).
+- Same slop-ban as the design bar (motion/README.md "AI tells to avoid"):
+  no em dashes, no filler verbs ("Elevate", "Seamless", "Unleash").
+
 i_am_done() refuses without a stamped render preview — a clean self-review of
 the source is not enough; the rendered frames are the evidence.
 """
