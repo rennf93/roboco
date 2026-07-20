@@ -42,6 +42,10 @@ on:
       - 'CLAUDE.md'
       - 'CHANGELOG.md'
       - 'docs/**'
+      # `make quality`'s prose gate lints motion/**, so a motion-only commit
+      # can still turn the gate red — without this it fires no run and a PR
+      # merges on a false green.
+      - 'motion/**'
   pull_request:
     branches:
       - master

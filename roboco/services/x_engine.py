@@ -493,13 +493,9 @@ class XEngine(BaseService):
         originated: list[TaskTable] = []
         product_name: str | None = None
         for mention in mentions:
-            if len(originated) >= settings.x_mentions_max_per_cycle:
+            if self._cycle_cap_reached(len(originated), open_count):
                 break
-            if open_count + len(originated) >= settings.x_max_open_posts:
-                break
-            if not mention.id or await self._already_seen(mention.id):
-                continue
-            if not _is_meaningful(mention, settings.x_mentions_min_engagement):
+            if await self._skip_mention(mention):
                 continue
             if project is None or project.id is None:
                 self.log.warning(
@@ -517,6 +513,22 @@ class XEngine(BaseService):
             if reply_task is not None:
                 originated.append(reply_task)
         return originated
+
+    def _cycle_cap_reached(self, originated_count: int, open_count: int) -> bool:
+        """Stop originating once this cycle's per-run or rolling open-post cap
+        is hit."""
+        return (
+            originated_count >= settings.x_mentions_max_per_cycle
+            or open_count + originated_count >= settings.x_max_open_posts
+        )
+
+    async def _skip_mention(self, mention: XMention) -> bool:
+        """A mention already handled, or below the engagement floor, is skipped.
+        The floor skip is deliberately not marked seen, so a later viral
+        re-fetch can still draft it."""
+        if not mention.id or await self._already_seen(mention.id):
+            return True
+        return not _is_meaningful(mention, settings.x_mentions_min_engagement)
 
     async def _since_id_get(self) -> str | None:
         """Best-effort read of the persisted mentions cursor; None on miss or
