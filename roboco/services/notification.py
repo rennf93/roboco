@@ -611,6 +611,7 @@ class NotificationService:
         body: str,
         priority: NotificationPriority = NotificationPriority.NORMAL,
         task_id: UUID | str | None = None,
+        db_session: AsyncSession | None = None,
     ) -> None:
         """Send a free-form ack-required notification (PM/Board only).
 
@@ -625,6 +626,11 @@ class NotificationService:
         """
         subject = body.split("\n", 1)[0][:200] or "Notification"
         related_task_id = str(task_id) if task_id is not None else None
+        # A caller notifying about a row its OWN open transaction just
+        # created must pass db_session so the insert joins that transaction
+        # — a fresh session can't see the uncommitted task and the
+        # related_task_id FK rejects the row (the 0.26.0 release-proposal
+        # bell notification was lost exactly this way).
         await self._create_notification(
             CreateNotificationParams(
                 notification_type=NotificationType.ALERT,
@@ -634,7 +640,8 @@ class NotificationService:
                 subject=subject,
                 body=body,
                 related_task_id=related_task_id,
-            )
+            ),
+            db_session=db_session,
         )
 
     async def send_broadcast_notification(

@@ -201,7 +201,11 @@ class ReleaseManagerEngine(BaseService):
         )
         try:
             await NotificationService().send_ack_notification(
-                from_agent="system", to_agent="ceo", body=body, task_id=str(task.id)
+                from_agent="system",
+                to_agent="ceo",
+                body=body,
+                task_id=str(task.id),
+                db_session=self.session,
             )
         except Exception as exc:
             self.log.warning("release CEO notify failed (best-effort)", error=str(exc))
