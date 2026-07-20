@@ -283,11 +283,17 @@ class ReleaseProposalService(BaseService):
         publish). Off/no-creds is itself a no-op inside the engine. The
         proposal task's project scopes the draft to the released project."""
         try:
-            from roboco.services.x_engine import get_x_engine
+            from roboco.services.x_engine import changelog_highlights, get_x_engine
 
+            # Prefer the curated CHANGELOG's feature headlines over raw
+            # per-commit subjects — the latter made the announcement caption
+            # parrot the top commit ("docs: curate the Unreleased body…").
+            highlights = changelog_highlights(report.drafted_changelog) or list(
+                report.change_summary
+            )
             await get_x_engine(self.session).draft_release_post(
                 version=report.proposed_version,
-                highlights=list(report.change_summary),
+                highlights=highlights,
                 project_id=project_id,
             )
         except Exception as exc:
