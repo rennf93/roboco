@@ -33,6 +33,10 @@ vi.mock("@/components/settings/feature-flags-card", () => ({
   FeatureFlagsCard: () => null,
 }));
 
+vi.mock("@/components/settings/github-app-credentials-card", () => ({
+  GitHubAppCredentialsCard: () => null,
+}));
+
 import SettingsPage from "../page";
 
 // The Label and Switch/Select are siblings inside a flex row, so the label
