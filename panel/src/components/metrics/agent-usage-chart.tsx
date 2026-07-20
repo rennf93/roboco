@@ -15,16 +15,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
+import { formatTokens } from "@/lib/format";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { AgentUsageRow } from "@/types";
 
 interface AgentUsageChartProps {
   data: AgentUsageRow[] | undefined;
   isLoading: boolean;
-}
-
-function fmtK(n: number): string {
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
-  return String(n);
 }
 
 const VIEW_OPTIONS = [
@@ -101,7 +98,7 @@ export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
           <ResponsiveContainer width="100%" height={208}>
             <BarChart
               data={chartData}
-              margin={{ top: 4, right: 8, left: 0, bottom: 24 }}
+              margin={{ top: 4, right: 8, left: 0, bottom: isMobile ? 40 : 32 }}
             >
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
               <XAxis
@@ -114,18 +111,18 @@ export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
                 tickLine={false}
               />
               <YAxis
-                tickFormatter={fmtK}
+                tickFormatter={formatTokens}
                 tick={{ fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                width={36}
+                width={46}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value) => [
-                  fmtK(typeof value === "number" ? value : 0),
+                  formatTokens(typeof value === "number" ? value : 0),
                   "Tokens",
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Bar
                 dataKey="Tokens"

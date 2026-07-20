@@ -14,28 +14,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
+import { formatTokens, formatBucket } from "@/lib/format";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { UsageTimePoint } from "@/types";
 
 interface UsageTimeSeriesChartProps {
   data: UsageTimePoint[] | undefined;
   isLoading: boolean;
-}
-
-function formatBucket(bucket: string): string {
-  const d = new Date(bucket);
-  // If the bucket has a non-zero time component it is an hourly bucket → show HH:00.
-  // Otherwise it is a daily bucket → show MM/DD.
-  const isHourly =
-    d.getMinutes() === 0 && (d.getHours() !== 0 || bucket.includes("T"));
-  if (isHourly && d.getSeconds() === 0 && !bucket.endsWith("T00:00:00.000Z")) {
-    return d.getHours().toString().padStart(2, "0") + ":00";
-  }
-  return d.getMonth() + 1 + "/" + d.getDate();
-}
-
-function fmtK(n: number): string {
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
-  return String(n);
 }
 
 export function UsageTimeSeriesChart({
@@ -99,23 +84,23 @@ export function UsageTimeSeriesChart({
               <XAxis
                 dataKey="hour"
                 tick={{ fontSize: isMobile ? 9 : 10 }}
-                interval={isMobile ? 5 : 3}
+                interval="preserveStartEnd"
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
-                tickFormatter={fmtK}
+                tickFormatter={formatTokens}
                 tick={{ fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                width={36}
+                width={46}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value, name) => [
-                  fmtK(typeof value === "number" ? value : 0),
+                  formatTokens(typeof value === "number" ? value : 0),
                   name,
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Legend wrapperStyle={{ fontSize: isMobile ? 10 : 12 }} />
               <Area

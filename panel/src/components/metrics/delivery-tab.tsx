@@ -25,6 +25,7 @@ import {
   useRework,
   useTeamScorecard,
 } from "@/hooks/use-observability";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { Scorecard } from "@/types";
 
 const CELLS = ["backend", "frontend", "ux_ui"] as const;
@@ -91,8 +92,8 @@ function CycleTimeCard() {
                 tickFormatter={(v) => v + "h"}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value) => [value + "h", "Avg"]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Bar
                 dataKey="Hours"
