@@ -122,6 +122,10 @@ _VALIDATORS = {
     # from FEATURE_FLAGS/the panel card) but reuses this same validated KV
     # store instead of a dedicated table, so a restart doesn't replay updates.
     "telegram_last_update_id": _validate_update_id,
+    # One-time-nudge marker (XEngine._maybe_nudge_brand_voice). Not a feature
+    # flag (absent from FEATURE_FLAGS/the panel card) but reuses this same KV
+    # store instead of a dedicated table or a restart-losing in-memory flag.
+    "x_brand_voice_nudge_sent": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

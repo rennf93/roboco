@@ -1089,6 +1089,33 @@ class NotificationDeliveryService(BaseService):
         await self._persist_and_deliver(notification)
         await self._notify_telegram(task_id=task_id, subject=notification.subject)
 
+    async def notify_ceo_of_brand_voice_unset(self) -> None:
+        """One-time nudge (see ``XEngine._maybe_nudge_brand_voice``): no
+        ``company_goals.brand_voice`` sample is set, so X/video drafts are
+        running on the generic house voice. Informational, no ack — the CEO
+        can ignore it and drafting keeps working exactly as before.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        notification = NotificationTable(
+            type=NotificationType.BROADCAST,
+            priority=NotificationPriority.NORMAL,
+            from_agent=ceo.id,
+            to_agents=[ceo.id],
+            subject="Set a brand voice for sharper X/video drafts",
+            body=(
+                "X posts and video captions are drafting on RoboCo's generic "
+                "house voice — no sample of yours is set yet. Add one in "
+                "Settings -> Business -> Goals -> Brand voice and every "
+                "future draft will read more like you wrote it."
+            ),
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BROADCAST],
+            read_by=[],
+            acked_by=[],
+        )
+        await self._persist_and_deliver(notification)
+
     async def notify_auditor_of_rework(
         self,
         *,

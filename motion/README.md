@@ -12,6 +12,14 @@ Compositions live under `compositions/<composition_id>/`. Each composition is on
 4. Add `<your_clip>.test.js` (vitest) asserting the HTML-structure invariants — dimensions, props.js wiring, theme link, at least one `class="clip"` element, no CDN scripts. See `release-announcement.test.js` as a template.
 5. `pnpm preview` (alias for `hyperframes preview <file>`) opens the local preview server; `pnpm lint` runs `hyperframes lint` over both orientations; `pnpm test` runs the smoke gate that CI runs.
 
+## Captions
+
+`propose_video`'s `x_caption`/`tiktok_caption` args (self-verified against each platform's limit in the tracked `captions.json` — see the release examples below) follow their own per-platform shape, not a shared template:
+
+- **X** — a hook line naming the concrete capability, then 1-2 lines of specifics (real feature names/numbers beat adjectives), a short outro. No hashtag spam. Target well under 240 characters so the 280 limit never truncates mid-sentence.
+- **TikTok** — hook + 2-3 short punchy lines + 3-5 relevant niche hashtags max (not generic `#tech #ai` filler).
+- Same slop-ban as the "AI tells to avoid" design-bar rule below: no em dashes, no filler verbs ("Elevate", "Seamless", "Unleash").
+
 ## `release-announcement` — props shape
 
 The composition reads `window.__PROPS__` (written into `props.js` by the sidecar at render time):
