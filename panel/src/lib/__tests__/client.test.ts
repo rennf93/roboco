@@ -30,7 +30,7 @@ vi.mock("@/store/rate-limit-store", () => ({
 // ---------------------------------------------------------------------------
 // Import the function under test AFTER mocks are in place
 // ---------------------------------------------------------------------------
-import { getErrorMessage } from "@/lib/api/client";
+import { getErrorMessage, isTgSurfacePath } from "@/lib/api/client";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -210,5 +210,19 @@ describe("getErrorMessage — non-Axios fallbacks", () => {
     expect(getErrorMessage({ code: "SOME_CODE" })).toBe(
       "An unexpected error occurred",
     );
+  });
+});
+
+describe("isTgSurfacePath — the /tg login-redirect exemption", () => {
+  it("matches the cockpit root and subpaths", () => {
+    expect(isTgSurfacePath("/tg")).toBe(true);
+    expect(isTgSurfacePath("/tg/")).toBe(true);
+  });
+
+  it("does not match the dashboard or lookalike segments", () => {
+    expect(isTgSurfacePath("/overview")).toBe(false);
+    expect(isTgSurfacePath("/tgsomething")).toBe(false);
+    expect(isTgSurfacePath("/login")).toBe(false);
+    expect(isTgSurfacePath("/")).toBe(false);
   });
 });
