@@ -73,6 +73,28 @@ export interface AdminConversationSummary {
   updated_at: string;
 }
 
+/**
+ * One row of the CEO's OWN conversation list (participant-scoped route) —
+ * unlike the admin list this carries the resolved `other_agent` and a real
+ * `unread_count`, which is what a phone chat list wants.
+ */
+export interface CeoConversationSummary {
+  id: string;
+  other_agent: string;
+  topic: string | null;
+  task_id: string | null;
+  status: string;
+  message_count: number;
+  unread_count: number;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+}
+
+export interface CeoConversationListResponse {
+  items: CeoConversationSummary[];
+  total: number;
+}
+
 /** One persisted A2A chat message (full body — WS frames only carry excerpts). */
 export interface A2AChatMessage {
   id: string;
@@ -524,5 +546,49 @@ export const a2aApi = {
       { headers: { "X-Agent-ID": "ceo" } },
     );
     return data;
+  },
+
+  /**
+   * The CEO's own conversation list (participant-scoped route) — resolved
+   * `other_agent` plus a real `unread_count` per thread, which the admin
+   * list doesn't carry.
+   */
+  listCeoConversations: async (
+    limit: number = 50,
+  ): Promise<CeoConversationListResponse> => {
+    if (isMockMode()) {
+      const now = new Date().toISOString();
+      return {
+        items: [
+          {
+            id: "mock-ceo-conv-1",
+            other_agent: "main-pm",
+            topic: null,
+            task_id: null,
+            status: "active",
+            message_count: 4,
+            unread_count: 1,
+            last_message_at: now,
+            last_message_preview: "Wave 2 is queued behind the migration.",
+          },
+        ],
+        total: 1,
+      };
+    }
+    const { data } = await api.get<CeoConversationListResponse>(
+      "/a2a/chat/conversations",
+      { params: { limit }, headers: { "X-Agent-ID": "ceo" } },
+    );
+    return data;
+  },
+
+  /** Clear the CEO's unread counter on one of its own conversations. */
+  markConversationRead: async (conversationId: string): Promise<void> => {
+    if (isMockMode()) return;
+    await api.post(
+      `/a2a/chat/conversations/${conversationId}/read`,
+      undefined,
+      { headers: { "X-Agent-ID": "ceo" } },
+    );
   },
 };

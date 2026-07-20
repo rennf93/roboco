@@ -44,6 +44,14 @@ vi.mock("@/components/tg/tg-board-tab", () => ({
 vi.mock("@/components/tg/tg-chat-tab", () => ({
   TgChatTab: () => <div data-testid="tg-chat-tab" />,
 }));
+vi.mock("@/components/tg/tg-metrics-tab", () => ({
+  TgMetricsTab: () => <div data-testid="tg-metrics-tab" />,
+}));
+// The shell's bell badge count — stubbed so the bootstrap test needs no
+// QueryClientProvider.
+vi.mock("@/hooks/use-notifications", () => ({
+  useNotifications: () => ({ data: undefined }),
+}));
 
 import TelegramMiniAppPage from "../page";
 
@@ -140,9 +148,7 @@ describe("TelegramMiniAppPage — auth bootstrap", () => {
       expect(screen.getByTestId("tg-tab-bar")).toBeInTheDocument(),
     );
     expect(post).not.toHaveBeenCalled();
-    expect(
-      screen.queryByText(/open from telegram/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/open from telegram/i)).not.toBeInTheDocument();
   });
 
   it("dev mock also engages when the CDN bridge loaded with empty initData", async () => {

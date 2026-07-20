@@ -142,7 +142,11 @@ describe("TgTodayTab", () => {
   it("renders the operations ring and deep-links Ship into the release", async () => {
     get.mockResolvedValue({
       data: brief({
-        ship: { version: "0.25.0", open_release_proposal: true, ci_fix_tasks: 0 },
+        ship: {
+          version: "0.25.0",
+          open_release_proposal: true,
+          ci_fix_tasks: 0,
+        },
       }),
     });
     const onNavigate = vi.fn();

@@ -58,6 +58,91 @@ export function Sparkline({ values }: { values: number[] }) {
   );
 }
 
+const AREA_W = 340;
+const AREA_H = 128;
+
+/**
+ * Full-size area chart for drilldowns — the wallet asset-chart archetype:
+ * a clean line + gradient fill with the series' min/max annotated on the
+ * right edge and start/end captions underneath. No axes, no grid; the two
+ * extremes plus the endpoints are the honest summary a phone needs.
+ * `values` oldest → newest; `format` renders the min/max annotations.
+ */
+export function TgAreaChart({
+  values,
+  format = (v: number) => v.toFixed(2),
+  startLabel,
+  endLabel,
+}: {
+  values: number[];
+  format?: (v: number) => string;
+  startLabel?: string;
+  endLabel?: string;
+}) {
+  const n = values.length;
+  const max = Math.max(...values, 0);
+  const min = Math.min(...values, 0);
+  const span = max - min || 1;
+  const gradId = "tg-area-grad";
+
+  const x = (i: number) => (n <= 1 ? 0 : (i / (n - 1)) * AREA_W);
+  const y = (v: number) => AREA_H - 8 - ((v - min) / span) * (AREA_H - 16);
+
+  const points = values.map((v, i) => [x(i), y(v)] as const);
+  const line = points.map(([px, py]) => `${px},${py}`).join(" ");
+  const area = `M0,${AREA_H} L${line.replace(/ /g, " L")} L${AREA_W},${AREA_H} Z`;
+  const [lastX, lastY] = points[points.length - 1] ?? [AREA_W, AREA_H / 2];
+
+  return (
+    <div>
+      <div className="relative">
+        <svg
+          viewBox={`0 0 ${AREA_W} ${AREA_H}`}
+          preserveAspectRatio="none"
+          className="h-32 w-full overflow-visible text-primary"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="currentColor" stopOpacity="0.26" />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <path d={area} fill={`url(#${gradId})`} className="tg-backdrop" />
+          <polyline
+            points={line}
+            pathLength={1}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            className="tg-draw-line"
+          />
+          <circle cx={lastX} cy={lastY} r="4" fill="currentColor" />
+        </svg>
+        {max > min && (
+          <>
+            <span className="absolute right-0 top-0 text-[10px] tabular-nums text-muted-foreground/70">
+              {format(max)}
+            </span>
+            <span className="absolute bottom-0 right-0 text-[10px] tabular-nums text-muted-foreground/70">
+              {format(min)}
+            </span>
+          </>
+        )}
+      </div>
+      {(startLabel || endLabel) && (
+        <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground/60">
+          <span>{startLabel}</span>
+          <span>{endLabel}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Compact day bars — the last bar (today) emphasized in the accent, the
  * rest muted. `values` oldest → newest. */
 export function DayBars({

@@ -71,6 +71,12 @@ export interface TelegramWebApp {
   /** Bot API 7.7+ — stops vertical swipes from minimizing the app so
    * scrolling a list never accidentally dismisses the cockpit. */
   disableVerticalSwipes?: () => void;
+  /** Bot API 6.1+/7.10+ — paint Telegram's own window chrome (titlebar,
+   * app background, bottom bar) so the cockpit blends edge-to-edge into
+   * the client instead of sitting framed inside default chrome. */
+  setHeaderColor?: (color: string) => void;
+  setBackgroundColor?: (color: string) => void;
+  setBottomBarColor?: (color: string) => void;
   HapticFeedback?: TelegramHapticFeedback;
   MainButton?: TelegramMainButton;
   BackButton?: TelegramBackButton;

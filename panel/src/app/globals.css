@@ -131,37 +131,56 @@
    dashboard theme. Inside Telegram, the themeParams bridge inline-overrides
    the SURFACE tokens (background/card/text/hint/border) to the user's own
    Telegram palette, while the accent tokens stay RoboCo's: Telegram's
-   surfaces, RoboCo's voice. */
+   surfaces, RoboCo's voice. Cards read as elevation (surface contrast +
+   an inset top highlight), never as outlines — border is reserved for
+   hairline separators. */
 #tg-shell {
   color-scheme: dark;
-  --background: oklch(0.16 0.015 260);
-  --foreground: oklch(0.93 0.005 260);
-  --card: oklch(0.205 0.02 260);
-  --card-foreground: oklch(0.93 0.005 260);
-  --popover: oklch(0.205 0.02 260);
-  --popover-foreground: oklch(0.93 0.005 260);
+  /* Native type: SF on iOS, Roboto on Android — the webview's own voice,
+     which is what makes the surface feel like Telegram, not a website. */
+  font-family:
+    -apple-system, "SF Pro Text", system-ui, "Segoe UI", Roboto,
+    "Helvetica Neue", sans-serif;
+  --background: oklch(0.155 0.014 255);
+  --foreground: oklch(0.935 0.005 255);
+  --card: oklch(0.215 0.018 255);
+  --card-foreground: oklch(0.935 0.005 255);
+  --popover: oklch(0.215 0.018 255);
+  --popover-foreground: oklch(0.935 0.005 255);
   --primary: oklch(0.8 0.13 78);
   --primary-foreground: oklch(0.22 0.04 78);
-  --secondary: oklch(0.26 0.02 260);
-  --secondary-foreground: oklch(0.93 0.005 260);
-  --muted: oklch(0.26 0.02 260);
-  --muted-foreground: oklch(0.68 0.012 260);
-  --accent: oklch(0.26 0.02 260);
-  --accent-foreground: oklch(0.93 0.005 260);
+  --secondary: oklch(0.27 0.02 255);
+  --secondary-foreground: oklch(0.935 0.005 255);
+  --muted: oklch(0.27 0.02 255);
+  --muted-foreground: oklch(0.67 0.014 255);
+  --accent: oklch(0.27 0.02 255);
+  --accent-foreground: oklch(0.935 0.005 255);
   --destructive: oklch(0.68 0.19 25);
-  --border: oklch(1 0 0 / 12%);
-  --input: oklch(1 0 0 / 15%);
+  --border: oklch(1 0 0 / 7%);
+  --input: oklch(1 0 0 / 12%);
   --ring: oklch(0.8 0.13 78);
 }
 
-/* Cockpit brand typography + motion. `.tg-display` is the Share Tech Mono
-   display voice (labels, numerals, wordmark — never body text); the
-   animation classes are the Mini App's only motion vocabulary: rise-in for
-   tab/section entrances, slide-up for bottom sheets, a draw-in for the
-   spend sparkline. All animate transform/opacity only and collapse to
-   instant under prefers-reduced-motion via the global rule below. */
-#tg-shell .tg-display {
+/* Cockpit typography + motion. `.tg-brand` is the Share Tech Mono wordmark
+   voice — the ROBOCO_ mark only, never labels or numerals. `.tg-display`
+   is the numeral voice: the native face at a heavier weight with tabular
+   figures, so big figures read like a wallet balance instead of terminal
+   output. The animation classes are the Mini App's only motion vocabulary:
+   rise-in for tab/section entrances, slide-in for pushed sub-pages,
+   slide-up for bottom sheets, a draw-in for the spend sparkline, a one-shot
+   flash for live-updated rows. Everything animates transform/opacity (the
+   flash animates a background tint once) and collapses to instant under
+   prefers-reduced-motion via the global rule below. */
+#tg-shell .tg-brand {
   font-family: var(--font-share-tech), ui-monospace, "SF Mono", monospace;
+}
+#tg-shell .tg-display {
+  /* The Share Tech Mono brand voice — hero numerals, stat values, the
+     wordmark. Single-weight face: strip synthesized bolding so the mark
+     stays crisp. Labels and body copy stay on the native stack. */
+  font-family: var(--font-share-tech), ui-monospace, "SF Mono", monospace;
+  font-weight: 400;
+  letter-spacing: 0.01em;
 }
 #tg-shell .tg-tab-in {
   animation: tg-rise 0.24s cubic-bezier(0.21, 0.61, 0.35, 1) backwards;
@@ -196,6 +215,39 @@
 }
 #tg-shell .tg-cursor {
   animation: tg-blink 1.1s steps(1) infinite;
+}
+/* Horizontal chip strips scroll without showing a bar — the native
+   mobile pattern (content itself signals the overflow). */
+#tg-shell .tg-scroll-x {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#tg-shell .tg-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+#tg-shell .tg-slide-in {
+  animation: tg-slide 0.28s cubic-bezier(0.32, 0.72, 0, 1) backwards;
+}
+#tg-shell .tg-flash {
+  animation: tg-flash 1.4s ease-out 1;
+}
+@keyframes tg-slide {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes tg-flash {
+  0% {
+    background-color: color-mix(in oklab, var(--primary) 14%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 @keyframes tg-rise {
   from {

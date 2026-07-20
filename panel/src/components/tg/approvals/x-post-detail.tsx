@@ -91,15 +91,15 @@ export function XPostDetail({
           value={body}
           onChange={(e) => setEdited(e.target.value)}
           rows={5}
-          className={cn("text-sm", overLimit && "border-destructive")}
+          className={cn("text-sm", overLimit && "border-rose-400/60")}
         />
         <p
           className={cn(
             "text-right text-[11px] tabular-nums",
-            overLimit ? "text-destructive" : "text-muted-foreground",
+            overLimit ? "text-rose-400" : "text-muted-foreground",
           )}
         >
-          {body.length}/{MAX_TWEET_CHARS}
+          {body.length} / {MAX_TWEET_CHARS}
         </p>
       </div>
 

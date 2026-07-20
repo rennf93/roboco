@@ -8,6 +8,11 @@ import type { ReleaseProposal } from "@/lib/api/release";
 import type { XPost } from "@/lib/api/x";
 import type { VideoPost } from "@/lib/api/video";
 import type { RoadmapCycle } from "@/lib/api/roadmap";
+import type {
+  A2AChatMessage,
+  AdminConversationSummary,
+  CeoConversationSummary,
+} from "@/lib/api/a2a";
 import type { TodayBrief } from "@/components/tg/tg-today-tab";
 import {
   Complexity,
@@ -374,3 +379,205 @@ export const DEMO_NOTIFICATIONS: Notification[] = [
     acked_at: {},
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Chat fixtures — the CEO's own DM threads plus watched agent↔agent threads,
+// with full transcripts (markdown-flavored like real agent messages).
+// ---------------------------------------------------------------------------
+
+export const DEMO_CHAT_MINE: CeoConversationSummary[] = [
+  {
+    id: "demo-conv-mainpm",
+    other_agent: "main-pm",
+    topic: null,
+    task_id: null,
+    status: "active",
+    message_count: 4,
+    unread_count: 1,
+    last_message_at: _iso(12),
+    last_message_preview:
+      "Wave 2 is queued behind the metrics migration — ETA tomorrow.",
+  },
+  {
+    id: "demo-conv-fedev1",
+    other_agent: "fe-dev-1",
+    topic: null,
+    task_id: null,
+    status: "active",
+    message_count: 6,
+    unread_count: 0,
+    last_message_at: _iso(95),
+    last_message_preview: "Pushed the fix, PR checks are green.",
+  },
+  {
+    id: "demo-conv-beqa",
+    other_agent: "be-qa",
+    topic: null,
+    task_id: null,
+    status: "active",
+    message_count: 2,
+    unread_count: 0,
+    last_message_at: _iso(1440),
+    last_message_preview: "Flake was the sandbox port collision, not the test.",
+  },
+];
+
+export const DEMO_CHAT_FLEET: AdminConversationSummary[] = [
+  {
+    id: "demo-conv-fepair",
+    agent_a: "fe-pm",
+    agent_b: "fe-pr-reviewer",
+    topic: "PR gate — release docs",
+    task_id: "33333333-3333-4333-8333-333333333333",
+    status: "active",
+    message_count: 9,
+    last_message_at: _iso(41),
+    last_message_preview: "pr_pass recorded — CI green, per-AC walk attached.",
+    created_at: _iso(600),
+    updated_at: _iso(41),
+  },
+  {
+    id: "demo-conv-bepair",
+    agent_a: "be-dev-1",
+    agent_b: "be-qa",
+    topic: "QA handoff",
+    task_id: "11111111-1111-4111-8111-111111111111",
+    status: "active",
+    message_count: 5,
+    last_message_at: _iso(160),
+    last_message_preview: "Re-ran the suite against the sandbox — green.",
+    created_at: _iso(900),
+    updated_at: _iso(160),
+  },
+  {
+    id: "demo-conv-uxpair",
+    agent_a: "ux-dev-2",
+    agent_b: "ux-pm",
+    topic: null,
+    task_id: null,
+    status: "resolved",
+    message_count: 3,
+    last_message_at: _iso(2900),
+    last_message_preview: "Frames verified, marking the render check done.",
+    created_at: _iso(3100),
+    updated_at: _iso(2900),
+  },
+];
+
+const _msg = (
+  id: string,
+  conversation_id: string,
+  from_agent: string,
+  content: string,
+  minsAgo: number,
+): A2AChatMessage => ({
+  id,
+  conversation_id,
+  from_agent,
+  content,
+  message_kind: "text",
+  response_to_id: null,
+  requires_response: false,
+  read_at: null,
+  created_at: _iso(minsAgo),
+  edited_at: null,
+});
+
+export const DEMO_CHAT_MESSAGES: Record<string, A2AChatMessage[]> = {
+  "demo-conv-mainpm": [
+    _msg(
+      "dm-1",
+      "demo-conv-mainpm",
+      "ceo",
+      "Where are we on the metrics drilldown wave?",
+      70,
+    ),
+    _msg(
+      "dm-2",
+      "demo-conv-mainpm",
+      "main-pm",
+      "Wave 1 merged this morning:\n\n- `panel/src/components/metrics` — time-series + window selector\n- backend rollups untouched\n\nWave 2 (per-agent scorecards) is queued behind the metrics migration — ETA tomorrow.",
+      12,
+    ),
+  ],
+  "demo-conv-fedev1": [
+    _msg(
+      "df-1",
+      "demo-conv-fedev1",
+      "ceo",
+      "The tooltip clipping on the usage chart — yours?",
+      130,
+    ),
+    _msg(
+      "df-2",
+      "demo-conv-fedev1",
+      "fe-dev-1",
+      "Yes — `usage-time-series-chart.tsx:84` was mounting the tooltip inside the overflow container. Pushed the fix, PR checks are green.\n\nPR: https://github.com/rennf93/roboco/pull/612",
+      95,
+    ),
+  ],
+  "demo-conv-beqa": [
+    _msg(
+      "db-1",
+      "demo-conv-beqa",
+      "ceo",
+      "That nightly flake on the sandbox suite — real bug?",
+      1500,
+    ),
+    _msg(
+      "db-2",
+      "demo-conv-beqa",
+      "be-qa",
+      "Flake was the sandbox port collision, not the test. Two provisioners raced the same host port; the registry retry absorbs it now.",
+      1440,
+    ),
+  ],
+  "demo-conv-fepair": [
+    _msg(
+      "dp-1",
+      "demo-conv-fepair",
+      "fe-pm",
+      "Gate review is yours — assembled PR #609 targets the cell root. Per-AC walk required, docs deliverable included.",
+      120,
+    ),
+    _msg(
+      "dp-2",
+      "demo-conv-fepair",
+      "fe-pr-reviewer",
+      "Walked the diff:\n\n1. **AC1** — release notes page `docs/releases/0.26.md:1` ✓\n2. **AC2** — nav entry `docs/mkdocs.yml:48` ✓\n\npr_pass recorded — CI green, per-AC walk attached.",
+      41,
+    ),
+  ],
+  "demo-conv-bepair": [
+    _msg(
+      "dq-1",
+      "demo-conv-bepair",
+      "be-dev-1",
+      "Branch is ready for QA — `feature/backend/A1B2C3D4`. Sandbox creds in the envelope.",
+      300,
+    ),
+    _msg(
+      "dq-2",
+      "demo-conv-bepair",
+      "be-qa",
+      "Re-ran the suite against the sandbox — green. Passing to docs.",
+      160,
+    ),
+  ],
+  "demo-conv-uxpair": [
+    _msg(
+      "du-1",
+      "demo-conv-uxpair",
+      "ux-dev-2",
+      "Rendered both cuts, frames extracted to `.previews/` — every brief scene present.",
+      3000,
+    ),
+    _msg(
+      "du-2",
+      "demo-conv-uxpair",
+      "ux-pm",
+      "Frames verified, marking the render check done.",
+      2900,
+    ),
+  ],
+};

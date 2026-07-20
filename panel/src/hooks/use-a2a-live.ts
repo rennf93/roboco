@@ -10,6 +10,7 @@ import {
 export const a2aLiveKeys = {
   all: ["a2a-live"] as const,
   conversations: ["a2a-live", "conversations"] as const,
+  ceoConversations: ["a2a-live", "ceo-conversations"] as const,
   pairs: ["a2a-live", "pairs"] as const,
   messages: (conversationId: string) =>
     ["a2a-live", "messages", conversationId] as const,
@@ -17,11 +18,38 @@ export const a2aLiveKeys = {
 
 // Conversation list — refreshed by WS `a2a.message` invalidation and the
 // manual Refresh button; a short staleTime keeps remounts reasonably fresh.
-export function useA2AConversations(limit?: number) {
+export function useA2AConversations(limit?: number, enabled = true) {
   return useQuery({
     queryKey: [...a2aLiveKeys.conversations, limit ?? 50],
     queryFn: () => a2aApi.listAdminConversations(limit),
     staleTime: 30_000,
+    enabled,
+  });
+}
+
+// The CEO's own threads (participant-scoped) — resolved peer + per-thread
+// unread count. The phone chat's "Mine" list.
+export function useCeoConversations(limit?: number, enabled = true) {
+  return useQuery({
+    queryKey: [...a2aLiveKeys.ceoConversations, limit ?? 50],
+    queryFn: () => a2aApi.listCeoConversations(limit),
+    staleTime: 30_000,
+    enabled,
+  });
+}
+
+// Clear a thread's unread counter when it's opened. Invalidates the CEO
+// list so its badge drops without waiting for the next WS frame.
+export function useMarkConversationRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) =>
+      a2aApi.markConversationRead(conversationId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: a2aLiveKeys.ceoConversations,
+      });
+    },
   });
 }
 
@@ -43,12 +71,12 @@ export function useA2AAdminPairs() {
 // passes a ~10s interval to poll the thread it's actively viewing.
 export function useA2AMessages(
   conversationId: string | null,
-  options?: { refetchInterval?: number | false },
+  options?: { refetchInterval?: number | false; enabled?: boolean },
 ) {
   return useQuery({
     queryKey: a2aLiveKeys.messages(conversationId || ""),
     queryFn: () => a2aApi.listAdminMessages(conversationId!),
-    enabled: !!conversationId,
+    enabled: !!conversationId && (options?.enabled ?? true),
     staleTime: 30_000,
     refetchInterval: options?.refetchInterval ?? false,
   });

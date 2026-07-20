@@ -37,7 +37,10 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-_T0 = datetime(2026, 6, 20, 12, 0, 0, tzinfo=UTC)
+# Relative, not hardcoded: the service windows (30d metrics, 7d scorecards)
+# filter on now(), so a fixed date silently ages out of the window and the
+# suite detonates weeks later. Two days back sits inside every window.
+_T0 = datetime.now(UTC) - timedelta(days=2)
 _EXPECTED_TASKS = 2  # completed tasks seeded per rework / scorecard test
 _EXPECTED_TOKENS = 1500  # 1000 input + 500 output in the scorecard spawn session
 

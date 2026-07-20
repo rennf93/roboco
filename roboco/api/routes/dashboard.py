@@ -8,9 +8,9 @@ Provides aggregated views, alerts, and reporting.
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import CurrentAgentContext, DbSession, require_panel_token
 from roboco.api.schemas.dashboard import (
     AuditorDashboard,
     AuditorFlag,
@@ -30,7 +30,10 @@ from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
 from roboco.services.usage import get_usage_service
 
-router = APIRouter()
+# Router-level panel gate (mirrors usage.py): every dashboard view is
+# panel-facing — the metrics/scorecard handlers take only DbSession, so
+# without this they'd be reachable unauthenticated on a public origin.
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 # The auditor flag/report mutating routes are gated to the Auditor and the
 # CEO. The Auditor is the silent-observer role whose flags/reports feed the

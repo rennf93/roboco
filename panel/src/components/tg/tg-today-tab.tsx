@@ -5,10 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api, { getErrorMessage } from "@/lib/api/client";
 import { isTgDemoMode } from "@/lib/telegram/demo";
 import { useWebSocket } from "@/hooks/use-websocket";
-import {
-  notificationKeys,
-  useNotifications,
-} from "@/hooks/use-notifications";
+import { notificationKeys, useNotifications } from "@/hooks/use-notifications";
 import { notificationsApi } from "@/lib/api/notifications";
 import { projectsApi } from "@/lib/api/projects";
 import { gitApi } from "@/lib/api/git";
@@ -16,23 +13,28 @@ import { haptics } from "@/lib/telegram/webapp";
 import type { TgTab } from "@/components/tg/tg-tab-bar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { TgAvatar, TgCircleAction, TgRow, TgSection } from "@/components/tg/ui";
+import {
+  TgAvatar,
+  TgCircleAction,
+  TgDeltaChip,
+  TgRow,
+  TgRowIcon,
+  TgSection,
+  TgStat,
+  TG_CARD,
+  TG_PRESS,
+} from "@/components/tg/ui";
 import { TgSheet, useCountUp } from "@/components/tg/motion";
 import {
   IconAckAll,
   IconFleet,
+  IconSeal,
   IconShip,
   IconSweep,
 } from "@/components/tg/tg-icons";
 import { DayBars, Sparkline } from "@/components/tg/charts";
-import {
-  AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  CheckSquare,
-  ChevronRight,
-  Rocket,
-} from "lucide-react";
+import { fmtTokens } from "@/components/tg/tg-format";
+import { CaretRight, CheckCircle, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -89,13 +91,9 @@ const DRAFT_LABELS: Record<string, string> = {
 
 const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 
-const compactNumber = new Intl.NumberFormat("en", {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
-
 function taskMeta(task: TodayTaskItem): string {
-  const parts = [task.team ?? "—"];
+  const parts: string[] = [];
+  if (task.team) parts.push(task.team);
   if (task.updated_at) {
     parts.push(`${formatDistanceToNow(new Date(task.updated_at))} ago`);
   }
@@ -111,44 +109,43 @@ function weekdayLabels(count: number): string[] {
   );
 }
 
-function SpendHero({ spend }: { spend: TodayBrief["spend"] }) {
-  const delta = spend.delta_pct;
-  const up = (delta ?? 0) >= 0;
+/** The spend hero — a wallet-balance-style numeral that doubles as the
+ * drilldown into Metrics. */
+function SpendHero({
+  spend,
+  onOpen,
+}: {
+  spend: TodayBrief["spend"];
+  onOpen: () => void;
+}) {
   const cost = useCountUp(spend.cost_today_usd);
   return (
-    <div className="overflow-hidden rounded-2xl border bg-gradient-to-b from-primary/[0.07] to-transparent p-4">
-      <p className="tg-display text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-        Spend today
-      </p>
-      <div className="mt-1 flex items-end justify-between gap-3">
-        <div className="flex items-baseline gap-2">
-          <span className="tg-display text-[40px] leading-none tabular-nums">
-            ${cost.toFixed(2)}
-          </span>
-          {delta !== null && (
-            <span
-              className={cn(
-                "flex items-center gap-0.5 text-xs font-medium tabular-nums",
-                up ? "text-emerald-400" : "text-rose-400",
-              )}
-            >
-              {up ? (
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowDownRight className="h-3.5 w-3.5" />
-              )}
-              {Math.abs(delta)}%
-            </span>
-          )}
-        </div>
-        <span className="pb-1 text-[11px] tabular-nums text-muted-foreground">
-          {compactNumber.format(spend.tokens_today)} tokens
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="Open metrics"
+      className={cn(TG_CARD, TG_PRESS, "w-full p-4 text-left")}
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-[13px] text-muted-foreground">Spend today</p>
+        <CaretRight
+          weight="bold"
+          className="h-4 w-4 text-muted-foreground/40"
+        />
+      </div>
+      <span className="tg-display block text-[44px] leading-none tabular-nums">
+        ${cost.toFixed(2)}
+      </span>
+      <div className="mt-1.5 flex items-center gap-2">
+        <TgDeltaChip pct={spend.delta_pct} />
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {fmtTokens(spend.tokens_today)} tokens
         </span>
       </div>
       <div className="-mx-1 mt-2">
         <Sparkline values={spend.series} />
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -166,13 +163,11 @@ function NeedsYouBanner({
   );
   if (needs.total === 0) {
     return (
-      <div className="flex items-center gap-2.5 rounded-2xl border bg-card p-3.5">
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
-          <CheckSquare className="h-4.5 w-4.5" />
-        </span>
+      <div className={cn(TG_CARD, "flex items-center gap-3 p-3.5")}>
+        <TgRowIcon icon={CheckCircle} tone="emerald" />
         <div>
           <p className="text-sm font-medium">All clear</p>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Nothing is waiting on you.
           </p>
         </div>
@@ -180,20 +175,20 @@ function NeedsYouBanner({
     );
   }
   return (
-    <div className="space-y-2 rounded-2xl border border-primary/30 bg-primary/[0.08] p-3.5">
+    <div className={cn(TG_CARD, "space-y-2 bg-primary/[0.06] p-3.5")}>
       <button
         type="button"
         onClick={onApprovals}
-        className="flex w-full items-center justify-between"
+        className="flex min-h-11 w-full items-center justify-between"
       >
-        <span className="tg-display text-[11px] uppercase tracking-[0.14em] text-primary">
+        <span className="text-[13px] font-semibold text-primary">
           Needs you
         </span>
         <span className="flex items-center gap-1 text-primary">
           <span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
             {needs.total}
           </span>
-          <ChevronRight className="h-4 w-4" />
+          <CaretRight weight="bold" className="h-4 w-4" />
         </span>
       </button>
       {heldEntries.length > 0 && (
@@ -203,7 +198,7 @@ function NeedsYouBanner({
               key={key}
               type="button"
               onClick={onApprovals}
-              className="rounded-full bg-primary/15 px-2.5 py-1 text-xs font-medium tabular-nums text-primary transition-colors active:bg-primary/25"
+              className="rounded-full bg-violet-500/15 px-2.5 py-1 text-xs font-medium tabular-nums text-violet-300 transition-colors active:bg-violet-500/25"
             >
               {DRAFT_LABELS[key] ?? key} · {count}
             </button>
@@ -211,10 +206,11 @@ function NeedsYouBanner({
         </div>
       )}
       {(needs.awaiting_ceo.length > 0 || needs.blocked.length > 0) && (
-        <div className="-mx-1.5 divide-y divide-primary/10">
+        <div className="-mx-1.5 divide-y divide-white/[0.04]">
           {needs.awaiting_ceo.slice(0, 2).map((t) => (
             <TgRow
               key={t.id}
+              leading={<TgRowIcon icon={IconSeal} tone="sky" />}
               title={t.title}
               meta={taskMeta(t)}
               onPress={onBoard}
@@ -223,6 +219,7 @@ function NeedsYouBanner({
           {needs.blocked.slice(0, 2).map((t) => (
             <TgRow
               key={t.id}
+              leading={<TgRowIcon icon={Warning} tone="rose" />}
               title={t.title}
               meta={
                 <>
@@ -268,7 +265,7 @@ function FleetSheet({
           <li key={agent.name} className="flex items-center gap-3 py-2.5">
             <TgAvatar name={agent.name} active />
             <div className="min-w-0 flex-1">
-              <p className="tg-display text-[13px]">{agent.name}</p>
+              <p className="text-[13px] font-semibold">{agent.name}</p>
               <p className="truncate text-xs text-muted-foreground">
                 {agent.task_title ??
                   `${agent.role}${agent.team ? ` · ${agent.team}` : ""}`}
@@ -380,9 +377,9 @@ export function TgTodayTab({
   if (isLoading) {
     return (
       <div className="space-y-3">
-        <Skeleton className="h-32 w-full rounded-2xl" />
-        <Skeleton className="h-16 w-full rounded-2xl" />
-        <Skeleton className="h-24 w-full rounded-2xl" />
+        <Skeleton className="h-32 w-full rounded-[20px]" />
+        <Skeleton className="h-16 w-full rounded-[20px]" />
+        <Skeleton className="h-24 w-full rounded-[20px]" />
       </div>
     );
   }
@@ -390,7 +387,7 @@ export function TgTodayTab({
   if (isError || !data) {
     return (
       <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
-        <AlertTriangle className="h-8 w-8 opacity-50" />
+        <Warning className="h-8 w-8 opacity-50" />
         <p className="text-sm">Couldn&apos;t load the brief</p>
       </div>
     );
@@ -404,15 +401,15 @@ export function TgTodayTab({
   };
   const idle = fleet.by_status.idle ?? 0;
   const active = fleet.by_status.active ?? Math.max(fleet.working.length, 0);
+  const shipMeta = ship.open_release_proposal
+    ? "Release proposal waiting"
+    : ship.ci_fix_tasks > 0
+      ? `${ship.ci_fix_tasks} CI fix open`
+      : "No release pending";
 
   return (
     <div className="tg-stagger space-y-3">
-      <header className="flex items-center justify-between px-1 pt-0.5">
-        <p className="tg-display text-[13px] tracking-[0.24em] text-muted-foreground">
-          ROBOCO<span className="tg-cursor text-primary">_</span>
-        </p>
-      </header>
-      <SpendHero spend={spend} />
+      <SpendHero spend={spend} onOpen={() => go("metrics")} />
 
       {/* Operations, not navigation — the tab bar already navigates. */}
       <div className="flex items-stretch gap-2 px-1">
@@ -476,7 +473,7 @@ export function TgTodayTab({
             }}
             className="w-full space-y-2 text-left"
           >
-            <div className="flex -space-x-1.5 overflow-hidden">
+            <div className="flex gap-2 overflow-hidden">
               {fleet.working.map((a) => (
                 <TgAvatar key={a.name} name={a.name} active />
               ))}
@@ -487,7 +484,7 @@ export function TgTodayTab({
                   key={agent.name}
                   className="flex items-baseline gap-2 text-[13px] leading-snug"
                 >
-                  <span className="tg-display shrink-0 text-xs">
+                  <span className="shrink-0 text-xs font-semibold">
                     {agent.name}
                   </span>
                   {agent.task_title && (
@@ -508,41 +505,26 @@ export function TgTodayTab({
       </TgSection>
 
       <div className="grid grid-cols-2 gap-2.5">
-        <TgSection
-          title="Shipped this week"
-          trailing={
-            <span className="text-sm font-semibold tabular-nums text-foreground">
-              {velocity.week_total}
-            </span>
-          }
-        >
-          <DayBars
-            values={velocity.series}
-            labels={weekdayLabels(velocity.series.length)}
+        <TgSection title="Velocity">
+          <TgStat
+            value={velocity.week_total}
+            caption="Shipped this week"
+            tone="attention"
           />
+          <div className="mt-2">
+            <DayBars
+              values={velocity.series}
+              labels={weekdayLabels(velocity.series.length)}
+            />
+          </div>
         </TgSection>
-        <TgSection icon={Rocket} title="Ship">
-          <button
-            type="button"
-            onClick={() => ship.open_release_proposal && go("approvals")}
-            className="w-full text-left"
-          >
-            <p
-              className={cn(
-                "tg-display text-[22px] leading-tight tabular-nums",
-                ship.open_release_proposal && "text-primary",
-              )}
-            >
-              v{ship.version}
-            </p>
-            <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
-              {ship.open_release_proposal
-                ? "Release proposal waiting"
-                : ship.ci_fix_tasks > 0
-                  ? `${ship.ci_fix_tasks} CI fix open`
-                  : "No release pending"}
-            </p>
-          </button>
+        <TgSection title="Ship">
+          <TgRow
+            leading={<TgRowIcon icon={IconShip} tone="amber" />}
+            title={`v${ship.version}`}
+            meta={shipMeta}
+            onPress={() => go("approvals", "release")}
+          />
         </TgSection>
       </div>
 
