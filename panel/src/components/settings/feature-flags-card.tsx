@@ -67,6 +67,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Periodically probe opted-in projects for dependency updates and open an update task when a lockfile would change (per-project opt-in; never auto-merges).",
   env_sync_enabled:
     "Cascade each project's declared environment ladder prod→dev via GitHub's merges API so dev never falls behind prod; a conflicted rung opens a sync PR for you to merge (per-project opt-in; never pushes prod).",
+  docs_sync_enabled:
+    "When a release publishes and the public docs site (roboco-website) has drifted from what shipped, open ONE docs-update task that rides the normal delivery flow (+ PR-review gate) — release-triggered, not polling; never auto-merges. Needs the docs-site repo registered as a project with a git token.",
   release_manager_enabled:
     "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
   org_memory_enabled:
@@ -91,6 +93,10 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Also open a video-authoring task when a release publishes. Off by default even with video_engine_enabled on.",
   video_on_spotlight:
     "Also open a video-authoring task when you approve a feature-spotlight draft that requests one. Off by default even with video_engine_enabled on.",
+  obsidian_vault_enabled:
+    "Project tasks, journals, and A2A digests into a human-readable, wikilinked Obsidian vault on disk (RoboCo/Tasks, Journals, A2A, Agents) — a rebuildable, DB-derived projection, never the system of record. Needs ROBOCO_VAULT_PATH set.",
+  vault_intake_enabled:
+    "Watch the vault's inbox folder for #roboco-tagged notes and turn them into board-review drafts — the same Product-Owner-reviewed path a chat-confirmed task takes, never straight into delivery. Needs the Obsidian vault projection on.",
   vault_report_enabled:
     "Materialize a weekly org-report note (velocity, cycle time, rework, cost) in the vault's Reports/ folder and notify you — deterministic numbers, no LLM. Needs the Obsidian vault projection on.",
   vault_kb_enabled:
@@ -148,11 +154,11 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   video_engine_enabled:
     "Authors and renders motion-graphics videos for social posts.",
   video_on_release: "Drafts a video whenever a release publishes.",
-  video_on_spotlight:
-    "Drafts a video whenever a feature spotlight is drafted.",
+  video_on_spotlight: "Drafts a video whenever a feature spotlight is drafted.",
   roadmap_engine_enabled:
     "Weekly has the Board draft a themed roadmap for CEO approval.",
-  fable_mode_enabled: "Adopts the Fable/Ponytail behavioral doctrine fleet-wide.",
+  fable_mode_enabled:
+    "Adopts the Fable/Ponytail behavioral doctrine fleet-wide.",
   obsidian_vault_enabled:
     "Projects tasks/journals/A2A into a human-readable Obsidian vault.",
   vault_intake_enabled:
@@ -297,7 +303,9 @@ export function FeatureFlagsCard() {
                             trigger itself would clobber its open/closed
                             data-state (same trap as Switch/TabsTrigger). */}
                         <HelpTip label="Only takes effect once x_engine_enabled above is on.">
-                          <span className="text-sm">X (Twitter) credentials</span>
+                          <span className="text-sm">
+                            X (Twitter) credentials
+                          </span>
                         </HelpTip>
                         {xCredsOpen ? (
                           <ChevronDown className="h-4 w-4" />

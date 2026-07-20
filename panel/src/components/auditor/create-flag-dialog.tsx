@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { HelpTip } from "@/components/ui/help-tip";
+import { TaskSelector } from "@/components/tasks/task-selector";
+import { AgentSelector } from "@/components/agents/agent-selector";
 import {
   Dialog,
   DialogContent,
@@ -53,8 +55,8 @@ export function CreateFlagDialog({
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<FlagSeverity>(FlagSeverity.INFO);
   const [category, setCategory] = useState("quality");
-  const [relatedTaskId, setRelatedTaskId] = useState("");
-  const [relatedAgentId, setRelatedAgentId] = useState("");
+  const [relatedTaskId, setRelatedTaskId] = useState<string | null>(null);
+  const [relatedAgentId, setRelatedAgentId] = useState<string | null>(null);
 
   const createFlag = useCreateAuditorFlag();
 
@@ -72,8 +74,8 @@ export function CreateFlagDialog({
         description: description.trim(),
         severity,
         category,
-        related_task_id: relatedTaskId.trim() || undefined,
-        related_agent_id: relatedAgentId.trim() || undefined,
+        related_task_id: relatedTaskId || undefined,
+        related_agent_id: relatedAgentId || undefined,
       });
       toast.success("Flag created successfully");
       onOpenChange(false);
@@ -88,8 +90,8 @@ export function CreateFlagDialog({
     setDescription("");
     setSeverity(FlagSeverity.INFO);
     setCategory("quality");
-    setRelatedTaskId("");
-    setRelatedAgentId("");
+    setRelatedTaskId(null);
+    setRelatedAgentId(null);
   };
 
   return (
@@ -172,24 +174,22 @@ export function CreateFlagDialog({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <HelpTip label="Optional. Links this flag to a task — shown as a quick-link in the flags list">
-                <Label htmlFor="task">Related Task ID (optional)</Label>
+                <Label>Related Task (optional)</Label>
               </HelpTip>
-              <Input
-                id="task"
+              <TaskSelector
                 value={relatedTaskId}
-                onChange={(e) => setRelatedTaskId(e.target.value)}
-                placeholder="Task UUID"
+                onChange={setRelatedTaskId}
+                placeholder="Select task (optional)..."
               />
             </div>
             <div className="space-y-2">
               <HelpTip label="Optional. Associates this flag with a specific agent for audit tracking">
-                <Label htmlFor="agent">Related Agent ID (optional)</Label>
+                <Label>Related Agent (optional)</Label>
               </HelpTip>
-              <Input
-                id="agent"
+              <AgentSelector
                 value={relatedAgentId}
-                onChange={(e) => setRelatedAgentId(e.target.value)}
-                placeholder="Agent ID"
+                onChange={setRelatedAgentId}
+                placeholder="Select agent (optional)..."
               />
             </div>
           </div>

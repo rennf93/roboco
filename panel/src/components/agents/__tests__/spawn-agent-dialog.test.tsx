@@ -29,6 +29,17 @@ vi.mock("@/store/rate-limit-store", () => ({
   useRateLimitStore: { getState: vi.fn(() => ({ hitRateLimit: vi.fn() })) },
 }));
 
+// TaskSelector is a data-fetching combobox (useTasks); stub it with a button
+// that reports a fixed task id, mirroring create-task-dialog.test.tsx's
+// approach to the same component.
+vi.mock("@/components/tasks/task-selector", () => ({
+  TaskSelector: ({ onChange }: { onChange: (v: string | null) => void }) => (
+    <button type="button" onClick={() => onChange("task-123")}>
+      Set Task
+    </button>
+  ),
+}));
+
 import { SpawnAgentDialog } from "../spawn-agent-dialog";
 
 function openDialog() {
@@ -59,9 +70,7 @@ describe("SpawnAgentDialog", () => {
     mutateAsync.mockResolvedValue({ already_running: false });
     openDialog();
 
-    fireEvent.change(screen.getByLabelText(/Task ID/i), {
-      target: { value: "task-123" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Set Task" }));
     fireEvent.change(screen.getByLabelText(/Initial Prompt/i), {
       target: { value: "go fix it" },
     });

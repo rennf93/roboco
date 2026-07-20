@@ -27,7 +27,6 @@ import { Team, type ProjectCreate } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
 import { HelpTip } from "@/components/ui/help-tip";
-import { Badge } from "@/components/ui/badge";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -54,6 +53,9 @@ export function CreateProjectDialog() {
     default_branch: "main",
     environments: null,
   });
+  // "auto" is a UI-only sentinel — never sent as-is; null on the wire lets
+  // the backend auto-detect from the Git URL host at creation time.
+  const [gitProvider, setGitProvider] = useState("auto");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const createProject = useCreateProject();
@@ -90,6 +92,7 @@ export function CreateProjectDialog() {
         name: formData.name,
         slug: formData.slug,
         git_url: formData.git_url,
+        git_provider: gitProvider === "auto" ? null : gitProvider,
         assigned_cell: formData.assigned_cell,
         git_token: formData.git_token || undefined,
         default_branch: formData.default_branch || "main",
@@ -112,6 +115,7 @@ export function CreateProjectDialog() {
         default_branch: "main",
         environments: null,
       });
+      setGitProvider("auto");
       setShowAdvanced(false);
     } catch (error) {
       toast.error(
@@ -189,17 +193,26 @@ export function CreateProjectDialog() {
               </p>
             </div>
 
-            {/* Forge (read-only — GitHub-only today) */}
+            {/* Forge */}
             <div className="grid gap-2">
-              <HelpTip label="Auto-detected from the Git URL's host at creation; RoboCo's PR/CI/review surface is GitHub-only today. GitLab & Gitea support planned.">
+              <HelpTip label="Which forge API serves PR/CI/review operations. Auto-detect resolves from the Git URL's host at creation (github.com -> GitHub, gitlab.com -> GitLab); a self-hosted Gitea/GitLab instance or GitHub Enterprise can't be told apart by host alone and must be set explicitly.">
                 <Label>Forge</Label>
               </HelpTip>
-              <div>
-                <Badge variant="secondary">GitHub</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                GitLab & Gitea support planned.
-              </p>
+              <Select value={gitProvider} onValueChange={setGitProvider}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Auto-detect" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto-detect</SelectItem>
+                  <SelectItem value="github">
+                    GitHub / GitHub Enterprise
+                  </SelectItem>
+                  <SelectItem value="gitea">Gitea (self-hosted)</SelectItem>
+                  <SelectItem value="gitlab">
+                    GitLab (gitlab.com / self-hosted)
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Git Token */}
@@ -263,14 +276,17 @@ export function CreateProjectDialog() {
                 placeholder="main"
               />
               <p className="text-xs text-muted-foreground">
-                Where PRs land and releases are cut when no environment ladder is set below.
+                Where PRs land and releases are cut when no environment ladder
+                is set below.
               </p>
             </div>
 
             {/* Environment ladder */}
             <EnvironmentLadderEditor
               rungs={formData.environments ?? null}
-              onChange={(rungs) => setFormData({ ...formData, environments: rungs })}
+              onChange={(rungs) =>
+                setFormData({ ...formData, environments: rungs })
+              }
             />
 
             {/* Advanced Options Toggle */}
@@ -369,7 +385,9 @@ export function CreateProjectDialog() {
 
                 <div className="grid gap-2">
                   <HelpTip label="When set, replaces the Lint + Typecheck pair as the dev's complete pre-submit gate command.">
-                    <Label htmlFor="quality_command">Quality Gate Command</Label>
+                    <Label htmlFor="quality_command">
+                      Quality Gate Command
+                    </Label>
                   </HelpTip>
                   <Input
                     id="quality_command"
@@ -387,6 +405,12 @@ export function CreateProjectDialog() {
                     run in the dev&apos;s workspace at hand-off to QA.
                   </p>
                 </div>
+
+                <p className="text-xs text-muted-foreground">
+                  Autonomous maintenance (CI-watch, video engine,
+                  dependency-update bot, sandbox DB/Redis/Mongo) is configured
+                  after creation, from this project&apos;s Edit Project dialog.
+                </p>
               </>
             )}
           </div>

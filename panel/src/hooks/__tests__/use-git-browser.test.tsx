@@ -4,6 +4,7 @@ import { useGitBrowser } from "../use-git-browser";
 
 const {
   mockUseProjects,
+  mockUseProject,
   mockUseGitStatus,
   mockUseGitLog,
   mockUseGitBranches,
@@ -16,6 +17,7 @@ const {
   mockToastError,
 } = vi.hoisted(() => ({
   mockUseProjects: vi.fn(),
+  mockUseProject: vi.fn(),
   mockUseGitStatus: vi.fn(),
   mockUseGitLog: vi.fn(),
   mockUseGitBranches: vi.fn(),
@@ -30,6 +32,7 @@ const {
 
 vi.mock("@/hooks/use-projects", () => ({
   useProjects: () => mockUseProjects(),
+  useProject: (...args: unknown[]) => mockUseProject(...args),
 }));
 
 vi.mock("@/hooks/use-git", () => ({
@@ -95,6 +98,7 @@ describe("useGitBrowser", () => {
     registeredCallbacks.length = 0;
 
     mockUseProjects.mockReturnValue(buildQueryResult([]));
+    mockUseProject.mockReturnValue(buildQueryResult(null));
     mockUseGitStatus.mockReturnValue(buildQueryResult(null));
     mockUseGitLog.mockReturnValue(buildQueryResult(null));
     mockUseGitBranches.mockReturnValue(buildQueryResult(null));
@@ -119,6 +123,52 @@ describe("useGitBrowser", () => {
     const { result } = renderHook(() => useGitBrowser());
     expect(result.current.projectSlug).toBe("roboco");
     expect(result.current.taskId).toBe("t1");
+  });
+
+  // Bug: GitActionsPanel used to hardcode "main" for the PR-target branch,
+  // wrong for the fleet default ("master") and any project on a real
+  // environment ladder. defaultBranch resolves the selected project's real
+  // head rung (or default_branch), not a literal.
+  it("resolves defaultBranch from the selected project's environment ladder head rung", () => {
+    mockUseProjects.mockReturnValue(
+      buildQueryResult([{ id: "proj-1", slug: "roboco", name: "RoboCo" }]),
+    );
+    mockUseProject.mockReturnValue(
+      buildQueryResult({
+        id: "proj-1",
+        default_branch: "master",
+        environments: [
+          { name: "head", branch: "slave" },
+          { name: "prod", branch: "master" },
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useGitBrowser());
+    expect(mockUseProject).toHaveBeenCalledWith("proj-1");
+    expect(result.current.defaultBranch).toBe("slave");
+  });
+
+  it("falls back to default_branch when no environment ladder is set", () => {
+    mockUseProjects.mockReturnValue(
+      buildQueryResult([{ id: "proj-1", slug: "roboco", name: "RoboCo" }]),
+    );
+    mockUseProject.mockReturnValue(
+      buildQueryResult({
+        id: "proj-1",
+        default_branch: "master",
+        environments: null,
+      }),
+    );
+
+    const { result } = renderHook(() => useGitBrowser());
+    expect(result.current.defaultBranch).toBe("master");
+  });
+
+  it('falls back to "main" before any project has loaded', () => {
+    const { result } = renderHook(() => useGitBrowser());
+    expect(mockUseProject).toHaveBeenCalledWith("");
+    expect(result.current.defaultBranch).toBe("main");
   });
 
   it("passes project slug and enabled flag to git query hooks", () => {

@@ -154,4 +154,26 @@ describe("FeatureFlagsCard — M42 off-transition confirm + pending-keys Set", (
     const unmapped = screen.getByText("Alpha");
     expect(unmapped.getAttribute("data-state")).toBeNull();
   });
+
+  // FLAG_DESCRIPTIONS previously lagged FLAG_TOOLTIPS for three vault/docs
+  // flags — the always-visible paragraph silently rendered empty for them.
+  it("renders an always-visible description for every vault/docs-sync flag", async () => {
+    getFeatureFlags.mockResolvedValueOnce({
+      flags: [
+        { key: "docs_sync_enabled", label: "Docs Sync", enabled: false },
+        {
+          key: "obsidian_vault_enabled",
+          label: "Obsidian Vault",
+          enabled: false,
+        },
+        { key: "vault_intake_enabled", label: "Vault Intake", enabled: false },
+      ],
+      note: "Changes take effect on the next backend restart.",
+    });
+    render(withQueryClient(<FeatureFlagsCard />));
+
+    expect(await screen.findByText(/docs-update task/i)).toBeInTheDocument();
+    expect(screen.getByText(/wikilinked Obsidian vault/i)).toBeInTheDocument();
+    expect(screen.getByText(/board-review drafts/i)).toBeInTheDocument();
+  });
 });
