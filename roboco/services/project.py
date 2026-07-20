@@ -20,6 +20,8 @@ from roboco.models.base import TaskStatus, Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.services.base import BaseService, ConflictError, NotFoundError
 from roboco.services.forge import register_project_forge
+from roboco.services.github_app_auth import GitHubAppError, mint_installation_token
+from roboco.services.github_app_credentials import get_github_app_credentials_service
 from roboco.utils.crypto import EncryptionError, decrypt_token, encrypt_token
 
 # Statuses that are NOT active progress: completed (done), cancelled
@@ -126,6 +128,7 @@ class ProjectService(BaseService):
             slug=data.slug,
             git_url=data.git_url,
             git_provider=git_provider,
+            github_installation_id=data.github_installation_id,
             default_branch=data.default_branch,
             protected_branches=data.protected_branches,
             environments=data.environments,
@@ -545,64 +548,92 @@ class ProjectService(BaseService):
     # GIT TOKEN MANAGEMENT
     # =========================================================================
 
+    async def _resolve_token(
+        self, project: ProjectTable, *, log_ref: str
+    ) -> str | None:
+        """Resolve the token git operations should use for ``project``.
+
+        An installation-bound project (``github_installation_id`` set) with
+        App credentials stored mints a short-lived installation token instead
+        of using the stored PAT. Any minting failure (App not configured,
+        installation revoked, network hiccup) is logged as a warning and falls
+        back to the PAT path below — a GitHub App hiccup must never brick git
+        operations for a project that also has a PAT on file.
+        """
+        if project.github_installation_id is not None:
+            has_app_creds = await get_github_app_credentials_service(
+                self.session
+            ).has_credentials()
+            if has_app_creds:
+                try:
+                    return await mint_installation_token(
+                        self.session, project.github_installation_id
+                    )
+                except GitHubAppError as e:
+                    self.log.warning(
+                        "GitHub App token mint failed; falling back to PAT",
+                        error=str(e),
+                        project=log_ref,
+                    )
+
+        if not project.git_token_encrypted:
+            return None
+        try:
+            return decrypt_token(project.git_token_encrypted)
+        except EncryptionError:
+            self.log.error(
+                "Failed to decrypt git token",
+                project=log_ref,
+                error="encryption_key_mismatch_or_corrupted",
+            )
+            raise
+
     async def get_decrypted_token(self, project_id: UUID) -> str | None:
         """
         Get the decrypted git token for a project.
 
-        Used by WorkspaceService and GitService for git operations.
-        The token is decrypted on-demand and should not be cached.
+        Used by WorkspaceService and GitService for git operations. When the
+        project is bound to a GitHub App installation, this instead returns a
+        minted installation token (see ``_resolve_token``); the returned
+        string is otherwise decrypted on-demand and should not be cached.
 
         Args:
             project_id: Project to get token for
 
         Returns:
-            Decrypted token or None if no token is set
+            Decrypted token, minted installation token, or None if neither
+            is available
 
         Raises:
-            EncryptionError: If decryption fails (key mismatch, corrupted data)
+            EncryptionError: If PAT decryption fails (key mismatch, corrupted
+                data) — never raised for a GitHub App minting failure, which
+                falls back to the PAT instead.
         """
         project = await self.get(project_id)
-        if not project or not project.git_token_encrypted:
+        if not project:
             return None
-
-        try:
-            return decrypt_token(project.git_token_encrypted)
-        except EncryptionError:
-            self.log.error(
-                "Failed to decrypt git token",
-                project_id=str(project_id),
-                error="encryption_key_mismatch_or_corrupted",
-            )
-            raise
+        return await self._resolve_token(project, log_ref=str(project_id))
 
     async def get_decrypted_token_by_slug(self, slug: str) -> str | None:
         """
         Get the decrypted git token for a project by slug.
 
-        Convenience method for services that work with project slugs.
+        Convenience method for services that work with project slugs. Same
+        GitHub App / PAT resolution as ``get_decrypted_token``.
 
         Args:
             slug: Project slug
 
         Returns:
-            Decrypted token or None if no token is set
+            Decrypted token, minted installation token, or None
 
         Raises:
-            EncryptionError: If decryption fails
+            EncryptionError: If PAT decryption fails
         """
         project = await self.get_by_slug(slug)
-        if not project or not project.git_token_encrypted:
+        if not project:
             return None
-
-        try:
-            return decrypt_token(project.git_token_encrypted)
-        except EncryptionError:
-            self.log.error(
-                "Failed to decrypt git token",
-                project_slug=slug,
-                error="encryption_key_mismatch_or_corrupted",
-            )
-            raise
+        return await self._resolve_token(project, log_ref=slug)
 
     # =========================================================================
     # ACCESS CONTROL

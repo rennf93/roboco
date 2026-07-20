@@ -158,6 +158,7 @@ async def create_project(
         slug=data.slug,
         git_url=data.git_url,
         git_provider=data.git_provider,
+        github_installation_id=data.github_installation_id,
         default_branch=data.default_branch,
         protected_branches=protected_branches,
         environments=data.environments,

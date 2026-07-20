@@ -126,6 +126,17 @@ class Project(TimestampMixin):
             "from git_url host; RoboCo is GitHub-only today."
         ),
     )
+    # GitHub App installation covering this repo. Set -> git operations mint a
+    # short-lived installation token instead of the stored PAT (falling back
+    # to the PAT on any minting failure). Null = unchanged PAT-only behavior.
+    github_installation_id: int | None = Field(
+        default=None,
+        description=(
+            "GitHub App installation id covering this repo. When set (and "
+            "App credentials are configured), git operations use a minted "
+            "installation token instead of the stored PAT."
+        ),
+    )
     default_branch: str = Field(default="master", description="Default branch name")
     protected_branches: list[str] = Field(
         default_factory=lambda: ["main", "master"],
@@ -286,6 +297,10 @@ class ProjectCreate(RobocoBase):
         default=None,
         description="GitHub PAT for clone/push/PR operations (stored encrypted)",
     )
+    github_installation_id: int | None = Field(
+        default=None,
+        description="GitHub App installation id covering this repo (see Project).",
+    )
 
     # Optional commands
     test_command: str | None = None
@@ -334,6 +349,10 @@ class ProjectUpdate(RobocoBase):
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
+    github_installation_id: int | None = Field(
+        default=None,
+        description="GitHub App installation id covering this repo (see Project).",
+    )
 
     @field_validator("sandbox_services")
     @classmethod

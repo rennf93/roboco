@@ -24,6 +24,7 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { Settings, Palette, Bell, Server, User } from "lucide-react";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
+import { GitHubAppCredentialsCard } from "@/components/settings/github-app-credentials-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
 
 export default function SettingsPage() {
@@ -53,7 +54,8 @@ export default function SettingsPage() {
 
       {/* Cards grid — two columns on large screens. Order (row,col):
           User Info (1,1) · Appearance (1,2) · Data & Refresh (2,1) ·
-          Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2). */}
+          Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2) ·
+          GitHub App (4,1). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* User Info */}
         <Card>
@@ -275,6 +277,11 @@ export default function SettingsPage() {
             </p>
           </CardContent>
         </Card>
+
+        {/* GitHub App — App id + private key powering the New Project
+            dialog's Select repo picker and per-project installation-token
+            auth (no feature flag; a standalone opt-in credential). */}
+        <GitHubAppCredentialsCard />
       </div>
 
       {/* Feature Flags — master switches for optional subsystems (full width;

@@ -514,6 +514,13 @@ class ProjectTable(Base):
     # this explicitly. Validated at the service layer (foundation/policy/
     # forge.py), not a DB enum — see migration 075.
     git_provider: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # GitHub App installation covering this repo. Set → git operations mint a
+    # short-lived installation token (roboco/services/github_app_auth.py)
+    # instead of using git_token_encrypted; null → unchanged PAT flow. See
+    # migration 077.
+    github_installation_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
 
     # CI/CD Commands (optional)
     test_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -2384,6 +2391,29 @@ class TelegramCredentialsTable(Base):
     )
     bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     chat_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
+class GitHubAppCredentialsTable(Base):
+    """Singleton row holding the GitHub App id + its Fernet-encrypted RSA
+    private key (mirrors ``TelegramCredentialsTable``). At most one row ever
+    exists; ``GitHubAppCredentialsService`` upserts it. ``app_id`` is a public
+    identifier (not a secret, so stored plain); the private key is decrypted
+    only server-side, by ``github_app_auth`` when minting installation
+    tokens — the API never returns it."""
+
+    __tablename__ = "github_app_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    app_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    private_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

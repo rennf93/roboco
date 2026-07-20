@@ -36,6 +36,7 @@ const mockProjects: Project[] = [
     slug: "roboco",
     git_url: "https://github.com/rennf93/roboco.git",
     git_provider: "github",
+    github_installation_id: null,
     default_branch: "master",
     protected_branches: ["master", "slave"],
     assigned_cell: Team.BACKEND,
@@ -55,6 +56,7 @@ const mockProjects: Project[] = [
     slug: "roboco-website",
     git_url: "https://github.com/rennf93/roboco-website.git",
     git_provider: "github",
+    github_installation_id: null,
     default_branch: "master",
     protected_branches: ["master"],
     assigned_cell: Team.FRONTEND,
@@ -72,7 +74,10 @@ const mockProjects: Project[] = [
 
 // Mock task counts per project (mock-mode only — real data comes from the
 // backend's grouped query). Keyed by project id.
-const mockTaskCounts: Record<string, { done: number; active: number; blocked: number }> = {
+const mockTaskCounts: Record<
+  string,
+  { done: number; active: number; blocked: number }
+> = {
   "proj-mock-1": { done: 120, active: 8, blocked: 1 },
   "proj-mock-2": { done: 34, active: 2, blocked: 0 },
 };
@@ -150,6 +155,7 @@ export const projectsApi = {
         git_provider:
           project.git_provider ??
           (project.git_url.includes("github.com") ? "github" : null),
+        github_installation_id: project.github_installation_id ?? null,
         default_branch: project.default_branch ?? "main",
         environments: project.environments ?? null,
         protected_branches: project.protected_branches ?? ["main", "master"],

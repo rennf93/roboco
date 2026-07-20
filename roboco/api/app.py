@@ -24,6 +24,7 @@ from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
+from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
@@ -549,6 +550,14 @@ def create_app() -> FastAPI:
         git_router,
         prefix=f"{api_prefix}/git",
         tags=["Git Operations"],
+    )
+
+    # GitHub App integration — CEO-managed credentials + the "Select repo"
+    # picker's installation/repository listing (see roboco/services/github_app_auth.py).
+    app.include_router(
+        github_app_router,
+        prefix=f"{api_prefix}/github-app",
+        tags=["GitHub App"],
     )
 
     # Project Management
