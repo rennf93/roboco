@@ -35,8 +35,17 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 
+# The internal RFC1918/loopback mesh is guard-whitelisted (authenticated
+# agents skip the WAF/threat-ban); only external traffic — what nginx forwards
+# with the real client IP — is scrutinized. So legit/passive tests use the
+# whitelisted loopback (trusted-agent path) and threat tests use a public
+# (TEST-NET-3, non-routable) IP to model an external attacker past the
+# whitelist.
+_EXTERNAL_IP = "203.0.113.7"
+
+
 class _InjectClientIP:
-    """ASGI shim giving the request a valid peer IP (prod is behind nginx)."""
+    """ASGI shim giving the request a peer IP (prod is behind nginx)."""
 
     def __init__(self, app: ASGIApp, ip: str = "127.0.0.1") -> None:
         self.app = app
@@ -49,7 +58,7 @@ class _InjectClientIP:
         await self.app(scope, receive, send)
 
 
-def _guarded_app(*, passive: bool) -> _InjectClientIP:
+def _guarded_app(*, passive: bool, ip: str = "127.0.0.1") -> _InjectClientIP:
     cfg = security.build_security_config()
     cfg.passive_mode = passive
     cfg.enable_redis = False
@@ -88,7 +97,7 @@ def _guarded_app(*, passive: bool) -> _InjectClientIP:
 
     app.state.guard_decorator = deco
     app.add_middleware(SecurityMiddleware, config=cfg)
-    return _InjectClientIP(app)
+    return _InjectClientIP(app, ip)
 
 
 def _client(app: _InjectClientIP) -> TestClient:
@@ -136,19 +145,19 @@ class TestActiveModeNoFalsePositives:
 
 class TestActiveModeStillBlocksThreats:
     def test_prompt_injection_blocked_even_in_excluded_field(self) -> None:
-        with _client(_guarded_app(passive=False)) as client:
+        with _client(_guarded_app(passive=False, ip=_EXTERNAL_IP)) as client:
             resp = client.post("/task", json={"description": _INJECTION})
         assert resp.status_code != HTTPStatus.OK
 
     def test_secret_exfil_blocked_even_in_excluded_field(self) -> None:
-        with _client(_guarded_app(passive=False)) as client:
+        with _client(_guarded_app(passive=False, ip=_EXTERNAL_IP)) as client:
             resp = client.post(
                 "/commit", json={"message": "my key is sk-ant-abcdefghij0123456789xyz"}
             )
         assert resp.status_code != HTTPStatus.OK
 
     def test_internal_ssrf_blocked_even_in_excluded_field(self) -> None:
-        with _client(_guarded_app(passive=False)) as client:
+        with _client(_guarded_app(passive=False, ip=_EXTERNAL_IP)) as client:
             resp = client.post(
                 "/research", json={"url": "http://169.254.169.254/latest/meta-data/"}
             )
@@ -156,7 +165,7 @@ class TestActiveModeStillBlocksThreats:
 
     def test_waf_still_fires_on_non_excluded_field(self) -> None:
         """The exclusion is field-scoped: a structured field still gets scanned."""
-        with _client(_guarded_app(passive=False)) as client:
+        with _client(_guarded_app(passive=False, ip=_EXTERNAL_IP)) as client:
             resp = client.post("/plain", json={"zzq_ref": "'; DROP TABLE x; --"})
         assert resp.status_code != HTTPStatus.OK
 
@@ -170,7 +179,7 @@ class TestDecoyPaths:
     """
 
     def test_decoy_path_blocked_in_active_mode(self) -> None:
-        with _client(_guarded_app(passive=False)) as client:
+        with _client(_guarded_app(passive=False, ip=_EXTERNAL_IP)) as client:
             resp = client.get("/.git/config")
         assert resp.status_code != HTTPStatus.OK
 
