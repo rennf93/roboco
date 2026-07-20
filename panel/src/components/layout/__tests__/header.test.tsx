@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Header } from "../header";
 import { PageRefreshProvider } from "@/components/providers";
@@ -8,6 +9,14 @@ import { usePageRefresh } from "@/hooks";
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
 }));
+
+// Header now reads the shared ["settings"] query for ceo_name; stub it so
+// tests don't hit the network. Individual tests can override the resolved
+// value via mockResolvedValueOnce.
+const { getAll } = vi.hoisted(() => ({
+  getAll: vi.fn(async () => ({}) as Record<string, string>),
+}));
+vi.mock("@/lib/api", () => ({ settingsApi: { getAll } }));
 
 vi.mock("@/hooks/use-websocket", () => ({
   useNotificationStream: () => ({
@@ -30,7 +39,14 @@ vi.mock("@/components/notifications/notification-bell", () => ({
 }));
 
 function withPageRefresh(ui: ReactNode) {
-  return <PageRefreshProvider>{ui}</PageRefreshProvider>;
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return (
+    <QueryClientProvider client={client}>
+      <PageRefreshProvider>{ui}</PageRefreshProvider>
+    </QueryClientProvider>
+  );
 }
 
 function RefreshRegistrator({
@@ -161,5 +177,24 @@ describe("Header — navbar refresh button", () => {
 
     resolveRefresh?.();
     await waitFor(() => expect(refreshButton).not.toBeDisabled());
+  });
+});
+
+describe("Header — CEO name chip (ceo_name setting)", () => {
+  beforeEach(() => {
+    getAll.mockClear();
+  });
+
+  it("falls back to the default name while the settings query is unset", async () => {
+    getAll.mockResolvedValueOnce({});
+    render(withPageRefresh(<Header />));
+    expect(await screen.findByText("Renzo")).toBeInTheDocument();
+  });
+
+  it("renders the persisted ceo_name once the settings query resolves", async () => {
+    getAll.mockResolvedValueOnce({ ceo_name: "Alice" });
+    render(withPageRefresh(<Header />));
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Renzo")).not.toBeInTheDocument();
   });
 });

@@ -25,6 +25,10 @@ vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "dark", setTheme: vi.fn() }),
 }));
 
+vi.mock("@/components/settings/user-info-card", () => ({
+  UserInfoCard: () => null,
+}));
+
 vi.mock("@/components/settings/transcript-retention-card", () => ({
   TranscriptRetentionCard: () => null,
 }));
@@ -85,9 +89,7 @@ describe("SettingsPage — client-only prefs (store-driven, no server round trip
     expect(controlFor("Enable Notifications", "switch")).not.toBeChecked();
     expect(controlFor("Sound Alerts", "switch")).not.toBeChecked();
     expect(controlFor("Auto Refresh", "switch")).toBeChecked();
-    expect(controlFor("Refresh Interval", "combobox")).toHaveTextContent(
-      "1m",
-    );
+    expect(controlFor("Refresh Interval", "combobox")).toHaveTextContent("1m");
   });
 
   it("toggling Auto Refresh calls setAutoRefresh directly — no edits/save step", () => {

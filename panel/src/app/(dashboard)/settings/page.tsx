@@ -21,8 +21,9 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { HelpTip } from "@/components/ui/help-tip";
-import { Settings, Palette, Bell, Server, User } from "lucide-react";
+import { Settings, Palette, Bell, Server } from "lucide-react";
 import { API_URL, WS_URL } from "@/lib/constants";
+import { UserInfoCard } from "@/components/settings/user-info-card";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
 
@@ -56,35 +57,7 @@ export default function SettingsPage() {
           Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* User Info */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <User className="h-5 w-5" />
-              User Info
-            </CardTitle>
-            <CardDescription>Your account information</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-4">
-              <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-bold text-2xl">
-                  CEO
-                </span>
-              </div>
-              <div>
-                <p className="font-semibold text-lg">Renzo</p>
-                <p className="text-sm text-muted-foreground">
-                  Chief Executive Officer
-                </p>
-                <HelpTip label="The CEO's fixed agent id — used to attribute your notifications, notes, and approvals across the API.">
-                  <p className="text-xs text-muted-foreground mt-1 w-fit">
-                    Agent ID: 00000000-0000-0000-0000-000000000001
-                  </p>
-                </HelpTip>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <UserInfoCard />
 
         {/* Appearance */}
         <Card>

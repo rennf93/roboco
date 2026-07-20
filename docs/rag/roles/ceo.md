@@ -2,7 +2,7 @@
 
 ## Identity
 
-- **Agent**: ceo (Renzo - Human)
+- **Agent**: ceo (Human)
 - **Role**: `ceo`
 - **Team**: board
 - **Reports to**: N/A (top of hierarchy)

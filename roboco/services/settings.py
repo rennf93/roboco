@@ -39,6 +39,18 @@ def _validate_bool(value: str) -> None:
         raise SettingValidationError("value must be 'true' or 'false'")
 
 
+_CEO_NAME_MAX_LEN = 60
+
+
+def _validate_ceo_name(value: str) -> None:
+    if not value.strip():
+        raise SettingValidationError("ceo_name must not be empty")
+    if len(value.strip()) > _CEO_NAME_MAX_LEN:
+        raise SettingValidationError(
+            f"ceo_name must be at most {_CEO_NAME_MAX_LEN} characters"
+        )
+
+
 # Panel-tunable feature flags (master switches). The stored value overrides the
 # config/env default at startup via ``apply_persisted_feature_flags`` — i.e. a
 # toggle takes effect on the next restart, replacing hand-editing env. Each maps
@@ -101,6 +113,11 @@ def _validate_update_id(value: str) -> None:
 # the panel can only persist values the backend understands.
 _VALIDATORS = {
     "transcript_retention_days": _validate_retention_days,
+    # The CEO's panel display name (header chip + Settings User Info card).
+    # No config/migration involved — an unset key just means the panel's
+    # own hardcoded "Renzo" default renders, same as transcript retention's
+    # client-side DEFAULT_RETENTION fallback.
+    "ceo_name": _validate_ceo_name,
     # Telegram inbound's getUpdates offset cursor. Not a feature flag (absent
     # from FEATURE_FLAGS/the panel card) but reuses this same validated KV
     # store instead of a dedicated table, so a restart doesn't replay updates.

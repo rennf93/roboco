@@ -3,7 +3,7 @@
 ## Hierarchy
 
 ```
-CEO (Renzo - Human)
+CEO (Human)
     |
     +-- Board (4 agents)
     |    +-- Product Owner
