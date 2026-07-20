@@ -6,6 +6,7 @@ API never returns plaintext)."""
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.project_fields import task_project_fields
 from roboco.api.schemas.video import (
+    PreviewFrameResponse,
     TikTokCredentialsSetRequest,
     TikTokCredentialsStatus,
     VideoPipelineItemResponse,
@@ -24,6 +26,7 @@ from roboco.api.schemas.video import (
     VideoPostHistoryResponse,
     VideoPostRejectRequest,
     VideoPostResponse,
+    VideoPreviewFramesResponse,
     VideoRequestBody,
     VideoRequestResponse,
 )
@@ -50,7 +53,7 @@ from roboco.services.x_video_client import build_x_video_poster
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import TaskTable
+    from roboco.db.tables import ProjectTable, TaskTable
     from roboco.services.video_post_service import VideoPostService
 
 router = APIRouter()
@@ -244,8 +247,8 @@ def _resolve_preview_path(root: Path, file_path: str) -> Path | None:
     anything that escapes it. A leading ``/`` is stripped before joining —
     pathlib's ``/`` operator otherwise lets an absolute right operand
     discard ``root`` entirely — then the joined path must resolve to an
-    existing file still under ``root``. The sole confinement check for the
-    CEO preview proxy."""
+    existing file still under ``root``. The confinement check shared by the
+    CEO composition-HTML proxy and the preview-frame streamer below."""
     candidate = (root / file_path.lstrip("/")).resolve()
     if not candidate.is_relative_to(root) or not candidate.is_file():
         return None
@@ -294,6 +297,124 @@ async def get_video_preview(
             "Content-Security-Policy": "frame-ancestors 'self'",
         },
     )
+
+
+# request_render's self-describing filename (video-renderer/render.js):
+# frame-<idx>-of-<n>-at-<t>s.png — no manifest needed to recover order/timestamp.
+_FRAME_NAME_RE = re.compile(r"^frame-(\d+)-of-\d+-at-([\d.]+)s\.png$")
+
+
+def _previews_root(project_slug: str, task_id: UUID) -> Path:
+    """The container-shared dir request_render extracts frames to — same
+    path every agent container mounts (content_actions._render_extract_frames),
+    so this resolves identically regardless of who rendered."""
+    return Path(settings.workspaces_root) / project_slug / ".previews" / task_id.hex[:8]
+
+
+def _list_orientation_frames(dir_path: Path) -> list[PreviewFrameResponse]:
+    """Sorted, filename-parsed frames for one orientation dir. Empty when
+    that orientation was never rendered (dir missing) — the directory
+    listing is authoritative for both orientations at once; the
+    render_preview marker only ever reflects the last request_render call's
+    single orientation."""
+    if not dir_path.is_dir():
+        return []
+    frames = []
+    for p in dir_path.iterdir():
+        m = _FRAME_NAME_RE.match(p.name)
+        if m:
+            frames.append(
+                PreviewFrameResponse(
+                    index=int(m.group(1)),
+                    file=p.name,
+                    timestamp_seconds=float(m.group(2)),
+                )
+            )
+    return sorted(frames, key=lambda f: f.index)
+
+
+async def _resolve_video_task_project(
+    task_id: UUID, db: AsyncSession
+) -> tuple[TaskTable, ProjectTable]:
+    """Task + project resolution shared by the two preview-frame routes below
+    — mirrors get_video_preview's inline checks (source=video, has a
+    project, project has a slug)."""
+    task = await get_task_service(db).get(task_id)
+    if task is None or task.source != VIDEO_SOURCE or task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such video task"
+        )
+    project = await get_project_service(db).get(cast("UUID", task.project_id))
+    if project is None or not project.slug:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+    return task, project
+
+
+@router.get("/preview-frames/{task_id}", response_model=VideoPreviewFramesResponse)
+async def get_video_preview_frames(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> VideoPreviewFramesResponse:
+    """A video-authoring task's request_render preview — every extracted
+    frame per orientation, ordered, with its in-video timestamp. The only
+    thing the CEO has to look at before the post-completion render loop
+    produces the real MP4 — an awaiting_ceo_approval task otherwise has
+    nothing to preview. 404s when there's no such video task, or nothing
+    was ever rendered.
+    """
+    _require_ceo(agent)
+    task, project = await _resolve_video_task_project(task_id, db)
+    root = _previews_root(project.slug, task_id)
+    frames = {cut: _list_orientation_frames(root / cut) for cut in _VALID_CUTS}
+    if not any(frames.values()):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No render preview frames for this task",
+        )
+    preview = markers.get_render_preview(task) or {}
+    return VideoPreviewFramesResponse(
+        task_id=str(task.id),
+        composition_id=preview.get("composition_id"),
+        duration_seconds=preview.get("duration_seconds"),
+        head_sha=preview.get("head_sha"),
+        dirty=preview.get("dirty"),
+        rendered_at=preview.get("at"),
+        frames=frames,
+    )
+
+
+@router.get("/preview-frames/{task_id}/{orientation}/{filename}", response_model=None)
+async def get_video_preview_frame(
+    task_id: UUID,
+    orientation: str,
+    filename: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> FileResponse:
+    """Stream one extracted preview-frame PNG. Confinement mirrors
+    ``_resolve_preview_path`` (get_video_preview's composition-HTML proxy) —
+    same root-relative resolve + ``..``/escape rejection + is_file check,
+    scoped to this task's ``.previews/`` dir instead of its read-clone.
+    400 on an orientation outside {vertical, square}; 404 on a missing
+    task/frame.
+    """
+    _require_ceo(agent)
+    if orientation not in _VALID_CUTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"orientation must be one of {_VALID_CUTS!r}",
+        )
+    _task, project = await _resolve_video_task_project(task_id, db)
+    root = _previews_root(project.slug, task_id)
+    resolved = _resolve_preview_path(root, f"{orientation}/{filename}")
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such preview frame"
+        )
+    return FileResponse(resolved, media_type="image/png")
 
 
 def _posted_ids(draft: dict[str, Any]) -> dict[str, str]:

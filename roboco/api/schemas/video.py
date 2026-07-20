@@ -111,6 +111,33 @@ class VideoPipelineItemResponse(BaseModel):
     project_name: str | None = None
 
 
+class PreviewFrameResponse(BaseModel):
+    """One extracted request_render preview frame — index/timestamp decoded
+    from the sidecar's self-describing filename
+    (``frame-<idx>-of-<n>-at-<t>s.png``, video-renderer/render.js)."""
+
+    index: int
+    file: str
+    timestamp_seconds: float
+
+
+class VideoPreviewFramesResponse(BaseModel):
+    """A video-authoring task's request_render preview frames, keyed by
+    orientation — the CEO's only look at the rendered artifact before the
+    post-completion render loop produces the real MP4 (awaiting_ceo_approval
+    has nothing else to show). composition_id/duration/head_sha/dirty/
+    rendered_at come from the render_preview marker; an orientation absent
+    or empty from ``frames`` was never rendered."""
+
+    task_id: str
+    composition_id: str | None = None
+    duration_seconds: float | None = None
+    head_sha: str | None = None
+    dirty: bool | None = None
+    rendered_at: str | None = None
+    frames: dict[str, list[PreviewFrameResponse]] = Field(default_factory=dict)
+
+
 class TikTokCredentialsStatus(BaseModel):
     """Whether the four OAuth2 secrets are stored. Never the secrets themselves."""
 

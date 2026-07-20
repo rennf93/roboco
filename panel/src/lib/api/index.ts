@@ -48,4 +48,6 @@ export type {
   VideoPostHistoryEntry,
   VideoRequestResult,
   TikTokCredentialsStatus,
+  PreviewFrame,
+  VideoPreviewFrames,
 } from "./video";

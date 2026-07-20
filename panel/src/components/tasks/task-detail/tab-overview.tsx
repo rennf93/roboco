@@ -1,10 +1,11 @@
 "use client";
 
-import { Task } from "@/types";
+import { Task, TaskStatus } from "@/types";
 import { TaskDescription } from "./task-description";
 import { AcceptanceCriteria } from "./acceptance-criteria";
 import { SubtasksList } from "./subtasks-list";
 import { WorkSessionCard } from "./work-session-card";
+import { VideoPreviewCard } from "./video-preview-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/ui/markdown";
@@ -49,6 +50,15 @@ export function TabOverview({ task }: TabOverviewProps) {
 
       {/* Work Session / Git Info */}
       <WorkSessionCard taskId={task.id} />
+
+      {/* Video preview (source=video authoring tasks with a captured
+          render_preview, or already awaiting the CEO's approval — the state
+          with nothing else to show) */}
+      {task.source === "video" &&
+        (!!task.orchestration_markers?.render_preview ||
+          task.status === TaskStatus.AWAITING_CEO_APPROVAL) && (
+          <VideoPreviewCard task={task} />
+        )}
 
       {/* Quick Context (for resumption) */}
       {task.quick_context && (
