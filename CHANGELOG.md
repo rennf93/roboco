@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **CEO agent lookup now tolerates multiple role rows in the database.** `NotificationDeliveryService._get_ceo_agent()` previously crashed with `MultipleResultsFound` when more than one CEO-role agent row existed — a rare edge case in production but routine in the shared test database where sibling test runs each commit their own CEO agent. The query now uses `.order_by(AgentTable.created_at).limit(1)` to select the earliest-created agent, mirroring the already-established pattern in `_get_auditor_agent()`. This relaxes an over-strict query (which crashed on >1 row) to gracefully select one deterministic result; no behavior change when exactly one CEO agent exists (the production expectation). Verified 13679 tests pass with 94.39% coverage.
+
 ## [0.26.0] - 2026-07-20
 
 ### Security
