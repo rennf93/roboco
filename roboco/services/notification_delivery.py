@@ -36,6 +36,7 @@ from roboco.services.notification_dedup import (
     all_recipients_recently_notified,
     clear_dedup_key,
 )
+from roboco.services.notification_text import task_display
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -753,7 +754,8 @@ class NotificationDeliveryService(BaseService):
             to_agents=[pm.id],
             subject=f"ACTION REQUIRED: Blocked - {task_title[:40]}",
             body=(
-                f"Task {task_id} has been BLOCKED by {blocker_name}.\n\n"
+                f"Task {task_display(task_title, task_id)} has been BLOCKED by "
+                f"{blocker_name}.\n\n"
                 f"Type: {details.blocker_type}\n"
                 f"Reason: {details.reason}\n"
                 f"What's needed: {details.what_needed}\n\n"
@@ -790,8 +792,8 @@ class NotificationDeliveryService(BaseService):
             to_agents=[pm.id],
             subject=f"Documentation complete: {task.title or 'Unknown task'}",
             body=(
-                f"Task {task_id} documentation is complete and ready "
-                "for final review.\n\nPlease review and complete the task."
+                f"Task {task_display(task, task_id)} documentation is complete "
+                "and ready for final review.\n\nPlease review and complete the task."
             ),
             related_task_id=task_id,
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.TASK_ASSIGNMENT],
@@ -819,8 +821,8 @@ class NotificationDeliveryService(BaseService):
             to_agents=[pm.id],
             subject=f"Task ready for review: {task.title or 'Unknown task'}",
             body=(
-                f"Task {task_id} has been submitted for PM review.\n\n"
-                f"Notes: {notes or 'None'}\n\n"
+                f"Task {task_display(task, task_id)} has been submitted for PM "
+                f"review.\n\nNotes: {notes or 'None'}\n\n"
                 "Please review and complete the task."
             ),
             related_task_id=task_id,
@@ -845,8 +847,8 @@ class NotificationDeliveryService(BaseService):
             to_agents=[assignee_agent_id],
             subject=f"CEO Revision Required: {task.title or 'Unknown task'}",
             body=(
-                f"Task {task_id} was rejected by CEO and requires revision.\n\n"
-                f"Reason: {notes}\n\n"
+                f"Task {task_display(task, task_id)} was rejected by CEO and "
+                f"requires revision.\n\nReason: {notes}\n\n"
                 "Please address the feedback and resubmit."
             ),
             related_task_id=task_id,
@@ -888,7 +890,10 @@ class NotificationDeliveryService(BaseService):
         if not target:
             raise EscalationError(f"Escalation target not found: {default_target}")
 
-        body = f"Task {task_id} escalated by {escalator.slug}.\n\nReason: {reason}"
+        body = (
+            f"Task {task_display(task, task_id)} escalated by "
+            f"{escalator.slug}.\n\nReason: {reason}"
+        )
         notification = NotificationTable(
             type=NotificationType.BLOCKER_ESCALATION,
             priority=NotificationPriority.HIGH,
@@ -1041,8 +1046,8 @@ class NotificationDeliveryService(BaseService):
             to_agents=[ceo.id],
             subject=f"CEO Approval Required: {task.title or 'Unknown task'}",
             body=(
-                f"Task {task_id} requires CEO approval for completion.\n\n"
-                f"Escalated by: {escalator_role}\n"
+                f"Task {task_display(task, task_id)} requires CEO approval for "
+                f"completion.\n\nEscalated by: {escalator_role}\n"
                 f"Notes: {notes or 'None'}\n\n"
                 "Use /ceo-approve or /ceo-reject to respond."
             ),
@@ -1110,7 +1115,7 @@ class NotificationDeliveryService(BaseService):
         role_label = actor_role or (actor.role if actor else "system")
 
         body_lines = [
-            f"Task {task_id} ({title}) entered needs_revision.",
+            f"Task {task_display(title, task_id)} entered needs_revision.",
             "",
             f"Reason: {reason}",
             f"Actor role: {role_label}",

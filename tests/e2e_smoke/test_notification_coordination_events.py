@@ -28,6 +28,7 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from roboco.services.notification_text import task_display
 from tests.e2e_smoke.arcs import seed_company, seed_project, seed_task
 
 if TYPE_CHECKING:
@@ -225,7 +226,8 @@ def test_unblock_persists_alert_notification(e2e_stack: E2EStack) -> None:
     note = notifications[0]
     assert "alert" in note["type"].lower(), note
     assert note["related_task_id"] == task_id, note
-    assert note["subject"] == f"Task {task_id} unblocked", note
+    expected_display = task_display("Rotate the expired staging credential", task_id)
+    assert note["subject"] == f"Task {expected_display} unblocked", note
     assert note["priority"], "priority must be populated"
     assert company.dev_id in note["to_agents"], note
 
@@ -294,8 +296,11 @@ def test_dependency_revival_persists_alert_notification(e2e_stack: E2EStack) -> 
     note = notifications[0]
     assert "alert" in note["type"].lower(), note
     assert note["related_task_id"] == dependent_id, note
-    assert note["subject"] == f"Task {dependent_id} revived by dependency completion", (
-        note
+    expected_display = task_display(
+        "Wire the new endpoint to the shared auth helper", dependent_id
     )
+    assert (
+        note["subject"] == f"Task {expected_display} revived by dependency completion"
+    ), note
     assert note["priority"], "priority must be populated"
     assert company.dev_id in note["to_agents"], note

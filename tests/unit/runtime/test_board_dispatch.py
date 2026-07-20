@@ -226,6 +226,7 @@ async def test_ceo_handoff_once_when_board_review_complete() -> None:
 
     svc = AsyncMock()
     task_svc = AsyncMock()
+    task_svc.get.return_value = SimpleNamespace(title="Strategic feature")
     db_ctx, task_ctx = _patch_handoff_db(task_svc)
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
@@ -239,7 +240,7 @@ async def test_ceo_handoff_once_when_board_review_complete() -> None:
 
     task_svc.mark_board_review_complete.assert_awaited_once()
     svc.send_board_review_complete_notification.assert_awaited_once_with(
-        task_id=task_id
+        task_id=task_id, task_title="Strategic feature"
     )
     assert task_id in orch._board_review_ceo_notified
 

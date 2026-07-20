@@ -97,7 +97,7 @@ async def test_third_unblock_notifies_ceo_once() -> None:
         env = await _unblock_once(c, pm_id, task_id, t)
         assert env.error is None, env.as_dict()
 
-    notify.assert_awaited_once_with(task_id, _THREE_FLIPS)
+    notify.assert_awaited_once_with(task_id, _THREE_FLIPS, t.title)
     assert markers.is_block_flip_notified(t) is True
 
 

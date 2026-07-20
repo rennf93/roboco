@@ -4882,11 +4882,13 @@ class TaskService(BaseService):
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
 
-        await self._notify_unblock(task_id, task.assigned_to)
+        await self._notify_unblock(task_id, task.assigned_to, task.title)
 
         return task
 
-    async def _notify_unblock(self, task_id: UUID, restored_owner: Any) -> None:
+    async def _notify_unblock(
+        self, task_id: UUID, restored_owner: Any, task_title: str | None = None
+    ) -> None:
         """Best-effort coordination notification when a blocked task resumes.
 
         Called from both `unblock` and `unblock_with_restore`'s restore=True
@@ -4903,6 +4905,7 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 restored_owner=str(restored_owner),
                 db_session=self.session,
+                task_title=task_title,
             )
         except Exception as e:
             self.log.warning(
@@ -7253,6 +7256,7 @@ class TaskService(BaseService):
                 assignee=str(owner),
                 completed_dependency_id=str(completed_dependency_id),
                 db_session=self.session,
+                task_title=task.title,
             )
         except Exception as e:
             self.log.warning(
@@ -7879,13 +7883,23 @@ class TaskService(BaseService):
             created = await self.add_dependency(held_back_id, blocking_id)
             if created:
                 held_back = siblings_by_id.get(held_back_id)
+                blocking = siblings_by_id.get(blocking_id)
                 owner = getattr(held_back, "assigned_to", None) if held_back else None
                 await self._notify_collision_sequencing(
-                    held_back_id, blocking_id, owner
+                    held_back_id,
+                    blocking_id,
+                    owner,
+                    getattr(held_back, "title", None),
+                    getattr(blocking, "title", None),
                 )
 
     async def _notify_collision_sequencing(
-        self, held_back_task_id: UUID, blocking_task_id: UUID, owner: Any
+        self,
+        held_back_task_id: UUID,
+        blocking_task_id: UUID,
+        owner: Any,
+        held_back_title: str | None = None,
+        blocking_title: str | None = None,
     ) -> None:
         """Best-effort coordination notification for a newly-wired collision edge."""
         try:
@@ -7895,6 +7909,8 @@ class TaskService(BaseService):
                 held_back_task_id=str(held_back_task_id),
                 blocking_task_id=str(blocking_task_id),
                 held_back_assignee=str(owner) if owner is not None else None,
+                held_back_title=held_back_title,
+                blocking_title=blocking_title,
             )
         except Exception as e:
             self.log.warning("Collision-sequencing notify failed", error=str(e))
@@ -8733,6 +8749,8 @@ class TaskService(BaseService):
             raise ServiceError("Update failed")
 
         if new_status == TaskStatus.AWAITING_PM_REVIEW and target_pm_slug:
+            from roboco.services.notification_text import task_display
+
             await notify_pm_for_substitute(
                 self.session,
                 pm_slug=target_pm_slug,
@@ -8740,7 +8758,8 @@ class TaskService(BaseService):
                 from_agent_id=agent.agent_id,
                 message=(
                     f"Task needs review: {updated.title or 'Unknown task'}",
-                    f"Task {task_id} requires PM review.\n\n"
+                    f"Task {task_display(updated.title, task_id)} requires PM "
+                    "review.\n\n"
                     f"Reason: {reason.value}\n"
                     f"Details: {details}\n\n"
                     "Please review and reassign as needed.",
@@ -9538,11 +9557,17 @@ class TaskService(BaseService):
             task_id=str(task_id),
             new_assignee=str(effective_assignee) if effective_assignee else None,
         )
-        await self._notify_reassignment(task_id, previous_assignee, effective_assignee)
+        await self._notify_reassignment(
+            task_id, previous_assignee, effective_assignee, task.title
+        )
         return task
 
     async def _notify_reassignment(
-        self, task_id: UUID, previous_assignee: Any, new_assignee: Any
+        self,
+        task_id: UUID,
+        previous_assignee: Any,
+        new_assignee: Any,
+        task_title: str | None = None,
     ) -> None:
         """Best-effort coordination notification for a real ownership change.
 
@@ -9561,6 +9586,7 @@ class TaskService(BaseService):
                 else None,
                 new_assignee=str(new_assignee) if new_assignee is not None else None,
                 db_session=self.session,
+                task_title=task_title,
             )
         except Exception as e:
             self.log.warning(
@@ -10186,7 +10212,7 @@ class TaskService(BaseService):
             return await self.unblock(task_id, agent_role="cell_pm")
 
         restored = await self._apply_pre_block_restore(task, restored_status)
-        await self._notify_unblock(task_id, restored.assigned_to)
+        await self._notify_unblock(task_id, restored.assigned_to, restored.title)
         return restored
 
     async def _apply_pre_block_restore(

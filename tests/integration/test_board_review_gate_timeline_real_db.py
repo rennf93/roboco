@@ -238,4 +238,5 @@ async def test_board_review_gate_flips_only_after_both_reviewers_go_idle(
     note = notes[0]
     assert note.from_agent == UUID(_SYSTEM_UUID)
     assert UUID(_CEO_UUID) in note.to_agents
-    assert str(task_id) in note.subject
+    # Subjects are human-readable now: task title + #id8, never the raw UUID.
+    assert f"#{str(task_id)[:8]}" in note.subject

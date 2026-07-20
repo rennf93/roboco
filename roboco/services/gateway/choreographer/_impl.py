@@ -6887,7 +6887,7 @@ class Choreographer:
             )
 
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
-        await self._maybe_notify_block_flip(task_id, t)
+        await self._maybe_notify_block_flip(task_id, t, t.title)
         next_msg = (
             "task restored to its pre-block state — original assignee will resume"
             if restore
@@ -6900,7 +6900,9 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role=role)
 
-    async def _maybe_notify_block_flip(self, task_id: UUID, t: Any) -> None:
+    async def _maybe_notify_block_flip(
+        self, task_id: UUID, t: Any, task_title: str | None = None
+    ) -> None:
         """Bump the flip counter; alert the CEO once past the threshold.
 
         A resolver that keeps unblocking a task that keeps re-blocking
@@ -6915,16 +6917,18 @@ class Choreographer:
             and not markers.is_block_flip_notified(t)
         ):
             markers.mark_block_flip_notified(t)
-            await self._notify_ceo_block_flip(task_id, flip_count)
+            await self._notify_ceo_block_flip(task_id, flip_count, task_title)
 
-    async def _notify_ceo_block_flip(self, task_id: UUID, flip_count: int) -> None:
+    async def _notify_ceo_block_flip(
+        self, task_id: UUID, flip_count: int, task_title: str | None = None
+    ) -> None:
         """Best-effort CEO alert for a repeating block/unblock cycle; never
         raises — the breaker signals, it does not wedge unblock itself."""
         from roboco.services.notification import NotificationService
 
         try:
             await NotificationService().send_block_flip_notification(
-                task_id=str(task_id), flip_count=flip_count
+                task_id=str(task_id), flip_count=flip_count, task_title=task_title
             )
         except Exception:
             logger.warning(
@@ -7284,7 +7288,7 @@ class Choreographer:
             actor_id=pm_agent_id,
             actor_role="cell_pm",
         )
-        await self._notify_ceo_merge_conflict(task_id, files)
+        await self._notify_ceo_merge_conflict(task_id, files, pm_agent_id)
         t = await self.task.get(task_id)
         detail = f" ({len(files)} conflicting file(s))" if files else ""
         return Envelope.ok(
@@ -7298,14 +7302,18 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
 
-    async def _notify_ceo_merge_conflict(self, task_id: UUID, files: list[str]) -> None:
+    async def _notify_ceo_merge_conflict(
+        self, task_id: UUID, files: list[str], pm_agent_id: UUID
+    ) -> None:
         """Best-effort CEO alert for a wedged merge conflict; never raises."""
         from roboco.services.notification import NotificationService
+        from roboco.services.notification_text import agent_display
 
         try:
+            pm_slug = await agent_display(pm_agent_id, self.task.session)
             await NotificationService().send_stuck_agent_notification(
                 task_id=str(task_id),
-                agent_slug="cell_pm",
+                agent_slug=pm_slug or str(pm_agent_id),
                 task_status="awaiting_ceo_approval",
                 to_agent="ceo",
             )
