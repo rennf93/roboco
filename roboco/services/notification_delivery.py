@@ -1205,8 +1205,17 @@ class NotificationDeliveryService(BaseService):
         return result.scalar_one_or_none()
 
     async def _get_ceo_agent(self) -> AgentTable | None:
+        """Find the CEO agent (org-wide singleton; earliest-created if many).
+
+        Mirrors `_get_auditor_agent`: a plain one-or-none raises
+        MultipleResultsFound if a second CEO-role row ever exists, so pin to
+        the earliest-created — the canonical seeded CEO — instead.
+        """
         result = await self.session.execute(
-            select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.CEO)
+            .order_by(AgentTable.created_at)
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

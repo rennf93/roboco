@@ -208,3 +208,35 @@ async def test_notify_ceo_of_completion_creates_alert(env: dict) -> None:
     assert env["ceo"].id in note.to_agents
     assert "Active effort" in note.body
     assert "Ship it" in note.subject
+
+
+@pytest.mark.asyncio
+async def test_get_ceo_agent_tolerates_duplicate_ceo_rows(env: dict) -> None:
+    """A second role=CEO row (a real hazard: sibling tests commit one into the
+    shared session DB, and nothing forbids two in prod) must not make
+    `_get_ceo_agent()` raise MultipleResultsFound — it resolves the
+    earliest-created CEO, mirroring `_get_auditor_agent`."""
+    db = env["db"]
+    later_ceo = AgentTable(
+        id=uuid4(),
+        name="CEO 2",
+        slug=f"ceo-{uuid4().hex[:6]}",
+        role=AgentRole.CEO,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+        created_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.add(later_ceo)
+    await db.flush()
+
+    delivery = get_notification_delivery_service(db)
+    resolved = await delivery._get_ceo_agent()
+
+    # Does not raise, and pins to the earliest-created (never the later row).
+    assert resolved is not None
+    assert resolved.id != later_ceo.id
