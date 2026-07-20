@@ -33,6 +33,12 @@ export type {
 } from "./x";
 export { telegramApi } from "./telegram";
 export type { TelegramCredentialsStatus } from "./telegram";
+export { githubAppApi } from "./github-app";
+export type {
+  GitHubAppCredentialsStatus,
+  GitHubAppInstallation,
+  GitHubAppInstallationRepository,
+} from "./github-app";
 export { roadmapApi } from "./roadmap";
 export type {
   RoadmapCycle,
