@@ -8,23 +8,23 @@ import { getAgentDisplayName } from "@/lib/agent-utils";
 import { TaskStatus, type Task } from "@/types";
 import { TG_CARD, TgRow, TgRowIcon, TgSection } from "@/components/tg/ui";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ChevronDown } from "lucide-react";
 import {
-  AlertTriangle,
-  CheckCircle2,
+  ArrowCounterClockwise,
+  CheckCircle,
   Circle,
-  ChevronDown,
-  ClipboardCheck,
+  CircleDashed,
+  ClipboardText,
   Crown,
   FileText,
   GitPullRequest,
   Hourglass,
-  ListTodo,
-  Loader2,
+  ListChecks,
   PauseCircle,
-  RotateCcw,
-  Users,
+  UsersThree,
+  Warning,
   XCircle,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
 type GroupKey = "needs_you" | "in_review" | "in_flight" | "queued" | "done";
@@ -86,20 +86,20 @@ const GROUP_TONE: Record<
 };
 
 const STATUS_ICON: Partial<Record<TaskStatus, typeof Circle>> = {
-  [TaskStatus.BACKLOG]: ListTodo,
+  [TaskStatus.BACKLOG]: ListChecks,
   [TaskStatus.PENDING]: Hourglass,
   [TaskStatus.CLAIMED]: Circle,
-  [TaskStatus.IN_PROGRESS]: Loader2,
-  [TaskStatus.BLOCKED]: AlertTriangle,
+  [TaskStatus.IN_PROGRESS]: CircleDashed,
+  [TaskStatus.BLOCKED]: Warning,
   [TaskStatus.PAUSED]: PauseCircle,
-  [TaskStatus.VERIFYING]: ClipboardCheck,
-  [TaskStatus.NEEDS_REVISION]: RotateCcw,
-  [TaskStatus.AWAITING_QA]: ClipboardCheck,
+  [TaskStatus.VERIFYING]: ClipboardText,
+  [TaskStatus.NEEDS_REVISION]: ArrowCounterClockwise,
+  [TaskStatus.AWAITING_QA]: ClipboardText,
   [TaskStatus.AWAITING_DOCUMENTATION]: FileText,
   [TaskStatus.AWAITING_PR_REVIEW]: GitPullRequest,
-  [TaskStatus.AWAITING_PM_REVIEW]: Users,
+  [TaskStatus.AWAITING_PM_REVIEW]: UsersThree,
   [TaskStatus.AWAITING_CEO_APPROVAL]: Crown,
-  [TaskStatus.COMPLETED]: CheckCircle2,
+  [TaskStatus.COMPLETED]: CheckCircle,
   [TaskStatus.CANCELLED]: XCircle,
 };
 
@@ -230,10 +230,7 @@ export function TgBoardTab() {
   }, []);
 
   const { data: fetched, isLoading } = useTasks({ limit: 200 });
-  const tasks = useMemo(
-    () => demoTasks ?? fetched ?? [],
-    [demoTasks, fetched],
-  );
+  const tasks = useMemo(() => demoTasks ?? fetched ?? [], [demoTasks, fetched]);
   const groups = useMemo(() => groupTasks(tasks), [tasks]);
 
   if (isLoading && demoTasks === undefined && !isTgDemoMode()) {
@@ -254,7 +251,7 @@ export function TgBoardTab() {
           "flex flex-col items-center gap-2 p-8 text-center text-muted-foreground",
         )}
       >
-        <ListTodo className="h-8 w-8 opacity-50" />
+        <ListChecks className="h-8 w-8 opacity-50" />
         <p className="text-sm">No tasks yet</p>
       </div>
     );

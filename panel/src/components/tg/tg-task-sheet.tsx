@@ -12,7 +12,8 @@ import { haptics } from "@/lib/telegram/webapp";
 import { TaskStatus, type Task } from "@/types";
 import { tasksApi, type TaskFinding } from "@/lib/api/tasks";
 import { Textarea } from "@/components/ui/textarea";
-import { CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
+import { CheckCircle } from "@phosphor-icons/react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -105,13 +106,7 @@ const MIN_REJECT = 10;
  * approve / request-changes on a task awaiting CEO approval, and unblock on
  * a blocked one. Everything else stays a desktop concern.
  */
-function CeoActions({
-  task,
-  onActed,
-}: {
-  task: Task;
-  onActed: () => void;
-}) {
+function CeoActions({ task, onActed }: { task: Task; onActed: () => void }) {
   const demo = isTgDemoMode();
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState(false);
@@ -275,7 +270,7 @@ export function TgTaskSheet({
               <ul className="space-y-1.5">
                 {task.acceptance_criteria.map((criterion, i) => (
                   <li key={i} className="flex gap-2 text-sm leading-relaxed">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50" />
+                    <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50" />
                     <span>{criterion}</span>
                   </li>
                 ))}

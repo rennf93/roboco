@@ -155,7 +155,10 @@ describe("TgTaskSheet", () => {
 
   it("offers Unblock on a blocked task and no CEO verbs elsewhere", () => {
     render(
-      <TgTaskSheet task={task({ status: "blocked" as Task["status"] })} onClose={vi.fn()} />,
+      <TgTaskSheet
+        task={task({ status: "blocked" as Task["status"] })}
+        onClose={vi.fn()}
+      />,
     );
     expect(screen.getByRole("button", { name: "Unblock" })).toBeInTheDocument();
 

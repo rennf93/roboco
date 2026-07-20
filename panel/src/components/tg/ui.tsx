@@ -113,7 +113,9 @@ export function TgAvatar({
   let face: string;
   let code: string;
   if (isKnownAgent(name)) {
-    face = cn("border", TEAM_COLOR_CLASSES[getAgentTeamColor(name)]);
+    // Tint only — the class map's border-* entries are inert without a
+    // border width, and the borderless tile is the point.
+    face = TEAM_COLOR_CLASSES[getAgentTeamColor(name)];
     code = getAgentInitials(name);
   } else {
     let hash = 0;

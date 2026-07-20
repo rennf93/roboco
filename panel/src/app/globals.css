@@ -175,9 +175,12 @@
   font-family: var(--font-share-tech), ui-monospace, "SF Mono", monospace;
 }
 #tg-shell .tg-display {
-  font-variant-numeric: tabular-nums;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  /* The Share Tech Mono brand voice — hero numerals, stat values, the
+     wordmark. Single-weight face: strip synthesized bolding so the mark
+     stays crisp. Labels and body copy stay on the native stack. */
+  font-family: var(--font-share-tech), ui-monospace, "SF Mono", monospace;
+  font-weight: 400;
+  letter-spacing: 0.01em;
 }
 #tg-shell .tg-tab-in {
   animation: tg-rise 0.24s cubic-bezier(0.21, 0.61, 0.35, 1) backwards;

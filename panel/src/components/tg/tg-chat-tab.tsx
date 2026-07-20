@@ -687,8 +687,7 @@ function ThreadView({
     const raf = requestAnimationFrame(() => {
       const el = scrollRef.current;
       if (!el) return;
-      const nearBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
       if (nearBottom) el.scrollTop = el.scrollHeight;
       else setShowJump(true);
     });

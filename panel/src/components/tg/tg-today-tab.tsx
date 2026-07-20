@@ -34,7 +34,8 @@ import {
 } from "@/components/tg/tg-icons";
 import { DayBars, Sparkline } from "@/components/tg/charts";
 import { fmtTokens } from "@/components/tg/tg-format";
-import { AlertTriangle, CheckSquare, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { CheckCircle, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -160,7 +161,7 @@ function NeedsYouBanner({
   if (needs.total === 0) {
     return (
       <div className={cn(TG_CARD, "flex items-center gap-3 p-3.5")}>
-        <TgRowIcon icon={CheckSquare} tone="emerald" />
+        <TgRowIcon icon={CheckCircle} tone="emerald" />
         <div>
           <p className="text-sm font-medium">All clear</p>
           <p className="text-xs text-muted-foreground">
@@ -215,7 +216,7 @@ function NeedsYouBanner({
           {needs.blocked.slice(0, 2).map((t) => (
             <TgRow
               key={t.id}
-              leading={<TgRowIcon icon={AlertTriangle} tone="rose" />}
+              leading={<TgRowIcon icon={Warning} tone="rose" />}
               title={t.title}
               meta={
                 <>
@@ -383,7 +384,7 @@ export function TgTodayTab({
   if (isError || !data) {
     return (
       <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
-        <AlertTriangle className="h-8 w-8 opacity-50" />
+        <Warning className="h-8 w-8 opacity-50" />
         <p className="text-sm">Couldn&apos;t load the brief</p>
       </div>
     );

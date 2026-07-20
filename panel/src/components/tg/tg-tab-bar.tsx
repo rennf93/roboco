@@ -61,7 +61,7 @@ export function TgTabBar({ active, onChange }: TgTabBarProps) {
                   isActive ? "bg-primary/12" : "bg-transparent",
                 )}
               >
-                <tab.icon className="h-5 w-5" />
+                <tab.icon className="h-[22px] w-[22px]" filled={isActive} />
               </span>
               {tab.label}
             </button>

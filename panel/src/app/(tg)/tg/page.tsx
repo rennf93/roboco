@@ -22,6 +22,7 @@ import { IconInbox } from "@/components/tg/tg-icons";
 import { isTgDemoMode } from "@/lib/telegram/demo";
 import { useNotifications } from "@/hooks/use-notifications";
 import { cn } from "@/lib/utils";
+import { IconContext } from "@phosphor-icons/react";
 import { Loader2, AlertTriangle, ExternalLink } from "lucide-react";
 
 type BootstrapState =
@@ -169,8 +170,11 @@ function CockpitShell() {
   const unread = isTgDemoMode() ? 3 : (notifications?.unread_count ?? 0);
 
   return (
-    <div className="p-3 pb-28">
-      <header className="flex items-center justify-between px-1 pb-3 pt-1">
+    // Every Phosphor glyph inside the cockpit is duotone unless a wrapper
+    // pins an explicit weight (the dock's filled active state).
+    <IconContext.Provider value={{ weight: "duotone" }}>
+      <div className="p-3 pb-28">
+        <header className="flex items-center justify-between px-1 pb-3 pt-1">
         <span className="tg-brand text-[13px] tracking-[0.3em] text-foreground">
           ROBOCO<span className="tg-cursor text-primary">_</span>
         </span>
@@ -189,23 +193,24 @@ function CockpitShell() {
           )}
         </button>
       </header>
-      {inboxOpen ? (
-        <TgSubPage title="Inbox" onBack={() => setInboxOpen(false)}>
-          <TgInboxTab />
-        </TgSubPage>
-      ) : (
-        // Keyed by tab so every switch replays the rise-in entrance.
-        <div key={tab} className="tg-tab-in">
-          {tab === "today" && <TgTodayTab onNavigate={navigate} />}
-          {tab === "approvals" && (
-            <TgApprovalsTab initialFocus={approvalsFocus} />
-          )}
-          {tab === "board" && <TgBoardTab />}
-          {tab === "chat" && <TgChatTab />}
-          {tab === "metrics" && <TgMetricsTab />}
-        </div>
-      )}
-      <TgTabBar active={tab} onChange={navigate} />
-    </div>
+        {inboxOpen ? (
+          <TgSubPage title="Inbox" onBack={() => setInboxOpen(false)}>
+            <TgInboxTab />
+          </TgSubPage>
+        ) : (
+          // Keyed by tab so every switch replays the rise-in entrance.
+          <div key={tab} className="tg-tab-in">
+            {tab === "today" && <TgTodayTab onNavigate={navigate} />}
+            {tab === "approvals" && (
+              <TgApprovalsTab initialFocus={approvalsFocus} />
+            )}
+            {tab === "board" && <TgBoardTab />}
+            {tab === "chat" && <TgChatTab />}
+            {tab === "metrics" && <TgMetricsTab />}
+          </div>
+        )}
+        <TgTabBar active={tab} onChange={navigate} />
+      </div>
+    </IconContext.Provider>
   );
 }

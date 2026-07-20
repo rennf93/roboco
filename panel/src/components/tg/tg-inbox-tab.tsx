@@ -16,18 +16,18 @@ import { NotificationType, type Notification } from "@/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TG_CARD, TgRowIcon, TgSection } from "@/components/tg/ui";
 import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowUpDown,
-  AtSign,
+  ArrowsDownUp,
+  At,
   Check,
   CheckSquare,
-  ClipboardList,
+  ClipboardText,
   Eye,
   FileText,
   Lightbulb,
   Megaphone,
-} from "lucide-react";
+  Warning,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import { formatDistanceToNow, format, isToday, isYesterday } from "date-fns";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -49,16 +49,16 @@ const NOTIF_TONE: Record<NotificationType, string> = {
 };
 
 const NOTIF_ICON: Record<NotificationType, typeof Check> = {
-  [NotificationType.TASK_ASSIGNMENT]: ClipboardList,
-  [NotificationType.PRIORITY_CHANGE]: ArrowUpDown,
-  [NotificationType.BLOCKER_ESCALATION]: AlertTriangle,
+  [NotificationType.TASK_ASSIGNMENT]: ClipboardText,
+  [NotificationType.PRIORITY_CHANGE]: ArrowsDownUp,
+  [NotificationType.BLOCKER_ESCALATION]: Warning,
   [NotificationType.REVIEW_REQUEST]: Eye,
   [NotificationType.DOCUMENTATION_REQUEST]: FileText,
   [NotificationType.APPROVAL]: CheckSquare,
-  [NotificationType.ALERT]: AlertCircle,
+  [NotificationType.ALERT]: WarningCircle,
   [NotificationType.BROADCAST]: Megaphone,
   [NotificationType.KNOWLEDGE_SHARE]: Lightbulb,
-  [NotificationType.MENTION]: AtSign,
+  [NotificationType.MENTION]: At,
 };
 
 function sentenceCase(s: string): string {

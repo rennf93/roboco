@@ -15,24 +15,24 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { TgRow, TgRowIcon, TG_CARD } from "@/components/tg/ui";
 import { cn } from "@/lib/utils";
+import { ArrowLeft } from "lucide-react";
 import {
-  AlertTriangle,
-  ArrowLeft,
-  CheckCircle2,
-  Clapperboard,
-  Map as MapIcon,
-  MessageCircle,
-  Rocket,
-} from "lucide-react";
+  ChatCircle,
+  CheckCircle,
+  FilmSlate,
+  MapTrifold,
+  RocketLaunch,
+  Warning,
+} from "@phosphor-icons/react";
 
 const KIND_META: Record<
   ApprovalItem["kind"],
-  { label: string; icon: typeof Rocket; tone: string }
+  { label: string; icon: typeof RocketLaunch; tone: string }
 > = {
-  release: { label: "Release", icon: Rocket, tone: "amber" },
-  x_post: { label: "X post", icon: MessageCircle, tone: "sky" },
-  video_post: { label: "Video", icon: Clapperboard, tone: "violet" },
-  roadmap: { label: "Roadmap", icon: MapIcon, tone: "emerald" },
+  release: { label: "Release", icon: RocketLaunch, tone: "amber" },
+  x_post: { label: "X post", icon: ChatCircle, tone: "sky" },
+  video_post: { label: "Video", icon: FilmSlate, tone: "violet" },
+  roadmap: { label: "Roadmap", icon: MapTrifold, tone: "emerald" },
 };
 
 function itemTitle(item: ApprovalItem): string {
@@ -127,7 +127,7 @@ export function TgApprovalsTab({
   if (anyFailed && items.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
-        <AlertTriangle className="h-8 w-8 opacity-50" />
+        <Warning className="h-8 w-8 opacity-50" />
         <p className="text-sm">Couldn&apos;t load the queues</p>
       </div>
     );
@@ -161,7 +161,7 @@ export function TgApprovalsTab({
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
-        <CheckCircle2 className="h-8 w-8 opacity-50" />
+        <CheckCircle className="h-8 w-8 opacity-50" />
         <p className="text-sm">Queue is clear</p>
       </div>
     );
@@ -174,7 +174,7 @@ export function TgApprovalsTab({
       </p>
       {anyFailed && (
         <p className="flex items-center gap-1.5 rounded-2xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <Warning className="h-3.5 w-3.5 shrink-0" />
           Some queues didn&apos;t load — this list may be incomplete.
         </p>
       )}
