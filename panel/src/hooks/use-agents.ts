@@ -125,6 +125,15 @@ const AGENT_ROSTER: Agent[] = [
     cell: "backend",
     status: "idle" as AgentState,
   },
+  {
+    id: "23",
+    agent_id: "be-pr-reviewer",
+    name: "Backend PR Reviewer",
+    role: "pr_reviewer" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
   // Frontend Cell
   {
     id: "10",
@@ -171,6 +180,15 @@ const AGENT_ROSTER: Agent[] = [
     cell: "frontend",
     status: "idle" as AgentState,
   },
+  {
+    id: "24",
+    agent_id: "fe-pr-reviewer",
+    name: "Frontend PR Reviewer",
+    role: "pr_reviewer" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
   // UX/UI Cell
   {
     id: "15",
@@ -213,6 +231,15 @@ const AGENT_ROSTER: Agent[] = [
     agent_id: "ux-doc",
     name: "UX/UI Documenter",
     role: "documenter" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "25",
+    agent_id: "ux-pr-reviewer",
+    name: "UX/UI PR Reviewer",
+    role: "pr_reviewer" as AgentRole,
     team: "ux_ui" as Team,
     cell: "ux_ui",
     status: "idle" as AgentState,

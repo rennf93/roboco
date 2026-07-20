@@ -55,18 +55,21 @@ const AGENT_UUIDS: Record<string, string> = {
   "00000000-0000-0000-0001-000000000003": "be-qa",
   "00000000-0000-0000-0001-000000000004": "be-pm",
   "00000000-0000-0000-0001-000000000005": "be-doc",
+  "00000000-0000-0000-0001-000000000006": "be-pr-reviewer",
   // Frontend Cell
   "00000000-0000-0000-0002-000000000001": "fe-dev-1",
   "00000000-0000-0000-0002-000000000002": "fe-dev-2",
   "00000000-0000-0000-0002-000000000003": "fe-qa",
   "00000000-0000-0000-0002-000000000004": "fe-pm",
   "00000000-0000-0000-0002-000000000005": "fe-doc",
+  "00000000-0000-0000-0002-000000000006": "fe-pr-reviewer",
   // UX/UI Cell
   "00000000-0000-0000-0003-000000000001": "ux-dev-1",
   "00000000-0000-0000-0003-000000000002": "ux-dev-2",
   "00000000-0000-0000-0003-000000000003": "ux-qa",
   "00000000-0000-0000-0003-000000000004": "ux-pm",
   "00000000-0000-0000-0003-000000000005": "ux-doc",
+  "00000000-0000-0000-0003-000000000006": "ux-pr-reviewer",
   // Board / Management
   "00000000-0000-0000-0004-000000000001": "main-pm",
   "00000000-0000-0000-0004-000000000002": "product-owner",
@@ -92,18 +95,21 @@ const AGENT_NAMES: Record<string, string> = {
   "be-dev-2": "Backend Dev 2",
   "be-qa": "Backend QA",
   "be-doc": "Backend Doc",
+  "be-pr-reviewer": "Backend PR Reviewer",
   // Frontend Cell
   "fe-pm": "Frontend PM",
   "fe-dev-1": "Frontend Dev 1",
   "fe-dev-2": "Frontend Dev 2",
   "fe-qa": "Frontend QA",
   "fe-doc": "Frontend Doc",
+  "fe-pr-reviewer": "Frontend PR Reviewer",
   // UX/UI Cell
   "ux-pm": "UX/UI PM",
   "ux-dev-1": "UX/UI Dev 1",
   "ux-dev-2": "UX/UI Dev 2",
   "ux-qa": "UX/UI QA",
   "ux-doc": "UX/UI Doc",
+  "ux-pr-reviewer": "UX/UI PR Reviewer",
   // CEO (human)
   ceo: "CEO",
   CEO: "CEO",
@@ -181,18 +187,21 @@ const AGENT_CODES: Record<string, string> = {
   "be-dev-2": "BD2",
   "be-qa": "BQA",
   "be-doc": "BDC",
+  "be-pr-reviewer": "BPR",
   // Frontend Cell
   "fe-pm": "FPM",
   "fe-dev-1": "FD1",
   "fe-dev-2": "FD2",
   "fe-qa": "FQA",
   "fe-doc": "FDC",
+  "fe-pr-reviewer": "FPR",
   // UX/UI Cell
   "ux-pm": "UPM",
   "ux-dev-1": "UD1",
   "ux-dev-2": "UD2",
   "ux-qa": "UQA",
   "ux-doc": "UDC",
+  "ux-pr-reviewer": "UPR",
   // CEO
   ceo: "CEO",
   CEO: "CEO",
@@ -240,12 +249,7 @@ export function isKnownAgent(agentId: string | null | undefined): boolean {
 // ---------------------------------------------------------------------------
 
 export type AgentTeamColor =
-  | "backend"
-  | "frontend"
-  | "ux_ui"
-  | "board"
-  | "ceo"
-  | "system";
+  "backend" | "frontend" | "ux_ui" | "board" | "ceo" | "system";
 
 /** Every value here is an existing Tailwind color family already used
  * elsewhere in the codebase at the same `/15` bg + `/40` border weight

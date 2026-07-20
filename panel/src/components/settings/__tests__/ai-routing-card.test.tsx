@@ -73,6 +73,187 @@ vi.mock("@/lib/api/providers", () => ({
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+// Full live roster (minus CEO/system) — mirrors foundation/identity.py so the
+// per-agent override grid is exercised against the real 25-agent org chart,
+// including the four PR reviewers a prior hard-coded literal dropped.
+const { useAgentDefinitions } = vi.hoisted(() => ({
+  useAgentDefinitions: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-agents", () => ({ useAgentDefinitions }));
+
+const FULL_ROSTER = [
+  {
+    id: "main-pm",
+    uuid: "u-main-pm",
+    name: "Main PM",
+    role: "main_pm",
+    team: "main_pm",
+  },
+  {
+    id: "product-owner",
+    uuid: "u-po",
+    name: "Product Owner",
+    role: "product_owner",
+    team: "board",
+  },
+  {
+    id: "head-marketing",
+    uuid: "u-hom",
+    name: "Head of Marketing",
+    role: "head_marketing",
+    team: "board",
+  },
+  {
+    id: "auditor",
+    uuid: "u-auditor",
+    name: "Auditor",
+    role: "auditor",
+    team: "board",
+  },
+  {
+    id: "intake-1",
+    uuid: "u-intake",
+    name: "Intake",
+    role: "prompter",
+    team: "board",
+  },
+  {
+    id: "secretary-1",
+    uuid: "u-secretary",
+    name: "Secretary",
+    role: "secretary",
+    team: "board",
+  },
+  {
+    id: "pr-reviewer-1",
+    uuid: "u-prr",
+    name: "PR Reviewer",
+    role: "pr_reviewer",
+    team: "board",
+  },
+  {
+    id: "be-dev-1",
+    uuid: "u-be1",
+    name: "Backend Developer 1",
+    role: "developer",
+    team: "backend",
+  },
+  {
+    id: "be-dev-2",
+    uuid: "u-be2",
+    name: "Backend Developer 2",
+    role: "developer",
+    team: "backend",
+  },
+  {
+    id: "be-qa",
+    uuid: "u-beqa",
+    name: "Backend QA",
+    role: "qa",
+    team: "backend",
+  },
+  {
+    id: "be-pm",
+    uuid: "u-bepm",
+    name: "Backend PM",
+    role: "cell_pm",
+    team: "backend",
+  },
+  {
+    id: "be-doc",
+    uuid: "u-bedoc",
+    name: "Backend Documenter",
+    role: "documenter",
+    team: "backend",
+  },
+  {
+    id: "be-pr-reviewer",
+    uuid: "u-bepr",
+    name: "Backend PR Reviewer",
+    role: "pr_reviewer",
+    team: "backend",
+  },
+  {
+    id: "fe-dev-1",
+    uuid: "u-fe1",
+    name: "Frontend Developer 1",
+    role: "developer",
+    team: "frontend",
+  },
+  {
+    id: "fe-dev-2",
+    uuid: "u-fe2",
+    name: "Frontend Developer 2",
+    role: "developer",
+    team: "frontend",
+  },
+  {
+    id: "fe-qa",
+    uuid: "u-feqa",
+    name: "Frontend QA",
+    role: "qa",
+    team: "frontend",
+  },
+  {
+    id: "fe-pm",
+    uuid: "u-fepm",
+    name: "Frontend PM",
+    role: "cell_pm",
+    team: "frontend",
+  },
+  {
+    id: "fe-doc",
+    uuid: "u-fedoc",
+    name: "Frontend Documenter",
+    role: "documenter",
+    team: "frontend",
+  },
+  {
+    id: "fe-pr-reviewer",
+    uuid: "u-fepr",
+    name: "Frontend PR Reviewer",
+    role: "pr_reviewer",
+    team: "frontend",
+  },
+  {
+    id: "ux-dev-1",
+    uuid: "u-ux1",
+    name: "UX/UI Developer 1",
+    role: "developer",
+    team: "ux_ui",
+  },
+  {
+    id: "ux-dev-2",
+    uuid: "u-ux2",
+    name: "UX/UI Developer 2",
+    role: "developer",
+    team: "ux_ui",
+  },
+  { id: "ux-qa", uuid: "u-uxqa", name: "UX/UI QA", role: "qa", team: "ux_ui" },
+  {
+    id: "ux-pm",
+    uuid: "u-uxpm",
+    name: "UX/UI PM",
+    role: "cell_pm",
+    team: "ux_ui",
+  },
+  {
+    id: "ux-doc",
+    uuid: "u-uxdoc",
+    name: "UX/UI Documenter",
+    role: "documenter",
+    team: "ux_ui",
+  },
+  {
+    id: "ux-pr-reviewer",
+    uuid: "u-uxpr",
+    name: "UX/UI PR Reviewer",
+    role: "pr_reviewer",
+    team: "ux_ui",
+  },
+] as unknown as import("@/hooks/use-agents").AgentDefinition[];
+
 import { toast } from "sonner";
 import { AIRoutingCard } from "../ai-routing-card";
 
@@ -96,6 +277,10 @@ describe("AIRoutingCard", () => {
     saveSelfHostedConfig.mockClear();
     testSelfHosted.mockClear();
     getSelfHostedModels.mockClear();
+    useAgentDefinitions.mockReturnValue({
+      data: FULL_ROSTER,
+      isLoading: false,
+    });
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -105,7 +290,9 @@ describe("AIRoutingCard", () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
 
-    const grokSection = screen.getByText("Grok (xAI) API key").closest("section");
+    const grokSection = screen
+      .getByText("Grok (xAI) API key")
+      .closest("section");
     const ollamaSection = screen
       .getByText("Ollama Cloud API key")
       .closest("section");
@@ -166,7 +353,7 @@ describe("AIRoutingCard", () => {
     await waitFor(() => expect(ollamaInput.value).toBe(""));
   });
 
-  it("groups the per-agent override list by org structure with two-column rows inside each group", async () => {
+  it("groups the per-agent override list by org structure with two-column rows inside each group, including all four PR reviewers", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Per-agent override (mix mode)");
 
@@ -176,34 +363,54 @@ describe("AIRoutingCard", () => {
       "Backend Cell",
       "Frontend Cell",
       "UX/UI Cell",
-      "Intake / Secretary",
+      "Intake / Secretary / PR Review",
     ]) {
       expect(
         screen.getByRole("heading", { level: 4, name: title }),
       ).toBeInTheDocument();
     }
 
-    // Spot-check a row from each end of the org chart.
+    // Spot-check a row from each end of the org chart, including the agents
+    // the old hard-coded literal dropped: ux-dev-2 and all four reviewers.
     expect(screen.getByText("product-owner")).toBeInTheDocument();
     expect(screen.getByText("be-dev-1")).toBeInTheDocument();
     expect(screen.getByText("secretary-1")).toBeInTheDocument();
+    expect(screen.getByText("ux-dev-2")).toBeInTheDocument();
+    expect(screen.getByText("pr-reviewer-1")).toBeInTheDocument();
+    expect(screen.getByText("be-pr-reviewer")).toBeInTheDocument();
+    expect(screen.getByText("fe-pr-reviewer")).toBeInTheDocument();
+    expect(screen.getByText("ux-pr-reviewer")).toBeInTheDocument();
 
-    // The Backend Cell group renders its 5 rows inside a 2-column grid.
+    // The Backend Cell group renders its 6 rows (5 + PR reviewer) inside a
+    // 2-column grid.
     const backendHeader = screen.getByRole("heading", {
       level: 4,
       name: "Backend Cell",
     });
     const rowGrid = backendHeader.nextElementSibling as HTMLElement;
     expect(rowGrid.className).toContain("sm:grid-cols-2");
-    expect(rowGrid.querySelectorAll(":scope > div")).toHaveLength(5);
+    expect(rowGrid.querySelectorAll(":scope > div")).toHaveLength(6);
 
-    // All 20 agents still render exactly one override select each.
+    // All 25 agents (the full roster minus the CEO) still render exactly one
+    // override select each.
     const mixSection = screen
       .getByText("Per-agent override (mix mode)")
       .closest("section")!;
+    expect(mixSection.querySelectorAll('[role="combobox"]')).toHaveLength(25);
+  });
+
+  it("shows a loading skeleton (not an empty grid) while the agent roster is still loading", async () => {
+    useAgentDefinitions.mockReturnValue({ data: undefined, isLoading: true });
+    render(withQueryClient(<AIRoutingCard />));
+    await screen.findByText("Per-agent override (mix mode)");
+
     expect(
-      mixSection.querySelectorAll('[role="combobox"]'),
-    ).toHaveLength(20);
+      screen.queryByRole("heading", { level: 4, name: "Board" }),
+    ).not.toBeInTheDocument();
+    const mixSection = screen
+      .getByText("Per-agent override (mix mode)")
+      .closest("section")!;
+    expect(mixSection.querySelector(".animate-pulse")).toBeInTheDocument();
   });
 
   it("tooltip-wraps the Grok/Ollama key labels and status badges, not the raw Switch", async () => {

@@ -25,24 +25,31 @@ export const AGENT_IDS = {
   mainPm: "main-pm",
   headMarketing: "head-marketing",
   auditor: "auditor",
+  // Board-adjacent singletons (CEO-facing / read-only)
+  intake: "intake-1",
+  secretary: "secretary-1",
+  prReviewer: "pr-reviewer-1",
   // Backend Cell
   bePm: "be-pm",
   beDev1: "be-dev-1",
   beDev2: "be-dev-2",
   beQa: "be-qa",
   beDoc: "be-doc",
+  bePrReviewer: "be-pr-reviewer",
   // Frontend Cell
   fePm: "fe-pm",
   feDev1: "fe-dev-1",
   feDev2: "fe-dev-2",
   feQa: "fe-qa",
   feDoc: "fe-doc",
+  fePrReviewer: "fe-pr-reviewer",
   // UX/UI Cell
   uxPm: "ux-pm",
   uxDev1: "ux-dev-1",
   uxDev2: "ux-dev-2",
   uxQa: "ux-qa",
   uxDoc: "ux-doc",
+  uxPrReviewer: "ux-pr-reviewer",
 };
 
 export const TASK_IDS = {
@@ -123,6 +130,13 @@ export const mockAgents: MockAgent[] = [
     role: AgentRole.DOCUMENTER,
     team: Team.BACKEND,
   },
+  {
+    id: AGENT_IDS.bePrReviewer,
+    name: "Backend PR Reviewer",
+    slug: "be-pr-reviewer",
+    role: AgentRole.PR_REVIEWER,
+    team: Team.BACKEND,
+  },
   // Frontend Cell
   {
     id: AGENT_IDS.feDev1,
@@ -159,7 +173,14 @@ export const mockAgents: MockAgent[] = [
     role: AgentRole.DOCUMENTER,
     team: Team.FRONTEND,
   },
-  // UX/UI Cell (only 1 dev per seed data)
+  {
+    id: AGENT_IDS.fePrReviewer,
+    name: "Frontend PR Reviewer",
+    slug: "fe-pr-reviewer",
+    role: AgentRole.PR_REVIEWER,
+    team: Team.FRONTEND,
+  },
+  // UX/UI Cell (2 devs per seed data)
   {
     id: AGENT_IDS.uxDev1,
     name: "UX/UI Developer 1",
@@ -195,6 +216,13 @@ export const mockAgents: MockAgent[] = [
     role: AgentRole.DOCUMENTER,
     team: Team.UX_UI,
   },
+  {
+    id: AGENT_IDS.uxPrReviewer,
+    name: "UX/UI PR Reviewer",
+    slug: "ux-pr-reviewer",
+    role: AgentRole.PR_REVIEWER,
+    team: Team.UX_UI,
+  },
   // Board/Management (team=null per seed data)
   {
     id: AGENT_IDS.mainPm,
@@ -223,6 +251,31 @@ export const mockAgents: MockAgent[] = [
     slug: "auditor",
     role: AgentRole.AUDITOR,
     team: null,
+  },
+  // Board-adjacent singletons — CEO-facing on-demand roles, not Board
+  // reviewers. pr-reviewer-1 carries team=board (unlike its siblings here)
+  // because that's the only signal distinguishing it from the per-cell
+  // reviewers below, which carry their own cell's team instead.
+  {
+    id: AGENT_IDS.intake,
+    name: "Intake",
+    slug: "intake-1",
+    role: AgentRole.PROMPTER,
+    team: null,
+  },
+  {
+    id: AGENT_IDS.secretary,
+    name: "Secretary",
+    slug: "secretary-1",
+    role: AgentRole.SECRETARY,
+    team: null,
+  },
+  {
+    id: AGENT_IDS.prReviewer,
+    name: "PR Reviewer",
+    slug: "pr-reviewer-1",
+    role: AgentRole.PR_REVIEWER,
+    team: Team.BOARD,
   },
   // CEO (Human - Renzo)
   {
