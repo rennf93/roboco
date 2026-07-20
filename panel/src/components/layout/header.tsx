@@ -1,6 +1,7 @@
 "use client";
 
 import { useTheme } from "next-themes";
+import { useQuery } from "@tanstack/react-query";
 import { Search, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,12 +23,23 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { usePageRefresh } from "@/hooks";
+import { settingsApi } from "@/lib/api";
+import { CEO_NAME_KEY, DEFAULT_CEO_NAME } from "@/lib/api/settings";
 
 const REFRESH_LABEL = "Refresh only the current page";
 
 export function Header() {
   const { setTheme } = useTheme();
   const { refresh, loading, disabled } = usePageRefresh();
+  // Same ["settings"] query key as the Settings page's User Info card — the
+  // app-wide react-query cache means whichever loads first primes the other.
+  // Falls back to the config default while loading/unset, so there's no
+  // flash of a wrong name.
+  const { data: settings } = useQuery({
+    queryKey: ["settings"],
+    queryFn: settingsApi.getAll,
+  });
+  const ceoName = settings?.[CEO_NAME_KEY] ?? DEFAULT_CEO_NAME;
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
@@ -120,7 +132,7 @@ export function Header() {
                 </span>
               </div>
               <span className="text-sm font-medium hidden sm:inline">
-                Renzo
+                {ceoName}
               </span>
             </div>
           </TooltipTrigger>

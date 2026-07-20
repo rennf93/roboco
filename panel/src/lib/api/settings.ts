@@ -1,5 +1,11 @@
 import api from "./client";
 
+// The CEO's panel display name — header user chip + Settings User Info card.
+// Unset key (no row yet) falls back to this default; current behavior until
+// the CEO edits it in Settings.
+export const CEO_NAME_KEY = "ceo_name";
+export const DEFAULT_CEO_NAME = "Renzo";
+
 export interface SettingsResponse {
   settings: Record<string, string>;
 }
