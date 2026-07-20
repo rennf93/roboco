@@ -648,6 +648,28 @@ class GitService(BaseService):
             return None
         return bool(result.stdout.strip())
 
+    async def prune_remote_best_effort(self, workspace: Path) -> None:
+        """Drop stale `origin/*` remote-tracking refs (ref-only, no object
+        transfer) so a branch deleted upstream stops showing in the viewing
+        clone's remote branch list. Never raises — a prune failure must not
+        break the caller's listing, mirroring `branch_exists_on_remote`.
+        """
+        try:
+            token = await self._token_for_workspace(workspace)
+            await self._run_git(
+                workspace,
+                ["remote", "prune", "origin"],
+                check=False,
+                token=token,
+                timeout=_network_git_timeout(),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "remote prune failed; continuing with existing refs",
+                workspace=str(workspace),
+                error=str(exc),
+            )
+
     # =========================================================================
     # STATUS / INFO METHODS
     # =========================================================================
@@ -1842,6 +1864,10 @@ class GitService(BaseService):
     ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
         """Fetch changes from origin without merging and return post-fetch status.
 
+        `--prune` drops local remote-tracking refs for branches deleted
+        upstream, so the manual Fetch button self-heals the same staleness
+        `prune_remote_best_effort` targets for the branches-list route.
+
         Uses _network_git_timeout() because the operation talks to origin.
 
         Returns: (current_branch, has_changes, staged, unstaged, untracked,
@@ -1850,7 +1876,7 @@ class GitService(BaseService):
         token = await self._token_for_workspace(workspace)
         await self._run_git(
             workspace,
-            ["fetch", "origin"],
+            ["fetch", "origin", "--prune"],
             token=token,
             timeout=_network_git_timeout(),
         )

@@ -305,8 +305,16 @@ async def list_branches(
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         current_branch = await git_service.get_current_branch(workspace)
 
-        # Get branches
-        args = ["branch", "--format=%(refname:short)|%(objectname:short)"]
+        if include_remote:
+            # Self-heal orphaned remote-tracking refs (branches deleted
+            # upstream via the forge API) before listing them.
+            await git_service.prune_remote_best_effort(workspace)
+
+        # Full refname, not `:short` — a remote-tracking ref shortens to
+        # `origin/<branch>`, indistinguishable from a local branch literally
+        # named that; classify on the `refs/heads/` vs `refs/remotes/`
+        # prefix instead.
+        args = ["branch", "--format=%(refname)|%(objectname:short)"]
         if include_remote:
             args.append("-a")
 
@@ -319,12 +327,19 @@ async def list_branches(
         if not line:
             continue
         parts = line.split("|")
-        name = parts[0]
+        ref = parts[0]
         last_commit = parts[1] if len(parts) > 1 else None
 
-        is_remote = name.startswith("remotes/")
-        if is_remote:
-            name = name.replace("remotes/origin/", "")
+        if ref.startswith("refs/heads/"):
+            name = ref.removeprefix("refs/heads/")
+            is_remote = False
+        elif ref.startswith("refs/remotes/"):
+            _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
+            if not name or name == "HEAD":
+                continue  # origin/HEAD is a symbolic pointer, not a branch
+            is_remote = True
+        else:
+            continue
 
         branches.append(
             BranchInfo(
