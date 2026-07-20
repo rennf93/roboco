@@ -4,7 +4,6 @@ import { useState } from "react";
 import { GitBranchListResponse, BranchType } from "@/types/git";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -24,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { GitBranch, Check, Cloud, Plus, RefreshCw } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
+import { TaskSelector } from "@/components/tasks/task-selector";
 
 interface GitBranchPanelProps {
   branches: GitBranchListResponse | undefined;
@@ -44,13 +44,13 @@ export function GitBranchPanel({
 }: GitBranchPanelProps) {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newBranchType, setNewBranchType] = useState<BranchType>("feature");
-  const [taskId, setTaskId] = useState("");
+  const [taskId, setTaskId] = useState<string | null>(null);
 
   const handleCreateBranch = () => {
-    if (taskId.trim()) {
-      onCreateBranch(newBranchType, taskId.trim());
+    if (taskId) {
+      onCreateBranch(newBranchType, taskId);
       setShowCreateDialog(false);
-      setTaskId("");
+      setTaskId(null);
     }
   };
 
@@ -131,14 +131,12 @@ export function GitBranchPanel({
                 </div>
                 <div className="space-y-2">
                   <HelpTip label="Identifies the task this branch is for — gets embedded in the branch name (shortened to 8 chars).">
-                    <label className="text-sm font-medium w-fit">
-                      Task ID
-                    </label>
+                    <label className="text-sm font-medium w-fit">Task</label>
                   </HelpTip>
-                  <Input
-                    placeholder="Enter task ID..."
+                  <TaskSelector
                     value={taskId}
-                    onChange={(e) => setTaskId(e.target.value)}
+                    onChange={setTaskId}
+                    placeholder="Select task..."
                   />
                 </div>
               </div>
@@ -151,7 +149,7 @@ export function GitBranchPanel({
                 </Button>
                 <Button
                   onClick={handleCreateBranch}
-                  disabled={!taskId.trim() || isCreating}
+                  disabled={!taskId || isCreating}
                 >
                   {isCreating && (
                     <RefreshCw className="h-4 w-4 mr-2 animate-spin" />

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { HelpTip } from "@/components/ui/help-tip";
+import { TaskSelector } from "@/components/tasks/task-selector";
 import { Play } from "lucide-react";
 import { toast } from "sonner";
 
@@ -31,7 +32,7 @@ export function SpawnAgentDialog({
   trigger,
 }: SpawnAgentDialogProps) {
   const [open, setOpen] = useState(false);
-  const [taskId, setTaskId] = useState("");
+  const [taskId, setTaskId] = useState<string | null>(null);
   const [initialPrompt, setInitialPrompt] = useState("");
   const spawnAgent = useSpawnAgent();
   // Synchronous re-entrancy guard: `spawnAgent.isPending` only flips on a
@@ -66,7 +67,7 @@ export function SpawnAgentDialog({
   };
 
   const resetForm = () => {
-    setTaskId("");
+    setTaskId(null);
     setInitialPrompt("");
   };
 
@@ -102,18 +103,19 @@ export function SpawnAgentDialog({
         <div className="space-y-4">
           <div className="space-y-2">
             <HelpTip label="Pre-claims this task on spawn instead of pulling from the pool">
-              <Label htmlFor="taskId" className="w-fit">Task ID (optional)</Label>
+              <Label className="w-fit">Task (optional)</Label>
             </HelpTip>
-            <Input
-              id="taskId"
+            <TaskSelector
               value={taskId}
-              onChange={(e) => setTaskId(e.target.value)}
-              placeholder="UUID of task to assign"
+              onChange={setTaskId}
+              placeholder="Select task to assign (optional)..."
             />
           </div>
           <div className="space-y-2">
             <HelpTip label="Extra instructions passed to the agent's first turn">
-              <Label htmlFor="initialPrompt" className="w-fit">Initial Prompt (optional)</Label>
+              <Label htmlFor="initialPrompt" className="w-fit">
+                Initial Prompt (optional)
+              </Label>
             </HelpTip>
             <Input
               id="initialPrompt"

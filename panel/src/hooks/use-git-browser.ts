@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { useProjects } from "@/hooks/use-projects";
+import { useProjects, useProject } from "@/hooks/use-projects";
 import {
   useGitStatus,
   useGitLog,
@@ -20,6 +20,10 @@ export interface UseGitBrowserResult {
   taskId: string;
   projects: ReturnType<typeof useProjects>["data"];
   loadingProjects: boolean;
+  // Real head/default branch of the selected project (env-ladder rung 0,
+  // falling back to default_branch, then "main" before any project loads) —
+  // never a hardcoded "main".
+  defaultBranch: string;
   status: ReturnType<typeof useGitStatus>["data"];
   loadingStatus: boolean;
   log: ReturnType<typeof useGitLog>["data"];
@@ -79,6 +83,19 @@ export function useGitBrowser(): UseGitBrowserResult {
     error: projectsError,
     refetch: refetchProjects,
   } = useProjects();
+
+  // The project list is a lightweight ProjectSummary (no default_branch /
+  // environments) — resolve its id, then fetch the full Project for the
+  // ladder/branch fields.
+  const currentProjectId =
+    projects?.find((p) => p.slug === projectSlug)?.id ?? "";
+  const { data: currentProject } = useProject(currentProjectId);
+  // Ladder rung 0 (head) when an environment ladder is declared, else the
+  // plain default_branch shim — mirrors roboco/models/env_branches.head_branch.
+  const defaultBranch =
+    currentProject?.environments?.[0]?.branch ??
+    currentProject?.default_branch ??
+    "main";
 
   const {
     data: status,
@@ -168,7 +185,9 @@ export function useGitBrowser(): UseGitBrowserResult {
   } = useGitOperations();
 
   // Resume point for a capped stale-branch sweep, per project.
-  const cleanupCursorRef = useRef<{ slug: string; cursor: string } | null>(null);
+  const cleanupCursorRef = useRef<{ slug: string; cursor: string } | null>(
+    null,
+  );
 
   const handleCheckout = useCallback(
     async (branch: string) => {
@@ -362,6 +381,7 @@ export function useGitBrowser(): UseGitBrowserResult {
     taskId,
     projects,
     loadingProjects,
+    defaultBranch,
     status,
     loadingStatus,
     log,

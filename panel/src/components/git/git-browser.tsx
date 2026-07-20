@@ -26,6 +26,7 @@ function GitBrowserContent() {
     taskId,
     projects,
     loadingProjects,
+    defaultBranch,
     status,
     loadingStatus,
     log,
@@ -134,6 +135,7 @@ function GitBrowserContent() {
               projectSlug={projectSlug}
               taskId={taskId}
               agentId="pm"
+              defaultBranch={defaultBranch}
               onCommit={handleCommit}
               onPush={handlePush}
               onCreatePR={handleCreatePR}

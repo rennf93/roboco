@@ -28,6 +28,7 @@ import {
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { MarkdownEditor } from "./markdown-editor";
+import { AcceptanceCriteriaEditor } from "./acceptance-criteria-editor";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { ProjectSelector } from "@/components/projects/project-selector";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -67,7 +68,8 @@ const TASK_TYPE_OPTIONS = [
 // (branch, commits, PR) — this only classifies the kind of artifact.
 const TASK_TYPE_DESCRIPTIONS: Record<TaskType, string> = {
   [TaskType.CODE]: "Source code changes. Follows the full git workflow.",
-  [TaskType.DOCUMENTATION]: "Documentation updates. Follows the full git workflow.",
+  [TaskType.DOCUMENTATION]:
+    "Documentation updates. Follows the full git workflow.",
   [TaskType.RESEARCH]:
     "Research findings, committed as notes. Follows the full git workflow.",
   [TaskType.PLANNING]:
@@ -102,6 +104,10 @@ function EditTaskDialogInner({
   const [nature, setNature] = useState<TaskNature>(
     task.nature ?? TaskNature.TECHNICAL,
   );
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState<string[]>(
+    task.acceptance_criteria,
+  );
+  const [acError, setAcError] = useState<string | undefined>();
   const [taskType, setTaskType] = useState<TaskType>(
     task.task_type ?? TaskType.CODE,
   );
@@ -131,6 +137,19 @@ function EditTaskDialogInner({
       return;
     }
 
+    if (acceptanceCriteria.length === 0) {
+      setAcError("At least one acceptance criterion is required");
+      return;
+    }
+    setAcError(undefined);
+
+    const trimmedCriteria = acceptanceCriteria
+      .map((c) => c.trim())
+      .filter(Boolean);
+    const criteriaChanged =
+      JSON.stringify(trimmedCriteria) !==
+      JSON.stringify(task.acceptance_criteria);
+
     try {
       await updateTask.mutateAsync({
         taskId: task.id,
@@ -145,6 +164,7 @@ function EditTaskDialogInner({
           project_id: projectId,
           assigned_to: assignedTo,
           target_date: targetDate ? new Date(targetDate).toISOString() : null,
+          ...(criteriaChanged && { acceptance_criteria: trimmedCriteria }),
         },
       });
       toast.success("Task updated successfully");
@@ -266,6 +286,13 @@ function EditTaskDialogInner({
               </Select>
             </div>
           </div>
+
+          {/* Acceptance Criteria */}
+          <AcceptanceCriteriaEditor
+            criteria={acceptanceCriteria}
+            onChange={setAcceptanceCriteria}
+            error={acError}
+          />
 
           {/* Advanced Options */}
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>

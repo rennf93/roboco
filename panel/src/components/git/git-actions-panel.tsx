@@ -45,6 +45,9 @@ interface GitActionsPanelProps {
   projectSlug: string;
   taskId: string;
   agentId: string;
+  // Real project default/head branch (env-ladder-aware) — PRs target this,
+  // not a hardcoded "main". See useGitBrowser.
+  defaultBranch: string;
   onCommit: (message: string) => void;
   onPush: (force?: boolean) => void;
   onCreatePR: (title: string, body: string) => void;
@@ -68,6 +71,7 @@ export function GitActionsPanel({
   projectSlug,
   taskId,
   agentId: _agentId,
+  defaultBranch,
   onCommit,
   onPush,
   onCreatePR,
@@ -98,7 +102,8 @@ export function GitActionsPanel({
   const hasStagedChanges = (status?.staged_files.length ?? 0) > 0;
   const hasUnpushedCommits = (status?.ahead ?? 0) > 0;
   const canPush = hasUnpushedCommits;
-  const canCreatePR = hasUnpushedCommits || status?.current_branch !== "main";
+  const canCreatePR =
+    hasUnpushedCommits || status?.current_branch !== defaultBranch;
 
   const handleCommitDialogOpenChange = (newOpen: boolean) => {
     if (!newOpen) setCommitMessage("");
@@ -251,10 +256,7 @@ export function GitActionsPanel({
               : "Nothing to push — no local commits sit ahead of the remote branch yet."
           }
         >
-          <span
-            className="block w-full"
-            tabIndex={!canPush ? 0 : undefined}
-          >
+          <span className="block w-full" tabIndex={!canPush ? 0 : undefined}>
             <Button
               className="w-full justify-start"
               variant={canPush ? "default" : "outline"}
@@ -284,8 +286,8 @@ export function GitActionsPanel({
           <HelpTip
             label={
               canCreatePR
-                ? "Opens GitHub's PR creation flow for this branch against main."
-                : "Already on main with nothing ahead of it — there's no branch content to open a PR for."
+                ? `Opens the forge's PR creation flow for this branch against ${defaultBranch}.`
+                : `Already on ${defaultBranch} with nothing ahead of it — there's no branch content to open a PR for.`
             }
           >
             <span
@@ -313,7 +315,7 @@ export function GitActionsPanel({
                 <div className="flex items-center gap-2 text-sm text-muted-foreground w-fit">
                   <Badge variant="outline">{status?.current_branch}</Badge>
                   <span>→</span>
-                  <Badge variant="outline">main</Badge>
+                  <Badge variant="outline">{defaultBranch}</Badge>
                 </div>
               </HelpTip>
               <div className="space-y-2">
@@ -383,9 +385,7 @@ export function GitActionsPanel({
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <HelpTip label="The GitHub PR number to merge, e.g. the 42 in .../pull/42.">
-                  <label className="text-sm font-medium w-fit">
-                    PR Number
-                  </label>
+                  <label className="text-sm font-medium w-fit">PR Number</label>
                 </HelpTip>
                 <Input
                   type="number"

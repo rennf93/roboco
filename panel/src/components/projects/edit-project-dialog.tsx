@@ -127,10 +127,14 @@ function EditProjectForm({
   // Initialize form state from project
   const [name, setName] = useState(project.name);
   const [gitUrl, setGitUrl] = useState(project.git_url);
-  const [gitProvider, setGitProvider] = useState(project.git_provider ?? "auto");
+  const [gitProvider, setGitProvider] = useState(
+    project.git_provider ?? "auto",
+  );
   const [assignedCell, setAssignedCell] = useState(project.assigned_cell);
   const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
-  const [environments, setEnvironments] = useState(project.environments ?? null);
+  const [environments, setEnvironments] = useState(
+    project.environments ?? null,
+  );
   const [isActive, setIsActive] = useState(project.is_active);
   const [testCommand, setTestCommand] = useState(project.test_command || "");
   const [lintCommand, setLintCommand] = useState(project.lint_command || "");
@@ -312,7 +316,7 @@ function EditProjectForm({
 
         {/* Forge provider */}
         <div className="grid gap-2">
-          <HelpTip label="Which forge API serves PR/CI/review operations. Auto-detect covers github.com; a self-hosted Gitea instance (or GitHub Enterprise) must be set explicitly — the host comes from the Git URL. GitLab support is planned.">
+          <HelpTip label="Which forge API serves PR/CI/review operations. Auto-detect resolves from the Git URL's host — but only at creation time, so changing the Git URL's host here needs an explicit provider re-pick (github.com -> GitHub, gitlab.com -> GitLab); a self-hosted Gitea/GitLab instance or GitHub Enterprise can't be told apart by host alone and must always be set explicitly.">
             <Label>Forge</Label>
           </HelpTip>
           <Select value={gitProvider} onValueChange={setGitProvider}>
@@ -323,7 +327,9 @@ function EditProjectForm({
               <SelectItem value="auto">Auto-detect (github.com)</SelectItem>
               <SelectItem value="github">GitHub / GitHub Enterprise</SelectItem>
               <SelectItem value="gitea">Gitea (self-hosted)</SelectItem>
-              <SelectItem value="gitlab">GitLab (gitlab.com / self-hosted)</SelectItem>
+              <SelectItem value="gitlab">
+                GitLab (gitlab.com / self-hosted)
+              </SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -434,7 +440,8 @@ function EditProjectForm({
             placeholder="main"
           />
           <p className="text-xs text-muted-foreground">
-            Where PRs land and releases are cut when no environment ladder is set below.
+            Where PRs land and releases are cut when no environment ladder is
+            set below.
           </p>
         </div>
 
