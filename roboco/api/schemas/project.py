@@ -32,6 +32,8 @@ class ProjectResponse(BaseModel):
     # Forge provider ("github"|"gitlab"|"gitea"); null = auto-detect from
     # git_url host (github.com -> github, stamped on create).
     git_provider: str | None = None
+    # GitHub App installation covering this repo; null = PAT-only auth.
+    github_installation_id: int | None = None
     default_branch: str
     protected_branches: list[str]
     environments: list[dict[str, str]] | None = None
@@ -144,6 +146,14 @@ class ProjectCreateRequest(BaseModel):
         default=None,
         description="GitHub PAT for clone/push/PR (stored encrypted, never returned)",
     )
+    github_installation_id: int | None = Field(
+        default=None,
+        description=(
+            "GitHub App installation id covering this repo (from the Select "
+            "repo picker). When set with App credentials configured, git "
+            "operations use a minted installation token instead of a PAT."
+        ),
+    )
 
     # Optional commands
     test_command: str | None = None
@@ -175,6 +185,13 @@ class ProjectUpdateRequest(BaseModel):
     git_token: str | None = Field(
         default=None,
         description="GitHub PAT (empty string clears, None leaves unchanged)",
+    )
+    github_installation_id: int | None = Field(
+        default=None,
+        description=(
+            "GitHub App installation id covering this repo. Explicit null "
+            "clears the binding (falls back to PAT-only auth)."
+        ),
     )
 
     # Commands
@@ -265,6 +282,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         slug=str(project.slug),
         git_url=str(project.git_url),
         git_provider=project.git_provider,
+        github_installation_id=project.github_installation_id,
         default_branch=str(default_branch) if default_branch else "master",
         protected_branches=list(project.protected_branches or []),
         environments=list(project.environments) if project.environments else None,

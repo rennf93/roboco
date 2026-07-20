@@ -26,6 +26,10 @@ import { toast } from "sonner";
 import { Team, type ProjectCreate } from "@/types";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
+import {
+  SelectRepoDialog,
+  type SelectedRepo,
+} from "@/components/projects/select-repo-picker";
 import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
@@ -57,6 +61,12 @@ export function CreateProjectDialog() {
   // the backend auto-detect from the Git URL host at creation time.
   const [gitProvider, setGitProvider] = useState("auto");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Set only via the "Select repo" picker below; a manually-typed/edited Git
+  // URL clears it so the project never binds to an installation whose repo
+  // no longer matches what's in the field.
+  const [githubInstallationId, setGithubInstallationId] = useState<
+    number | null
+  >(null);
 
   const createProject = useCreateProject();
 
@@ -66,6 +76,11 @@ export function CreateProjectDialog() {
       name,
       slug: generateSlug(name),
     });
+  };
+
+  const handleRepoSelected = (repo: SelectedRepo) => {
+    setFormData({ ...formData, git_url: repo.git_url });
+    setGithubInstallationId(repo.installation_id);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -93,6 +108,7 @@ export function CreateProjectDialog() {
         slug: formData.slug,
         git_url: formData.git_url,
         git_provider: gitProvider === "auto" ? null : gitProvider,
+        github_installation_id: githubInstallationId ?? undefined,
         assigned_cell: formData.assigned_cell,
         git_token: formData.git_token || undefined,
         default_branch: formData.default_branch || "main",
@@ -116,6 +132,7 @@ export function CreateProjectDialog() {
         environments: null,
       });
       setGitProvider("auto");
+      setGithubInstallationId(null);
       setShowAdvanced(false);
     } catch (error) {
       toast.error(
@@ -177,19 +194,27 @@ export function CreateProjectDialog() {
 
             {/* Git URL */}
             <div className="grid gap-2">
-              <HelpTip label="Cloned into each assigned agent's workspace on first access; use HTTPS so the encrypted token below can authenticate clone, push, and PR operations.">
-                <Label htmlFor="git_url">Git URL *</Label>
-              </HelpTip>
+              <div className="flex items-center justify-between gap-2">
+                <HelpTip label="Cloned into each assigned agent's workspace on first access; use HTTPS so the encrypted token below can authenticate clone, push, and PR operations.">
+                  <Label htmlFor="git_url">Git URL *</Label>
+                </HelpTip>
+                <SelectRepoDialog onSelect={handleRepoSelected} />
+              </div>
               <Input
                 id="git_url"
                 value={formData.git_url}
-                onChange={(e) =>
-                  setFormData({ ...formData, git_url: e.target.value })
-                }
+                onChange={(e) => {
+                  setFormData({ ...formData, git_url: e.target.value });
+                  // A manual edit invalidates any prior "Select repo" pick —
+                  // never bind an installation to a URL the user then changed.
+                  setGithubInstallationId(null);
+                }}
                 placeholder="https://github.com/org/repo.git"
               />
               <p className="text-xs text-muted-foreground">
-                Use HTTPS URL for token-based authentication
+                {githubInstallationId
+                  ? "Filled from the GitHub App picker — git operations will use a minted installation token."
+                  : "Use HTTPS URL for token-based authentication"}
               </p>
             </div>
 

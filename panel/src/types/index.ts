@@ -1034,6 +1034,8 @@ export interface Project {
   // Forge provider ("github"|"gitlab"|"gitea"); null = auto-detect from
   // git_url host (github.com -> github, stamped on create). GitHub-only today.
   git_provider: string | null;
+  // GitHub App installation covering this repo; null = PAT-only auth.
+  github_installation_id: number | null;
   default_branch: string;
   // Ordered environment ladder (first=head/PR-target, last=prod/release-target).
   // Null/empty => degenerate 1-rung ladder synthesized from default_branch.
@@ -1081,6 +1083,8 @@ export interface ProjectCreate {
   assigned_cell: Team;
   // Git authentication (stored encrypted, never returned)
   git_token?: string;
+  // GitHub App installation covering this repo (from the Select repo picker).
+  github_installation_id?: number | null;
   test_command?: string;
   lint_command?: string;
   format_command?: string;
@@ -1101,6 +1105,8 @@ export interface ProjectUpdate {
   assigned_cell?: Team;
   // Git authentication (empty string clears, undefined leaves unchanged)
   git_token?: string;
+  // null clears the installation binding; omitted leaves unchanged.
+  github_installation_id?: number | null;
   is_active?: boolean;
   test_command?: string;
   lint_command?: string;
