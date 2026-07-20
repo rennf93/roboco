@@ -497,9 +497,7 @@ class XEngine(BaseService):
                 break
             if open_count + len(originated) >= settings.x_max_open_posts:
                 break
-            if not mention.id or await self._already_seen(mention.id):
-                continue
-            if not _is_meaningful(mention, settings.x_mentions_min_engagement):
+            if not await self._mention_is_new_and_meaningful(mention):
                 continue
             if project is None or project.id is None:
                 self.log.warning(
@@ -517,6 +515,14 @@ class XEngine(BaseService):
             if reply_task is not None:
                 originated.append(reply_task)
         return originated
+
+    async def _mention_is_new_and_meaningful(self, mention: XMention) -> bool:
+        """True when a mention hasn't been seen yet and clears the engagement
+        floor — the combined skip/continue precondition `_process_mentions`
+        checks before marking a mention seen and drafting a reply."""
+        if not mention.id or await self._already_seen(mention.id):
+            return False
+        return _is_meaningful(mention, settings.x_mentions_min_engagement)
 
     async def _since_id_get(self) -> str | None:
         """Best-effort read of the persisted mentions cursor; None on miss or
