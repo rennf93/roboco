@@ -42,80 +42,106 @@ import {
   Zap,
 } from "lucide-react";
 import { toast } from "sonner";
-import { AssignmentScope, ModelProvider } from "@/types";
+import { AssignmentScope, AgentRole, ModelProvider } from "@/types";
 import type { SelfHostedModel } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAgentDefinitions } from "@/hooks/use-agents";
+import {
+  getBoardAgents,
+  getMainPm,
+  getBackendAgents,
+  getFrontendAgents,
+  getUxAgents,
+  getSupportAgents,
+  type AgentDefinition,
+} from "@/lib/agent-definitions";
 
-// Matches the roboco agents_config AGENT_ROLE_MAP / AGENT_TEAM_MAP.
-// Hard-coded so Mix mode shows a stable 18-row picker without an extra
-// server round-trip. Grouped + ordered to mirror the org chart in CLAUDE.md.
-//
-// NOTE: CEO is explicitly excluded — it's the human-in-the-loop seat
-// (Renzo), not an LLM-backed agent. Routing it anywhere would be a
-// no-op in spawn_agent but confusing in the UI.
-const AGENT_GROUPS: { title: string; agents: { slug: string; label: string }[] }[] = [
+// Grouped to mirror the org chart in CLAUDE.md, sourced from the live
+// `/api/agents` roster (useAgentDefinitions) instead of a hand-maintained
+// literal — that literal drifted (missing ux-dev-2 + all 4 PR reviewers).
+// CEO is excluded by construction: none of these selectors ever match it.
+const AGENT_GROUP_DEFS: {
+  title: string;
+  titleHint: string;
+  select: (agents: AgentDefinition[] | undefined | null) => AgentDefinition[];
+}[] = [
   {
     title: "Board",
-    agents: [
-      { slug: "product-owner", label: "Product Owner" },
-      { slug: "head-marketing", label: "Head of Marketing" },
-      { slug: "auditor", label: "Auditor" },
-    ],
+    titleHint: "Product Owner, Head of Marketing, Auditor",
+    select: getBoardAgents,
   },
   {
     title: "Main PM",
-    agents: [{ slug: "main-pm", label: "Main PM" }],
+    titleHint: "Coordinates all three delivery cells",
+    select: getMainPm,
   },
   {
     title: "Backend Cell",
-    agents: [
-      { slug: "be-pm", label: "Backend PM" },
-      { slug: "be-dev-1", label: "Backend Dev 1" },
-      { slug: "be-dev-2", label: "Backend Dev 2" },
-      { slug: "be-qa", label: "Backend QA" },
-      { slug: "be-doc", label: "Backend Documenter" },
-    ],
+    titleHint: "2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer",
+    select: getBackendAgents,
   },
   {
     title: "Frontend Cell",
-    agents: [
-      { slug: "fe-pm", label: "Frontend PM" },
-      { slug: "fe-dev-1", label: "Frontend Dev 1" },
-      { slug: "fe-dev-2", label: "Frontend Dev 2" },
-      { slug: "fe-qa", label: "Frontend QA" },
-      { slug: "fe-doc", label: "Frontend Documenter" },
-    ],
+    titleHint: "2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer",
+    select: getFrontendAgents,
   },
   {
     title: "UX/UI Cell",
-    agents: [
-      { slug: "ux-pm", label: "UX/UI PM" },
-      { slug: "ux-dev-1", label: "UX/UI Dev" },
-      { slug: "ux-qa", label: "UX/UI QA" },
-      { slug: "ux-doc", label: "UX/UI Documenter" },
-    ],
+    titleHint: "2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer",
+    select: getUxAgents,
   },
   {
-    title: "Intake / Secretary",
-    agents: [
-      // Interactive (held-open chat) roles. Claude (SDK driver) and Grok
-      // (grok CLI) are the supported runtimes; assigning a Grok model routes
-      // them to the grok-prompter / grok-secretary image.
-      { slug: "intake-1", label: "Intake (Prompter)" },
-      { slug: "secretary-1", label: "Secretary" },
-    ],
+    title: "Intake / Secretary / PR Review",
+    titleHint:
+      "On-demand CEO-facing roles (Intake, Secretary) plus the root PR reviewer — reviews root→master PRs and inbound external/fork PRs.",
+    select: getSupportAgents,
   },
 ];
+
+// Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
+// so the picker doesn't churn alphabetically as the live roster loads —
+// ties (e.g. dev-1/dev-2) break on slug, which already sorts correctly.
+const ROLE_RANK: Partial<Record<AgentRole, number>> = {
+  [AgentRole.PRODUCT_OWNER]: 0,
+  [AgentRole.HEAD_MARKETING]: 1,
+  [AgentRole.AUDITOR]: 2,
+  [AgentRole.MAIN_PM]: 0,
+  [AgentRole.CELL_PM]: 0,
+  [AgentRole.DEVELOPER]: 1,
+  [AgentRole.QA]: 2,
+  [AgentRole.DOCUMENTER]: 3,
+  [AgentRole.PR_REVIEWER]: 4,
+  [AgentRole.PROMPTER]: 0,
+  [AgentRole.SECRETARY]: 1,
+};
+
+function byOrgOrder(a: AgentDefinition, b: AgentDefinition): number {
+  const ra = (a.role && ROLE_RANK[a.role]) ?? 99;
+  const rb = (b.role && ROLE_RANK[b.role]) ?? 99;
+  return ra !== rb ? ra - rb : a.id.localeCompare(b.id);
+}
 
 export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
   const { data: keyStatus } = useOllamaKey();
   const { data: snapshot } = useRoutingMode();
   const { data: selfHostedModels = [] } = useSelfHostedModels();
+  const { data: agentDefs, isLoading: agentsLoading } = useAgentDefinitions();
+
+  const agentGroups = useMemo(
+    () =>
+      AGENT_GROUP_DEFS.map((g) => ({
+        title: g.title,
+        titleHint: g.titleHint,
+        agents: g.select(agentDefs).slice().sort(byOrgOrder),
+      })).filter((g) => g.agents.length > 0),
+    [agentDefs],
+  );
 
   const setKey = useSetOllamaKey();
   const applyMode = useApplyMode();
@@ -231,7 +257,9 @@ export function AIRoutingCard() {
       return;
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
-      toast.success("Role/global routing now on Anthropic — per-agent pins kept");
+      toast.success(
+        "Role/global routing now on Anthropic — per-agent pins kept",
+      );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -291,7 +319,9 @@ export function AIRoutingCard() {
         mode: "self_hosted",
         ...(selfHostedModel ? { default_model: selfHostedModel } : {}),
       });
-      toast.success("Role/global routing now on Self-Hosted LLM — per-agent pins kept");
+      toast.success(
+        "Role/global routing now on Self-Hosted LLM — per-agent pins kept",
+      );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -397,7 +427,10 @@ export function AIRoutingCard() {
                   }
                   disabled={clearGrokKey}
                 />
-                <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+                <Button
+                  onClick={saveGrokKey}
+                  disabled={setGrokKeyMut.isPending}
+                >
                   {setGrokKeyMut.isPending ? "Saving…" : "Save"}
                 </Button>
               </div>
@@ -629,155 +662,171 @@ export function AIRoutingCard() {
             Leave a row blank to inherit from the global mode. Saving overwrites
             all per-agent overrides with what&apos;s picked here.
           </p>
-          <div className="divide-y rounded-md border">
-            {AGENT_GROUPS.map((group) => (
-              <div key={group.title} className="p-4">
-                <h4 className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  {group.title}
-                </h4>
-                <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-                  {group.agents.map((a) => (
-                    <div
-                      key={a.slug}
-                      className="grid grid-cols-[1fr_170px] items-center gap-4 rounded-md border px-3 py-2.5"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate font-mono text-xs">
-                          {a.slug}
-                        </div>
-                        <div className="truncate text-[11px] text-muted-foreground">
-                          {a.label}
-                        </div>
-                      </div>
-                      <Select
-                        value={mixMap[a.slug] ?? ""}
-                        onValueChange={(v: string) =>
-                          setMixMap((prev) => ({
-                            ...prev,
-                            [a.slug]: v === "__clear__" ? "" : v,
-                          }))
-                        }
-                      >
-                        <SelectTrigger size="sm" className="w-full text-xs">
-                          <SelectValue placeholder="(inherit)" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__clear__">
-                            (inherit global)
-                          </SelectItem>
-
-                          {/* Anthropic models */}
-                          {catalogAnthropicOnly.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>
-                                <ProviderBadge variant="anthropic" />
-                                Anthropic
-                              </SelectLabel>
-                              {catalogAnthropicOnly.map(
-                                (c: {
-                                  model_name: string;
-                                  display_name: string;
-                                }) => (
-                                  <SelectItem
-                                    key={c.model_name}
-                                    value={c.model_name}
-                                  >
-                                    {c.display_name}
-                                  </SelectItem>
-                                ),
-                              )}
-                            </SelectGroup>
-                          )}
-
-                          {/* Grok (xAI) models */}
-                          {catalogGrokOnly.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>
-                                <ProviderBadge variant="grok" />
-                                Grok (xAI)
-                              </SelectLabel>
-                              {catalogGrokOnly.map(
-                                (c: {
-                                  model_name: string;
-                                  display_name: string;
-                                }) => (
-                                  <SelectItem
-                                    key={c.model_name}
-                                    value={c.model_name}
-                                  >
-                                    {c.display_name}
-                                  </SelectItem>
-                                ),
-                              )}
-                            </SelectGroup>
-                          )}
-
-                          {/* Ollama Cloud models */}
-                          {catalogOllamaOnly.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>
-                                <ProviderBadge variant="ollama" />
-                                Ollama Cloud
-                              </SelectLabel>
-                              {catalogOllamaOnly.map(
-                                (c: {
-                                  model_name: string;
-                                  display_name: string;
-                                }) => (
-                                  <SelectItem
-                                    key={c.model_name}
-                                    value={c.model_name}
-                                  >
-                                    {c.display_name}
-                                  </SelectItem>
-                                ),
-                              )}
-                            </SelectGroup>
-                          )}
-
-                          {/* Self-Hosted models */}
-                          {selfHostedModels.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>
-                                <ProviderBadge variant="self-hosted" />
-                                Self-Hosted
-                              </SelectLabel>
-                              {selfHostedModels.map((m: SelfHostedModel) => (
-                                <SelectItem
-                                  key={m.model_name}
-                                  value={m.model_name}
-                                >
-                                  {m.display_name}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          )}
-
-                          {/* Fallback: un-grouped catalog when no grouping is possible */}
-                          {catalogAnthropicOnly.length === 0 &&
-                            catalogOllamaOnly.length === 0 &&
-                            selfHostedModels.length === 0 &&
-                            catalogForMix.map(
-                              (c: {
-                                model_name: string;
-                                display_name: string;
-                              }) => (
-                                <SelectItem
-                                  key={c.model_name}
-                                  value={c.model_name}
-                                >
-                                  {c.display_name} — {c.model_name}
-                                </SelectItem>
-                              ),
-                            )}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
+          {agentsLoading ? (
+            <div className="divide-y rounded-md border">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="p-4">
+                  <Skeleton className="mb-2 h-3 w-24" />
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                    <Skeleton className="h-14 w-full rounded-md" />
+                    <Skeleton className="h-14 w-full rounded-md" />
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="divide-y rounded-md border">
+              {agentGroups.map((group) => (
+                <div key={group.title} className="p-4">
+                  <HelpTip label={group.titleHint}>
+                    <h4 className="mb-2 w-fit text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      {group.title}
+                    </h4>
+                  </HelpTip>
+                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                    {group.agents.map((a) => (
+                      <div
+                        key={a.id}
+                        className="grid grid-cols-[1fr_170px] items-center gap-4 rounded-md border px-3 py-2.5"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-xs">
+                            {a.id}
+                          </div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {a.name}
+                          </div>
+                        </div>
+                        <Select
+                          value={mixMap[a.id] ?? ""}
+                          onValueChange={(v: string) =>
+                            setMixMap((prev) => ({
+                              ...prev,
+                              [a.id]: v === "__clear__" ? "" : v,
+                            }))
+                          }
+                        >
+                          <SelectTrigger size="sm" className="w-full text-xs">
+                            <SelectValue placeholder="(inherit)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__clear__">
+                              (inherit global)
+                            </SelectItem>
+
+                            {/* Anthropic models */}
+                            {catalogAnthropicOnly.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>
+                                  <ProviderBadge variant="anthropic" />
+                                  Anthropic
+                                </SelectLabel>
+                                {catalogAnthropicOnly.map(
+                                  (c: {
+                                    model_name: string;
+                                    display_name: string;
+                                  }) => (
+                                    <SelectItem
+                                      key={c.model_name}
+                                      value={c.model_name}
+                                    >
+                                      {c.display_name}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectGroup>
+                            )}
+
+                            {/* Grok (xAI) models */}
+                            {catalogGrokOnly.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>
+                                  <ProviderBadge variant="grok" />
+                                  Grok (xAI)
+                                </SelectLabel>
+                                {catalogGrokOnly.map(
+                                  (c: {
+                                    model_name: string;
+                                    display_name: string;
+                                  }) => (
+                                    <SelectItem
+                                      key={c.model_name}
+                                      value={c.model_name}
+                                    >
+                                      {c.display_name}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectGroup>
+                            )}
+
+                            {/* Ollama Cloud models */}
+                            {catalogOllamaOnly.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>
+                                  <ProviderBadge variant="ollama" />
+                                  Ollama Cloud
+                                </SelectLabel>
+                                {catalogOllamaOnly.map(
+                                  (c: {
+                                    model_name: string;
+                                    display_name: string;
+                                  }) => (
+                                    <SelectItem
+                                      key={c.model_name}
+                                      value={c.model_name}
+                                    >
+                                      {c.display_name}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectGroup>
+                            )}
+
+                            {/* Self-Hosted models */}
+                            {selfHostedModels.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>
+                                  <ProviderBadge variant="self-hosted" />
+                                  Self-Hosted
+                                </SelectLabel>
+                                {selfHostedModels.map((m: SelfHostedModel) => (
+                                  <SelectItem
+                                    key={m.model_name}
+                                    value={m.model_name}
+                                  >
+                                    {m.display_name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            )}
+
+                            {/* Fallback: un-grouped catalog when no grouping is possible */}
+                            {catalogAnthropicOnly.length === 0 &&
+                              catalogOllamaOnly.length === 0 &&
+                              selfHostedModels.length === 0 &&
+                              catalogForMix.map(
+                                (c: {
+                                  model_name: string;
+                                  display_name: string;
+                                }) => (
+                                  <SelectItem
+                                    key={c.model_name}
+                                    value={c.model_name}
+                                  >
+                                    {c.display_name} — {c.model_name}
+                                  </SelectItem>
+                                ),
+                              )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {catalogOllamaOnly.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               Ollama catalog empty — check /api/providers/catalog.
