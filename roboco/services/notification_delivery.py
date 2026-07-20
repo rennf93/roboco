@@ -1205,8 +1205,21 @@ class NotificationDeliveryService(BaseService):
         return result.scalar_one_or_none()
 
     async def _get_ceo_agent(self) -> AgentTable | None:
+        """Find the CEO agent (org-wide; earliest-created if many).
+
+        CEO is a singleton in the real system, but nothing enforces that at
+        the DB level (no unique constraint on ``role``), so a bare
+        ``scalar_one_or_none()`` raised ``MultipleResultsFound`` whenever more
+        than one CEO-role row existed — a real (if rare) production
+        possibility, and a routine occurrence in the shared test DB where
+        sibling tests each commit their own CEO agent. Mirrors
+        ``_get_auditor_agent``'s established earliest-wins tie-break.
+        """
         result = await self.session.execute(
-            select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.CEO)
+            .order_by(AgentTable.created_at)
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
