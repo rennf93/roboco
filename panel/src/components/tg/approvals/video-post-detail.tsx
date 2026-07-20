@@ -29,7 +29,9 @@ const CUT_LABELS: Record<VideoCut, string> = {
  */
 function CutPlayer({ post }: { post: VideoPost }) {
   const paths = post.mp4_paths ?? {};
-  const [cut, setCut] = useState<VideoCut>(paths.vertical ? "vertical" : "square");
+  const [cut, setCut] = useState<VideoCut>(
+    paths.vertical ? "vertical" : "square",
+  );
   // url === null means the fetch for that cut failed; a stale entry for a
   // different cut is simply ignored in render, so no synchronous state
   // reset is needed when the cut changes.
@@ -87,7 +89,9 @@ function CutPlayer({ post }: { post: VideoPost }) {
           playsInline
           className={cn(
             "w-full rounded-md bg-black",
-            cut === "vertical" ? "aspect-[9/16] max-h-[60dvh]" : "aspect-square",
+            cut === "vertical"
+              ? "aspect-[9/16] max-h-[60dvh]"
+              : "aspect-square",
           )}
         />
       ) : (
@@ -134,15 +138,15 @@ function CaptionEditor({
         disabled={!editing}
         onChange={(e) => onChange(e.target.value)}
         rows={3}
-        className={cn("text-sm", editing && overLimit && "border-destructive")}
+        className={cn("text-sm", editing && overLimit && "border-rose-400/60")}
       />
       <p
         className={cn(
           "text-right text-[11px] tabular-nums",
-          editing && overLimit ? "text-destructive" : "text-muted-foreground",
+          editing && overLimit ? "text-rose-400" : "text-muted-foreground",
         )}
       >
-        {caption.length}/{maxChars}
+        {caption.length} / {maxChars}
       </p>
     </div>
   );
@@ -196,7 +200,8 @@ export function VideoPostDetail({
 
   const reject = useMutation({
     mutationFn: (reason: string) => videoApi.reject(post.task_id, reason),
-    onSuccess: () => finish(true, "Draft rejected — feedback goes back to the author."),
+    onSuccess: () =>
+      finish(true, "Draft rejected — feedback goes back to the author."),
     onError: (err) => {
       haptics.error();
       toast.error(getErrorMessage(err));
@@ -213,7 +218,9 @@ export function VideoPostDetail({
           </Badge>
         ))}
         {post.render_status === "failed" && (
-          <Badge variant="destructive">render failed</Badge>
+          <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-medium text-rose-300">
+            render failed
+          </span>
         )}
       </div>
 

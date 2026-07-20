@@ -6,6 +6,7 @@ import { roadmapApi, type RoadmapItem } from "@/lib/api/roadmap";
 import { getErrorMessage } from "@/lib/api/client";
 import { haptics } from "@/lib/telegram/webapp";
 import { Badge } from "@/components/ui/badge";
+import { TgSection } from "@/components/tg/ui";
 import { PrimaryAction } from "./primary-action";
 import { RejectForm } from "./reject-form";
 
@@ -74,23 +75,17 @@ export function RoadmapItemDetail({
 
       <p className="text-sm leading-relaxed">{item.description}</p>
 
-      <div className="space-y-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Why
-        </h3>
+      <TgSection title="Why">
         <p className="text-xs text-muted-foreground">{item.rationale}</p>
-      </div>
+      </TgSection>
 
-      <div className="space-y-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Acceptance criteria
-        </h3>
+      <TgSection title="Acceptance criteria">
         <ul className="list-disc space-y-0.5 pl-4 text-xs">
           {item.acceptance_criteria.map((ac, i) => (
             <li key={i}>{ac}</li>
           ))}
         </ul>
-      </div>
+      </TgSection>
 
       <PrimaryAction
         text="Approve → backlog"

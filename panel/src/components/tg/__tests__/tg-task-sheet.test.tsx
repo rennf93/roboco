@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TgTaskSheet } from "../tg-task-sheet";
 import type { Task } from "@/types";
 import type { TaskFindingsResponse } from "@/lib/api/tasks";
@@ -11,7 +12,18 @@ const { findings } = vi.hoisted(() => ({
 }));
 vi.mock("@/hooks/use-tasks", () => ({
   useTaskFindings: findings,
+  taskKeys: { all: ["tasks"] },
 }));
+
+// The sheet's CEO action block mutates through react-query.
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return rtlRender(
+    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+  );
+}
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -131,5 +143,30 @@ describe("TgTaskSheet", () => {
     expect(screen.getByText(/open findings · 1/i)).toBeInTheDocument();
     expect(screen.getByText("roboco/services/queue.py:42")).toBeInTheDocument();
     expect(screen.queryByText(/dlq\.py/)).not.toBeInTheDocument();
+  });
+
+  it("offers Approve / Request changes on an awaiting-CEO task", () => {
+    render(<TgTaskSheet task={task()} onClose={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Request changes" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Unblock on a blocked task and no CEO verbs elsewhere", () => {
+    render(
+      <TgTaskSheet task={task({ status: "blocked" as Task["status"] })} onClose={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: "Unblock" })).toBeInTheDocument();
+
+    render(
+      <TgTaskSheet
+        task={task({ id: "t2", status: "in_progress" as Task["status"] })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Approve" }),
+    ).not.toBeInTheDocument();
   });
 });

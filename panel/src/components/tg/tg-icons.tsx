@@ -104,6 +104,24 @@ export function IconChat({ className }: TgIconProps) {
   );
 }
 
+/** Rising trend in a frame — Metrics. */
+export function IconMetrics({ className }: TgIconProps) {
+  return (
+    <Svg className={className}>
+      <rect x="3" y="3.6" width="18" height="16.8" rx="4.2" opacity=".45" />
+      <path
+        d="m6.8 14.6 3.4-3.6 2.6 2.2 4.2-5"
+        stroke="currentColor"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <circle cx="17.2" cy="8.1" r="1.9" />
+    </Svg>
+  );
+}
+
 /** Rocket — Ship. */
 export function IconShip({ className }: TgIconProps) {
   return (

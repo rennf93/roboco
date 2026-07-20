@@ -43,6 +43,11 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
  * skipped — the panel's own theme shows through, which is the right
  * degraded look.
  */
+/** The #tg-shell default background as hex — what Telegram's own window
+ * chrome is painted with when the theme doesn't hand us a bg_color.
+ * Keep in step with `--background` in globals.css' #tg-shell block. */
+const SHELL_BG_HEX = "#14171c";
+
 export function applyTelegramTheme(
   webApp: TelegramWebApp,
   root: HTMLElement,
@@ -55,6 +60,17 @@ export function applyTelegramTheme(
       root.style.setProperty(cssVar, value);
     }
   }
+  // Paint Telegram's own window chrome (titlebar / app bg / bottom bar) to
+  // the shell background so the cockpit blends edge-to-edge into the client
+  // instead of sitting framed inside default chrome — the single biggest
+  // "native app, not website" tell.
+  const bg =
+    params.bg_color && HEX_COLOR.test(params.bg_color)
+      ? params.bg_color
+      : SHELL_BG_HEX;
+  webApp.setHeaderColor?.(bg);
+  webApp.setBackgroundColor?.(bg);
+  webApp.setBottomBarColor?.(bg);
 }
 
 /**

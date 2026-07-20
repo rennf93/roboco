@@ -82,7 +82,13 @@ describe("useMainButton", () => {
     );
     rerender(
       <TgWebAppProvider webApp={webApp}>
-        <MainButtonHarness text="Approve" visible loading disabled onClick={second} />
+        <MainButtonHarness
+          text="Approve"
+          visible
+          loading
+          disabled
+          onClick={second}
+        />
       </TgWebAppProvider>,
     );
     expect(mainButton.showProgress).toHaveBeenCalled();

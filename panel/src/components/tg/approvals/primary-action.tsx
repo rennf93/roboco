@@ -26,11 +26,7 @@ export function PrimaryAction({
   useMainButton({ text, visible: true, disabled, loading, onClick });
   if (webApp?.MainButton) return null;
   return (
-    <Button
-      className="w-full"
-      disabled={disabled || loading}
-      onClick={onClick}
-    >
+    <Button className="w-full" disabled={disabled || loading} onClick={onClick}>
       {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
       {text}
     </Button>

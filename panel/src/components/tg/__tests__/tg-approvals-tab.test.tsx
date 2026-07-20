@@ -131,7 +131,7 @@ describe("TgApprovalsTab", () => {
     renderTab();
     await userEvent.click(await screen.findByText(/^x+$/));
 
-    expect(screen.getByText("281/280")).toBeInTheDocument();
+    expect(screen.getByText("281 / 280")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /post to x/i })).toBeDisabled();
   });
 
@@ -166,7 +166,9 @@ describe("TgApprovalsTab", () => {
     renderTab();
 
     await userEvent.click(await screen.findByText("Shipped a thing."));
-    expect(screen.getByRole("button", { name: /post to x/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /post to x/i }),
+    ).toBeInTheDocument();
 
     // Outside Telegram there's no native BackButton — the visible fallback
     // arrow renders instead.

@@ -80,13 +80,11 @@ export function TgSheet({
       <div
         role="dialog"
         aria-modal="true"
-        className="tg-sheet absolute inset-x-0 bottom-0 mx-auto flex max-h-[85dvh] w-full max-w-[430px] flex-col rounded-t-2xl border-t bg-card text-card-foreground shadow-2xl"
+        className="tg-sheet absolute inset-x-0 bottom-0 mx-auto flex max-h-[85dvh] w-full max-w-[430px] flex-col rounded-t-[28px] bg-card text-card-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_-16px_48px_-16px_rgba(0,0,0,0.9)]"
       >
-        <div className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-muted-foreground/30" />
+        <div className="mx-auto mt-2.5 h-1 w-9 shrink-0 rounded-full bg-muted-foreground/30" />
         <header className="flex items-center justify-between gap-2 px-4 pb-2 pt-3">
-          <h2 className="tg-display text-[12px] uppercase tracking-[0.16em] text-muted-foreground">
-            {title}
-          </h2>
+          <h2 className="text-[15px] font-semibold text-foreground">{title}</h2>
           <button
             type="button"
             aria-label="Close"

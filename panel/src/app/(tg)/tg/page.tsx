@@ -16,6 +16,12 @@ import { TgApprovalsTab } from "@/components/tg/tg-approvals-tab";
 import { TgInboxTab } from "@/components/tg/tg-inbox-tab";
 import { TgBoardTab } from "@/components/tg/tg-board-tab";
 import { TgChatTab } from "@/components/tg/tg-chat-tab";
+import { TgMetricsTab } from "@/components/tg/tg-metrics-tab";
+import { TgSubPage, TG_PRESS } from "@/components/tg/ui";
+import { IconInbox } from "@/components/tg/tg-icons";
+import { isTgDemoMode } from "@/lib/telegram/demo";
+import { useNotifications } from "@/hooks/use-notifications";
+import { cn } from "@/lib/utils";
 import { Loader2, AlertTriangle, ExternalLink } from "lucide-react";
 
 type BootstrapState =
@@ -47,13 +53,6 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
  */
 export default function TelegramMiniAppPage() {
   const [state, setState] = useState<BootstrapState>({ kind: "validating" });
-  const [tab, setTab] = useState<TgTab>("today");
-  // Today's Ship action deep-focuses the release proposal in Approvals.
-  const [approvalsFocus, setApprovalsFocus] = useState<"release" | undefined>();
-  const navigate = (next: TgTab, intent?: "release") => {
-    setApprovalsFocus(next === "approvals" ? intent : undefined);
-    setTab(next);
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -143,19 +142,70 @@ export default function TelegramMiniAppPage() {
 
   return (
     <TgWebAppProvider webApp={state.webApp}>
-      <div className="p-3 pb-24">
-        {/* Keyed by tab so every switch replays the rise-in entrance. */}
+      <CockpitShell />
+    </TgWebAppProvider>
+  );
+}
+
+/**
+ * The signed-in cockpit: brand header (wordmark + inbox bell), the active
+ * tab, and the floating dock. Lives below the auth gate so its data hooks
+ * only ever fire with a valid session.
+ */
+function CockpitShell() {
+  const [tab, setTab] = useState<TgTab>("today");
+  // Today's Ship action deep-focuses the release proposal in Approvals.
+  const [approvalsFocus, setApprovalsFocus] = useState<"release" | undefined>();
+  // Inbox is a pushed sub-page behind the header bell, not a tab.
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const navigate = (next: TgTab, intent?: "release") => {
+    setApprovalsFocus(next === "approvals" ? intent : undefined);
+    setInboxOpen(false);
+    setTab(next);
+  };
+  const { data: notifications } = useNotifications();
+  // The live query doesn't run against fixtures, so demo shows a static
+  // badge rather than an empty bell.
+  const unread = isTgDemoMode() ? 3 : (notifications?.unread_count ?? 0);
+
+  return (
+    <div className="p-3 pb-28">
+      <header className="flex items-center justify-between px-1 pb-3 pt-1">
+        <span className="tg-brand text-[13px] tracking-[0.3em] text-foreground">
+          ROBOCO<span className="tg-cursor text-primary">_</span>
+        </span>
+        <button
+          type="button"
+          aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
+          onClick={() => setInboxOpen(true)}
+          className={cn(
+            "relative flex h-9 w-9 items-center justify-center rounded-full bg-card text-muted-foreground",
+            TG_PRESS,
+          )}
+        >
+          <IconInbox className="h-5 w-5" />
+          {unread > 0 && (
+            <span className="absolute right-1 top-1 flex h-2 w-2 rounded-full bg-primary" />
+          )}
+        </button>
+      </header>
+      {inboxOpen ? (
+        <TgSubPage title="Inbox" onBack={() => setInboxOpen(false)}>
+          <TgInboxTab />
+        </TgSubPage>
+      ) : (
+        // Keyed by tab so every switch replays the rise-in entrance.
         <div key={tab} className="tg-tab-in">
           {tab === "today" && <TgTodayTab onNavigate={navigate} />}
           {tab === "approvals" && (
             <TgApprovalsTab initialFocus={approvalsFocus} />
           )}
-          {tab === "inbox" && <TgInboxTab />}
           {tab === "board" && <TgBoardTab />}
           {tab === "chat" && <TgChatTab />}
+          {tab === "metrics" && <TgMetricsTab />}
         </div>
-        <TgTabBar active={tab} onChange={navigate} />
-      </div>
-    </TgWebAppProvider>
+      )}
+      <TgTabBar active={tab} onChange={navigate} />
+    </div>
   );
 }

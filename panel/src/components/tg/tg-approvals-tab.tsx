@@ -13,7 +13,8 @@ import { useBackButton, useTgWebApp } from "@/lib/telegram/hooks";
 import { haptics } from "@/lib/telegram/webapp";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { TgRow, TgRowIcon } from "@/components/tg/ui";
+import { TgRow, TgRowIcon, TG_CARD } from "@/components/tg/ui";
+import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -47,16 +48,10 @@ function itemTitle(item: ApprovalItem): string {
   }
 }
 
-function ItemRow({
-  item,
-  onOpen,
-}: {
-  item: ApprovalItem;
-  onOpen: () => void;
-}) {
+function ItemRow({ item, onOpen }: { item: ApprovalItem; onOpen: () => void }) {
   const meta = KIND_META[item.kind];
   return (
-    <div className="rounded-xl border bg-card text-card-foreground">
+    <div className={cn(TG_CARD, "px-2 py-1 text-card-foreground")}>
       <TgRow
         leading={<TgRowIcon icon={meta.icon} tone={meta.tone} />}
         title={itemTitle(item)}
@@ -112,8 +107,7 @@ export function TgApprovalsTab({
     initialFocus && !initialConsumed && focusedId === null
       ? items.find((i) => i.kind === initialFocus)
       : undefined;
-  const focused =
-    items.find((i) => i.id === focusedId) ?? autoTarget ?? null;
+  const focused = items.find((i) => i.id === focusedId) ?? autoTarget ?? null;
   const back = () => {
     setInitialConsumed(true);
     setFocusedId(null);
@@ -145,14 +139,19 @@ export function TgApprovalsTab({
       <div className="space-y-3">
         <div className="flex items-center gap-1.5">
           {!webApp?.BackButton && (
-            <Button variant="ghost" size="sm" className="-ml-1.5 px-1.5" onClick={back}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-ml-1.5 px-1.5"
+              onClick={back}
+            >
               <ArrowLeft className="h-4 w-4" />
             </Button>
           )}
-          <meta.icon className="h-3.5 w-3.5 text-muted-foreground" />
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+            <meta.icon className="h-3.5 w-3.5" />
             {meta.label}
-          </p>
+          </span>
         </div>
         <Detail item={focused} onDone={back} />
       </div>
@@ -169,11 +168,14 @@ export function TgApprovalsTab({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="tg-stagger space-y-2">
+      <p className="px-1 text-[13px] font-semibold text-foreground/90">
+        {items.length} waiting for you
+      </p>
       {anyFailed && (
-        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          Some queues couldn&apos;t load — this list may be incomplete.
+        <p className="flex items-center gap-1.5 rounded-2xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          Some queues didn&apos;t load — this list may be incomplete.
         </p>
       )}
       {items.map((item) => (
