@@ -125,7 +125,7 @@ function PipelineHeader({ groups }: { groups: Record<GroupKey, Task[]> }) {
   return (
     <div className={cn(TG_CARD, "p-4")}>
       <p className="text-[13px] font-semibold text-foreground/90">Pipeline</p>
-      <div className="mt-2 flex gap-1.5 overflow-x-auto">
+      <div className="tg-scroll-x mt-2 flex gap-1.5">
         {chips.map((k) => (
           <span
             key={k}
