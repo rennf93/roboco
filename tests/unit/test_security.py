@@ -200,3 +200,27 @@ def test_enforce_https_always_off(monkeypatch: pytest.MonkeyPatch) -> None:
     moment the guard went active (2026-07-19 outage)."""
     monkeypatch.setattr(settings, "environment", "production")
     assert security.build_security_config().enforce_https is False
+
+
+# --- the internal agent mesh is exempt from WAF + IP-ban ------------------
+
+
+def test_internal_agent_mesh_is_whitelisted() -> None:
+    """Agents reach the orchestrator directly on the docker bridge, HMAC-
+    authenticated; the guard's threat-ban is for the external surface. Without
+    this the guard IP-banned agent containers the moment it went active
+    (2026-07-20 incident) and wedged every subsequent gateway verb."""
+    cfg = security.build_security_config()
+    assert cfg.whitelist is not None
+    for net in ("127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+        assert net in cfg.whitelist
+
+
+def test_guard_whitelist_appends_emergency_extras(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "guard_emergency_whitelist", "203.0.113.5")
+    cfg = security.build_security_config()
+    assert cfg.whitelist is not None
+    assert "203.0.113.5" in cfg.whitelist
+    assert "172.16.0.0/12" in cfg.whitelist

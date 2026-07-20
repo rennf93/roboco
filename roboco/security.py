@@ -319,6 +319,32 @@ def _redis_url() -> str:
     return f"redis://{settings.redis_host}:{settings.redis_port}/0"
 
 
+# RFC1918 + loopback: the internal agent mesh. Agents reach the orchestrator
+# DIRECTLY on the docker bridge (172.x → roboco-orchestrator:8000, no nginx
+# hop), HMAC-authenticated — the guard's WAF/threat-ban is for the EXTERNAL
+# attack surface arriving through nginx, not for authenticated internal
+# traffic. Without this the guard IP-banned agent containers the moment it
+# went active (2026-07-20): one journal/note body tripping a signature banned
+# the whole container's IP, wedging every subsequent verb (dm, i_am_idle, ...).
+# Robust against XFF spoofing: trusted_proxy_depth=1 means the effective IP for
+# an nginx-forwarded request is the real client (public, non-matching), so an
+# external attacker cannot spoof themselves into this range.
+_INTERNAL_NETWORKS = [
+    "127.0.0.1",
+    "::1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+]
+
+
+def _guard_whitelist() -> list[str]:
+    extra = [
+        x.strip() for x in settings.guard_emergency_whitelist.split(",") if x.strip()
+    ]
+    return [*_INTERNAL_NETWORKS, *extra]
+
+
 def _emergency_whitelist() -> list[str]:
     extra = [
         x.strip() for x in settings.guard_emergency_whitelist.split(",") if x.strip()
@@ -374,6 +400,10 @@ def build_security_config() -> SecurityConfig:
         # Flip-on kill switch.
         emergency_mode=settings.guard_emergency,
         emergency_whitelist=_emergency_whitelist(),
+        # The internal agent mesh skips all checks (WAF + IP-ban) — see
+        # _INTERNAL_NETWORKS. External traffic via nginx carries the real
+        # client IP (XFF, depth 1) and is still fully scrutinized.
+        whitelist=_guard_whitelist(),
         exclude_paths=_EXCLUDE_PATHS,
         security_headers=_SECURITY_HEADERS,
         threat_ban_config=_THREAT_BAN_CONFIG,
