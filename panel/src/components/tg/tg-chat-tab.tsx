@@ -56,7 +56,14 @@ import {
   DEMO_CHAT_MINE,
 } from "@/lib/telegram/demo-data";
 import { haptics } from "@/lib/telegram/webapp";
-import { ArrowDown, Eye, MessageSquarePlus, Send, Loader2 } from "lucide-react";
+import {
+  ArrowDown,
+  CaretRight,
+  CircleNotch,
+  Eye,
+  NotePencil,
+  PaperPlaneTilt,
+} from "@phosphor-icons/react";
 import { format, isSameDay, isToday, isYesterday } from "date-fns";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -152,23 +159,11 @@ function SecretaryPinnedRow({ onOpen }: { onOpen: () => void }) {
           Directives, questions, company state
         </p>
       </div>
-      <ChevronRightIcon />
+      <CaretRight
+        weight="bold"
+        className="h-4 w-4 shrink-0 text-muted-foreground/40"
+      />
     </button>
-  );
-}
-
-function ChevronRightIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      className="h-4 w-4 shrink-0 text-muted-foreground/40"
-      aria-hidden="true"
-    >
-      <path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }
 
@@ -223,7 +218,7 @@ function SecretaryView({ onBack }: { onBack: () => void }) {
         {shown.length === 0 && (
           <p className="py-10 text-center text-sm text-muted-foreground">
             {demo || sessionId
-              ? "Ask anything — company state, queues, directives."
+              ? "Ask anything: company state, queues, directives."
               : "Waking the Secretary…"}
           </p>
         )}
@@ -273,7 +268,7 @@ function SecretaryView({ onBack }: { onBack: () => void }) {
         )}
       </div>
       <Composer
-        placeholder={demo ? "Demo mode — sends disabled" : "Message…"}
+        placeholder={demo ? "Demo mode, sends disabled" : "Message…"}
         pending={streaming}
         disabled={demo || (!demo && !sessionId)}
         onSend={(text) => {
@@ -622,9 +617,9 @@ function Composer({
         )}
       >
         {pending ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
+          <CircleNotch weight="bold" className="h-4 w-4 animate-spin" />
         ) : (
-          <Send className="h-4 w-4" />
+          <PaperPlaneTilt weight="fill" className="h-4 w-4" />
         )}
       </button>
     </div>
@@ -775,7 +770,7 @@ function ThreadView({
               TG_PRESS,
             )}
           >
-            <ArrowDown className="h-4 w-4" />
+            <ArrowDown weight="bold" className="h-4 w-4" />
           </button>
         )}
       </div>
@@ -783,7 +778,7 @@ function ThreadView({
       {threadRef.kind === "fleet" && !threadRef.taskId ? (
         <div className="mt-2 flex items-center gap-2 rounded-2xl bg-muted/40 px-3.5 py-3 text-[13px] text-muted-foreground">
           <Eye className="h-4 w-4 shrink-0" />
-          Watch-only — this thread isn&apos;t linked to a task, so replies
+          Watch-only. This thread isn&apos;t linked to a task, so replies
           can&apos;t be routed.
         </div>
       ) : (
@@ -803,7 +798,7 @@ function ThreadView({
             </button>
           )}
           <Composer
-            placeholder={demo ? "Demo mode — sends disabled" : "Message…"}
+            placeholder={demo ? "Demo mode, sends disabled" : "Message…"}
             pending={send.isPending || reply.isPending}
             disabled={demo}
             onSend={handleSend}
@@ -878,9 +873,9 @@ function ComposeNewChat({
           )}
         >
           {create.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <CircleNotch weight="bold" className="h-4 w-4 animate-spin" />
           ) : (
-            <Send className="h-4 w-4" />
+            <PaperPlaneTilt weight="fill" className="h-4 w-4" />
           )}
           Send
         </button>
@@ -991,7 +986,7 @@ export function TgChatTab() {
             TG_PRESS,
           )}
         >
-          <MessageSquarePlus className="h-5 w-5" />
+          <NotePencil className="h-5 w-5" />
         </button>
       </div>
       {scope === "mine" && (

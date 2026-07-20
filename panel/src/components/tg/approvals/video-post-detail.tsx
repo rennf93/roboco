@@ -201,7 +201,7 @@ export function VideoPostDetail({
   const reject = useMutation({
     mutationFn: (reason: string) => videoApi.reject(post.task_id, reason),
     onSuccess: () =>
-      finish(true, "Draft rejected — feedback goes back to the author."),
+      finish(true, "Draft rejected. Feedback goes back to the author."),
     onError: (err) => {
       haptics.error();
       toast.error(getErrorMessage(err));

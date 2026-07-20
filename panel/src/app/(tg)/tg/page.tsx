@@ -23,7 +23,11 @@ import { isTgDemoMode } from "@/lib/telegram/demo";
 import { useNotifications } from "@/hooks/use-notifications";
 import { cn } from "@/lib/utils";
 import { IconContext } from "@phosphor-icons/react";
-import { Loader2, AlertTriangle, ExternalLink } from "lucide-react";
+import {
+  ArrowSquareOut,
+  CircleNotch,
+  Warning,
+} from "@phosphor-icons/react";
 
 type BootstrapState =
   | { kind: "validating" }
@@ -112,7 +116,7 @@ export default function TelegramMiniAppPage() {
   if (state.kind === "validating") {
     return (
       <CenteredMessage>
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <CircleNotch weight="bold" className="h-8 w-8 animate-spin text-muted-foreground" />
         <p className="text-sm text-muted-foreground">Connecting…</p>
       </CenteredMessage>
     );
@@ -121,7 +125,7 @@ export default function TelegramMiniAppPage() {
   if (state.kind === "not_in_telegram") {
     return (
       <CenteredMessage>
-        <ExternalLink className="h-10 w-10 text-muted-foreground" />
+        <ArrowSquareOut weight="duotone" className="h-10 w-10 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Open from Telegram</h1>
         <p className="text-sm text-muted-foreground">
           This cockpit only runs inside Telegram. Open it from the bot&apos;s
@@ -134,7 +138,7 @@ export default function TelegramMiniAppPage() {
   if (state.kind === "error") {
     return (
       <CenteredMessage>
-        <AlertTriangle className="h-10 w-10 text-destructive" />
+        <Warning weight="duotone" className="h-10 w-10 text-destructive" />
         <h1 className="text-lg font-semibold">Couldn&apos;t sign in</h1>
         <p className="text-sm text-muted-foreground">{state.message}</p>
       </CenteredMessage>

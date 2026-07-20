@@ -14,7 +14,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { AlertTriangle } from "lucide-react";
+import { Warning } from "@phosphor-icons/react";
 import { usageApi, type UsagePeriod } from "@/lib/api/usage";
 import { observabilityApi } from "@/lib/api/observability";
 import { isScorecardMemberId } from "@/hooks/use-observability";
@@ -212,7 +212,7 @@ function teamLabel(team: string): string {
 }
 
 function pctOrDash(v: number | null): string {
-  return v === null ? "—" : `${(v * 100).toFixed(0)}%`;
+  return v === null ? "-" : `${(v * 100).toFixed(0)}%`;
 }
 
 // =============================================================================
@@ -227,7 +227,7 @@ function ErrorCard({ onRetry }: { onRetry: () => void }) {
         "flex flex-col items-center gap-3 p-6 text-center",
       )}
     >
-      <AlertTriangle className="h-6 w-6 text-muted-foreground" />
+      <Warning className="h-6 w-6 text-muted-foreground" />
       <p className="text-sm text-muted-foreground">
         Couldn&apos;t load metrics. Pull to retry.
       </p>
@@ -460,7 +460,7 @@ function Hub({
           />
           <TgStat value={rework?.total_completed ?? 0} caption="Completed" />
           <TgStat
-            value={worstStage ? humanizeHours(worstStage.avg_seconds) : "—"}
+            value={worstStage ? humanizeHours(worstStage.avg_seconds) : "-"}
             caption={
               worstStage ? humanizeStatus(worstStage.status) : "Slowest stage"
             }

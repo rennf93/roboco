@@ -34,8 +34,7 @@ import {
 } from "@/components/tg/tg-icons";
 import { DayBars, Sparkline } from "@/components/tg/charts";
 import { fmtTokens } from "@/components/tg/tg-format";
-import { ChevronRight } from "lucide-react";
-import { CheckCircle, Warning } from "@phosphor-icons/react";
+import { CaretRight, CheckCircle, Warning } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
@@ -93,7 +92,8 @@ const DRAFT_LABELS: Record<string, string> = {
 const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"];
 
 function taskMeta(task: TodayTaskItem): string {
-  const parts = [task.team ?? "—"];
+  const parts: string[] = [];
+  if (task.team) parts.push(task.team);
   if (task.updated_at) {
     parts.push(`${formatDistanceToNow(new Date(task.updated_at))} ago`);
   }
@@ -128,7 +128,10 @@ function SpendHero({
     >
       <div className="flex items-center justify-between">
         <p className="text-[13px] text-muted-foreground">Spend today</p>
-        <ChevronRight className="h-4 w-4 text-muted-foreground/40" />
+        <CaretRight
+          weight="bold"
+          className="h-4 w-4 text-muted-foreground/40"
+        />
       </div>
       <span className="tg-display block text-[44px] leading-none tabular-nums">
         ${cost.toFixed(2)}
@@ -185,7 +188,7 @@ function NeedsYouBanner({
           <span className="rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
             {needs.total}
           </span>
-          <ChevronRight className="h-4 w-4" />
+          <CaretRight weight="bold" className="h-4 w-4" />
         </span>
       </button>
       {heldEntries.length > 0 && (

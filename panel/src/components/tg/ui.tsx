@@ -11,7 +11,7 @@
  */
 
 import { cn } from "@/lib/utils";
-import { ArrowLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, CaretRight } from "@phosphor-icons/react";
 
 /** Any icon component — lucide or the cockpit's own duotone glyphs. */
 export type TgAnyIcon = React.ComponentType<{ className?: string }>;
@@ -217,7 +217,10 @@ export function TgRow({
         )}
       </div>
       {trailing ?? (
-        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40" />
+        <CaretRight
+          weight="bold"
+          className="h-4 w-4 shrink-0 text-muted-foreground/40"
+        />
       )}
     </button>
   );
@@ -386,7 +389,7 @@ export function TgSubPage({
               TG_PRESS,
             )}
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft weight="bold" className="h-4 w-4" />
           </button>
         )}
         <div className="min-w-0 flex-1">

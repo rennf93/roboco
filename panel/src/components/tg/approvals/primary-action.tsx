@@ -3,7 +3,7 @@
 import { useMainButton } from "@/lib/telegram/hooks";
 import { useTgWebApp } from "@/lib/telegram/hooks";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
+import { CircleNotch } from "@phosphor-icons/react";
 
 /**
  * The focused card's one primary action. Inside Telegram it drives the
@@ -27,7 +27,9 @@ export function PrimaryAction({
   if (webApp?.MainButton) return null;
   return (
     <Button className="w-full" disabled={disabled || loading} onClick={onClick}>
-      {loading && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+      {loading && (
+        <CircleNotch weight="bold" className="mr-1.5 h-4 w-4 animate-spin" />
+      )}
       {text}
     </Button>
   );

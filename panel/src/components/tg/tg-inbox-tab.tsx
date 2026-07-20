@@ -256,7 +256,7 @@ export function TgInboxTab() {
                 onAck={() =>
                   ack.mutate(n.id, {
                     onError: () =>
-                      toast.error("Couldn't acknowledge — try again."),
+                      toast.error("Couldn't acknowledge. Try again."),
                   })
                 }
               />

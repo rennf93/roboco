@@ -8,7 +8,7 @@ import { getAgentDisplayName } from "@/lib/agent-utils";
 import { TaskStatus, type Task } from "@/types";
 import { TG_CARD, TgRow, TgRowIcon, TgSection } from "@/components/tg/ui";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown } from "lucide-react";
+import { CaretDown } from "@phosphor-icons/react";
 import {
   ArrowCounterClockwise,
   CheckCircle,
@@ -197,7 +197,7 @@ function DoneSection({
           <span>
             {completed} completed · {cancelled} cancelled
           </span>
-          <ChevronDown className="h-4 w-4" />
+          <CaretDown weight="bold" className="h-4 w-4" />
         </button>
       ) : (
         <div className="divide-y divide-white/[0.04]">

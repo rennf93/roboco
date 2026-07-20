@@ -15,7 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { TgRow, TgRowIcon, TG_CARD } from "@/components/tg/ui";
 import { cn } from "@/lib/utils";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft } from "@phosphor-icons/react";
 import {
   ChatCircle,
   CheckCircle,
@@ -175,7 +175,7 @@ export function TgApprovalsTab({
       {anyFailed && (
         <p className="flex items-center gap-1.5 rounded-2xl bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
           <Warning className="h-3.5 w-3.5 shrink-0" />
-          Some queues didn&apos;t load — this list may be incomplete.
+          Some queues didn&apos;t load, so this list may be incomplete.
         </p>
       )}
       {items.map((item) => (

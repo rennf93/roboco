@@ -12,8 +12,11 @@ import { haptics } from "@/lib/telegram/webapp";
 import { TaskStatus, type Task } from "@/types";
 import { tasksApi, type TaskFinding } from "@/lib/api/tasks";
 import { Textarea } from "@/components/ui/textarea";
-import { ExternalLink, Loader2 } from "lucide-react";
-import { CheckCircle } from "@phosphor-icons/react";
+import {
+  ArrowSquareOut,
+  CheckCircle,
+  CircleNotch,
+} from "@phosphor-icons/react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -151,7 +154,9 @@ function CeoActions({ task, onActed }: { task: Task; onActed: () => void }) {
           TG_PRESS,
         )}
       >
-        {unblock.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+        {unblock.isPending && (
+          <CircleNotch weight="bold" className="h-4 w-4 animate-spin" />
+        )}
         Unblock
       </button>
     );
@@ -170,7 +175,9 @@ function CeoActions({ task, onActed }: { task: Task; onActed: () => void }) {
           TG_PRESS,
         )}
       >
-        {approve.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+        {approve.isPending && (
+          <CircleNotch weight="bold" className="h-4 w-4 animate-spin" />
+        )}
         Approve
       </button>
       {rejecting ? (
@@ -191,7 +198,9 @@ function CeoActions({ task, onActed }: { task: Task; onActed: () => void }) {
               TG_PRESS,
             )}
           >
-            {reject.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+            {reject.isPending && (
+              <CircleNotch weight="bold" className="h-4 w-4 animate-spin" />
+            )}
             Send back for revision
           </button>
         </div>
@@ -249,7 +258,6 @@ export function TgTaskSheet({
             </h3>
             <p className="text-[11px] text-muted-foreground">
               {[
-                task.team,
                 getAgentDisplayName(task.assigned_to),
                 task.updated_at &&
                   `${formatDistanceToNow(new Date(task.updated_at))} ago`,
@@ -304,7 +312,7 @@ export function TgTaskSheet({
                 TG_PRESS,
               )}
             >
-              <ExternalLink className="h-4 w-4" />
+              <ArrowSquareOut className="h-4 w-4" />
               Open PR{task.pr_number !== null && ` #${task.pr_number}`}
             </a>
           )}

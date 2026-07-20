@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { X } from "@phosphor-icons/react";
 import { haptics } from "@/lib/telegram/webapp";
 import { useBackButton } from "@/lib/telegram/hooks";
 
@@ -91,7 +91,7 @@ export function TgSheet({
             onClick={onClose}
             className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-muted-foreground transition-transform active:scale-90"
           >
-            <X className="h-4 w-4" />
+            <X weight="bold" className="h-4 w-4" />
           </button>
         </header>
         <div className="overflow-y-auto px-4 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
