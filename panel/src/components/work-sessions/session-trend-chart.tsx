@@ -13,6 +13,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { WorkSessionSummary } from "@/types";
 
 interface SessionTrendChartProps {
@@ -112,13 +113,17 @@ export function SessionTrendChart({
                 width={28}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value) => [
                   typeof value === "number" ? value : 0,
                   "Sessions started",
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
-              <Bar dataKey="count" fill="var(--chart-1)" radius={[3, 3, 0, 0]} />
+              <Bar
+                dataKey="count"
+                fill="var(--chart-1)"
+                radius={[3, 3, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         )}

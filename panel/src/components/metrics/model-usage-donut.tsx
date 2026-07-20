@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { ModelUsageSlice } from "@/types";
 
 // Design-system chart tokens — resolves to theme-aware palette
@@ -71,12 +72,12 @@ export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
                 ))}
               </Pie>
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value, name) => [
                   (typeof value === "number" ? value : 0).toLocaleString() +
                     " tokens",
                   name,
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Legend wrapperStyle={{ fontSize: isMobile ? 9 : 11 }} />
             </PieChart>

@@ -12,16 +12,13 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
+import { formatBucket } from "@/lib/format";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { UsageTimePoint } from "@/types";
 
 interface SpendTrendChartProps {
   data: UsageTimePoint[] | undefined;
   isLoading: boolean;
-}
-
-function formatBucket(bucket: string): string {
-  const d = new Date(bucket);
-  return d.getMonth() + 1 + "/" + d.getDate();
 }
 
 function fmtCost(n: number): string {
@@ -63,7 +60,7 @@ export function SpendTrendChart({ data, isLoading }: SpendTrendChartProps) {
               <XAxis
                 dataKey="day"
                 tick={{ fontSize: 9 }}
-                interval={4}
+                interval="preserveStartEnd"
                 axisLine={false}
                 tickLine={false}
               />
@@ -75,13 +72,17 @@ export function SpendTrendChart({ data, isLoading }: SpendTrendChartProps) {
                 width={44}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value) => [
                   fmtCost(typeof value === "number" ? value : 0),
                   "Spend",
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
-              <Bar dataKey="Spend" fill="var(--chart-3)" radius={[3, 3, 0, 0]} />
+              <Bar
+                dataKey="Spend"
+                fill="var(--chart-3)"
+                radius={[3, 3, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         )}

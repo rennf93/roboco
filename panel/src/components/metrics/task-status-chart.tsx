@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 
 interface TaskStatusSlice {
   name: string;
@@ -73,11 +74,11 @@ export function TaskStatusChart({ slices, isLoading }: TaskStatusChartProps) {
                 ))}
               </Pie>
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value, name) => [
                   `${typeof value === "number" ? value : 0} tasks`,
                   name,
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
             </PieChart>

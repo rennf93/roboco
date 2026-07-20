@@ -12,16 +12,13 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
+import { formatBucket } from "@/lib/format";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { UsageTimePoint } from "@/types";
 
 interface CostTrendChartProps {
   data: UsageTimePoint[] | undefined;
   isLoading: boolean;
-}
-
-function formatBucket(bucket: string): string {
-  const d = new Date(bucket);
-  return d.getMonth() + 1 + "/" + d.getDate();
 }
 
 function fmtCost(n: number): string {
@@ -88,11 +85,11 @@ export function CostTrendChart({ data, isLoading }: CostTrendChartProps) {
                 width={44}
               />
               <Tooltip
+                {...chartTooltipStyle}
                 formatter={(value) => [
                   fmtCost(typeof value === "number" ? value : 0),
                   "Cost",
                 ]}
-                contentStyle={{ fontSize: 12 }}
               />
               <Area
                 type="monotone"

@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { ChevronUp, ChevronDown } from "lucide-react";
+import { formatTokens } from "@/lib/format";
 import type { UsageSession } from "@/types";
 
 const PAGE_SIZE = 10;
@@ -46,8 +47,16 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { key: "agent_slug", label: "Agent", tip: "The agent slug that ran this session — click to sort" },
-  { key: "model", label: "Model", tip: "Claude/Grok model used for this session — click to sort" },
+  {
+    key: "agent_slug",
+    label: "Agent",
+    tip: "The agent slug that ran this session — click to sort",
+  },
+  {
+    key: "model",
+    label: "Model",
+    tip: "Claude/Grok model used for this session — click to sort",
+  },
   {
     key: "started_at",
     label: "Started",
@@ -85,11 +94,6 @@ function formatTime(ts: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function fmtK(n: number): string {
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
-  return String(n);
 }
 
 interface SessionsTableProps {
@@ -198,16 +202,16 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                               {formatTime(s.started_at)}
                             </TableCell>
                             <TableCell className="text-xs">
-                              {fmtK(s.total_tokens)}
+                              {formatTokens(s.total_tokens)}
                             </TableCell>
                             <TableCell className="text-xs">
-                              {fmtK(s.tokens_input)}
+                              {formatTokens(s.tokens_input)}
                             </TableCell>
                             <TableCell className="text-xs">
-                              {fmtK(s.tokens_output)}
+                              {formatTokens(s.tokens_output)}
                             </TableCell>
                             <TableCell className="text-xs">
-                              {fmtK(s.tokens_cache)}
+                              {formatTokens(s.tokens_cache)}
                             </TableCell>
                             <TableCell className="text-xs">
                               ${s.cost.toFixed(4)}
@@ -241,16 +245,16 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                             {formatTime(s.started_at)}
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="Total">
-                            {fmtK(s.total_tokens)}
+                            {formatTokens(s.total_tokens)}
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="Input">
-                            {fmtK(s.tokens_input)}
+                            {formatTokens(s.tokens_input)}
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="Output">
-                            {fmtK(s.tokens_output)}
+                            {formatTokens(s.tokens_output)}
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="Cache">
-                            {fmtK(s.tokens_cache)}
+                            {formatTokens(s.tokens_cache)}
                           </ResponsiveTableCardRow>
                           <ResponsiveTableCardRow label="Cost">
                             ${s.cost.toFixed(4)}

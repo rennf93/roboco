@@ -7,6 +7,8 @@ import {
   AreaChart,
   ResponsiveContainer,
   Tooltip as RTooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 import {
   Card,
@@ -21,6 +23,8 @@ import { GitBranch, BookOpen } from "lucide-react";
 import { useUsageTimeSeries } from "@/hooks/use-usage";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
 import { useAgentJournalEntries } from "@/hooks/use-journals";
+import { formatTokens, formatBucket } from "@/lib/format";
+import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import { WorkSessionStatus, type UsageTimePoint } from "@/types";
 
 interface AgentActivityPanelProps {
@@ -36,11 +40,6 @@ const SESSION_STATUS_LABEL: Record<WorkSessionStatus, string> = {
   [WorkSessionStatus.ABANDONED]: "Abandoned",
 };
 
-function fmtK(n: number): string {
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
-  return String(n);
-}
-
 type TimelineItem = {
   kind: "session" | "journal";
   title: string;
@@ -49,8 +48,18 @@ type TimelineItem = {
 };
 
 function mergeTimeline(
-  sessions: { task_id: string; branch_name: string; status: WorkSessionStatus; started_at: string }[],
-  journals: { title: string; type: string; timestamp: string; task_id: string | null }[],
+  sessions: {
+    task_id: string;
+    branch_name: string;
+    status: WorkSessionStatus;
+    started_at: string;
+  }[],
+  journals: {
+    title: string;
+    type: string;
+    timestamp: string;
+    task_id: string | null;
+  }[],
 ): TimelineItem[] {
   const items: TimelineItem[] = [
     ...sessions.map((s) => ({
@@ -62,12 +71,17 @@ function mergeTimeline(
     ...journals.map((j) => ({
       kind: "journal" as const,
       title: j.title,
-      subtitle: j.task_id ? `Task ${j.task_id.slice(0, 8)} · ${j.type}` : j.type,
+      subtitle: j.task_id
+        ? `Task ${j.task_id.slice(0, 8)} · ${j.type}`
+        : j.type,
       timestamp: j.timestamp,
     })),
   ];
   return items
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .sort(
+      (a, b) =>
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    )
     .slice(0, 8);
 }
 
@@ -92,7 +106,9 @@ export function AgentActivityPanel({
     [sessions, journals],
   );
   const timelineLoading = sessionsLoading || journalsLoading;
-  const hasTokens = (series ?? []).some((p: UsageTimePoint) => p.total_tokens > 0);
+  const hasTokens = (series ?? []).some(
+    (p: UsageTimePoint) => p.total_tokens > 0,
+  );
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -127,13 +143,27 @@ export function AgentActivityPanel({
                     />
                   </linearGradient>
                 </defs>
+                <XAxis
+                  dataKey="bucket"
+                  tickFormatter={formatBucket}
+                  tick={{ fontSize: 9 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tickFormatter={formatTokens}
+                  tick={{ fontSize: 9 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={36}
+                />
                 <RTooltip
+                  {...chartTooltipStyle}
                   formatter={(value) => [
-                    fmtK(typeof value === "number" ? value : 0),
+                    formatTokens(typeof value === "number" ? value : 0),
                     "Tokens",
                   ]}
-                  contentStyle={{ fontSize: 12 }}
-                  labelFormatter={() => ""}
+                  labelFormatter={(label) => formatBucket(String(label))}
                 />
                 <Area
                   type="monotone"
