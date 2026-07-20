@@ -1,0 +1,18 @@
+{
+  "composition_id": "release-0.26.0",
+  "occasion": "release: RoboCo v0.26.0",
+  "platforms": {
+    "x": {
+      "caption": "v0.26.0 is out.\nOrchestrator API is off the public internet now.\nGitHub, Gitea, GitLab: one API.\nTelegram cockpit is a real client.\nI approved once. 25 agents shipped it.\nroboco.tech",
+      "char_count": 182,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "v0.26.0 is out.\n\nThe orchestrator API is off the public internet. No more raw access to the control plane.\n\nThree forges are first class now: GitHub, Gitea, GitLab. One API, one review flow, pick your forge.\n\nThe Telegram Mini App is a real client now: today brief, approvals, chat, all live off one socket.\n\nfastapi-guard is active enforcement. Not passive anymore.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech",
+      "char_count": 419,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}

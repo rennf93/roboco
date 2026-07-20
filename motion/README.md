@@ -147,3 +147,56 @@ Same schema as `release-recap`: one `captions.json` next to the HTML with self-v
 ### Smoke-test invariants
 
 `release-0.25.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the "Notification bell" text, the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.
+
+## Release-specific example: `release-0.26.0`
+
+`compositions/release-0.26.0/` is a panel-demo kit clip for the RoboCo v0.26.0 release, mirroring the structure and pacing of release-0.25.0. It builds on the `kit/` register instead of the text-card style, so it has no `theme.css` of its own.
+
+The composition runs **40 seconds** total. The story is "the control plane gets a lock" (the hero tagline): the CEO types "The control plane gets a lock" into the panel intake at 3.6s, then four shipped security/feature cards enter the kanban column one per scene and flip from `in progress` to `completed`:
+
+1. **Off the public net** — enters at 5.0s, completes at 6.6s ("127.0.0.1 only, nginx does the rest."). The orchestrator API is now bound to localhost; public internet access is closed.
+2. **3 forges, 1 API** — enters at 10.0s, completes at 11.6s ("GitHub, Gitea, GitLab. Pick your forge."). Three forge providers (GitHub, Gitea, GitLab) are now first-class citizens behind one unified REST API.
+3. **Telegram cockpit** — enters at 15.0s, completes at 16.6s ("Today brief, approvals, chat. One socket."). The Telegram Mini App V4 becomes a real client with live task dashboard, actionable approvals, and multi-channel communication over a single WebSocket.
+4. **Guard mode: active** — enters at 20.0s, completes at 21.6s ("fastapi-guard stops watching, starts blocking."). The content-security guard flips from passive monitoring to active enforcement on request payloads.
+
+Each card gets roughly five seconds of fully visible time before the next card enters. A cursor clicks the intake at 4.8s (submit), then witnesses each card completing without further clicks (the agents do the work), then a second click at 30.8s (acknowledge the toast). The stats overlay shows "1 release / 3 forges / 0 leaks" from 24.0s to 32.0s, the toast "v0.26.0 shipped / I approved once. 25 agents shipped it." runs from 30.0s to 38.0s, and the "roboco.tech" outro lands at 36.0s and holds through the end.
+
+The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern to replace the `in progress` pill with `completed` on the same beat. The stats overlay uses display typography (Share Tech Mono) and the accent color to emphasize the "3 forges" metric, reinforcing the release's security + multi-provider focus.
+
+### Preview / test this composition
+
+```bash
+pnpm preview
+pnpm test   # release-0.26.0.test.js is picked up by vitest
+```
+
+### `props.js` shape
+
+```js
+{
+  introText: string,   // text that types into the panel intake field
+  toastTitle: string, // headline inside the shipping toast
+  toastBody: string,   // sub-line inside the shipping toast
+}
+```
+
+`window.__ORIENTATION__` is set for local preview only; the sidecar overwrites both globals at render time.
+
+### `captions.json`
+
+Same schema as prior releases: one `captions.json` next to the HTML with self-verified X and TikTok captions. The X caption totals **182 characters** (within the 280 limit); the TikTok caption **419 characters** (within the 2200 limit):
+
+```json
+{
+  "composition_id": "release-0.26.0",
+  "occasion": "release: RoboCo v0.26.0",
+  "platforms": {
+    "x":      { "caption": "v0.26.0 is out.\nOrchestrator API is off the public internet now.\nGitHub, Gitea, GitLab: one API.\nTelegram cockpit is a real client.\nI approved once. 25 agents shipped it.\nroboco.tech", "char_count": 182, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "v0.26.0 is out.\n\nThe orchestrator API is off the public internet. No more raw access to the control plane.\n\nThree forges are first class now: GitHub, Gitea, GitLab. One API, one review flow, pick your forge.\n\nThe Telegram Mini App is a real client now: today brief, approvals, chat, all live off one socket.\n\nfastapi-guard is active enforcement. Not passive anymore.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech", "char_count": 419, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+### Smoke-test invariants
+
+`release-0.26.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the exact titles ("Off the public net", "3 forges, 1 API", "Telegram cockpit", "Guard mode: active"), the stats overlay renders the three-line receipt (1 release / 3 forges / 0 leaks), the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.
