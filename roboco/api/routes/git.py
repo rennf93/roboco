@@ -290,6 +290,28 @@ async def get_git_log(
     )
 
 
+def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
+    """Classify one `%(refname)|%(objectname:short)` line as (name, is_remote,
+    last_commit), or None for skippable entries (blank, origin/HEAD, other ref
+    namespaces). Full refname, not `:short` — a remote-tracking ref shortens to
+    `origin/<branch>`, indistinguishable from a local branch literally named
+    that; classify on the `refs/heads/` vs `refs/remotes/` prefix instead.
+    """
+    if not line:
+        return None
+    parts = line.split("|")
+    ref = parts[0]
+    last_commit = parts[1] if len(parts) > 1 else None
+    if ref.startswith("refs/heads/"):
+        return ref.removeprefix("refs/heads/"), False, last_commit
+    if ref.startswith("refs/remotes/"):
+        _remote_name, _, name = ref.removeprefix("refs/remotes/").partition("/")
+        if not name or name == "HEAD":
+            return None  # origin/HEAD is a symbolic pointer, not a branch
+        return name, True, last_commit
+    return None
+
+
 @router.get("/branches", response_model=GitBranchListResponse)
 async def list_branches(
     db: DbSession,
@@ -305,8 +327,12 @@ async def list_branches(
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         current_branch = await git_service.get_current_branch(workspace)
 
-        # Get branches
-        args = ["branch", "--format=%(refname:short)|%(objectname:short)"]
+        if include_remote:
+            # Self-heal orphaned remote-tracking refs (branches deleted
+            # upstream via the forge API) before listing them.
+            await git_service.prune_remote_best_effort(workspace)
+
+        args = ["branch", "--format=%(refname)|%(objectname:short)"]
         if include_remote:
             args.append("-a")
 
@@ -316,16 +342,10 @@ async def list_branches(
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
-        if not line:
+        parsed = _parse_branch_line(line)
+        if parsed is None:
             continue
-        parts = line.split("|")
-        name = parts[0]
-        last_commit = parts[1] if len(parts) > 1 else None
-
-        is_remote = name.startswith("remotes/")
-        if is_remote:
-            name = name.replace("remotes/origin/", "")
-
+        name, is_remote, last_commit = parsed
         branches.append(
             BranchInfo(
                 name=name,

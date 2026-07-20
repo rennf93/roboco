@@ -324,7 +324,7 @@ async def test_log_service_error(git_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_branches_local_only(git_client: dict) -> None:
     branch_result = MagicMock()
-    branch_result.stdout = "main|abc123\nfeature/x|def456\n"
+    branch_result.stdout = "refs/heads/main|abc123\nrefs/heads/feature/x|def456\n"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
@@ -336,12 +336,27 @@ async def test_branches_local_only(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
+    names = {b["name"]: b for b in response.json()["branches"]}
+    assert names["main"]["is_remote"] is False
+    assert names["feature/x"]["is_remote"] is False
+    # include_remote=False (default) never prunes.
+    svc.prune_remote_best_effort.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_branches_with_remote(git_client: dict) -> None:
+    """Regression: `%(refname)` renders a remote-tracking ref as
+    `refs/remotes/origin/<branch>` (real git never emits the old stub's
+    `remotes/origin/<branch>` shape) — it must classify as remote with the
+    `refs/remotes/origin/` prefix stripped down to the bare branch name, and
+    the symbolic `origin/HEAD` ref must be dropped, not surfaced as a fake
+    branch named "HEAD"."""
     branch_result = MagicMock()
-    branch_result.stdout = "main|abc123\nremotes/origin/feature/y|def456\n"
+    branch_result.stdout = (
+        "refs/heads/main|abc123\n"
+        "refs/remotes/origin/feature/y|def456\n"
+        "refs/remotes/origin/HEAD|abc123\n"
+    )
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
@@ -354,6 +369,11 @@ async def test_branches_with_remote(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
+    names = {b["name"]: b for b in response.json()["branches"]}
+    assert names["feature/y"]["is_remote"] is True
+    assert "origin/feature/y" not in names
+    assert "HEAD" not in names
+    svc.prune_remote_best_effort.assert_awaited_once_with("/tmp/ws")
 
 
 @pytest.mark.asyncio
@@ -361,7 +381,7 @@ async def test_branches_skips_empty_lines(git_client: dict) -> None:
     """Line 246: empty line in branch output triggers continue."""
     branch_result = MagicMock()
     # Embed an empty line between two branches.
-    branch_result.stdout = "main|abc\n\nfeature/x|def\n"
+    branch_result.stdout = "refs/heads/main|abc\n\nrefs/heads/feature/x|def\n"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
