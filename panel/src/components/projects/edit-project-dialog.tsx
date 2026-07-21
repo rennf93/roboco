@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useProject, useUpdateProject } from "@/hooks/use-projects";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,8 +28,13 @@ import { ConventionsTab } from "@/components/conventions/conventions-tab";
 import { Key, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
+import { githubAppApi } from "@/lib/api";
 import { EnvironmentLadderEditor } from "@/components/projects/environment-ladder-editor";
 import { validateLadder } from "@/components/projects/ladder-validation";
+import {
+  SelectRepoDialog,
+  type SelectedRepo,
+} from "@/components/projects/select-repo-picker";
 import { HelpTip } from "@/components/ui/help-tip";
 
 const cells: { value: Team; label: string }[] = [
@@ -130,6 +136,11 @@ function EditProjectForm({
   const [gitProvider, setGitProvider] = useState(
     project.git_provider ?? "auto",
   );
+  // Set via the "Select repo" picker (binds to a GitHub App installation) or
+  // cleared via "Unbind"; null = git ops fall back to the PAT below.
+  const [githubInstallationId, setGithubInstallationId] = useState<
+    number | null
+  >(project.github_installation_id);
   const [assignedCell, setAssignedCell] = useState(project.assigned_cell);
   const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
   const [environments, setEnvironments] = useState(
@@ -200,6 +211,21 @@ function EditProjectForm({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAutonomy, setShowAutonomy] = useState(false);
 
+  const { data: credStatus } = useQuery({
+    queryKey: ["github-app", "credentials"],
+    queryFn: () => githubAppApi.getCredentialsStatus(),
+  });
+  const appConfigured = !!credStatus?.has_credentials;
+  // App auth is GitHub-only; a self-hosted Gitea/GitLab project keeps using
+  // its own token below regardless of any installation id already stored.
+  const isNonGithubProvider =
+    gitProvider === "gitea" || gitProvider === "gitlab";
+
+  const handleRepoSelected = (repo: SelectedRepo) => {
+    setGitUrl(repo.git_url);
+    setGithubInstallationId(repo.installation_id);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -219,6 +245,9 @@ function EditProjectForm({
       name,
       git_url: gitUrl,
       git_provider: gitProvider === "auto" ? null : gitProvider,
+      // Sent explicitly (never coerced to undefined) so an unbind (null)
+      // actually clears the stored installation instead of being dropped.
+      github_installation_id: githubInstallationId,
       assigned_cell: assignedCell,
       default_branch: defaultBranch || "main",
       environments,
@@ -336,6 +365,54 @@ function EditProjectForm({
               </SelectItem>
             </SelectContent>
           </Select>
+        </div>
+
+        {/* GitHub App binding */}
+        <div className="grid gap-2 p-3 border rounded-lg bg-muted/30">
+          <HelpTip label="Binding routes commits and PR reviews through a short-lived GitHub App installation token attributed to the App bot, instead of this project's personal access token; unbinding reverts to the PAT. Requires the App to be installed on this repository.">
+            <Label>GitHub App</Label>
+          </HelpTip>
+          {!appConfigured ? (
+            <p className="text-xs text-muted-foreground">
+              Git operations use this project&apos;s personal access token
+              below. Configure the GitHub App on the Settings page to enable
+              App-token (bot-attributed) auth.
+            </p>
+          ) : isNonGithubProvider ? (
+            <p className="text-xs text-muted-foreground">
+              App auth is GitHub-only — this project&apos;s forge is{" "}
+              {gitProvider}, so git operations use its token below.
+            </p>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm">
+                {githubInstallationId !== null ? (
+                  <span className="text-green-600 dark:text-green-400">
+                    Using GitHub App (installation #{githubInstallationId})
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    Using personal access token
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-2">
+                <SelectRepoDialog onSelect={handleRepoSelected} />
+                {githubInstallationId !== null && (
+                  <HelpTip label="Clears the installation binding on save; git operations fall back to the personal access token below.">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setGithubInstallationId(null)}
+                    >
+                      Unbind
+                    </Button>
+                  </HelpTip>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Git Token Section */}
