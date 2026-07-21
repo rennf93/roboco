@@ -19,6 +19,7 @@ from roboco.config import settings
 from roboco.exceptions import GitCommandError, GitError, MergeConflictError
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.forge import RepoRef
+from roboco.services.gateway.quality_gate import GateResult
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -164,6 +165,25 @@ async def test_push_task_branch_pushes_task_branch_by_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_push_task_branch_runs_codegen_before_push() -> None:
+    """push_task_branch regenerates + commits codegen drift before pushing."""
+    task = MagicMock(branch_name="feature/backend/abc")
+    project = MagicMock(slug="roboco")
+    svc = _service()
+    _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    codegen_mock = AsyncMock()
+    _bind(svc, "_run_codegen_and_commit", codegen_mock)
+    push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
+    _bind(svc, "push", push_mock)
+
+    await svc.push_task_branch(uuid4(), uuid4())
+
+    codegen_mock.assert_awaited_once_with("feature/backend/abc", Path("/tmp/ws"))
+
+
+@pytest.mark.asyncio
 async def test_push_branch_pushes_named_branch_not_current_checkout() -> None:
     """push_branch (open_pr's push side effect) pushes the NAMED branch.
 
@@ -190,6 +210,23 @@ async def test_push_branch_pushes_named_branch_not_current_checkout() -> None:
     # The named branch is forwarded to push() — NOT push(workspace) which
     # would default to the clone root's current checkout.
     push_mock.assert_awaited_once_with(Path("/tmp/ws"), branch=branch_name)
+
+
+@pytest.mark.asyncio
+async def test_push_branch_runs_codegen_before_push() -> None:
+    """push_branch (open_pr's FIRST push) regenerates + commits codegen drift
+    before pushing — the initial PR head must never carry stale artifacts."""
+    branch_name = "feature/backend/abc"
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    codegen_mock = AsyncMock()
+    _bind(svc, "_run_codegen_and_commit", codegen_mock)
+    push_mock = AsyncMock(return_value=(branch_name, _PUSHED_COMMIT_COUNT))
+    _bind(svc, "push", push_mock)
+
+    await svc.push_branch(branch_name)
+
+    codegen_mock.assert_awaited_once_with(branch_name, Path("/tmp/ws"))
 
 
 @pytest.mark.asyncio
@@ -365,6 +402,150 @@ async def test_push_task_branch_noop_for_project_less_task() -> None:
 
     assert pushed == 0
     push_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# _run_codegen_and_commit: regenerate + commit codegen drift before push
+# ---------------------------------------------------------------------------
+
+
+def test_codegen_command_for_returns_none_when_unset() -> None:
+    project = MagicMock(codegen_command=None)
+    assert GitService._codegen_command_for(project) is None
+
+
+def test_codegen_command_for_ignores_unspecced_mock_attribute() -> None:
+    """A bare MagicMock auto-vivifies codegen_command as a truthy MagicMock —
+    the isinstance(str) guard must treat that the same as unset, or every
+    loosely-specced GitService test would spuriously trip the codegen path."""
+    assert GitService._codegen_command_for(MagicMock()) is None
+
+
+def test_codegen_command_for_returns_configured_command() -> None:
+    project = MagicMock(codegen_command="make codegen")
+    assert GitService._codegen_command_for(project) == "make codegen"
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_noop_when_command_unset() -> None:
+    """Null codegen_command (most projects) never runs a subprocess."""
+    task = MagicMock(id=uuid4(), branch_name="feature/backend/abc")
+    project = MagicMock(codegen_command=None)
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    run_mock = AsyncMock()
+    with patch("roboco.services.git.run_quality_commands", run_mock):
+        await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
+    run_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_noop_when_no_task() -> None:
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
+    run_mock = AsyncMock()
+    with patch("roboco.services.git.run_quality_commands", run_mock):
+        await svc._run_codegen_and_commit("feature/backend/missing", Path("/tmp/ws"))
+    run_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_commits_drift() -> None:
+    """Codegen runs clean but produces drift -> add -A + a task-prefixed commit."""
+    task_id = uuid4()
+    task = MagicMock(id=task_id, branch_name="feature/backend/abc")
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = " M docs/rag/lifecycle/foo.md\n" if args[0] == "status" else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    gate_result = GateResult(passed=True, output="ok")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
+
+    assert ["add", "-A"] in calls
+    commit_call = next(c for c in calls if c[0] == "commit")
+    assert commit_call == [
+        "commit",
+        "-m",
+        f"[{str(task_id)[:8]}] regenerate generated artifacts",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_noop_when_codegen_clean() -> None:
+    """Codegen runs clean with NO drift -> git status is clean, no commit."""
+    task = MagicMock(id=uuid4(), branch_name="feature/backend/abc")
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    gate_result = GateResult(passed=True, output="ok")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
+
+    assert not any(c[0] in ("add", "commit") for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_fail_open_on_command_failure() -> None:
+    """A non-zero codegen exit logs a warning and skips the commit (fail-open) —
+    push must proceed rather than a broken codegen command blocking delivery."""
+    task = MagicMock(id=uuid4(), branch_name="feature/backend/abc")
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    run_git_mock = AsyncMock()
+    _bind(svc, "_run_git", run_git_mock)
+    gate_result = GateResult(passed=False, failures=("codegen",), output="boom")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
+
+    # Never even checks git status — a failed codegen command skips straight
+    # through without touching git.
+    run_git_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_fail_open_on_exception() -> None:
+    """Any unexpected exception (worktree resolution, git failure, ...) must
+    never raise out of this helper and break the caller's push."""
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(side_effect=RuntimeError("boom")))
+    await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ class ProjectResponse(BaseModel):
     typecheck_command: str | None = None
     build_command: str | None = None
     quality_command: str | None = None
+    codegen_command: str | None = None
 
     # Autonomous maintenance opt-in
     ci_watch_enabled: bool = False
@@ -162,6 +163,7 @@ class ProjectCreateRequest(BaseModel):
     typecheck_command: str | None = None
     build_command: str | None = None
     quality_command: str | None = None
+    codegen_command: str | None = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -201,6 +203,7 @@ class ProjectUpdateRequest(BaseModel):
     typecheck_command: str | None = None
     build_command: str | None = None
     quality_command: str | None = None
+    codegen_command: str | None = None
 
     # Autonomous maintenance opt-in
     ci_watch_enabled: bool | None = None
@@ -294,6 +297,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         typecheck_command=project.typecheck_command,
         build_command=project.build_command,
         quality_command=project.quality_command,
+        codegen_command=project.codegen_command,
         ci_watch_enabled=bool(project.ci_watch_enabled),
         ci_watch_workflow=project.ci_watch_workflow,
         video_engine_enabled=bool(project.video_engine_enabled),

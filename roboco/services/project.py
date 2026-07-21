@@ -140,6 +140,7 @@ class ProjectService(BaseService):
             typecheck_command=data.typecheck_command,
             build_command=data.build_command,
             quality_command=data.quality_command,
+            codegen_command=data.codegen_command,
             created_by=created_by,
         )
 

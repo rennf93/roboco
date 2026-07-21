@@ -532,6 +532,10 @@ class ProjectTable(Base):
     # the agent i_am_done gate runs this in the dev's workspace instead of the
     # lint/typecheck pair — e.g. "make gate".
     quality_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Regenerates checked-in generated artifacts (e.g. "make codegen"); run and
+    # any drift committed in the task's workspace before every push, so CI's
+    # codegen-drift gate never fails on inherited drift. Null = no codegen step.
+    codegen_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Autonomous maintenance opt-in (multi-repo CI-watch). Default-off: a
     # project is watched only when ci_watch_enabled is set; ci_watch_workflow
