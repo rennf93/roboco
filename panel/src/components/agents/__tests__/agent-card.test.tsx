@@ -212,8 +212,12 @@ describe("AgentCard", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides the DM quick-action for the human-only prompter/secretary roles", () => {
-    for (const role of ["prompter", "secretary"]) {
+  it("gives prompter/secretary a dedicated-chat nav button, not a DM", () => {
+    const cases = [
+      { role: "prompter", label: "Open Intake chat" },
+      { role: "secretary", label: "Open Secretary chat" },
+    ];
+    for (const { role, label } of cases) {
       const agent = {
         id: role,
         name: role,
@@ -223,9 +227,12 @@ describe("AgentCard", () => {
       const { unmount } = render(
         <AgentCard agent={agent} agentStatus={statusOf()} />,
       );
+      // No 1:1 DM (they run their chat over a live-session bridge)...
       expect(
         screen.queryByRole("button", { name: "DM this agent" }),
       ).not.toBeInTheDocument();
+      // ...but the same-icon button that routes to their own screen.
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
       unmount();
     }
   });
