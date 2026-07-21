@@ -105,3 +105,36 @@ Returns a `PageRefreshState` object:
 
 - `panel/src/components/providers.tsx` was renamed to `panel/src/components/app-providers.tsx` so that `@/components/providers` could be used as a barrel export for `PageRefreshProvider`. Update any direct import of the root providers component from `@/components/providers` to `@/components/app-providers`.
 - The earlier scope-keyed provider files (`panel/src/components/page-refresh-provider.tsx` and `panel/src/store/page-refresh-context.ts`) were deleted. The current implementation lives in `panel/src/components/providers/page-refresh-provider.tsx` and is consumed through `usePageRefresh` from `@/hooks`.
+
+## Data-hook null-guard audit
+
+Every useQuery hook in `panel/src/hooks/` has been audited for missing `enabled` guards on undefined/null IDs, staleTime mismatches, and refetchInterval leaks on unmount.
+
+### Audit results
+
+All hooks carrying id-driven queries (`useTask`, `useSubtasks`, `useBoardReview`, `useTaskFindings`, `useTaskCollisionMap`, `useProject`, `useWorkSession`, `useWorkSessionForTask`, `useAgentStatus`, `useAgentDefinition`, `useJournalByAgent`, `useJournalEntry`, `useNotification`, `useGitStatus`, `useGitLog`, `useGitBranches`, `useGitDiff`, `useGitFile`, `useMemberScorecard`, and others) already carry correct `enabled: !!id` guards preventing undefined/null IDs from reaching the API.
+
+**Special case: board-review polls.** `useTask` includes a conditional `refetchInterval` when the task belongs to the Board team and `board_review_complete` is still `false`. The interval is correctly wired to self-disable via a selector function — once the backend reports `board_review_complete: true`, the refetchInterval gate closes and no further polls are scheduled. TanStack Query's `Observer` already tears down the interval timer on unmount, so there is no lifecycle leak.
+
+No code changes were required. A regression test suite (`panel/src/hooks/__tests__/use-tasks-null-guards.test.tsx`) verifies the enabled guards and the board-review poll behavior with fake timers.
+
+### Using these hooks safely
+
+When calling any id-driven hook, always pass the id from a verified source:
+
+```tsx
+import { useTask } from "@/hooks";
+
+export function TaskDetail({ taskId }: { taskId: string | undefined }) {
+  // The hook's `enabled` guard ensures no API call occurs when taskId is empty
+  const { data, isLoading, error } = useTask(taskId);
+
+  if (!taskId) return <p>No task selected</p>;
+  if (isLoading) return <p>Loading...</p>;
+  if (error) return <p>Error: {error.message}</p>;
+
+  return <div>{data?.title}</div>;
+}
+```
+
+No manual guard is needed before calling the hook — the `enabled: !!taskId` guard is built in and prevents wasted API calls and race conditions.

@@ -13,6 +13,24 @@ declare module "axios" {
 
 const RATE_LIMIT_MAX_RETRIES = 3;
 
+// GET/PUT are safe to auto-retry on a 429 — GET has no side effect and PUT is
+// a full-resource replace, so replaying it is a no-op past the first apply.
+// POST/PATCH/DELETE are NOT safe by default (a replayed POST can create a
+// duplicate task, a replayed DELETE/PATCH can double-apply a partial update)
+// — they only retry when the caller attached an idempotency key the backend
+// can dedupe on. Header name matches what a future idempotency-key-bearing
+// caller would set; no call site sets it yet, so these methods currently
+// skip the auto-retry entirely rather than risking a duplicate side effect.
+const RETRY_SAFE_METHODS = new Set(["get", "put"]);
+const IDEMPOTENCY_KEY_HEADER = "X-Idempotency-Key";
+
+export function isRetrySafe(config: AxiosError["config"]): boolean {
+  if (!config) return false;
+  const method = (config.method ?? "get").toLowerCase();
+  if (RETRY_SAFE_METHODS.has(method)) return true;
+  return Boolean(config.headers?.has?.(IDEMPOTENCY_KEY_HEADER));
+}
+
 // Create axios instance with default config
 // axios ^1.16.0 audit (2026-07-09): every call in panel/src rides this
 // browser instance (no proxy option, no maxRedirects/adapter override, no
@@ -146,22 +164,30 @@ api.interceptors.response.use(
       };
       useRateLimitStore.getState().hitRateLimit(hitEvent);
 
-      // Track retry count; retry the request (after backoff delay) until exhausted, then toast
-      const retryCount = (error.config?._retryCount ?? 0) + 1;
-      if (error.config) {
-        error.config._retryCount = retryCount;
-        if (retryCount < RATE_LIMIT_MAX_RETRIES) {
-          // Wait retryAfterSeconds before retrying — interceptor re-runs on each subsequent 429
-          const delayMs = safeRetryAfter * 1000;
-          return new Promise<void>((resolve) =>
-            setTimeout(resolve, delayMs),
-          ).then(() => api(error.config!));
+      if (isRetrySafe(error.config)) {
+        // Track retry count; retry the request (after backoff delay) until exhausted, then toast
+        const retryCount = (error.config?._retryCount ?? 0) + 1;
+        if (error.config) {
+          error.config._retryCount = retryCount;
+          if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+            // Wait retryAfterSeconds before retrying — interceptor re-runs on each subsequent 429
+            const delayMs = safeRetryAfter * 1000;
+            return new Promise<void>((resolve) =>
+              setTimeout(resolve, delayMs),
+            ).then(() => api(error.config!));
+          }
         }
+        // Retries exhausted — notify the user via Sonner toast
+        toast.warning(
+          `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`,
+        );
+      } else {
+        // A non-idempotent write (POST/PATCH/DELETE) never auto-retries —
+        // replaying it could double-apply the action. Surface it once instead.
+        toast.warning(
+          `Rate limited by ${provider}. This action was not automatically retried to avoid duplicating it — please try again in ~${safeRetryAfter}s.`,
+        );
       }
-      // Retries exhausted — notify the user via Sonner toast
-      toast.warning(
-        `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`,
-      );
     }
 
     // Log comprehensive error info
