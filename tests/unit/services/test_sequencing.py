@@ -83,6 +83,27 @@ def test_touches_shared_runs_last() -> None:
     assert plan.waves[-1] == [2]  # the shared task is the final wave
 
 
+def test_all_shared_batch_with_disjoint_surfaces_generates_no_edges() -> None:
+    # Verifying the claimed rule-3 property: when every draft in the batch
+    # touches_shared, ``_shared_last_edges`` skips every candidate pair (its
+    # inner loop continues on `other.touches_shared`), so it contributes no
+    # edges on its own. With disjoint file surfaces rule 1 (same-shared-status
+    # overlap) also contributes nothing, so the whole batch runs in one
+    # parallel wave — confirmed correct, no fix needed.
+    s = [
+        DraftSurface(0, 1, ["fe/app/a.tsx"], False, True),
+        DraftSurface(1, 1, ["fe/app/b.tsx"], False, True),
+        DraftSurface(2, 1, ["fe/app/c.tsx"], False, True),
+    ]
+    plan = SequencingService().analyze(s, _frontend, {"frontend": 3})
+    assert plan.edges == []
+    assert plan.waves == [[0, 1, 2]]
+    # And rule 3 in isolation truly contributes zero edges for an all-shared
+    # set, regardless of overlap — it is rule 1 (same-shared-status overlap),
+    # not rule 3, that would serialize two OVERLAPPING shared surfaces.
+    assert SequencingService()._shared_last_edges(s) == []
+
+
 def test_cycle_is_rejected() -> None:
     with pytest.raises(SequencingError):
         SequencingService()._toposort([(0, 1), (1, 0)], 2)
@@ -352,6 +373,44 @@ def test_dev_collision_fallback_idempotent_on_rerun() -> None:
     a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1")
     b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1")
     assert dev_task_collision_edges([a, b]) == dev_task_collision_edges([a, b])
+
+
+def test_dev_collision_fallback_still_applies_when_another_pair_collides() -> None:
+    # Regression: a `if edges: return edges` short-circuit used to drop the
+    # assignee-lane fallback ENTIRELY whenever ANY surfaced pair produced a
+    # collision edge, even for a totally unrelated same-assignee pair with no
+    # declared surface at all. (a, b) collide on a.py (different assignees, so
+    # no lane relationship between them); (c, d) share an assignee/project but
+    # declare no surface — they must still get lane-ordered.
+    a = _Sib(
+        uuid4(),
+        sequence=0,
+        intends_to_touch=["a.py"],
+        assigned_to="be-dev-1",
+    )
+    b = _Sib(
+        uuid4(),
+        sequence=1,
+        intends_to_touch=["a.py"],
+        assigned_to="be-dev-2",
+    )
+    c = _Sib(uuid4(), sequence=2, assigned_to="be-dev-3")
+    d = _Sib(uuid4(), sequence=3, assigned_to="be-dev-3")
+    edges = _edge_set(dev_task_collision_edges([a, b, c, d]))
+    assert edges == {(a.id, b.id), (c.id, d.id)}
+
+
+def test_dev_collision_fallback_covers_unsurfaced_sibling_in_surfaced_lane() -> None:
+    # Same assignee/project lane mixes a surfaced sibling (touches a.py) with
+    # an unsurfaced one (no declared surface) and a third surfaced sibling
+    # that doesn't overlap the first — the analyzer alone wires nothing for
+    # this lane (no pair overlaps), so the fallback must still chain all three
+    # by (priority, sequence).
+    first = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1", intends_to_touch=["a.py"])
+    bare = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1")
+    other = _Sib(uuid4(), sequence=2, assigned_to="be-dev-1", intends_to_touch=["b.py"])
+    edges = dev_task_collision_edges([first, bare, other])
+    assert edges == [(first.id, bare.id), (bare.id, other.id)]
 
 
 # ---------------------------------------------------------------------------
