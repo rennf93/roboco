@@ -9,8 +9,9 @@ call sequence; the production git/gh ops is exercised live (CEO-gated).
 from __future__ import annotations
 
 import base64
+import subprocess
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -442,6 +443,108 @@ def test_release_ci_workflow_decoupled_from_self_heal_setting(
     # An empty release setting never falls through to None — always the default.
     monkeypatch.setattr(settings, "release_ci_workflow", "")
     assert _resolve_release_ci_workflow() == "ci.yml"
+
+
+# --------------------------------------------------------------------------- #
+# _GitReleaseOps.release_commit_sha — half-landed retry detection against a
+# REAL git repo (not the fake ops above): verifies the exact worry the task
+# named — that ``_current_version`` could return the bumped version while the
+# changelog hasn't actually been written yet. It can't: ``apply_version_bumps``
+# and ``write_changelog_entry`` both run as uncommitted working-tree edits
+# BEFORE ``commit_and_push``'s single ``git add -A`` + commit, so nothing ever
+# reaches origin (and therefore no fresh retry clone can ever observe it) with
+# one written but not the other.
+# --------------------------------------------------------------------------- #
+
+
+def _git_sync(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    )
+    return result.stdout
+
+
+def _init_release_repo(repo: Path, *, initial_version: str = "0.12.0") -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git_sync(repo, "init", "-b", "master")
+    _git_sync(repo, "config", "user.email", "t@example.com")
+    _git_sync(repo, "config", "user.name", "T")
+    _git_sync(repo, "config", "commit.gpgsign", "false")
+    (repo / "pyproject.toml").write_text(f'[project]\nversion = "{initial_version}"\n')
+    (repo / "CHANGELOG.md").write_text("# Changelog\n")
+    _git_sync(repo, "add", "-A")
+    _git_sync(repo, "commit", "-m", "init")
+
+
+def _ops(session: object, root: Path) -> _GitReleaseOps:
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        prod_branch="master",
+        root=root,
+        git_url="x",
+        git_prefix=[],
+        ci_workflow="ci.yml",
+        env_chain=[],
+    )
+    return _GitReleaseOps(session=cast("Any", session), ctx=ctx)
+
+
+@pytest.mark.asyncio
+async def test_release_commit_sha_detects_a_real_half_landed_commit(
+    tmp_path: Path,
+) -> None:
+    """A genuine publish_failed retry: a prior execute already ran
+    ``apply_version_bumps`` + ``write_changelog_entry`` + committed (both
+    landed in the SAME commit, exactly as ``commit_and_push`` does with one
+    ``git add -A``). The fresh clone must detect that commit and its
+    changelog entry must already be present — never re-bump, never skip the
+    changelog."""
+    _init_release_repo(tmp_path)
+    ops = _ops(MagicMock(), tmp_path)
+    await ops.apply_version_bumps(["pyproject.toml"], "0.13.0")
+    await ops.write_changelog_entry(
+        "## [0.13.0] - 2026-07-21\n\n### Added\n- a thing\n"
+    )
+    _git_sync(tmp_path, "add", "-A")
+    _git_sync(tmp_path, "commit", "-m", "chore(release): 0.13.0")
+
+    sha = await ops.release_commit_sha("0.13.0")
+
+    assert sha is not None
+    assert sha == _git_sync(tmp_path, "rev-parse", "HEAD").strip()
+    # The changelog entry landed in the SAME commit as the bump — never split.
+    assert "0.13.0" in (tmp_path / "pyproject.toml").read_text()
+    assert "a thing" in (tmp_path / "CHANGELOG.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_release_commit_sha_none_for_uncommitted_bump_no_false_half_landed(
+    tmp_path: Path,
+) -> None:
+    """An uncommitted version bump (e.g. a crash between apply_version_bumps
+    and commit_and_push) must NOT be mistaken for a half-landed release —
+    only a matching COMMIT counts. A fresh retry clone starts from origin's
+    unchanged HEAD anyway (this isolates release_commit_sha's own check)."""
+    _init_release_repo(tmp_path)
+    ops = _ops(MagicMock(), tmp_path)
+    # Bump the working tree WITHOUT committing (write_changelog_entry never ran).
+    await ops.apply_version_bumps(["pyproject.toml"], "0.13.0")
+
+    sha = await ops.release_commit_sha("0.13.0")
+
+    assert sha is None  # falls through to the normal bump/changelog/gate/commit path
+
+
+@pytest.mark.asyncio
+async def test_release_commit_sha_none_when_version_not_yet_bumped(
+    tmp_path: Path,
+) -> None:
+    """No prior attempt at all: the clone is still at the old version, so
+    there is nothing half-landed to detect."""
+    _init_release_repo(tmp_path)
+    ops = _ops(MagicMock(), tmp_path)
+
+    assert await ops.release_commit_sha("0.13.0") is None
 
 
 # --------------------------------------------------------------------------- #
