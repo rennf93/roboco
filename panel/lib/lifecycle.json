@@ -438,16 +438,6 @@
       "name": "unclaim",
       "pre_side_effects": [],
       "side_effects": []
-    },
-    {
-      "allowed_roles": [
-        "auditor"
-      ],
-      "composes": [],
-      "description": "Waive one minor/nit review finding by id with a required note. Blocker/major findings must be fixed, never waived. No task status change.",
-      "name": "waive_finding",
-      "pre_side_effects": [],
-      "side_effects": []
     }
   ],
   "transitions": [

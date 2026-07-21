@@ -439,6 +439,14 @@ class ReleaseProposalService(BaseService):
         published (COMPLETED) — an approve may have shipped it after a stale
         reject button/request was queued; cancelling a published release
         would lie about the release's real, already-public state.
+
+        Acquires the same release mutex ``approve()`` holds (same key, same
+        non-blocking acquire style) so a reject can't interleave with a
+        concurrent in-flight approve — an unguarded write here used to be
+        able to land on the proposal while an approve was mid-execute (up to
+        ~40 min), racing the approve's own post-lock write. Fails CLOSED like
+        approve, both when the lock is held and when Redis is unreachable —
+        the CEO retries the reject once it clears.
         """
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source != RELEASE_MANAGER_SOURCE:
@@ -448,10 +456,34 @@ class ReleaseProposalService(BaseService):
                 f"release proposal {task_id} already published (COMPLETED);"
                 " cannot be rejected"
             )
-        markers.set_release_required_changes(task, required_changes)
-        task.status = TaskStatus.CANCELLED
-        await self.session.flush()
-        return task
+
+        lock_key = f"{_RELEASE_LOCK_PREFIX}{task_id}"
+        try:
+            lock_token = await self._acquire_release_lock(lock_key)
+        except ReleaseLockUnavailable as exc:
+            logger.error("release reject lock unavailable (redis down): %s", exc)
+            return None
+        if lock_token is None:
+            return None  # a concurrent approve is mid-execute; refuse the reject
+        try:
+            # Re-read under the lock: a concurrent approve may have committed
+            # COMPLETED between the pre-lock check and here.
+            self.session.expire(task)
+            locked = await get_task_service(self.session).get(task_id)
+            if locked is None:
+                return None
+            if locked.status == TaskStatus.COMPLETED:
+                raise TaskAlreadyCompletedError(
+                    f"release proposal {task_id} already published (COMPLETED);"
+                    " cannot be rejected"
+                )
+            markers.set_release_required_changes(locked, required_changes)
+            locked.status = TaskStatus.CANCELLED
+            await self.session.flush()
+            return locked
+        finally:
+            await self._release_release_lock(lock_key, lock_token)
+            await self._close_redis()
 
 
 def get_release_proposal_service(session: AsyncSession) -> ReleaseProposalService:

@@ -254,6 +254,15 @@ async def _await_proc(
             proc.kill()  # already-exited between the timeout and the kill is fine
         await proc.wait()
         return _TIMEOUT_RC, f"subprocess timed out after {int(timeout)}s"
+    except asyncio.CancelledError:
+        # An outer cancellation (e.g. the release loop's own task being
+        # cancelled mid-op) throws in here instead of the TimeoutError above —
+        # same orphaned child + leaked FDs if left unkilled. Mirrors
+        # quality_gate.py's ``_run_one`` handler for the identical shape.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     return proc.returncode or 0, out.decode("utf-8", "replace")
 
 

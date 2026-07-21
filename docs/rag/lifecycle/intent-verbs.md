@@ -309,12 +309,3 @@ Voluntarily release a claim back to pending. The work-in-progress branch is pres
 
 **Composes:** (no atomic actions)
 
-
-## waive_finding
-
-Waive one minor/nit review finding by id with a required note. Blocker/major findings must be fixed, never waived. No task status change.
-
-**Allowed roles:** auditor
-
-**Composes:** (no atomic actions)
-
