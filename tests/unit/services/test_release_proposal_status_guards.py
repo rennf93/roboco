@@ -12,6 +12,7 @@ do for their own seams.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -19,6 +20,7 @@ from uuid import uuid4
 import pytest
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.foundation import identity as _foundation
+from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, TaskNature, TaskStatus, TaskType
 from roboco.models.base import Team as T
 from roboco.services.release_proposal import (
@@ -26,12 +28,16 @@ from roboco.services.release_proposal import (
     TaskAlreadyCompletedError,
 )
 from roboco.services.release_readiness import ReleaseReadinessReport, report_to_dict
-from roboco.services.task import RELEASE_MANAGER_SOURCE
+from roboco.services.task import RELEASE_MANAGER_SOURCE, TaskService
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 _VERSION = "0.18.0"
 
@@ -170,3 +176,89 @@ async def test_reject_raises_when_already_published(db_session: AsyncSession) ->
         )
     await db_session.refresh(task)
     assert task.status == TaskStatus.COMPLETED  # untouched, never cancelled
+
+
+async def _fresh_session(url: str) -> tuple[AsyncSession, AsyncEngine]:
+    """A session on a brand-new engine/connection (caller disposes)."""
+    engine = create_async_engine(url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    return factory(), engine
+
+
+async def _dispose(session: AsyncSession, engine: AsyncEngine) -> None:
+    with contextlib.suppress(Exception):
+        await session.rollback()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reject_concurrent_approve_completes_during_lock_wait(
+    db_session: AsyncSession, _test_database_url: str
+) -> None:
+    """Redis mutex pre-lock write audit regression for ``reject()``: a
+    genuinely concurrent approve (a real second session/connection) publishes
+    + commits COMPLETED in the window between reject's pre-lock read and its
+    lock acquisition. The in-lock re-read must see that committed state and
+    refuse — the CANCELLED status write and required-changes marker must
+    never land on the just-published row, proving the fix holds across
+    sessions, not merely within one. Mirrors
+    ``test_x_post_service.test_reject_concurrent_approve_completes_during_lock_wait``.
+    """
+    task = await _seed_proposal(db_session)
+    task_id = cast("UUID", task.id)
+    await db_session.commit()
+
+    real_get = TaskService.get
+    injected = False
+
+    async def _get_then_inject_concurrent_publish(
+        self: TaskService, tid: UUID
+    ) -> TaskTable | None:
+        """Fires once, right after reject's pre-lock read — the exact window
+        between that read and reject's own (would-be) pre-lock write."""
+        nonlocal injected
+        result = await real_get(self, tid)
+        if not injected:
+            injected = True
+            other, other_engine = await _fresh_session(_test_database_url)
+            try:
+                other_task = await other.get(TaskTable, tid)
+                assert other_task is not None
+                other_task.status = TaskStatus.COMPLETED
+                await other.commit()
+            finally:
+                await _dispose(other, other_engine)
+        return result
+
+    with (
+        patch.object(TaskService, "get", _get_then_inject_concurrent_publish),
+        patch.object(
+            ReleaseProposalService,
+            "_acquire_release_lock",
+            AsyncMock(return_value="tok"),
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_release_release_lock",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            ReleaseProposalService, "_close_redis", AsyncMock(return_value=None)
+        ),
+        pytest.raises(TaskAlreadyCompletedError),
+    ):
+        await ReleaseProposalService(db_session).reject(
+            task_id, "needs another migration check"
+        )
+
+    fresh, fresh_engine = await _fresh_session(_test_database_url)
+    try:
+        final = await fresh.get(TaskTable, task_id)
+        assert final is not None
+        assert final.status == TaskStatus.COMPLETED
+        # The reject must never have landed on the just-published row.
+        assert markers.get_release_required_changes(final) is None
+    finally:
+        await _dispose(fresh, fresh_engine)

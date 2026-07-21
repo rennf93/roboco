@@ -497,6 +497,65 @@ async def test_reject_completed_raises(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reject_concurrent_approve_completes_during_lock_wait(
+    db_session: AsyncSession, _test_database_url: str
+) -> None:
+    """Redis mutex pre-lock write audit regression for ``reject()``: a
+    genuinely concurrent approve (a real second session/connection) posts +
+    commits COMPLETED in the window between reject's pre-lock read and its
+    lock acquisition. The in-lock re-read must see that committed state and
+    refuse — the CANCELLED status write and reject reason must never land on
+    the just-posted row, proving the fix holds across sessions, not merely
+    within one. Mirrors
+    ``test_approve_concurrent_edit_does_not_clobber_a_committed_post``."""
+    task = await _seed_draft(db_session)
+    task_id = _id(task)
+    await db_session.commit()
+
+    real_get = TaskService.get
+    injected = False
+
+    async def _get_then_inject_concurrent_post(
+        self: TaskService, tid: UUID
+    ) -> TaskTable | None:
+        """Fires once, right after reject's pre-lock read — the exact window
+        between that read and reject's own (would-be) pre-lock write."""
+        nonlocal injected
+        result = await real_get(self, tid)
+        if not injected:
+            injected = True
+            other, other_engine = await _fresh_session(_test_database_url)
+            try:
+                other_task = await other.get(TaskTable, tid)
+                assert other_task is not None
+                markers.set_x_posted_tweet_id(other_task, "concurrent-999")
+                other_task.status = TS.COMPLETED
+                await other.commit()
+            finally:
+                await _dispose(other, other_engine)
+        return result
+
+    with (
+        patch.object(TaskService, "get", _get_then_inject_concurrent_post),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        pytest.raises(TaskAlreadyCompletedError),
+    ):
+        await _svc(db_session).reject(task_id, "Tone doesn't match")
+
+    fresh, fresh_engine = await _fresh_session(_test_database_url)
+    try:
+        final = await fresh.get(TaskTable, task_id)
+        assert final is not None
+        assert final.status == TS.COMPLETED
+        assert markers.get_x_posted_tweet_id(final) == "concurrent-999"
+        # The reject must never have landed on the just-posted row.
+        assert markers.get_x_reject_reason(final) is None
+    finally:
+        await _dispose(fresh, fresh_engine)
+
+
+@pytest.mark.asyncio
 async def test_list_post_history_excludes_open_drafts(
     db_session: AsyncSession,
 ) -> None:
