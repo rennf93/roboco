@@ -67,7 +67,7 @@ Sending notifications means calling the `notify(target, text, priority)` content
 | qa | No | - |
 | documenter | No | - |
 
-Non-senders (developer, qa, documenter, auditor) still communicate via `dm(recipient, text)` for direct agent-to-agent messages — those are not ack-required notifications. The Auditor is restricted further: it has `note(scope=reflect)` + `evidence` + read-only `notify_list`/`notify_get`, and NO `dm`/`notify`.
+Non-senders (developer, qa, documenter) still communicate via `dm(recipient, text)` for direct agent-to-agent messages — those are not ack-required notifications. The Auditor is restricted further: `note(scope=reflect)` + `evidence` + read-only `notify_list`/`notify_get`, and NO `notify`. It does carry `dm`/`read_a2a`, but only to reply in-thread when the CEO opens a DM with it — `can_a2a_direct` refuses it as a sender unconditionally, so it never initiates to a peer.
 
 ## Task-Creator Roles
 

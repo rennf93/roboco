@@ -99,23 +99,32 @@ def test_can_a2a_direct_to_ceo_message_explains_reply_only() -> None:
 
 @pytest.mark.parametrize(
     "target_slug",
-    ["auditor", "pr-reviewer-1", "intake-1", "secretary-1"],
+    ["intake-1", "secretary-1"],
 )
 def test_can_a2a_direct_ceo_to_no_comms_role_denied(target_slug: str) -> None:
     """The CEO's asymmetric reach still can't target a role with no dm/
-    read_a2a on its manifest (auditor, pr_reviewer, prompter, secretary) —
-    nothing on the other end could ever read or answer the DM. The panel's
-    New-DM dialog already filters these client-side (EXCLUDE_NON_DM_ROLES);
-    this is the server-side backstop for a direct API/A2A-service call."""
+    read_a2a on its manifest (prompter, secretary — human-only, own chat
+    pages) — nothing on the other end could ever read or answer the DM."""
     allowed, reason = can_a2a_direct("ceo", target_slug)
     assert allowed is False
     assert reason is not None
     assert "comms" in reason.lower()
 
 
+@pytest.mark.parametrize("target_slug", ["auditor", "pr-reviewer-1"])
+def test_can_a2a_direct_ceo_to_auditor_or_pr_reviewer_allowed(target_slug: str) -> None:
+    """The CEO can now DM a mid-flight auditor or PR reviewer — both carry
+    dm/read_a2a so they can read and reply in-thread, even though neither
+    gains a peer-initiation surface (auditor stays silent via
+    can_a2a_direct; the PR reviewer stays scoped to its owning PM)."""
+    allowed, reason = can_a2a_direct("ceo", target_slug)
+    assert allowed is True
+    assert reason is None
+
+
 def test_can_a2a_direct_ceo_to_no_comms_role_reuses_canonical_set() -> None:
     """The refusal set must be exactly foundation.policy.communications'
     NO_COMMS_ROLES — the same set services.gateway.content_actions uses to
     gate the dm() sender side — so the two never drift apart."""
-    expected = {"auditor", "pr_reviewer", "prompter", "secretary"}
+    expected = {"prompter", "secretary"}
     assert {role.value for role in NO_COMMS_ROLES} == expected

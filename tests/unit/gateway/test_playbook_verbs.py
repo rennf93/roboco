@@ -1,8 +1,9 @@
 """Playbook content verbs — role grants + ContentActions RBAC.
 
 Delivery roles DRAFT playbooks; only the Auditor CURATES (approve/reject/archive).
-The Auditor's no-say/no-dm restriction is preserved (these are KB curation
-actions, not agent comms).
+Curation is KB-curation, not agent comms, and stays separate from the
+Auditor's dm/read_a2a surface (CEO-reachable, reply-only — see
+agents_config.can_a2a_direct for the peer-initiation refusal).
 """
 
 from __future__ import annotations
@@ -33,9 +34,12 @@ def test_auditor_curates_but_does_not_draft() -> None:
     for verb in _CURATE_VERBS:
         assert verb in do_tools
     assert "draft_playbook" not in do_tools
-    # No-say/no-dm preserved.
+    # No "say" tool exists; dm/read_a2a ARE present (CEO-reachable, reply-only
+    # — the auditor still never initiates peer A2A, enforced in
+    # agents_config.can_a2a_direct, not by omitting the tool here).
     assert "say" not in do_tools
-    assert "dm" not in do_tools
+    assert "dm" in do_tools
+    assert "read_a2a" in do_tools
 
 
 def test_delivery_role_cannot_curate() -> None:

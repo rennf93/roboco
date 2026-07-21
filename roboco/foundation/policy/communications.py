@@ -56,17 +56,19 @@ NOTIFY_SENDER_ROLES: frozenset[Role] = frozenset(
 )
 
 
-# Roles with no agent-comms surface at all: auditor (silent observer, no dm/
-# read_a2a on its manifest), pr_reviewer (posts findings on the PR itself),
-# and the human-only prompter/secretary (note + evidence only). A DM to any
-# of these is a black hole — nothing on the other end can read or answer it.
-# Canonical set consumed by both the dm() sender-side guard
-# (services.gateway.content_actions) and the CEO's asymmetric target check
-# (agents_config.can_a2a_direct) so the two never drift apart.
+# Roles with no agent-comms surface at all: the human-only prompter/secretary
+# (note + evidence only — they own dedicated chat pages, not agent A2A). A DM
+# to either is a black hole — nothing on the other end can read or answer it.
+# Auditor and pr_reviewer are NOT here: both now carry dm/read_a2a so the CEO
+# can reach a mid-flight one and it can reply in-thread, but neither gains a
+# peer-initiation surface — the auditor stays silent by the can_a2a_direct
+# rule (agents_config.can_a2a_direct), the pr_reviewer stays scoped to its
+# owning PM (_check_pr_reviewer_a2a). Canonical set consumed by both the dm()
+# sender-side guard (services.gateway.content_actions) and the CEO's
+# asymmetric target check (agents_config.can_a2a_direct) so the two never
+# drift apart.
 NO_COMMS_ROLES: frozenset[Role] = frozenset(
     {
-        Role.AUDITOR,
-        Role.PR_REVIEWER,
         Role.PROMPTER,
         Role.SECRETARY,
     }

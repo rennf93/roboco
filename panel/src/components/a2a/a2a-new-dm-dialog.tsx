@@ -23,15 +23,15 @@ import { getErrorMessage } from "@/lib/api/client";
 import { useCreateCeoConversation } from "@/hooks/use-a2a-live";
 import { useAgentDefinitions } from "@/hooks/use-agents";
 
-// Self, plus every role that can't actually read/answer a DM: auditor and
-// pr_reviewer carry no read_a2a on their manifests, prompter and secretary
-// are human-only note/evidence roles — a DM to any of them is a black hole.
+// Self, plus every role that can't actually read/answer a DM: prompter and
+// secretary are human-only note/evidence roles with their own dedicated chat
+// pages — a DM to either is a black hole. Auditor and pr_reviewer now carry
+// dm/read_a2a (the CEO can reach a mid-flight one and it can reply in-thread)
+// so they're no longer excluded here.
 // Exported so other "start a fresh 1:1" surfaces (the /tg Mini App chat tab)
 // share the exact same exclusion list instead of drifting out of sync.
 export const EXCLUDE_NON_DM_ROLES = [
   AgentRole.CEO,
-  AgentRole.AUDITOR,
-  AgentRole.PR_REVIEWER,
   AgentRole.PROMPTER,
   AgentRole.SECRETARY,
 ];
@@ -141,9 +141,8 @@ export function A2ANewDmDialog({
         <DialogHeader>
           <DialogTitle>New direct message</DialogTitle>
           <DialogDescription>
-            Starts (or reopens) your own 1:1 with an agent — separate from
-            the threads you&apos;re watching, and visible only to you and
-            them.
+            Starts (or reopens) your own 1:1 with an agent — separate from the
+            threads you&apos;re watching, and visible only to you and them.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">

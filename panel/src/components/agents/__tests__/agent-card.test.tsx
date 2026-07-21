@@ -186,7 +186,7 @@ describe("AgentCard", () => {
     );
   });
 
-  it("hides the DM quick-action for a role that can't read/answer a DM", () => {
+  it("shows the DM quick-action for the auditor now that it carries dm/read_a2a", () => {
     const auditor = {
       id: "auditor",
       name: "Auditor",
@@ -195,8 +195,39 @@ describe("AgentCard", () => {
     } as unknown as AgentDefinition;
     render(<AgentCard agent={auditor} agentStatus={statusOf()} />);
     expect(
-      screen.queryByRole("button", { name: "DM this agent" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "DM this agent" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the DM quick-action for a PR reviewer now that it carries dm/read_a2a", () => {
+    const prReviewer = {
+      id: "pr-reviewer-1",
+      name: "PR Reviewer",
+      role: "pr_reviewer",
+      team: "board",
+    } as unknown as AgentDefinition;
+    render(<AgentCard agent={prReviewer} agentStatus={statusOf()} />);
+    expect(
+      screen.getByRole("button", { name: "DM this agent" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the DM quick-action for the human-only prompter/secretary roles", () => {
+    for (const role of ["prompter", "secretary"]) {
+      const agent = {
+        id: role,
+        name: role,
+        role,
+        team: null,
+      } as unknown as AgentDefinition;
+      const { unmount } = render(
+        <AgentCard agent={agent} agentStatus={statusOf()} />,
+      );
+      expect(
+        screen.queryByRole("button", { name: "DM this agent" }),
+      ).not.toBeInTheDocument();
+      unmount();
+    }
   });
 
   it("hides the DM quick-action for the CEO card", () => {

@@ -79,14 +79,14 @@ def test_envelope_circuit_open_kind_distinct_from_tracing_gap() -> None:
     assert env_co.as_dict()["error"] != env_tg.as_dict()["error"]
 
 
-def test_auditor_silent_runtime_guard_in_dm() -> None:
-    """Spec §5.5: auditor dm refused at runtime (defense in depth).
+def test_no_comms_runtime_guard_in_dm() -> None:
+    """Spec §5.5: no-comms roles' dm() refused at runtime (defense in depth).
 
-    say() was retired with the channels/messaging subsystem; dm() (A2A) is
-    the sole surviving agent-comms verb this guard still needs to cover.
+    The auditor and pr_reviewer now carry dm/read_a2a (the CEO can DM a
+    mid-flight one and it replies in-thread), so the runtime guard covers only
+    the human-only prompter/secretary — checked against the canonical
+    _NO_COMMS_ROLES set rather than a hardcoded role name. The behavioral test
+    lives in tests/unit/gateway/test_auditor_silent_guard.py.
     """
-    # The actual guard test lives in tests/unit/gateway/test_auditor_silent_guard.py.
-    # Smoke gate verifies the guard exists by checking the source for the
-    # specific role-check pattern.
     dm_source = inspect.getsource(content_actions.ContentActions.dm)
-    assert "auditor" in dm_source.lower(), "dm() missing auditor runtime guard"
+    assert "_NO_COMMS_ROLES" in dm_source, "dm() missing no-comms runtime guard"

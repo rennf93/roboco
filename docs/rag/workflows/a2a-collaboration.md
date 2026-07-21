@@ -53,6 +53,6 @@ If a conversation surfaces work that needs a new task:
 
 Most roles can `dm` (same-cell) and read incoming messages with `read_a2a`, plus check their notify inbox with `notify_list` / `notify_get`.
 
-The **Auditor** is a silent observer: it can read (`notify_list`, `notify_get`) but has **no** `dm` or `notify` — it never communicates outwardly.
+The **Auditor** is a silent observer of peers: it never *initiates* `dm` to another agent and has no `notify`. It does carry `dm`/`read_a2a` so it can read and reply in-thread when the CEO opens a DM with it — that reply path is stateful (not gated by the peer-initiation rule).
 
 Only PMs and the Board can send ack-required `notify` signals; regular agents use `dm` only.

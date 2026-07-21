@@ -636,10 +636,10 @@ def _check_ceo_a2a(to_role: str) -> tuple[bool, str | None]:
     """Check A2A permissions for the CEO's asymmetric send-to-anyone reach.
 
     A target with no agent-comms surface (no dm/read_a2a on its manifest —
-    auditor, pr_reviewer, prompter, secretary) can never read or answer a
-    DM regardless of who sends it; the panel's New-DM dialog already
-    excludes these roles client-side (EXCLUDE_NON_DM_ROLES), this is the
-    server-side backstop so a direct API/A2A-service call can't bypass it.
+    prompter, secretary) can never read or answer a DM regardless of who
+    sends it; the panel's New-DM dialog already excludes these roles
+    client-side (EXCLUDE_NON_DM_ROLES), this is the server-side backstop so
+    a direct API/A2A-service call can't bypass it.
     """
     if to_role in _comms.NO_COMMS_ROLES:
         return (
@@ -648,6 +648,19 @@ def _check_ceo_a2a(to_role: str) -> tuple[bool, str | None]:
             "cannot receive a DM.",
         )
     return True, None
+
+
+def _check_auditor_a2a() -> tuple[bool, str | None]:
+    """Silent observer: the auditor never INITIATES A2A to any target.
+
+    It can still read and reply inside a DM the CEO opens (a stateful reply
+    via A2AService._get_conversation_for_reply_to_ceo, not gated here), so a
+    mid-flight auditor is reachable by the CEO for help.
+    """
+    return (
+        False,
+        "The auditor observes silently; it only replies inside a CEO-opened DM.",
+    )
 
 
 def _check_pr_reviewer_a2a(to_role: str) -> tuple[bool, str | None]:
@@ -693,8 +706,10 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
             "CEO opened — use notify() otherwise.",
         )
 
-    # Board → board/main-pm (not CEO, not cells directly)
-    if from_role in ("product_owner", "head_marketing", "auditor"):
+    # Board → board/main-pm (not CEO, not cells directly). Auditor is split
+    # out of this tuple — it's dispatched via _check_auditor_a2a below since
+    # it never reaches a peer at all, board or otherwise.
+    if from_role in ("product_owner", "head_marketing"):
         return (
             (True, None)
             if to_role in _BOARD_ROLES or to_role == "main_pm"
@@ -706,6 +721,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
         "main_pm": _check_main_pm_a2a(to_role, to_team),
         "cell_pm": _check_cell_pm_a2a(from_team, to_agent, to_role, to_team),
         "pr_reviewer": _check_pr_reviewer_a2a(to_role),
+        "auditor": _check_auditor_a2a(),
     }
     if from_role in handlers:
         return handlers[from_role]
