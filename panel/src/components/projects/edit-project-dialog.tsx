@@ -148,6 +148,9 @@ function EditProjectForm({
   const [qualityCommand, setQualityCommand] = useState(
     project.quality_command || "",
   );
+  const [codegenCommand, setCodegenCommand] = useState(
+    project.codegen_command || "",
+  );
   const [ciWatchEnabled, setCiWatchEnabled] = useState(
     project.ci_watch_enabled,
   );
@@ -226,6 +229,7 @@ function EditProjectForm({
       typecheck_command: typecheckCommand || undefined,
       build_command: buildCommand || undefined,
       quality_command: qualityCommand || undefined,
+      codegen_command: codegenCommand || undefined,
       ci_watch_enabled: ciWatchEnabled,
       ci_watch_workflow: ciWatchWorkflow || undefined,
       video_engine_enabled: videoEngineEnabled,
@@ -550,6 +554,22 @@ function EditProjectForm({
               <p className="text-xs text-muted-foreground">
                 Fast pre-submit gate (lint + types + complexity, no tests) run
                 in the dev&apos;s workspace at hand-off to QA.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <HelpTip label="Command that regenerates checked-in generated files, e.g. `make codegen`; run and committed before push so codegen drift never fails CI. Leave blank if the project has no generated artifacts.">
+                <Label htmlFor="codegen_command">Codegen Command</Label>
+              </HelpTip>
+              <Input
+                id="codegen_command"
+                value={codegenCommand}
+                onChange={(e) => setCodegenCommand(e.target.value)}
+                placeholder="make codegen"
+              />
+              <p className="text-xs text-muted-foreground">
+                Regenerates checked-in generated artifacts; any drift is
+                committed in the task&apos;s workspace before each push.
               </p>
             </div>
           </>

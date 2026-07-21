@@ -189,6 +189,15 @@ class Project(TimestampMixin):
             "When set it replaces the lint/typecheck pair in the gate."
         ),
     )
+    codegen_command: str | None = Field(
+        default=None,
+        description=(
+            "Command that regenerates checked-in generated artifacts "
+            "(e.g. 'make codegen'); run and any drift committed before push "
+            "so CI's codegen-drift gate never fails on inherited drift. "
+            "Null = no codegen step."
+        ),
+    )
 
     # Access Control
     assigned_cell: Team = Field(..., description="Which cell owns this project")
@@ -309,6 +318,7 @@ class ProjectCreate(RobocoBase):
     typecheck_command: str | None = None
     build_command: str | None = None
     quality_command: str | None = None
+    codegen_command: str | None = None
 
 
 class ProjectUpdate(RobocoBase):
@@ -339,6 +349,7 @@ class ProjectUpdate(RobocoBase):
     typecheck_command: str | None = None
     build_command: str | None = None
     quality_command: str | None = None
+    codegen_command: str | None = None
     assigned_cell: Team | None = None
     allowed_agents: list[UUID] | None = None
     is_active: bool | None = None

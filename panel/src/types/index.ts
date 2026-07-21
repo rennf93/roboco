@@ -1052,6 +1052,7 @@ export interface Project {
   typecheck_command: string | null;
   build_command: string | null;
   quality_command: string | null;
+  codegen_command: string | null;
   // Autonomous maintenance opt-in
   ci_watch_enabled: boolean;
   ci_watch_workflow: string | null;
@@ -1091,6 +1092,7 @@ export interface ProjectCreate {
   typecheck_command?: string;
   build_command?: string;
   quality_command?: string;
+  codegen_command?: string;
 }
 
 export interface ProjectUpdate {
@@ -1114,6 +1116,7 @@ export interface ProjectUpdate {
   typecheck_command?: string;
   build_command?: string;
   quality_command?: string;
+  codegen_command?: string;
   // Autonomous maintenance opt-in
   ci_watch_enabled?: boolean;
   ci_watch_workflow?: string;

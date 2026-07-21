@@ -577,3 +577,12 @@ foundation-check:
 # `foundation-check` is now the canonical drift gate; this alias just forwards.
 .PHONY: ci-lifecycle-check
 ci-lifecycle-check: foundation-check
+
+# Write counterpart to foundation-check's read: regenerates the same checked-in
+# artifacts IN PLACE (no diff/exit-code guard) so a project can point its
+# `codegen_command` at this and have drift committed before a push, instead of
+# only ever discovering it at CI's foundation-check hard-fail.
+.PHONY: codegen
+codegen:
+	@$(MAKE) lifecycle
+	@uv run python scripts/regenerate_verb_tables.py

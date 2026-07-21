@@ -168,6 +168,7 @@ export const projectsApi = {
         typecheck_command: project.typecheck_command ?? null,
         build_command: project.build_command ?? null,
         quality_command: project.quality_command ?? null,
+        codegen_command: project.codegen_command ?? null,
         ci_watch_enabled: false,
         ci_watch_workflow: null,
         video_engine_enabled: false,

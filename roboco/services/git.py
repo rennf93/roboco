@@ -1782,6 +1782,9 @@ class GitService(BaseService):
         if project is None:
             return 0
         workspace = await self.get_workspace(project.slug, agent_id)
+        # Regenerate + commit any codegen drift BEFORE the push carries it —
+        # a no-op unless the project sets codegen_command.
+        await self._run_codegen_and_commit(str(task.branch_name), workspace)
         # Push the task's branch BY NAME, independent of the current checkout.
         # The dev's clone is shared across tasks, so by the QA-submission /
         # open_pr boundary it is usually parked on a LATER task's branch; the
@@ -4242,6 +4245,77 @@ class GitService(BaseService):
         workspace = await self.get_workspace(project.slug, actor_agent_id)
         return await run_quality_commands(workspace, commands)
 
+    @staticmethod
+    def _codegen_command_for(project: Any) -> str | None:
+        """The project's ``codegen_command``, or ``None`` if unset.
+
+        The ``isinstance`` check is defensive (the column is ``str | None``)
+        and also keeps a loosely-specced test double inert: a bare
+        ``MagicMock`` auto-vivifies any attribute access, so without it every
+        unrelated GitService test would spuriously trip the codegen path.
+        """
+        command = getattr(project, "codegen_command", None)
+        return command if isinstance(command, str) and command else None
+
+    async def _run_codegen_and_commit(self, branch_name: str, workspace: Path) -> None:
+        """Regenerate + commit codegen drift in the branch's worktree before push.
+
+        Some projects check in generated artifacts (rendered docs, generated
+        verb tables, ...) that drift whenever their source changes. Left
+        unregenerated, drift only ever surfaces later as CI's own drift gate
+        (a `git diff --exit-code` hard-fail) — a failure with no obvious link
+        back to the task that caused it. Running the project's
+        ``codegen_command`` here means any drift lands in the SAME push that's
+        about to open/update the PR, so CI never sees it stale.
+
+        Fail-open by design: a broken/timing-out codegen command, or any
+        resolution failure (missing task/project, worktree trouble), logs a
+        warning and is skipped — the push proceeds without a commit rather
+        than blocking delivery. A red CI drift-gate on the resulting PR is the
+        safety net, not a silent pass. A null/absent ``codegen_command`` (most
+        projects) is a pure no-op.
+        """
+        try:
+            task = await self._task_for_branch(branch_name)
+            if task is None:
+                return
+            project = await self._project_for_task(task)
+            if project is None:
+                return
+            command = self._codegen_command_for(project)
+            if command is None:
+                return
+            task_id = require_uuid(task.id)
+            worktree = self._worktree_for_task(workspace, task_id)
+            await self._ensure_worktree_for_commit(workspace, worktree, branch_name)
+            result = await run_quality_commands(worktree, [("codegen", command)])
+            if not result.passed:
+                self.log.warning(
+                    "codegen_command_failed",
+                    project=getattr(project, "slug", None),
+                    task_id=str(task_id),
+                    output=result.output_excerpt,
+                )
+                return
+            status = await self._run_git(
+                worktree, ["status", "--porcelain"], check=False
+            )
+            if not status.stdout.strip():
+                return  # codegen ran clean — nothing to commit
+            await self._run_git(worktree, ["add", "-A"])
+            await self._run_git(
+                worktree,
+                [
+                    "commit",
+                    "-m",
+                    f"[{str(task_id)[:8]}] regenerate generated artifacts",
+                ],
+            )
+        except Exception as exc:
+            self.log.warning(
+                "codegen_and_commit_failed", branch=branch_name, error=str(exc)
+            )
+
     async def toolchain_status_for_task(
         self, actor_agent_id: UUID, task: Any
     ) -> str | None:
@@ -4377,6 +4451,9 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
+        # Regenerate + commit any codegen drift BEFORE this first push opens
+        # the PR — a no-op unless the project sets codegen_command.
+        await self._run_codegen_and_commit(branch_name, workspace)
         # Push the NAMED branch, not the workspace's current checkout. The
         # clone root is shared across a dev's tasks and (F123) parked on the
         # default branch while the task branch lives in a per-task worktree;
