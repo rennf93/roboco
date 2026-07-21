@@ -129,17 +129,21 @@ function A2AViewContent() {
   }
 
   // Live wiring resolved first: the /ws/system `a2a.message` stream drives
-  // instant updates, but the socket flaps, so the transcript/list get a REST
-  // poll fallback gated on the connection — poll only while disconnected,
-  // never when the stream is healthy. Without it a dropped socket freezes the
-  // open thread (it has no other refresh path).
+  // instant updates when it's healthy. But the transcript/list have no other
+  // refresh path, so a silent-dead socket (a half-open WS still reporting
+  // readyState OPEN, or a missed frame) freezes the open thread — and
+  // `isConnected` can't detect that, it only reflects readyState. So poll
+  // UNCONDITIONALLY as a backstop: a relaxed 20s while the socket claims to be
+  // up (the WS still delivers sub-second when it actually works), a tighter 8s
+  // once it's known-down for faster recovery. Guarantees liveness regardless
+  // of why a frame didn't land, at negligible cost for a single open view.
   const {
     lastMessage,
     a2aMessages,
     isConnected,
     state: connectionState,
   } = useA2ALiveStream();
-  const a2aPoll = isConnected ? false : 10_000;
+  const a2aPoll = isConnected ? 20_000 : 8_000;
 
   const {
     data: conversationData,

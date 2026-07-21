@@ -194,16 +194,17 @@ describe("A2AView", () => {
     });
   });
 
-  it("polls the transcript + list as a fallback only when the /ws/system socket is down", () => {
-    // Connected (beforeEach default): no poll — the WS frame drives updates.
+  it("polls the transcript + list as an unconditional backstop, tighter once the socket is known-down", () => {
+    // Connected (beforeEach default): relaxed 20s backstop — the WS still
+    // delivers instantly when healthy, but a silent-dead socket can't freeze
+    // the thread for more than one interval.
     render(withPageRefresh(<A2AView />));
     expect(useA2AMessages).toHaveBeenCalledWith(expect.anything(), {
-      refetchInterval: false,
+      refetchInterval: 20_000,
     });
-    expect(useA2AConversations).toHaveBeenCalledWith(100, true, false);
+    expect(useA2AConversations).toHaveBeenCalledWith(100, true, 20_000);
 
-    // Disconnected: both fall back to a 10s REST poll so a dropped socket
-    // can't freeze the open thread.
+    // Known-down: tighten to 8s for faster recovery.
     useA2AMessages.mockClear();
     useA2AConversations.mockClear();
     useA2ALiveStream.mockReturnValue({
@@ -214,9 +215,9 @@ describe("A2AView", () => {
     });
     render(withPageRefresh(<A2AView />));
     expect(useA2AMessages).toHaveBeenCalledWith(expect.anything(), {
-      refetchInterval: 10_000,
+      refetchInterval: 8_000,
     });
-    expect(useA2AConversations).toHaveBeenCalledWith(100, true, 10_000);
+    expect(useA2AConversations).toHaveBeenCalledWith(100, true, 8_000);
   });
 
   it("shows the transcript pane and composer for a task-linked conversation", () => {
