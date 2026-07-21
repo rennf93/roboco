@@ -163,11 +163,6 @@ select = [
 # by the release/spotlight/on-demand callers — same "bundling would just
 # relocate the same named fields behind one hop" rationale as prompter.py.
 "roboco/services/video_engine.py" = ["PLR0913"]
-# GitHubProvisioningService.__init__ is a provider-selection constructor
-# (token/org/base_url/timeout/client plus Phase-4's provider_name/host) —
-# every kwarg is independently override-able by callers/tests, same
-# bundling-adds-no-clarity rationale as prompter.py above.
-"roboco/services/github_provisioning.py" = ["PLR0913"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the

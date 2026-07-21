@@ -397,11 +397,6 @@ services:
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-false}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-false}
       ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-false}
-      # Telegram notifications bridge V1/V2/V3 — default OFF; inert without
-      # stored bot-token + chat-id credentials regardless of these flags.
-      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-false}
-      ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-false}
-      ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-false}
       # Fable-mode (behavioral doctrine + turn-discipline hooks) and the
       # sandboxed per-agent dev DB/Redis — both default OFF, conservative here.
       ROBOCO_FABLE_MODE_ENABLED: ${ROBOCO_FABLE_MODE_ENABLED:-false}

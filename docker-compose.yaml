@@ -534,25 +534,6 @@ services:
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-true}
-      # Telegram notifications bridge: best-effort DMs to the CEO on escalation
-      # + completion. Armed by default here per the NAS-compose convention
-      # (new flags ship ON unless the CEO opts out); inert without stored
-      # bot-token + chat-id credentials regardless of this flag.
-      ROBOCO_TELEGRAM_ENABLED: ${ROBOCO_TELEGRAM_ENABLED:-true}
-      # Telegram V2 — inbound commands + actionable approve/reject buttons.
-      # Armed here (sub-switch of ROBOCO_TELEGRAM_ENABLED above); the whole
-      # bridge stays inert until that flag AND credentials
-      # are both set, so arming this alone does nothing yet.
-      ROBOCO_TELEGRAM_INBOUND_ENABLED: ${ROBOCO_TELEGRAM_INBOUND_ENABLED:-true}
-      # Telegram Mini App sign-in: validates Telegram's signed WebApp initData
-      # and mints the same cloud-auth session cookie /api/auth/login issues,
-      # so the CEO's phone becomes an authenticated panel client. Requires
-      # ROBOCO_CLOUD_AUTH_ENABLED=true (startup fails loud otherwise) AND a
-      # public HTTPS origin (the cookie is secure-only, and Telegram itself
-      # only opens Mini Apps over https). Armed by default per the NAS-compose
-      # convention — NOTE: boot fails loud if cloud auth is disabled/unseeded,
-      # so a cloud-auth-off .env must also set this false.
-      ROBOCO_TELEGRAM_MINIAPP_ENABLED: ${ROBOCO_TELEGRAM_MINIAPP_ENABLED:-true}
       ROBOCO_OBSIDIAN_VAULT_ENABLED: ${ROBOCO_OBSIDIAN_VAULT_ENABLED:-true}
       ROBOCO_VAULT_PATH: ${ROBOCO_VAULT_PATH:-/app/vault}
       ROBOCO_VAULT_INTAKE_ENABLED: ${ROBOCO_VAULT_INTAKE_ENABLED:-true}
