@@ -7,6 +7,8 @@ fixture) so approve exercises the real post + status-transition path.
 
 from __future__ import annotations
 
+import contextlib
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -25,7 +27,12 @@ from roboco.models.base import (
 from roboco.models.base import TaskNature as TN
 from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
-from roboco.services.task import X_FEATURE_SOURCE, X_POST_SOURCE, X_REPLY_SOURCE
+from roboco.services.task import (
+    X_FEATURE_SOURCE,
+    X_POST_SOURCE,
+    X_REPLY_SOURCE,
+    TaskService,
+)
 from roboco.services.x_client import XClient, XMention, XPostResult
 from roboco.services.x_post_service import (
     TaskAlreadyCompletedError,
@@ -34,16 +41,32 @@ from roboco.services.x_post_service import (
     XPostService,
     get_x_post_service,
 )
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from uuid import UUID
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
 ONE = 1
 TWO = 2
+
+
+@contextmanager
+def _lock_free() -> Iterator[None]:
+    """Patch XPostService's lock helpers so approve/reject exercise the real
+    post/cancel path without touching the (test-blocked) Redis."""
+    with (
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        yield
 
 
 class _StubClient(XClient):
@@ -268,7 +291,7 @@ async def test_approve_no_credentials_result(db_session: AsyncSession) -> None:
     assert result is not None
     assert result.status == "no_credentials"
     await db_session.refresh(task)
-    assert task.status == TS.PENDING  # never advanced without credentials
+    assert task.status == TS.PENDING
 
 
 @pytest.mark.asyncio
@@ -326,7 +349,8 @@ async def test_approve_refuses_already_rejected_draft(
     refuses and never calls the X client — the reproduced bug (a stale
     Approve after reject re-posting)."""
     task = await _seed_draft(db_session)
-    await _svc(db_session).reject(_id(task), "not on-brand")
+    with _lock_free():
+        await _svc(db_session).reject(_id(task), "not on-brand")
     client = _StubClient()
     with (
         patch("roboco.services.x_post_service.build_x_client", return_value=client),
@@ -387,17 +411,39 @@ async def test_approve_unknown_task_returns_none(db_session: AsyncSession) -> No
 @pytest.mark.asyncio
 async def test_reject_records_reason_and_cancels(db_session: AsyncSession) -> None:
     task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-    updated = await _svc(db_session).reject(_id(task), "Tone doesn't match our voice")
+    with _lock_free():
+        updated = await _svc(db_session).reject(
+            _id(task), "Tone doesn't match our voice"
+        )
     assert updated is not None
     assert updated.status == TS.CANCELLED
     assert markers.get_x_reject_reason(updated) == "Tone doesn't match our voice"
 
 
 @pytest.mark.asyncio
+async def test_reject_refused_while_lock_held_by_concurrent_approve(
+    db_session: AsyncSession,
+) -> None:
+    """A concurrent approve holds the post lock (mid-tweet-POST); reject must
+    fail closed instead of racing a CANCEL under it — previously reject()
+    never even attempted the lock, so it could commit CANCELLED to a draft a
+    concurrent approve was about to mark COMPLETED, or clobber the approve's
+    outcome depending on commit ordering."""
+    task = await _seed_draft(db_session)
+    with patch.object(XPostService, "_acquire_lock", AsyncMock(return_value=None)):
+        result = await _svc(db_session).reject(_id(task), "not relevant")
+    assert result is None
+    await db_session.refresh(task)
+    assert task.status == TS.PENDING
+    assert markers.get_x_reject_reason(task) is None
+
+
+@pytest.mark.asyncio
 async def test_list_open_posts_excludes_terminal(db_session: AsyncSession) -> None:
     open_task = await _seed_draft(db_session)
     rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    with _lock_free():
+        await _svc(db_session).reject(_id(rejected_task), "not relevant")
     open_posts = await _svc(db_session).list_open_posts()
     ids = {t.id for t in open_posts}
     assert open_task.id in ids
@@ -451,12 +497,72 @@ async def test_reject_completed_raises(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reject_concurrent_approve_completes_during_lock_wait(
+    db_session: AsyncSession, _test_database_url: str
+) -> None:
+    """Redis mutex pre-lock write audit regression for ``reject()``: a
+    genuinely concurrent approve (a real second session/connection) posts +
+    commits COMPLETED in the window between reject's pre-lock read and its
+    lock acquisition. The in-lock re-read must see that committed state and
+    refuse — the CANCELLED status write and reject reason must never land on
+    the just-posted row, proving the fix holds across sessions, not merely
+    within one. Mirrors
+    ``test_approve_concurrent_edit_does_not_clobber_a_committed_post``."""
+    task = await _seed_draft(db_session)
+    task_id = _id(task)
+    await db_session.commit()
+
+    real_get = TaskService.get
+    injected = False
+
+    async def _get_then_inject_concurrent_post(
+        self: TaskService, tid: UUID
+    ) -> TaskTable | None:
+        """Fires once, right after reject's pre-lock read — the exact window
+        between that read and reject's own (would-be) pre-lock write."""
+        nonlocal injected
+        result = await real_get(self, tid)
+        if not injected:
+            injected = True
+            other, other_engine = await _fresh_session(_test_database_url)
+            try:
+                other_task = await other.get(TaskTable, tid)
+                assert other_task is not None
+                markers.set_x_posted_tweet_id(other_task, "concurrent-999")
+                other_task.status = TS.COMPLETED
+                await other.commit()
+            finally:
+                await _dispose(other, other_engine)
+        return result
+
+    with (
+        patch.object(TaskService, "get", _get_then_inject_concurrent_post),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        pytest.raises(TaskAlreadyCompletedError),
+    ):
+        await _svc(db_session).reject(task_id, "Tone doesn't match")
+
+    fresh, fresh_engine = await _fresh_session(_test_database_url)
+    try:
+        final = await fresh.get(TaskTable, task_id)
+        assert final is not None
+        assert final.status == TS.COMPLETED
+        assert markers.get_x_posted_tweet_id(final) == "concurrent-999"
+        # The reject must never have landed on the just-posted row.
+        assert markers.get_x_reject_reason(final) is None
+    finally:
+        await _dispose(fresh, fresh_engine)
+
+
+@pytest.mark.asyncio
 async def test_list_post_history_excludes_open_drafts(
     db_session: AsyncSession,
 ) -> None:
     open_task = await _seed_draft(db_session)
     rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    with _lock_free():
+        await _svc(db_session).reject(_id(rejected_task), "not relevant")
     history = await _svc(db_session).list_post_history()
     ids = {t.id for t in history}
     assert rejected_task.id in ids
@@ -468,7 +574,8 @@ async def test_list_post_history_newest_acted_first(
     db_session: AsyncSession,
 ) -> None:
     rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-    await _svc(db_session).reject(_id(rejected_task), "not relevant")
+    with _lock_free():
+        await _svc(db_session).reject(_id(rejected_task), "not relevant")
     posted_task = await _seed_draft(db_session)
     client = _StubClient()
     with (
@@ -495,7 +602,8 @@ async def test_list_post_history_includes_marker_fields(
     ):
         await _svc(db_session).approve(_id(posted_task))
     rejected_task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-    await _svc(db_session).reject(_id(rejected_task), "off-brand tone")
+    with _lock_free():
+        await _svc(db_session).reject(_id(rejected_task), "off-brand tone")
 
     history = await _svc(db_session).list_post_history()
     by_id = {t.id: t for t in history}
@@ -508,7 +616,8 @@ async def test_list_post_history_respects_limit(db_session: AsyncSession) -> Non
     tasks = []
     for _ in range(3):
         t = await _seed_draft(db_session, source=X_REPLY_SOURCE)
-        await _svc(db_session).reject(_id(t), "not relevant")
+        with _lock_free():
+            await _svc(db_session).reject(_id(t), "not relevant")
         tasks.append(t)
     history = await _svc(db_session).list_post_history(limit=2)
     assert len(history) == TWO
@@ -548,6 +657,86 @@ async def test_approve_does_not_flush_edited_body_before_lock(
     assert result.status == "already_posted"
     await db_session.refresh(task)
     assert markers.get_x_draft_body(task) == original_body
+
+
+async def _fresh_session(url: str) -> tuple[AsyncSession, AsyncEngine]:
+    """A session on a brand-new engine/connection (caller disposes)."""
+    engine = create_async_engine(url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    return factory(), engine
+
+
+async def _dispose(session: AsyncSession, engine: AsyncEngine) -> None:
+    with contextlib.suppress(Exception):
+        await session.rollback()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_approve_concurrent_edit_does_not_clobber_a_committed_post(
+    db_session: AsyncSession, _test_database_url: str
+) -> None:
+    """Redis mutex pre-lock write audit regression: a genuinely concurrent
+    approve (a real second session/connection, not an in-process mock) posts
+    + commits COMPLETED in the window between our pre-lock read and our lock
+    acquisition. The in-lock re-read must see that committed state and the
+    CEO's edited body must never land on the just-posted row — proving the
+    fix holds across sessions, not merely within one, mirroring
+    VideoPostService's identical cross-session regression test."""
+    task = await _seed_draft(db_session, body="Original")
+    task_id = _id(task)
+    await db_session.commit()
+
+    real_get = TaskService.get
+    injected = False
+
+    async def _get_then_inject_concurrent_post(
+        self: TaskService, tid: UUID
+    ) -> TaskTable | None:
+        """Fires once, right after the outer pre-lock read — the exact
+        window between our read and our own (would-be) pre-lock write."""
+        nonlocal injected
+        result = await real_get(self, tid)
+        if not injected:
+            injected = True
+            other, other_engine = await _fresh_session(_test_database_url)
+            try:
+                other_task = await other.get(TaskTable, tid)
+                assert other_task is not None
+                markers.set_x_posted_tweet_id(other_task, "concurrent-999")
+                other_task.status = TS.COMPLETED
+                await other.commit()
+            finally:
+                await _dispose(other, other_engine)
+        return result
+
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(TaskService, "get", _get_then_inject_concurrent_post),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(task_id, "Edited body")
+
+    assert result is not None
+    assert result.status == "already_posted"
+    assert result.tweet_id == "concurrent-999"
+    # No double-post: the concurrently-committed tweet wins, ours never fires.
+    assert client.calls == []
+
+    fresh, fresh_engine = await _fresh_session(_test_database_url)
+    try:
+        final = await fresh.get(TaskTable, task_id)
+        assert final is not None
+        assert final.status == TS.COMPLETED
+        assert markers.get_x_posted_tweet_id(final) == "concurrent-999"
+        # The edit must never have landed on the just-posted row.
+        assert markers.get_x_draft_body(final) == "Original"
+    finally:
+        await _dispose(fresh, fresh_engine)
 
 
 # --------------------------------------------------------------------------- #
@@ -684,9 +873,12 @@ async def test_reject_feature_spotlight_with_wants_video_opens_none(
     task = await _seed_feature_draft(db_session)
     video_engine = AsyncMock()
     video_engine.open_video_task = AsyncMock(return_value=None)
-    with patch(
-        "roboco.services.video_engine.get_video_engine",
-        return_value=video_engine,
+    with (
+        patch(
+            "roboco.services.video_engine.get_video_engine",
+            return_value=video_engine,
+        ),
+        _lock_free(),
     ):
         updated = await _svc(db_session).reject(_id(task), "not on-brand")
     assert updated is not None

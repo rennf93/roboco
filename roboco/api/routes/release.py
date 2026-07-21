@@ -149,9 +149,15 @@ async def reject_release_proposal(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
     revised = await svc.reject(cast("UUID", task.id), data.required_changes)
-    if revised is None:  # pragma: no cover - open_proposal already guaranteed it
+    if revised is None:
+        # A concurrent approve is mid-execute (holds the release mutex) or
+        # Redis is unreachable — reject fails closed rather than racing it.
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Reject refused: a release approve is in progress or Redis is"
+                " unavailable. Retry once it clears."
+            ),
         )
     await db.commit()
     return _to_response(revised)
