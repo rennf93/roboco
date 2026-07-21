@@ -500,10 +500,18 @@ def test_claim_rules_match_pre_gateway_table() -> None:
         {spec.Status.PENDING, spec.Status.AWAITING_DOCUMENTATION}
     )
     assert spec.CLAIM_RULES[spec.Role.CELL_PM] == frozenset(
-        {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
+        {
+            spec.Status.PENDING,
+            spec.Status.NEEDS_REVISION,
+            spec.Status.AWAITING_PM_REVIEW,
+        }
     )
     assert spec.CLAIM_RULES[spec.Role.MAIN_PM] == frozenset(
-        {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
+        {
+            spec.Status.PENDING,
+            spec.Status.NEEDS_REVISION,
+            spec.Status.AWAITING_PM_REVIEW,
+        }
     )
 
 
