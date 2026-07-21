@@ -189,9 +189,13 @@ async def test_reject_cancels_and_records_reason(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     task = await _seed_draft(db_session)
-    resp = await ceo_client.post(
-        f"/api/x/posts/{task.id}/reject", json={"reason": "Not our voice"}
-    )
+    with (
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        resp = await ceo_client.post(
+            f"/api/x/posts/{task.id}/reject", json={"reason": "Not our voice"}
+        )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json()["reject_reason"] == "Not our voice"
     refreshed = await db_session.get(TaskTable, task.id)
@@ -204,9 +208,13 @@ async def test_history_returns_posted_and_rejected_newest_first(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
     rejected = await _seed_draft(db_session)
-    await ceo_client.post(
-        f"/api/x/posts/{rejected.id}/reject", json={"reason": "off-brand tone"}
-    )
+    with (
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await ceo_client.post(
+            f"/api/x/posts/{rejected.id}/reject", json={"reason": "off-brand tone"}
+        )
     posted = await _seed_draft(db_session)
     posted_project = await db_session.get(ProjectTable, posted.project_id)
     with (
@@ -258,9 +266,13 @@ async def test_history_respects_limit(
 ) -> None:
     for _ in range(3):
         t = await _seed_draft(db_session)
-        await ceo_client.post(
-            f"/api/x/posts/{t.id}/reject", json={"reason": "not relevant"}
-        )
+        with (
+            patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+            patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        ):
+            await ceo_client.post(
+                f"/api/x/posts/{t.id}/reject", json={"reason": "not relevant"}
+            )
     resp = await ceo_client.get("/api/x/posts/history", params={"limit": HISTORY_LIMIT})
     assert resp.status_code == HTTPStatus.OK
     assert len(resp.json()) == HISTORY_LIMIT

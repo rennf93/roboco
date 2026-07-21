@@ -2112,6 +2112,59 @@ async def test_docs_complete_advances_when_pr_already_created(
     assert out.status == TaskStatus.AWAITING_PM_REVIEW
 
 
+@pytest.mark.asyncio
+async def test_docs_complete_advance_clears_stale_documenter_claim(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F-audit: docs_complete's PM hand-off must not leave the outgoing
+    documenter as claimed_by/active_claimant_id once a specific owning PM is
+    assigned — unlike its siblings (qa_pass/fail_qa/submit_for_qa/pr_pass/
+    pr_fail/request_changes), which always reassign or clear both fields
+    together, _maybe_advance_to_pm_review used to only update assigned_to.
+    A stale active_claimant_id then makes content_actions.py's
+    `_active_claim_violation` wrongly reject the newly-assigned PM's own
+    explicit-task_id note()/commit() calls before it formally claims.
+    """
+    svc = task_setup["svc"]
+    pm_agent = AgentTable(
+        id=uuid4(),
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm_agent)
+    await db_session.flush()
+    parent = await svc.create(_req(task_setup, assigned_to=pm_agent.id))
+    task = await svc.create(_req(task_setup, parent_task_id=parent.id))
+    task.status = TaskStatus.AWAITING_DOCUMENTATION
+    documenter_id = task_setup["agent_id"]
+    task.assigned_to = documenter_id
+    task.claimed_by = documenter_id
+    task.active_claimant_id = documenter_id
+    task.pr_number = 1
+    task.pr_url = "u"
+    task.pr_created = True
+    await db_session.flush()
+
+    out = await svc.docs_complete(task.id, doc_notes="documented all flows")
+
+    assert out is not None
+    assert out.status == TaskStatus.AWAITING_PM_REVIEW
+    assert out.assigned_to == pm_agent.id
+    # The documenter's claim must not survive the hand-off.
+    assert out.claimed_by == pm_agent.id
+    assert out.active_claimant_id == pm_agent.id
+    assert out.claimed_by != documenter_id
+    assert out.active_claimant_id != documenter_id
+
+
 # ---------------------------------------------------------------------------
 # mark_pr_created edge cases
 # ---------------------------------------------------------------------------

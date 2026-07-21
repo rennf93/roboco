@@ -29,6 +29,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable, HeartbeatMutex
 from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
@@ -72,6 +73,19 @@ _CHAT_TIMEOUT_SECONDS = 60.0
 # The whole CHANGELOG section for a release, not one bullet — capped so a
 # pathological entry can't blow up the task description.
 _CHANGELOG_BRIEF_CHARS = 4000
+
+# ``open_video_task``'s "no open task for this occasion yet" check and its
+# insert are NOT atomic on their own: unlike the other engines' `run_cycle`
+# (each driven by exactly one sequential orchestrator-loop task, so it can
+# never overlap itself), this method is reachable from several genuinely
+# concurrent callers — the release-publish hook, the feature-spotlight hook,
+# and the CEO's on-demand ``POST /video/request`` route (two overlapping
+# requests, e.g. a double-click, each get their own DB session/transaction).
+# A flat SET NX (mirrors XPostService's identical short-critical-section
+# lock) keyed by occasion closes that window instead of letting a duplicate
+# authoring task slip through.
+_OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
+_OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
 # authoring dev always lands on the demo kit instead of a text card.
@@ -357,9 +371,65 @@ class VideoEngine(BaseService):
         ``fallback_acceptance_criterion`` (when supplied) is appended instead
         — ``reauthor_from_rejection`` uses this for its
         feedback-must-be-addressed criterion.
+
+        The dedup check + insert below run under a short-lived Redis mutex
+        keyed by ``occasion`` (see ``_OCCASION_LOCK_PREFIX``) — this method,
+        unlike the other engines' single-loop ``run_cycle``, is reachable
+        from several genuinely concurrent callers (the release/spotlight
+        hooks and the on-demand ``/video/request`` route), so the "no open
+        task yet" read and the create must be atomic against each other.
+        Fails closed: a Redis outage or a lock already held both no-op
+        (return None) rather than risk a duplicate authoring task.
         """
         if not settings.video_engine_enabled:
             return None
+        lock = HeartbeatMutex(
+            f"{_OCCASION_LOCK_PREFIX}{occasion}",
+            ttl_seconds=_OCCASION_LOCK_TTL_SECONDS,
+            heartbeat_seconds=_OCCASION_LOCK_TTL_SECONDS,
+        )
+        try:
+            token = await lock.acquire()
+        except HeartbeatLockUnavailable as exc:
+            self.log.warning(
+                "video-engine: occasion lock unavailable (redis down); "
+                "not opening authoring task",
+                occasion=occasion,
+                error=str(exc),
+            )
+            return None
+        if token is None:
+            self.log.info(
+                "video-engine: another call is already opening this occasion; skipping",
+                occasion=occasion,
+            )
+            return None
+        try:
+            return await self._open_video_task_locked(
+                occasion=occasion,
+                script=script,
+                platforms=platforms,
+                brief=brief,
+                suggested_input_props=suggested_input_props,
+                project_id=project_id,
+                fallback_acceptance_criterion=fallback_acceptance_criterion,
+            )
+        finally:
+            await lock.release(token)
+
+    async def _open_video_task_locked(
+        self,
+        *,
+        occasion: str,
+        script: str,
+        platforms: list[str],
+        brief: str,
+        suggested_input_props: dict[str, Any] | None,
+        project_id: UUID | None,
+        fallback_acceptance_criterion: str | None,
+    ) -> TaskTable | None:
+        """The dedup-check + insert body, run while ``open_video_task`` holds
+        the per-occasion lock."""
         task_svc = get_task_service(self.session)
         open_tasks = await task_svc.list_open_video_posts()
         for existing in open_tasks:

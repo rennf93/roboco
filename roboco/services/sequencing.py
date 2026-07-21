@@ -306,6 +306,15 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     waves are edge-consistent, so an edge-wired pair can never invert its
     sort). ``add_dependency`` dedupes, so repeated wiring is a no-op on
     already-wired pairs.
+
+    The same-assignee-lane fallback (see ``_same_assignee_lane_edges``) always
+    runs alongside the collision edges above, not only when the analyzer found
+    none: a collision between ONE pair of surfaced siblings must not silently
+    drop the lane-ordering of every OTHER same-assignee pair the analyzer never
+    saw (an unsurfaced sibling contributes no analyzer edge at all — it isn't
+    even in ``surfaced``). Any pair the analyzer already ordered is left alone
+    here (its fallback edge is skipped) so the two mechanisms can never assert
+    opposite directions for the same pair.
     """
     # Collision edges from DECLARED surfaces. Fewer than two surfaced siblings
     # -> no collision path (edges stays empty); the undeclared-surface fallback
@@ -337,13 +346,19 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
         # any warning attributable. Empty capacity -> no warnings emitted.
         plan = SequencingService().analyze(surfaces, lambda _idx: "", {})
         edges = [(surfaced[a].id, surfaced[b].id) for a, b in plan.edges]
-    if edges:
-        return edges
 
-    # Undeclared-surface fallback (zero collision edges): chain same-assignee
-    # same-repo lanes so they don't merge out-of-order. See
-    # ``_same_assignee_lane_edges`` for the rationale + re-run idempotency.
-    return _same_assignee_lane_edges(siblings)
+    # Same-assignee-lane fallback: runs over EVERY sibling (surfaced or not),
+    # regardless of whether the collision analyzer above produced edges
+    # elsewhere in the batch. A pair already ordered by the analyzer keeps
+    # that edge only — its fallback duplicate is dropped so the two sources
+    # can never disagree on direction for the same pair.
+    covered_pairs = {frozenset((a, b)) for a, b in edges}
+    fallback = [
+        pair
+        for pair in _same_assignee_lane_edges(siblings)
+        if frozenset(pair) not in covered_pairs
+    ]
+    return edges + fallback
 
 
 # ---------------------------------------------------------------------------

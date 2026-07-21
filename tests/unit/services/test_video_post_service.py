@@ -274,7 +274,7 @@ async def test_approve_completes_when_unconfigured_platform_is_skipped(
     assert result.status == "posted"
     assert result.posted == {"x": "x-vid-1"}
     assert "skipped (unconfigured): tiktok" in result.detail
-    assert tiktok_poster.calls == []  # never attempted without credentials
+    assert tiktok_poster.calls == []
     await db_session.refresh(task)
     assert task.status == TS.COMPLETED
     draft = markers.get_video_draft(task)
@@ -967,7 +967,7 @@ async def test_approve_concurrent_caption_edit_does_not_erase_a_committed_posted
     commit — the retry re-posted the platform (a double-post)."""
     task = await _seed_video_post(db_session, platforms=["x", "tiktok"])
     task_id = _id(task)
-    await db_session.commit()  # externally visible to the "concurrent" session below
+    await db_session.commit()
 
     real_get = TaskService.get
     injected = False

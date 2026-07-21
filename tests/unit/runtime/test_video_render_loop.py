@@ -28,6 +28,7 @@ from roboco.runtime.orchestrator import (
     _MAX_VIDEO_RENDER_ATTEMPTS,
     AgentOrchestrator,
 )
+from roboco.services import video_engine as video_engine_module
 from roboco.services.task import VIDEO_POST_SOURCE, get_task_service
 from roboco.services.video_engine import VideoEngine
 from sqlalchemy import select
@@ -47,6 +48,26 @@ FOUR = 4
 
 def _orch() -> Any:
     return AgentOrchestrator.__new__(AgentOrchestrator)
+
+
+class _AlwaysAcquiredMutex:
+    """Stand-in for ``HeartbeatMutex``: always acquires immediately, no live
+    Redis required (matches the project's ``_no_live_redis`` fixture and
+    mirrors ``test_video_engine.py``'s identical stub)."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    async def acquire(self) -> str | None:
+        return "tok"
+
+    async def release(self, _token: str) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_occasion_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(video_engine_module, "HeartbeatMutex", _AlwaysAcquiredMutex)
 
 
 class _FakeRenderer:
