@@ -53,7 +53,12 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/hooks/use-agents", () => ({
   useAgentDefinitions: () => ({
     data: [
-      { id: "be-dev-1", name: "Backend Dev 1", role: "developer", team: "backend" },
+      {
+        id: "be-dev-1",
+        name: "Backend Dev 1",
+        role: "developer",
+        team: "backend",
+      },
     ],
   }),
 }));
@@ -187,6 +192,32 @@ describe("A2AView", () => {
       isConnected: true,
       state: "connected",
     });
+  });
+
+  it("polls the transcript + list as an unconditional backstop, tighter once the socket is known-down", () => {
+    // Connected (beforeEach default): relaxed 20s backstop — the WS still
+    // delivers instantly when healthy, but a silent-dead socket can't freeze
+    // the thread for more than one interval.
+    render(withPageRefresh(<A2AView />));
+    expect(useA2AMessages).toHaveBeenCalledWith(expect.anything(), {
+      refetchInterval: 20_000,
+    });
+    expect(useA2AConversations).toHaveBeenCalledWith(100, true, 20_000);
+
+    // Known-down: tighten to 8s for faster recovery.
+    useA2AMessages.mockClear();
+    useA2AConversations.mockClear();
+    useA2ALiveStream.mockReturnValue({
+      lastMessage: null,
+      a2aMessages: [],
+      isConnected: false,
+      state: "disconnected",
+    });
+    render(withPageRefresh(<A2AView />));
+    expect(useA2AMessages).toHaveBeenCalledWith(expect.anything(), {
+      refetchInterval: 8_000,
+    });
+    expect(useA2AConversations).toHaveBeenCalledWith(100, true, 8_000);
   });
 
   it("shows the transcript pane and composer for a task-linked conversation", () => {
@@ -432,9 +463,7 @@ describe("A2AView", () => {
 
   it("renders the New DM trigger in the header", () => {
     render(withPageRefresh(<A2AView />));
-    expect(
-      screen.getByRole("button", { name: /new dm/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new dm/i })).toBeInTheDocument();
   });
 
   it("uses the direct composer (no task required) for a CEO-owned conversation", () => {
@@ -511,9 +540,7 @@ describe("A2AView", () => {
 
     it("does not open the dialog when no dm param is present", () => {
       render(withPageRefresh(<A2AView />));
-      expect(
-        screen.queryByText("New direct message"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("New direct message")).not.toBeInTheDocument();
       expect(mockReplace).not.toHaveBeenCalled();
     });
 
