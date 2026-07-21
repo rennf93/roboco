@@ -30,7 +30,7 @@ A **pitch** is a proposal for new product work. Its lifecycle is small:
 | `provisioned` | Approved — turned into a product / project(s) |
 | `rejected` | Declined |
 
-When a pitch is approved and **provisioning is enabled** (`ROBOCO_PROVISIONING_ENABLED` plus a GitHub token and org), it can auto-create the product and its repositories (recorded in `provisioned_product_id` / `provisioned_project_ids`). With provisioning off, approval just records the decision.
+When a pitch is approved it now raises `ProvisioningDisabledError` and does not create products or repositories. PR #640 stripped the GitHub App integration wiring, so the pitch record remains a CEO decision tracker: a pitch is either `proposed` or `rejected`; the `provisioned` status and the `provisioned_product_id` / `provisioned_project_ids` fields are no longer produced.
 
 ## Strategy Engine
 
@@ -61,7 +61,7 @@ The CEO's chief-of-staff reads this layer (`read_company_state` returns the char
 |-----|---------|---------|
 | `ROBOCO_RESEARCH_ENABLED` | **on** | Board / PM web research |
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | off | The strategy watcher loop |
-| `ROBOCO_PROVISIONING_ENABLED` | on (inert without a token/org) | Pitch → auto-provisioned repos |
+| `ROBOCO_PROVISIONING_ENABLED` | on (inert) | Pitch record only — repo auto-provisioning removed in PR #640; pitch approval raises `ProvisioningDisabledError` |
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | off | The weekly board roadmap engine above |
 
-With every toggle off, the company layer is just the charter plus the pitch record — research and provisioning ship on by default but degrade gracefully (no key/token configured) rather than doing anything until set up.
+With every toggle off, the company layer is just the charter plus the pitch record. Research ships on by default and degrades gracefully when no key is configured; provisioning is no longer active and pitch approval now rejects with `ProvisioningDisabledError`.

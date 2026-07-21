@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The product / strategy / research / pitch slice covers the "company layer" above the delivery lifecycle: registering the git repositories agents work on (`Project`), mapping cells to repos within a product (`Product`), rendering role-specific kanban views (`Kanban`), the singleton company charter (`CompanyGoals`), the dormant goal-drift watcher (`StrategyEngine`), the pluggable web-search capability for Board/PM agents (`Research` + `ResearchQuota`), Board pitches with CEO-approve → auto-provision (`Pitch`), and the single GitHub repo-creation service that backs provisioning (`GitHubProvisioning`). Together these are the CEO/Board-facing surface that originates work and feeds it into the normal delivery lifecycle, plus the per-cell routing keystone that the gateway delegate path consults at runtime.
+The product / strategy / research / pitch slice covers the "company layer" above the delivery lifecycle: registering the git repositories agents work on (`Project`), mapping cells to repos within a product (`Product`), rendering role-specific kanban views (`Kanban`), the singleton company charter (`CompanyGoals`), the dormant goal-drift watcher (`StrategyEngine`), the pluggable web-search capability for Board/PM agents (`Research` + `ResearchQuota`), and Board pitches (`Pitch`). The pitch approve path previously auto-provisioned GitHub repos/Projects; PR #640 stripped that GitHub App integration wiring, so approval now raises `ProvisioningDisabledError` instead of creating repos. Together these are the CEO/Board-facing surface that originates work and feeds it into the normal delivery lifecycle, plus the per-cell routing keystone that the gateway delegate path consults at runtime.
 
 ## Files
 
@@ -15,8 +15,8 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals, notify-only to CEO | 111 |
 | `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (Tavily/Brave/Exa/Null) + clamping service | 431 |
 | `roboco/services/research_quota.py` | Per-agent UTC-daily Redis quota counter for research calls (fail-open) | 78 |
-| `roboco/services/pitch.py` | Board pitch CRUD + CEO approve → provision repos/Projects(+Product) + seed Main-PM task | 274 |
-| `roboco/services/github_provisioning.py` | The only service that CREATES repos for pitch provisioning — now provider-aware (GitHub/Gitea/GitLab, Phase 4 forge parity), despite the GitHub-flavored name (kept for backward compatibility) | 232 |
+| `roboco/services/pitch.py` | Board pitch CRUD + CEO approve/reject; approval now raises `ProvisioningDisabledError` because repo auto-provisioning was removed | 274 |
+| `roboco/services/github_provisioning.py` | Provider-aware repo-creation helper (GitHub/Gitea/GitLab, Phase 4 forge parity). Retained in tree but no longer called by the pitch approve path after the GitHub App integration strip. | 232 |
 | `roboco/services/roadmap_engine.py` | Dormant weekly engine: originates ONE held roadmap-exploration task for the Product Owner (default off) | 111 |
 | `roboco/services/roadmap_service.py` | CEO's per-item approve/reject glue over a held roadmap cycle; approve materializes a BACKLOG task | 211 |
 | `roboco/api/routes/roadmap.py` | CEO-only routes: list open cycles, approve/reject one item | 124 |
@@ -72,13 +72,12 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `ResearchQuotaTracker.check_and_consume` | method | research_quota.py:51 | Atomic INCR-then-compare; over-limit still bumps counter |
 | `QuotaStatus` | dataclass | research_quota.py:24 | (allowed, used, limit, day) |
 | `PitchService` | class | pitch.py:56 | Pitch CRUD + approve/reject |
-| `PitchService.approve` | method | pitch.py:109 | Provision repos → register topology → seed Main-PM task; idempotent on re-approval |
-| `PitchService._provision_repos` | method | pitch.py:163 | One repo per target cell (multi-cell suffixes cell); reuses existing Project by slug |
-| `PitchService._register_topology` | method | pitch.py:201 | Multi-cell → Product (reuse existing by slug + refresh cell map); single-cell → seed project only |
-| `PitchService._seed_main_pm_task` | method | pitch.py:234 | Creates PENDING Main-PM CODE task (`source="pitch"`, `confirmed_by_human=True`) |
+| `PitchService.approve` | method | pitch.py:109 | Raises `ProvisioningDisabledError`; repo auto-provisioning was removed with the GitHub App integration |
+| `PitchService.reject` | method | pitch.py:82 | Records the CEO's rejection and marks the pitch rejected |
 | `PitchService._proposed_or_raise` | method | pitch.py:152 | 404 if missing, 409 if not `proposed` (no re-deciding) |
-| `GitHubProvisioningService` | class | github_provisioning.py:81 | Create private repos for pitch provisioning — Phase 4 forge parity: provider-dispatched via `_build_provider`, not GitHub-only despite the class name |
-| `GitHubProvisioningService.enabled` | prop | github_provisioning.py:123 | True only when master switch + token + org all set; ALSO requires `ROBOCO_PROVISIONING_HOST` when the provider is gitlab/gitea (self-hosted needs a host, github.com doesn't) |
+| `ProvisioningDisabledError` | exc | pitch.py:30 | Raised by `PitchService.approve` to signal that repository provisioning is unavailable |
+| `GitHubProvisioningService` | class | github_provisioning.py:81 | Provider-aware repo-creation helper (GitHub/Gitea/GitLab, Phase 4 forge parity). Retained in tree but no longer called by the pitch approve path. |
+| `GitHubProvisioningService.enabled` | prop | github_provisioning.py:123 | True only when token + org + optional host are set (no panel-tunable master switch after the `provisioning_enabled` flag was removed from `FEATURE_FLAGS`) |
 | `GitHubProvisioningService.create_repo` | method | github_provisioning.py:142 | Provider-dispatched repo creation with `auto_init=true`; handles the "already exists" response idempotently across all three forges via `_fetch_existing_repo`/`_is_already_exists` (#83/#84) |
 | `GitHubProvisioningService._fetch_existing_repo` | method | github_provisioning.py:203 | GET the existing repo and reconstruct `ProvisionedRepo` — called on an "already exists" response to reuse an orphaned repo from a rolled-back prior approval |
 | `_build_provider` | func | github_provisioning.py:68 | Picks the concrete provider (`GitHubProvider`/`GiteaProvider`/`GitLabProvider` — a `Union`, not the `GitProvider` ABC, since provisioning needs `client=`/`timeout=` kwargs the ABC doesn't declare) by `ROBOCO_PROVISIONING_PROVIDER` |
@@ -113,7 +112,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 
 Two distinct flows originate work into the delivery lifecycle:
 
-**Pitch flow (CEO-driven origination).** A Board member creates a pitch (`PitchService.create` → `PitchTable` status `proposed`). The CEO approves via `POST /api/pitch/{id}/approve` → `PitchService.approve`. Approval calls `GitHubProvisioningService.create_repo` once per target cell (repo name `{slug}-{cell}` when multi-cell, else `{slug}`), then `ProjectService.create` to register each repo as a Project (git token stored from `settings.provisioning_token`). For multi-cell pitches, `ProductService.create` registers a Product with the cell→project map; for single-cell, the lone project is the seed. `_seed_main_pm_task` then creates a PENDING Main-PM CODE task (`source="pitch"`, `confirmed_by_human=True`) assigned to `main-pm`, which the normal dispatcher picks up. The pitch row moves to `provisioned` with `provisioned_product_id` / `provisioned_project_ids` / `seed_task_id` recorded.
+**Pitch flow (CEO-driven origination).** A Board member creates a pitch (`PitchService.create` → `PitchTable` status `proposed`). The CEO approves via `POST /api/pitch/{id}/approve` → `PitchService.approve`. Approval now raises `ProvisioningDisabledError` and does not create repos, Projects, Products, or seed tasks. The pitch row therefore stays in `proposed` unless the CEO rejects it. Repo auto-provisioning was removed with the GitHub App integration in PR #640.
 
 **Strategy flow (dormant watcher).** `Orchestrator._strategy_engine_loop` (created at startup) returns immediately unless `strategy_engine_enabled`; otherwise each `strategy_engine_interval_seconds` it opens a DB context and calls `StrategyEngine.run_cycle` → `assess`. `assess` reads `TaskService.list_in_progress_or_claimed` and `list_long_running_blocked` against `CompanyGoalsService.get()`; if idle-with-goals or stranded-blocked, it sends the CEO an ack-notification via `NotificationService.send_ack_notification`. Notify-only — never originates work.
 
@@ -133,15 +132,10 @@ Two distinct flows originate work into the delivery lifecycle:
 flowchart TD
     Board[Board member] -->|create| Pitch[PitchService.create]
     CEO -->|approve /api/pitch/:id/approve| Approve[PitchService.approve]
-    Approve --> Prov[GitHubProvisioningService.create_repo]
-    Prov --> GH[(GitHub org repos)]
-    Approve --> ProjReg[ProjectService.create per cell]
-    Approve --> Topo{_register_topology}
-    Topo -->|multi-cell| ProdCreate[ProductService.create]
-    Topo -->|single-cell| SeedProj[seed_project_id]
-    Approve --> Seed[_seed_main_pm_task]
-    Seed --> MainPmTask[PENDING Main-PM task source=pitch]
-    MainPmTask --> Dispatcher[normal delivery lifecycle]
+    Approve -->|raises| Disabled[ProvisioningDisabledError]
+    Disabled --> Proposed[pitch stays proposed]
+    CEO -->|reject /api/pitch/:id/reject| Reject[PitchService.reject]
+    Reject --> Rejected[pitch rejected]
 
     subgraph StrategyLoop[dormant — strategy_engine_enabled]
         Loop[Orchestrator._strategy_engine_loop] -->|interval| Cycle[StrategyEngine.run_cycle]
@@ -225,13 +219,11 @@ product-strategy-research-pitch
 │   └── check_and_consume (INCR-then-compare)
 ├── pitch.py — PitchService
 │   ├── CRUD + list_pitches
-│   ├── reject / approve
-│   ├── _provision_repos (idempotent on re-approval)
-│   ├── _register_topology (Product vs seed-project)
-│   └── _seed_main_pm_task (PENDING Main-PM task)
-├── github_provisioning.py — GitHubProvisioningService
-│   ├── enabled (master+token+org)
-│   └── create_repo (POST /orgs/{org}/repos, auto_init)
+│   ├── reject / approve (approve raises ProvisioningDisabledError)
+│   └── _proposed_or_raise (status guard)
+└── github_provisioning.py — GitHubProvisioningService (retained in tree, no pitch caller after PR #640)
+    ├── enabled (token+org+optional host)
+    └── create_repo (provider-dispatched; handles "already exists" idempotently)
 ├── roadmap_engine.py — RoadmapEngine (dormant, roadmap_engine_enabled)
 │   └── run_cycle (one held exploration task for the Product Owner; one-open-cycle dedup)
 ├── roadmap_service.py — RoadmapService
@@ -275,7 +267,7 @@ product-strategy-research-pitch
 - `roboco.foundation.identity` — `RoadmapEngine._originate` (`AGENTS["product-owner"]`/`AGENTS["system"]`).
 - `roboco.services.agent` — `PitchService` (`get_by_slug("main-pm")`).
 - `roboco.services.notification` — `StrategyEngine.run_cycle`.
-- `roboco.services.github_provisioning` — `PitchService.approve`.
+- `roboco.services.github_provisioning` — retained in tree but no longer called by `PitchService.approve` after PR #640.
 - `roboco.services.project` / `product` — `PitchService`.
 - `roboco.runtime.orchestrator` — runs `_strategy_engine_loop` + `_roadmap_engine_loop`/`_dispatch_roadmap_exploration`; mounts `roboco-search` MCP when `research_enabled`.
 
@@ -316,7 +308,7 @@ product-strategy-research-pitch
 | `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:275 | Hard cap on `web_fetch` extracted chars |
 | `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:280 | Outbound provider HTTP timeout |
 | `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:286 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:309 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:309 | Pitch auto-provisioning master switch (still inert without token+org). **No longer a panel-tunable `FEATURE_FLAGS` entry** after PR #640; the pitch approve path now raises `ProvisioningDisabledError` regardless of this flag. |
 | `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:316 | GitHub PAT for repo creation (server-side only) |
 | `ROBOCO_PROVISIONING_ORG` | `""` | config.py:323 | GitHub org where repos are provisioned |
 | `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:327 | Override for GitHub Enterprise |
@@ -336,7 +328,7 @@ product-strategy-research-pitch
 
 ## Gotchas
 
-- **~~Pitch partial-failure orphans GitHub repos~~ — RESOLVED (536bbb64).** `GitHubProvisioningService.create_repo` now treats a GitHub 422 "name already exists" response as an idempotent signal: it calls `_fetch_existing_repo` and returns the existing repo's `ProvisionedRepo` instead of erroring. Combined with the Project-by-slug and Product-by-slug reuse already in place, re-approval is now idempotent end-to-end — no manual intervention needed. The initial partial failure still leaves an orphaned GitHub repo, but the re-approval path recovers it automatically.
+- **Pitch approval no longer provisions repos.** PR #640 stripped the GitHub App integration wiring; `PitchService.approve` raises `ProvisioningDisabledError` and does not call `GitHubProvisioningService.create_repo`, `ProjectService.create`, `ProductService.create`, or `_seed_main_pm_task`.
 - **`ResearchQuotaTracker` INCRs before the limit check (research_quota.py:65).** An over-limit call still increments the counter (documented as fine for a ceiling). It also fails open on any Redis error (`allowed=True`) — research must not break because the cache is down. The route-level `_quota_tracker` is a module-level singleton sharing one Redis connection across requests.
 - **`ProductService._replace_cells` flushes DELETEs before INSERTs (product.py:143).** This is load-bearing: SQLAlchemy otherwise orders INSERTs before DELETEs for the same table, which would collide the new `(product_id, team)` rows with not-yet-deleted old ones on `uq_product_projects_product_team` and 409 on any re-mapping of a team. Refactoring away the intermediate flush reintroduces the 409.
 - **~~`KanbanService._task_to_card` hardcodes `subtask_count = 0`~~ — FIXED (c71f9b3b / 536bbb64).** The new `_load_subtask_counts` method (kanban.py:47) batch-counts direct children per parent in a single grouped SQL query and passes the result map into each `_task_to_card` call; `has_subtasks` and `subtask_count` now reflect real data.
@@ -346,15 +338,14 @@ product-strategy-research-pitch
 - **Strategy loop sleeps a full interval before the first cycle (orchestrator.py:6375).** `await asyncio.sleep(interval)` runs before the first `run_cycle`, so on startup there is a guaranteed `strategy_engine_interval_seconds` delay before the first assessment.
 - **`StrategyEngine.run_cycle` catches nothing itself; the orchestrator wraps each cycle in `except Exception` (orchestrator.py:6380).** A failing `assess` is logged and retried forever on the next tick — the CEO is never notified that the engine itself is broken.
 - **`build_provider` returns `NullProvider` for an unknown provider name (research.py:326- 328).** A typo in `ROBOCO_RESEARCH_PROVIDER` (validated by pydantic pattern, so unlikely) would silently degrade to empty results rather than erroring.
-- **`GitHubProvisioningService.enabled` requires master + token + org (github_provisioning.py:64).** `provisioning_enabled` defaults `True`, so the flag alone is not enough — an operator who toggles the flag without setting token/org still gets `enabled=False` and `approve` raises `ProvisioningDisabledError`.
-- **`PitchService._seed_main_pm_task` requires a `main-pm` agent row (pitch.py:241-243).** If the agent slug is missing it raises `ValidationError` after provisioning has already happened — another partial-failure window (repos + Product created, no seed task).
+- **`GitHubProvisioningService.enabled` requires token + org + optional host (github_provisioning.py:123).** `provisioning_enabled` was removed from the panel-tunable `FEATURE_FLAGS` tuple in PR #640; the env key remains but `PitchService.approve` raises `ProvisioningDisabledError` before any repo creation regardless of flag or credentials.
 - **`XPostService.approve` did NOT check for a CANCELLED (already-rejected) task before Wave 5 (`11915f36`, PR #551).** Before the fix, approving a draft the CEO had already rejected would proceed straight to posting it — reachable via the Telegram inbound bridge's inline Approve button (targets a draft by id regardless of its current status) and equally via a replayed HTTP `POST /api/x/posts/{id}/approve`. The guard now returns `already_rejected` both before acquiring the lock and again after re-reading the task under lock.
 
 ## Drift from CLAUDE.md
 
 - **Research provider set vs CLAUDE.md.** CLAUDE.md's "Technology Stack" / feature-flags section lists web research under `ROBOCO_RESEARCH_ENABLED` only; it does not enumerate the provider adapters (`tavily`/`brave`/`exa`/`null`) or the per-agent daily quota (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`, default 50). Code: config.py:252/286, research.py:310. Not a contradiction — an omission in the doc.
 - **CLAUDE.md says the strategy engine "never spends, builds, or auto-approves" and is default-OFF.** Code matches exactly (`strategy_engine_enabled` default `False`, config.py:348; `run_cycle` notify-only, strategy_engine.py:92-106). No drift.
-- **CLAUDE.md says pitch provisioning is gated by `ROBOCO_PROVISIONING_*`.** Code matches (`provisioning_enabled` + `_token` + `_org` + `_repo_private` + `_timeout_seconds`, config.py:309-336; `GitHubProvisioningService.enabled` requires all three, github_provisioning.py:64). No drift.
+- **CLAUDE.md says pitch provisioning is gated by `ROBOCO_PROVISIONING_*`.** The env keys still exist (`provisioning_enabled` + `_token` + `_org` + `_repo_private` + `_timeout_seconds`, config.py:309-336), but after PR #640 `PitchService.approve` raises `ProvisioningDisabledError` before any repo creation regardless of those values. `GitHubProvisioningService` remains in tree but is no longer called by the pitch path. Doc drift: the pitch approve path is now a hard rejection, not a gated provisioning flow.
 - **CLAUDE.md does not mention `ProductService.project_for` as the per-cell routing keystone**, though it does describe product cell-routing as a feature. Code: product.py:87, called from the gateway delegate path. Doc omission, not contradiction.
 - **CLAUDE.md does not mention `ROBOCO_PROTECTED_GIT_URLS`** (the project denylist, config.py:770, project.py:40). Doc omission.
 - **CLAUDE.md's service table does not list `KanbanService`, `CompanyGoalsService`, `StrategyEngine`, `ResearchService`, `PitchService`, `GitHubProvisioningService`.** The CLAUDE.md "Services" table is explicitly a non-exhaustive "Core services" list, so this is an acknowledged omission rather than drift.
@@ -375,6 +366,7 @@ product-strategy-research-pitch
 > - `7e01c0ce` (PR #570, "project-branded drafts + project badges", 2026-07-18): migration 075 adds `company_goals.company_name`; `CompanyGoalsService.resolve_product_name` (company_goals.py:79) is the new single fallback chain (project name → charter `company_name` → "RoboCo") consumed by both `XEngine._voice_guide`/`draft_release_post` and `VideoEngine` (see `docs/map/video-engine.md`) so their prompt builders stop hardcoding "RoboCo". New `roboco/api/schemas/project_fields.py`'s `task_project_fields` helper adds `project_slug`/`project_name` to the X and video post-queue API responses (`api/routes/x.py`, `api/routes/video.py`); the panel renders them via a shared `ProjectBadge` — see `docs/map/panel.md`.
 > - `461a6e1a`+`96401f4c`+`5f32d876` (Phases 1/2-3/4, 2026-07-18/19, #571/#575/#581) — Phase 4 makes `GitHubProvisioningService` provider-aware: `_build_provider` (github_provisioning.py:68) dispatches to `GitHubProvider`/`GiteaProvider`/`GitLabProvider` by `ROBOCO_PROVISIONING_PROVIDER`, `.enabled` additionally requires `ROBOCO_PROVISIONING_HOST` for gitlab/gitea, and `_is_already_exists` (github_provisioning.py:61) matches the "already exists" idempotency signal across all three forges' differing status codes/phrasing. The forge transport package itself (`GitProvider`/`ForgeRouter`/provider implementations) is documented in `docs/map/worksession-git.md` — this slice only covers the provisioning consumer.
 > - `a0baf94b` ("agnosticism-residue", agnosticism audit items B6/B8): `x_engine.py`'s remaining hardcoded `"RoboCo"` literals (the reply-prompt builder and the feature-spotlight exploration description — `draft_release_post`/`_voice_guide` were already fixed by `7e01c0ce` above) are threaded out: `_reply_prompt` gains a `product_name` param, `_FEATURE_EXPLORATION_DESCRIPTION` (a module constant) becomes `_feature_exploration_description(product_name)` (a function), and `run_cycle`/`open_feature_spotlight_exploration` each resolve `product_name` once via `resolve_product_name` and thread it through.
+> - PR #640 (2026-07-21) stripped the GitHub App integration backend wiring. `PitchService.approve` now raises `ProvisioningDisabledError` and no longer calls `GitHubProvisioningService.create_repo`, `ProjectService.create`, `ProductService.create`, or `_seed_main_pm_task`. `provisioning_enabled` was removed from `FEATURE_FLAGS`; the env key remains but pitch approval does not provision regardless of it.
 
 ## Regression Risks
 
@@ -383,7 +375,6 @@ No commit since `fd10cc86` modified any file in this slice, so there are **no re
 | Title | File:Line | Claim | Severity |
 |-------|-----------|-------|----------|
 | ~~Pitch partial-failure orphans GitHub repos~~ **RESOLVED 536bbb64** | pitch.py / github_provisioning.py | `create_repo` now handles GitHub 422 "already exists" by fetching the existing repo; re-approval is idempotent end-to-end. Initial partial failure still orphans the repo on GitHub, but re-approval recovers it automatically. | ~~medium~~ |
-| Seed-task failure after provisioning | pitch.py:241-243 | `_seed_main_pm_task` raises `ValidationError` if `main-pm` agent is missing — after repos + Product are already created. Another partial-failure window with no rollback. | medium |
 | Strategy engine failure is silent | orchestrator.py:6380, strategy_engine.py:92 | A failing `assess` is caught by the orchestrator's broad `except Exception`, logged, and retried next tick; the CEO is never notified that the engine is broken — looks dormant while actually erroring. | low |
 | Quota INCR-then-compare + fail-open | research_quota.py:51-73 | Over-limit calls still bump the counter (documented); Redis outage fails open (`allowed=True`), so a quota bypass during a Redis outage is by design. | low |
 | `_replace_cells` flush ordering is load-bearing | product.py:135-143 | The intermediate `flush()` (DELETEs before INSERTs) prevents a 409 on `uq_product_projects_product_team`. Refactoring it away reintroduces the unique-constraint collision on any team re-mapping. | low |
@@ -393,4 +384,4 @@ No commit since `fd10cc86` modified any file in this slice, so there are **no re
 
 ## Health
 
-This slice is internally coherent and consistent with CLAUDE.md: every documented flag, default, and behavior matches the code, and the two slices-of-flow (CEO-driven pitch origination into the normal lifecycle; dormant notify-only strategy watcher) are cleanly separated and default-safe. The services follow a uniform `BaseService` + session-bound factory pattern, provider/research quotas fail open where cost-control (not security) is the goal, and the provisioning path is inert without token+org. The pitch approval path's external-side-effect non-atomicity remains (GitHub repo creation cannot roll back with the DB transaction), but re-approval is now idempotent end-to-end: `create_repo` handles GitHub 422 "already exists" by fetching the existing repo, and Project/Product rows are reused by slug, so a CEO re-approving after a partial failure recovers cleanly. The remaining open risk is `_seed_main_pm_task` failing after repos are already created (missing `main-pm` agent row). Post-snapshot three commits updated this slice's files, resolving four standing risks (kanban subtask counts, flat-board dropped cards, `project.update` None-field skip, and the pitch re-approval collision).
+This slice is internally coherent and consistent with CLAUDE.md for the remaining flows. The CEO-driven pitch path is now a decision record only: PR #640 removed the GitHub App integration wiring, so `PitchService.approve` raises `ProvisioningDisabledError` and never creates repos, Projects, Products, or seed tasks. The dormant notify-only strategy watcher and on-demand research flows are unchanged. The services follow a uniform `BaseService` + session-bound factory pattern, provider/research quotas fail open where cost-control (not security) is the goal, and `GitHubProvisioningService` remains in tree but is no longer called by the pitch path. Post-snapshot three commits updated this slice's files, resolving four standing risks (kanban subtask counts, flat-board dropped cards, `project.update` None-field skip, and the pitch re-approval collision) before the provisioning removal in PR #640.

@@ -76,7 +76,7 @@ Agents whose provider is `GROK` run xAI's official `grok` CLI. Auth is the host 
 
 ## Feature flags
 
-Env-gated subsystems. Most are default-off; `ROBOCO_OVERLOAD_BREAK_ENABLED`, `ROBOCO_RESEARCH_ENABLED`, and `ROBOCO_PROVISIONING_ENABLED` ship default-**on**. Each takes effect on the next backend restart; the panel's Settings → Feature Flags card toggles the panel-exposed ones (`roboco/services/settings.py`'s `FEATURE_FLAGS`) without hand-editing env — a few security/topology flags below are env-only by design and are called out as such.
+Env-gated subsystems. Most are default-off; `ROBOCO_OVERLOAD_BREAK_ENABLED` and `ROBOCO_RESEARCH_ENABLED` ship default-**on**. `ROBOCO_PROVISIONING_ENABLED` remains in config for backward compatibility but is no longer consumed: PR #640 stripped the GitHub App integration wiring, so `PitchService.approve` now raises `ProvisioningDisabledError` and does not create repos, Projects, or Products regardless of this flag. Each takes effect on the next backend restart; the panel's Settings → Feature Flags card toggles the panel-exposed ones (`roboco/services/settings.py`'s `FEATURE_FLAGS`) without hand-editing env — a few security/topology flags below are env-only by design and are called out as such.
 
 The PR-gate turn cut (when every child of an assembled parent is terminal, `_try_auto_submit` runs the real `submit_up` / `submit_root` system-side as the owning PM instead of spawning the PM for that turn) is **unconditional** — no flag, no kill-switch. A gate rejection (freshness/integrity/AC-coverage/a subtask-terminal race) or transport error falls back to the classic PM closure spawn with the rejection reason threaded into the PM's prompt; that fallback is the sole safety net. Each auto-submit leaves a `task.auto_submitted` audit row.
 
@@ -96,7 +96,7 @@ The PR-gate turn cut (when every child of an assembled parent is terminal, `_try
 | `ROBOCO_VAULT_REPORT_ENABLED` | `true` | The vault janitor's weekly `RoboCo/Reports/<ISO-week>.md` org-report note + CEO notification (deterministic, no LLM). Needs `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. |
 | `ROBOCO_VAULT_KB_ENABLED` | `false` (NAS compose sets `true`; registry compose leaves `false`) | Master switch for vault KB ingest: embeds `ROBOCO_VAULT_KB_DIRS` note folders (default `RoboCo/Notes`) into `IndexType.VAULT_NOTES`, screened for injection attempts before indexing. Requires `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. `ROBOCO_VAULT_KB_DIRS` (CSV, default `RoboCo/Notes`) and `ROBOCO_VAULT_KB_INTERVAL_SECONDS` (default `900`) tune scope and cadence. See `docs/rag/architecture/obsidian-vault.md`. |
 
-The company-in-a-box subsystems toggle the same way: web research (`ROBOCO_RESEARCH_ENABLED`, default **on** — see "Web Research" below), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`, default off), and pitch provisioning (`ROBOCO_PROVISIONING_ENABLED`, default on but inert without a token/org configured).
+The company-in-a-box subsystems toggle the same way: web research (`ROBOCO_RESEARCH_ENABLED`, default **on** — see "Web Research" below), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`, default off), and the pitch record (`ROBOCO_PROVISIONING_ENABLED`, default on but inert — PR #640 removed repo auto-provisioning, so pitch approval now raises `ProvisioningDisabledError` regardless of token/org configuration).
 
 ## Web Research
 

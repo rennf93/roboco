@@ -37,7 +37,7 @@ Agent HMAC auth and the orchestrator's `system` self-PATCH are untouched in both
 
 `panel/src/proxy.ts` (the Next.js middleware entry) probes `GET /api/auth/status` on every non-API, non-static request; if `cloud_auth_enabled` is true and the `roboco_session` cookie is absent, it redirects to `/login`. The probe fails open (treats a slow/unreachable backend as "cloud auth off") within a 1.5s timeout — a stuck backend must never turn into a stuck redirect loop.
 
-A second route mints this same session cookie without a password: `POST /api/telegram/webapp-auth` validates a Telegram Mini App's signed `initData` instead, gated by its own `ROBOCO_TELEGRAM_MINIAPP_ENABLED` (which itself requires `cloud_auth_enabled`) — see `docs/map/api-routes-schemas.md`.
+> ponytail: `POST /api/telegram/webapp-auth`, which previously minted the same session cookie from a Telegram Mini App's signed `initData`, was removed with the Telegram Mini App V3 backend strip in PR #640. Cloud auth now relies only on the seeded email/password login.
 
 ## Related
 
