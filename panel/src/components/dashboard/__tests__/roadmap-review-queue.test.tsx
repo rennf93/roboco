@@ -58,6 +58,11 @@ vi.mock("@/lib/api", () => ({
   roadmapApi: { listCycles, approveItem, rejectItem },
 }));
 
+const { toast } = vi.hoisted(() => ({
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+}));
+vi.mock("sonner", () => ({ toast }));
+
 import { RoadmapReviewQueue } from "../roadmap-review-queue";
 
 function withQueryClient(ui: ReactNode) {
@@ -72,6 +77,9 @@ describe("RoadmapReviewQueue", () => {
     listCycles.mockClear();
     approveItem.mockClear();
     rejectItem.mockClear();
+    toast.success.mockClear();
+    toast.warning.mockClear();
+    toast.error.mockClear();
     resolveApproveRef.current = null;
   });
   afterEach(() => {
@@ -140,4 +148,48 @@ describe("RoadmapReviewQueue", () => {
     await waitFor(() => expect(listCycles).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
   });
+
+  // F(silent-bug-sweep #c): RoadmapService uses its own disjoint status
+  // vocabulary (approved/already_approved/invalid_state/rejected/
+  // already_rejected) — none of the 7 named cross-queue statuses
+  // (already_in_progress, redis_unavailable, lock_lost, post_failed,
+  // posted_partial, no_platforms, no_credentials) ever reach this queue, so
+  // this locks in distinct feedback for roadmap's own statuses instead.
+  it.each([
+    [
+      "already_approved",
+      "this item was already approved",
+      "Item approved — added to the backlog",
+    ],
+    [
+      "invalid_state",
+      "item is 'rejected', not proposed — cannot approve",
+      "item is 'rejected', not proposed — cannot approve",
+    ],
+  ])(
+    "shows distinct feedback for the %s status",
+    async (status, detail, message) => {
+      render(withQueryClient(<RoadmapReviewQueue />));
+      const approveButtons = await screen.findAllByRole("button", {
+        name: /Approve/,
+      });
+      fireEvent.click(approveButtons[0]);
+      await waitFor(() => expect(approveItem).toHaveBeenCalled());
+
+      resolveApproveRef.current?.({
+        status,
+        item_id: "item-0",
+        materialized_task_id: null,
+        detail,
+      });
+
+      await waitFor(() => {
+        if (status === "already_approved") {
+          expect(toast.success).toHaveBeenCalledWith(message);
+        } else {
+          expect(toast.warning).toHaveBeenCalledWith(message);
+        }
+      });
+    },
+  );
 });

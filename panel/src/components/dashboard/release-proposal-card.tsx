@@ -38,6 +38,20 @@ function gateBadgeVariant(
   return "secondary";
 }
 
+// Distinct copy for the concurrency/infra statuses a release execute can
+// come back with (already_in_progress / redis_unavailable / lock_lost) —
+// the rest (gate_failed, ci_failed, ...) fall through to the generic
+// "Release halted (status): detail" message, itself still status-specific.
+function describeHaltedStatus(result: ReleaseExecuteResult): string {
+  if (result.status === "already_in_progress")
+    return "A release execute is already in progress for this proposal.";
+  if (result.status === "redis_unavailable")
+    return "Redis is unavailable — can't acquire the release mutex.";
+  if (result.status === "lock_lost")
+    return "The release lock was lost mid-execute — retry the approve.";
+  return `Release halted (${result.status}): ${result.detail}`;
+}
+
 // A red gate / open gaps make publishing risky — the CEO should resolve them
 // first. Approval still runs the fail-closed executor, so it can't ship a bad
 // release; this only steers the CEO.
@@ -86,7 +100,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           "Release execute dispatched — running in the background. This card updates as it progresses.",
         );
       } else {
-        toast.warning(`Release halted (${result.status}): ${result.detail}`);
+        toast.warning(describeHaltedStatus(result));
       }
       closeDialog();
     },
