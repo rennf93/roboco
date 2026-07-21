@@ -99,9 +99,12 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
 
-# Roles with NO agent-comms surface (CLAUDE.md): auditor (silent observer),
-# pr_reviewer (posts review findings on the PR itself — no dm), prompter
-# and secretary (human-only, restricted to note + evidence — no dm/notify).
+# Roles with NO agent-comms surface (CLAUDE.md): the human-only prompter and
+# secretary — restricted to note + evidence, no dm/notify, they own their own
+# dedicated chat pages instead. (Auditor and pr_reviewer carry dm/read_a2a
+# now — the CEO can DM either and it can reply in-thread — so they're no
+# longer in this set; the auditor's silence toward PEERS is enforced
+# separately in agents_config.can_a2a_direct.)
 # The spawn manifest already omits dm from these roles' tool surfaces, but
 # that is convention-only — this frozenset is the handler-level defence-in-depth
 # that refuses any call that bypassed the manifest (direct verb dispatch, test
@@ -111,16 +114,6 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 # foundation.policy.communications — agents_config.can_a2a_direct's CEO
 # target-side check reuses the same source.
 _NO_COMMS_ROLES: frozenset[str] = frozenset(r.value for r in _comms.NO_COMMS_ROLES)
-
-
-def _no_comms_remediate(role: str) -> str:
-    """Role-appropriate remediation for a no-comms role blocked at dm."""
-    if role == "auditor":
-        return "record observations via note(scope='reflect') instead"
-    if role == "pr_reviewer":
-        return "post review findings on the PR itself via pr_pass/pr_fail instead"
-    # prompter / secretary are human-only (note + evidence).
-    return "use note() to record; this human-only role has no agent-comms surface"
 
 
 _DECISION_SECTIONS: tuple[tuple[str, str], ...] = (
@@ -1702,10 +1695,10 @@ class ContentActions:
         """A2A direct message. Requires task_id (active or explicit)."""
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
-        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
-        # Defense-in-depth: dm() is the channel through which a no-comms role
-        # could "speak". Covers auditor,
-        # pr_reviewer, and the human-only prompter / secretary.
+        # Spec §5.5: no-comms roles — defense-in-depth runtime guard. dm() is
+        # the channel through which a no-comms role could "speak"; covers the
+        # human-only prompter/secretary (own dedicated chat pages, no agent
+        # A2A surface at all).
         agent = await self.task.agent_for(agent_id)
         caller_role = str(agent.role) if agent is not None else ""
         if caller_role in _NO_COMMS_ROLES:
@@ -1714,7 +1707,10 @@ class ContentActions:
                     f"role '{caller_role}' is a silent / no-comms role;"
                     " dm is not permitted"
                 ),
-                remediate=_no_comms_remediate(caller_role),
+                remediate=(
+                    "use note() to record; this human-only role has no"
+                    " agent-comms surface"
+                ),
                 context_briefing={},
             )
 

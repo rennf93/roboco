@@ -140,13 +140,17 @@ _HEAD_MARKETING_DO = (
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
-# no ack (silent observer — wouldn't ack notifications).
+# no ack (silent observer — wouldn't ack notifications). It now carries
+# dm/read_a2a so the CEO can open a DM with a mid-flight auditor and it can
+# reply in-thread, but it still never INITIATES peer A2A — that's enforced in
+# agents_config.can_a2a_direct, not by omitting the tool.
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
-# its surface (approve/reject/archive are KB curation actions, not agent comms,
-# so the no-dm restriction is preserved).
+# its surface (approve/reject/archive are KB curation actions, not agent comms).
 _AUDITOR_DO = (
     "note",
     "evidence",
+    "dm",
+    "read_a2a",
     "approve_playbook",
     "reject_playbook",
     "archive_playbook",
@@ -157,10 +161,12 @@ _AUDITOR_DO = (
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
 # from the lifecycle spec (a dedicated review trio, not QA's). It reads diffs and
-# records findings (note/evidence); the change-request is posted server-side, so
-# it has no outward agent comms (no dm).
+# records findings (note/evidence); the change-request is posted server-side. It
+# now carries dm/read_a2a so the CEO can reach one mid-review and it can reply
+# in-thread; its only INITIATION target stays its owning cell_pm/main_pm
+# (agents_config._check_pr_reviewer_a2a).
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
-_PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get")
+_PR_REVIEWER_DO = ("note", "evidence", "dm", "read_a2a", "notify_list", "notify_get")
 
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER

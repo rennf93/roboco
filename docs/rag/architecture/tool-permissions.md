@@ -89,7 +89,7 @@ Both share the same flow verbs and read-only git (none), but their content verbs
 
 **Flow verbs:** `triage`, `i_am_idle`  (read-only)
 
-**Content verbs:** `note` (scope=reflect), `evidence`  (no `dm` — Auditor observes silently)
+**Content verbs:** `note` (scope=reflect), `evidence`, `dm`, `read_a2a` (dm/read_a2a exist only so it can reply in-thread to a CEO-opened DM — it never initiates to a peer, so it still observes silently)
 
 **Read-only git:** none.
 
@@ -97,7 +97,7 @@ Both share the same flow verbs and read-only git (none), but their content verbs
 
 **Flow verbs:** `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork + internal PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim`, `i_am_idle`  (read-only)
 
-**Content verbs:** `note`, `evidence`, plus notification reads (`notify_list`, `notify_get`) — no `dm`: the change-request is posted server-side on the PR itself.
+**Content verbs:** `note`, `evidence`, `dm`, `read_a2a`, plus notification reads (`notify_list`, `notify_get`) — the change-request itself is still posted server-side on the PR; `dm`/`read_a2a` exist so it can reply in-thread to a CEO-opened DM, and its only INITIATION target is its owning cell_pm/main_pm (the in-path gate verdict).
 
 **Read-only git:** none.
 

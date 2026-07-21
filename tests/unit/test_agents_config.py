@@ -471,6 +471,23 @@ def test_can_a2a_direct_board_to_developer_denied() -> None:
     assert reason is not None
 
 
+def test_can_a2a_direct_auditor_to_product_owner_denied() -> None:
+    """The auditor is a silent observer of peers — it never INITIATES A2A,
+    even to a fellow board member. It still replies inside a CEO-opened DM
+    (a stateful path in A2AService, not gated by this matrix)."""
+    allowed, reason = can_a2a_direct("auditor", "product-owner")
+    assert allowed is False
+    assert reason is not None
+    assert "silent" in reason.lower()
+
+
+def test_can_a2a_direct_auditor_to_main_pm_denied() -> None:
+    allowed, reason = can_a2a_direct("auditor", "main-pm")
+    assert allowed is False
+    assert reason is not None
+    assert "silent" in reason.lower()
+
+
 def test_can_a2a_direct_pr_reviewer_to_main_pm_allowed() -> None:
     """The root→master gate reviewer delivers pr_fail change-requests to the
     owning Main PM. Denying it silently strands the verdict (blind re-submit)."""
@@ -533,10 +550,10 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
 # A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
 # ---------------------------------------------------------------------------
 
-_EXPECTED_PAIR_COUNT = 88
+_EXPECTED_PAIR_COUNT = 93
 _EXPECTED_GROUP_COUNTS = {
     "board": 3,
-    "ceo": 18,
+    "ceo": 23,
     "cell-backend": 15,
     "cell-frontend": 15,
     "cell-ux_ui": 15,
@@ -574,22 +591,22 @@ def test_a2a_allowed_pairs_excludes_non_participants_keeps_ceo() -> None:
 
 
 def test_a2a_allowed_pairs_ceo_paired_with_every_dm_capable_agent() -> None:
-    """CEO → anyone with an agent-comms surface is allowed, so every non-CEO
-    switchboard slug EXCEPT the no-comms roles (auditor, pr_reviewer — no
-    dm/read_a2a on their manifest, so a CEO DM to them is a black hole)
-    appears in exactly one ``ceo``-group pair."""
+    """CEO → anyone with an agent-comms surface is allowed. Every switchboard
+    slug is now dm-capable (auditor and pr_reviewer carry dm/read_a2a so a
+    mid-flight one can read + reply — prompter/secretary are the only
+    no-comms roles left, and they're already excluded from the switchboard
+    entirely, see test_a2a_allowed_pairs_excludes_non_participants_keeps_ceo),
+    so every non-CEO slug appears in exactly one ``ceo``-group pair."""
     ceo_pairs = [p for p in A2A_ALLOWED_PAIRS if "ceo" in (p.agent_a, p.agent_b)]
     non_ceo_slugs = (
         {p.agent_a for p in A2A_ALLOWED_PAIRS} | {p.agent_b for p in A2A_ALLOWED_PAIRS}
     ) - {"ceo"}
-    dm_capable_slugs = {
-        s for s in non_ceo_slugs if get_agent_role(s) not in ("auditor", "pr_reviewer")
-    }
     assert all(p.group_key == "ceo" for p in ceo_pairs)
-    assert len(ceo_pairs) == len(dm_capable_slugs)
-    # And the no-comms roles are confirmed absent from any ceo-group pair.
-    ceo_slugs = {p.agent_a for p in ceo_pairs} | {p.agent_b for p in ceo_pairs}
-    assert ceo_slugs.isdisjoint(non_ceo_slugs - dm_capable_slugs)
+    assert len(ceo_pairs) == len(non_ceo_slugs)
+    ceo_slugs = ({p.agent_a for p in ceo_pairs} | {p.agent_b for p in ceo_pairs}) - {
+        "ceo"
+    }
+    assert ceo_slugs == non_ceo_slugs
 
 
 def test_a2a_allowed_pairs_group_key_counts() -> None:

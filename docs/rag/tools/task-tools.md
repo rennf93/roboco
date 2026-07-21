@@ -130,7 +130,7 @@ triage()                        # read-only list of actionable tasks
 i_am_idle()
 ```
 
-The Auditor is a silent observer: read-only `triage`, no `dm`/`notify`, no claim/complete/cancel.
+The Auditor is a silent observer: read-only `triage`, no `notify`, no claim/complete/cancel. It carries `dm`/`read_a2a` but only to reply in-thread when the CEO opens a DM with it — it never initiates `dm` to a peer.
 
 ## PR Reviewer flow
 
@@ -142,7 +142,7 @@ unclaim(task_id)                # release a claimed inbound or gate review back 
 i_am_idle()
 ```
 
-The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs the org did not open. It is read-only: no `commit`/`open_pr`/`merge`, no `dm` — the change-request is posted server-side on the PR itself, and the CEO decides Supersede/Dismiss from the PR Review Queue.
+The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs the org did not open. It is read-only: no `commit`/`open_pr`/`merge` — the change-request is posted server-side on the PR itself, and the CEO decides Supersede/Dismiss from the PR Review Queue. It carries `dm`/`read_a2a`, but only to its owning cell_pm/main_pm (the in-path gate verdict) or in reply to a CEO-opened DM — never broader agent chatter.
 
 The same role also runs the **in-path PR-review gate** on the org's own assembled delivery PRs — the merge-level review before the PM merges:
 
