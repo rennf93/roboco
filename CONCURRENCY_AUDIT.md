@@ -9,7 +9,7 @@ This PR audits the list-open-then-originate dedup pattern across six engines and
 1. **VideoEngine.open_video_task** — Race condition fixed
    - **Why it races:** Three concurrent call sites (release hook, spotlight hook, /video/request route)
    - **Fix:** Per-occasion HeartbeatMutex wraps the dedup check + insert atomically
-   - **Tests:** 
+   - **Tests:**
      - `test_open_video_task_lock_held` — locked calls return None
      - `test_open_video_task_concurrent_calls` — concurrent calls for same occasion create only one task
 
@@ -24,7 +24,7 @@ This PR audits the list-open-then-originate dedup pattern across six engines and
 ### Verified Correct (with regression tests documenting why)
 
 1. **RoadmapEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race
-2. **XEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race  
+2. **XEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race
 3. **DepUpdateEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race
 4. **CIWatchEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race
 5. **SelfHealEngine.run_cycle** — Single sequential orchestrator-loop call site → no self-race
