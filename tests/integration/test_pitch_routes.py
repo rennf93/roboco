@@ -15,7 +15,7 @@ from roboco.db.tables import PitchTable
 from roboco.models import AgentRole
 from roboco.models.permissions import AgentContext
 from roboco.services.base import ConflictError
-from roboco.services.github_provisioning import ProvisioningDisabledError
+from roboco.services.pitch import ProvisioningDisabledError
 
 
 def _agent(role: AgentRole) -> AgentContext:

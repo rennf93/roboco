@@ -62,7 +62,6 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("strategy_engine_enabled", "Strategy engine"),
     ("self_heal_enabled", "Self-healing (detect + notify)"),
     ("self_heal_originate_enabled", "Self-healing — open fix tasks"),
-    ("provisioning_enabled", "Pitch auto-provisioning"),
     ("toolchain_match_enabled", "Agent runtime toolchain matching"),
     ("conventions_enabled", "Architectural conventions standard"),
     (
@@ -92,21 +91,8 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("vault_intake_enabled", "Vault intake watcher (notes -> held drafts)"),
     ("vault_report_enabled", "Vault weekly org-report note"),
     ("vault_kb_enabled", "Vault KB ingest (CEO notes -> RAG)"),
-    ("telegram_enabled", "Telegram notifications bridge (CEO DMs)"),
-    ("telegram_inbound_enabled", "Telegram inbound commands + actionable buttons"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
-
-
-def _validate_update_id(value: str) -> None:
-    try:
-        update_id = int(value)
-    except ValueError as exc:
-        raise SettingValidationError(
-            "telegram_last_update_id must be an integer"
-        ) from exc
-    if update_id < 0:
-        raise SettingValidationError("telegram_last_update_id must be >= 0")
 
 
 # Writable settings: key -> validator. Keys absent here are rejected on write so
@@ -118,10 +104,6 @@ _VALIDATORS = {
     # own hardcoded "Renzo" default renders, same as transcript retention's
     # client-side DEFAULT_RETENTION fallback.
     "ceo_name": _validate_ceo_name,
-    # Telegram inbound's getUpdates offset cursor. Not a feature flag (absent
-    # from FEATURE_FLAGS/the panel card) but reuses this same validated KV
-    # store instead of a dedicated table, so a restart doesn't replay updates.
-    "telegram_last_update_id": _validate_update_id,
     # One-time-nudge marker (XEngine._maybe_nudge_brand_voice). Not a feature
     # flag (absent from FEATURE_FLAGS/the panel card) but reuses this same KV
     # store instead of a dedicated table or a restart-losing in-memory flag.

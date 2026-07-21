@@ -17,8 +17,8 @@ Two client lifecycles are served by the same shared ``_send`` helper:
 existing pattern — and what the test suite patches via
 ``roboco.services.git.httpx.AsyncClient``, which works here too since
 ``httpx`` is a single shared module object regardless of which file imports
-it); ``GitHubProvisioningService`` and the release publisher inject/reuse
-their own client. Passing ``client=`` selects the second mode.
+it); the release publisher injects/reuses its own client. Passing
+``client=`` selects the second mode.
 """
 
 from __future__ import annotations
@@ -72,9 +72,8 @@ class GitHubProvider(GitProvider):
     """GitHub.com / GitHub Enterprise REST transport."""
 
     def __init__(self, *, base_url: str | None = None) -> None:
-        # An explicit override (only ``GitHubProvisioningService`` supplies
-        # one, already resolved once at its own construction) wins over the
-        # live setting; otherwise every call re-reads the setting fresh.
+        # An explicit override wins over the live setting; otherwise every call
+        # re-reads the setting fresh.
         self._base_url_override = base_url.rstrip("/") if base_url else None
 
     def _api_base(self) -> str:

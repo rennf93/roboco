@@ -1,8 +1,8 @@
 """roboco.services.pitch — CRUD + approve/reject orchestration (mocked deps).
 
-The approve path constructs real domain models (ProjectCreate, ProductCellMapping,
-TaskCreateRequest) but the downstream services and the GitHub provisioner are
-faked, so the test exercises the orchestration logic without a DB or network.
+Repository auto-provisioning was removed with the GitHub App integration;
+approve now raises ProvisioningDisabledError so the CEO knows provisioning is
+unavailable.
 """
 
 from __future__ import annotations
@@ -15,14 +15,8 @@ import pytest
 from roboco.db.tables import PitchTable
 from roboco.foundation.identity import Team
 from roboco.models.pitch import PitchCreate, PitchStatus
-from roboco.services import pitch as pitch_module
 from roboco.services.base import ConflictError
-from roboco.services.github_provisioning import (
-    GitHubProvisioningService,
-    ProvisionedRepo,
-    ProvisioningDisabledError,
-)
-from roboco.services.pitch import PitchService
+from roboco.services.pitch import PitchService, ProvisioningDisabledError
 
 
 def _session() -> MagicMock:
@@ -45,63 +39,6 @@ def _pitch(**kw: Any) -> PitchTable:
     }
     defaults.update(kw)
     return PitchTable(**defaults)
-
-
-class _FakeProvisioning(GitHubProvisioningService):
-    def __init__(self, *, enabled: bool = True) -> None:
-        self._enabled = enabled
-        self.created: list[str] = []
-
-    @property
-    def enabled(self) -> bool:
-        return self._enabled
-
-    async def create_repo(
-        self, name: str, description: str = "", *, private: bool = True
-    ) -> ProvisionedRepo:
-        _ = (description, private)
-        self.created.append(name)
-        return ProvisionedRepo(
-            full_name=f"org/{name}",
-            clone_url=f"https://github.com/org/{name}.git",
-            html_url=f"https://github.com/org/{name}",
-        )
-
-    async def close(self) -> None:
-        return None
-
-
-def _patch_topology(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    proj = MagicMock()
-    proj.id = uuid4()
-    project_svc = MagicMock()
-    project_svc.create = AsyncMock(return_value=proj)
-    # Default: nothing pre-exists, so provisioning takes the create path. The
-    # idempotency tests override these to return an existing row.
-    project_svc.get_by_slug = AsyncMock(return_value=None)
-    monkeypatch.setattr(pitch_module, "get_project_service", lambda _s: project_svc)
-
-    prod = MagicMock()
-    prod.id = uuid4()
-    product_svc = MagicMock()
-    product_svc.create = AsyncMock(return_value=prod)
-    product_svc.get_by_slug = AsyncMock(return_value=None)
-    product_svc.update = AsyncMock(return_value=prod)
-    monkeypatch.setattr(pitch_module, "get_product_service", lambda _s: product_svc)
-
-    task = MagicMock()
-    task.id = uuid4()
-    task_svc = MagicMock()
-    task_svc.create = AsyncMock(return_value=task)
-    monkeypatch.setattr(pitch_module, "get_task_service", lambda _s: task_svc)
-
-    main_pm = MagicMock()
-    main_pm.id = uuid4()
-    agent_svc = MagicMock()
-    agent_svc.get_by_slug = AsyncMock(return_value=main_pm)
-    monkeypatch.setattr(pitch_module, "get_agent_service", lambda _s: agent_svc)
-
-    return {"project": project_svc, "product": product_svc, "task": task_svc}
 
 
 @pytest.mark.asyncio
@@ -156,49 +93,6 @@ async def test_reject_sets_status(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_single_cell_provisions_project_and_task(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    svc = PitchService(_session())
-    pitch = _pitch(target_cells=["backend"])
-    monkeypatch.setattr(svc, "get", AsyncMock(return_value=pitch))
-    svcs = _patch_topology(monkeypatch)
-    prov = _FakeProvisioning(enabled=True)
-
-    result = await svc.approve(
-        pitch.id, "approved for build", uuid4(), provisioning=prov
-    )
-
-    assert result.status == PitchStatus.PROVISIONED.value
-    assert result.seed_task_id is not None
-    assert result.provisioned_project_ids is not None
-    assert len(result.provisioned_project_ids) == len(pitch.target_cells)
-    assert result.provisioned_product_id is None
-    assert prov.created == ["widget"]
-    svcs["product"].create.assert_not_called()
-    svcs["task"].create.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_approve_multi_cell_creates_product(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    svc = PitchService(_session())
-    pitch = _pitch(slug="multi", target_cells=["backend", "frontend"])
-    monkeypatch.setattr(svc, "get", AsyncMock(return_value=pitch))
-    svcs = _patch_topology(monkeypatch)
-    prov = _FakeProvisioning(enabled=True)
-
-    result = await svc.approve(pitch.id, "approved", uuid4(), provisioning=prov)
-
-    assert result.provisioned_product_id is not None
-    assert result.provisioned_project_ids is not None
-    assert len(result.provisioned_project_ids) == len(pitch.target_cells)
-    assert prov.created == ["multi-backend", "multi-frontend"]
-    svcs["product"].create.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_approve_rejects_when_not_proposed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,62 +101,14 @@ async def test_approve_rejects_when_not_proposed(
         svc, "get", AsyncMock(return_value=_pitch(status="provisioned"))
     )
     with pytest.raises(ConflictError):
-        await svc.approve(uuid4(), "x", uuid4(), provisioning=_FakeProvisioning())
+        await svc.approve(uuid4(), "x", uuid4())
 
 
 @pytest.mark.asyncio
-async def test_approve_blocked_when_provisioning_disabled(
+async def test_approve_raises_because_provisioning_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc = PitchService(_session())
     monkeypatch.setattr(svc, "get", AsyncMock(return_value=_pitch()))
     with pytest.raises(ProvisioningDisabledError):
-        await svc.approve(
-            uuid4(), "x", uuid4(), provisioning=_FakeProvisioning(enabled=False)
-        )
-
-
-@pytest.mark.asyncio
-async def test_approve_reuses_existing_project(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Re-approval after a partial provision reuses a committed Project by slug —
-    no repo re-create, no slug collision (idempotent provisioning)."""
-    svcs = _patch_topology(monkeypatch)
-    existing = MagicMock()
-    existing.id = uuid4()
-    svcs["project"].get_by_slug = AsyncMock(return_value=existing)
-    svc = PitchService(_session())
-    monkeypatch.setattr(
-        svc, "get", AsyncMock(return_value=_pitch(target_cells=["backend"]))
-    )
-    prov = _FakeProvisioning()
-    await svc.approve(
-        uuid4(), "ship it, aligned with the charter", uuid4(), provisioning=prov
-    )
-    assert prov.created == []  # repo NOT re-created
-    svcs["project"].create.assert_not_awaited()  # Project reused, not re-created
-
-
-@pytest.mark.asyncio
-async def test_approve_reuses_existing_product(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Multi-cell re-approval reuses the committed Product and refreshes its cell
-    map (no uq_product_projects_product_team collision)."""
-    svcs = _patch_topology(monkeypatch)
-    existing = MagicMock()
-    existing.id = uuid4()
-    svcs["product"].get_by_slug = AsyncMock(return_value=existing)
-    svc = PitchService(_session())
-    monkeypatch.setattr(
-        svc, "get", AsyncMock(return_value=_pitch(target_cells=["backend", "frontend"]))
-    )
-    await svc.approve(
-        uuid4(),
-        "ship it, aligned with the charter",
-        uuid4(),
-        provisioning=_FakeProvisioning(),
-    )
-    svcs["product"].update.assert_awaited_once()  # reused + cell map refreshed
-    svcs["product"].create.assert_not_awaited()  # NOT re-created
+        await svc.approve(uuid4(), "x", uuid4())

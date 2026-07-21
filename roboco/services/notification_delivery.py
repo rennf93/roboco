@@ -10,8 +10,6 @@ Also implements the ACK system for tracking acknowledgments.
 """
 
 import asyncio
-import contextlib
-import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,22 +43,6 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(service="notification_delivery")
 
 
-def _esc(value: object) -> str:
-    """HTML-escape a dynamic value before it lands in a Telegram HTML
-    message — mirrors ``telegram_inbound._esc``; every DM this service
-    composes runs its dynamic parts (a notification subject, a panel link)
-    through this before interpolation."""
-    return html.escape(str(value), quote=False)
-
-
-def _esc_attr(value: object) -> str:
-    """Like ``_esc`` but also escapes quotes — mirrors
-    ``telegram_inbound._esc_attr``. The panel-link ``href`` is the one place
-    this service interpolates into an HTML attribute rather than a text
-    node; an unescaped ``"`` there would close the attribute early."""
-    return html.escape(str(value), quote=True)
-
-
 def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> str:
     """Human-readable completion summary — real effort vs wall-clock, not a lone
     wall-clock figure. Degrades to wall-clock-only (turns 'n/a') when there are
@@ -92,8 +74,7 @@ def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> s
 # error) rolled the row back while connected WebSocket clients had already
 # received a push for an id that no longer existed. The fix defers the bus
 # publish to the session's `after_commit` so a rollback drops the pending
-# event: the row is durable by the time the event fires. The same queue also
-# carries the outbound Telegram send (see `_notify_telegram`) — any
+# event: the row is durable by the time the event fires. Any
 # network-adjacent side effect that must not hold the transaction open rides
 # this mechanism.
 #
@@ -913,117 +894,22 @@ class NotificationDeliveryService(BaseService):
             escalator_slug=escalator.slug,
         )
 
-    async def _send_telegram_deferred(
+    async def notify_ceo_of_queue_item(
         self,
         *,
-        text: str,
-        reply_markup: dict[str, Any] | None,
-        disable_link_preview: bool = False,
+        kind: str,  # noqa: ARG002
+        id8: str,  # noqa: ARG002
+        extra: str = "",  # noqa: ARG002
+        title: str,  # noqa: ARG002
     ) -> None:
-        """Shared best-effort deferred-send plumbing behind every Telegram DM
-        this service issues (``_notify_telegram``, ``notify_ceo_of_queue_item``).
+        """No-op placeholder: Telegram push DMs were removed with the
+        Telegram backend surfaces.
 
-        Degrades to a no-op unless ``telegram_enabled`` is armed and
-        credentials are stored. Credentials are fetched now (a fast DB read
-        on the open session); the actual network send is deferred via
-        ``defer_after_commit`` so a slow Telegram Bot API call can't hold the
-        caller's open transaction for up to ``telegram_timeout_seconds``.
-        Never raises into the caller — a credentials/network failure only
-        logs. ``text`` is sent with HTML ``parse_mode``; callers are
-        responsible for escaping every dynamic value they interpolated into
-        it (``_esc``).
+        The method is retained so existing callers (release/X/video/roadmap
+        engines) and their tests keep compiling; the in-app notification
+        remains the primary CEO signal.
         """
-        from roboco.config import settings
-
-        if not settings.telegram_enabled:
-            return
-        from roboco.services.telegram_client import build_telegram_client
-        from roboco.services.telegram_credentials import (
-            get_telegram_credentials_service,
-        )
-
-        try:
-            creds = await get_telegram_credentials_service(self.session).get_decrypted()
-        except Exception as exc:  # best-effort — never block the producer
-            _log.warning("telegram_notify_failed", error=str(exc))
-            return
-
-        timeout = settings.telegram_timeout_seconds
-
-        async def _send() -> None:
-            client = None
-            try:
-                client = build_telegram_client(creds, timeout=timeout)
-                result = await client.send_message(
-                    text,
-                    reply_markup=reply_markup,
-                    parse_mode="HTML",
-                    disable_link_preview=disable_link_preview,
-                )
-                if not result.sent:
-                    _log.warning("telegram_notify_skip", detail=result.detail)
-            except Exception as exc:  # best-effort — never break the drain
-                _log.warning("telegram_notify_failed", error=str(exc))
-            finally:
-                if client is not None:
-                    with contextlib.suppress(Exception):
-                        await client.close()
-
-        defer_after_commit(self.session, _send)
-
-    async def _notify_telegram(
-        self, *, task_id: UUID, subject: str, actionable: bool = False
-    ) -> None:
-        """Best-effort Telegram DM to the CEO alongside an in-app notification.
-
-        The message carries a panel deep-link (named "Open in panel", link
-        preview disabled so the card never swallows the chat) when
-        ``panel_base_url`` is set.
-
-        ``actionable=True`` (escalation only — V1's completion send never
-        expands beyond link-only, and no new call site is added here) also
-        attaches an Approve/Reject/Open inline keyboard (V2, gated separately
-        by ``telegram_inbound_enabled`` — with it off the buttons render but
-        the bot never polls for the tap, so they're harmlessly inert; the
-        plain-text link still works either way).
-        """
-        from roboco.config import settings
-
-        text = f"<b>{_esc(subject)}</b>"
-        if settings.panel_base_url:
-            link = f"{settings.panel_base_url.rstrip('/')}/tasks/{str(task_id)[:8]}"
-            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
-        reply_markup = None
-        if actionable:
-            from roboco.services.telegram_inbound import build_action_keyboard
-
-            reply_markup = build_action_keyboard("task", str(task_id)[:8])
-
-        await self._send_telegram_deferred(
-            text=text, reply_markup=reply_markup, disable_link_preview=True
-        )
-
-    async def notify_ceo_of_queue_item(
-        self, *, kind: str, id8: str, extra: str = "", title: str
-    ) -> None:
-        """Best-effort push DM at the moment a held draft becomes CEO-
-        actionable — release proposals, X drafts, video posts, and roadmap
-        items used to land in the approval queue silently, with no ping
-        until the CEO happened to run ``/queue``. Reuses the exact styled
-        item line and Approve/Reject/Open keyboard ``/queue`` itself renders
-        (``telegram_inbound.render_queue_item_text`` / ``build_action_keyboard``
-        — one renderer, two callers), and the same degrade-to-no-op contract
-        as ``_notify_telegram``: a credentials/network failure only logs,
-        never raises into the originating engine.
-        """
-        from roboco.services.telegram_inbound import (
-            build_action_keyboard,
-            render_queue_item_text,
-        )
-
-        text = render_queue_item_text(kind, id8, extra, title)
-        reply_markup = build_action_keyboard(kind, id8, extra)
-        await self._send_telegram_deferred(text=text, reply_markup=reply_markup)
+        return
 
     async def notify_ceo_of_escalation(
         self,
@@ -1055,9 +941,6 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
         )
         await self._persist_and_deliver(notification)
-        await self._notify_telegram(
-            task_id=task_id, subject=notification.subject, actionable=True
-        )
 
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
@@ -1087,7 +970,6 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
         )
         await self._persist_and_deliver(notification)
-        await self._notify_telegram(task_id=task_id, subject=notification.subject)
 
     async def notify_ceo_of_brand_voice_unset(self) -> None:
         """One-time nudge (see ``XEngine._maybe_nudge_brand_voice``): no

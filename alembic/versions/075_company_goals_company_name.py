@@ -6,7 +6,7 @@ below a project's own name and above the "RoboCo" literal default. Additive
 and inert until the CEO sets it in the Business -> Goals editor.
 
 Revision ID: 075_company_goals_company_name
-Revises: 074_telegram_credentials
+Revises: 073_project_environments
 Create Date: 2026-07-18
 """
 
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "075_company_goals_company_name"
-down_revision = "074_telegram_credentials"
+down_revision = "073_project_environments"
 branch_labels: dict[str, str] | None = None
 depends_on: dict[str, str] | None = None
 
