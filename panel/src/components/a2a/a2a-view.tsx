@@ -128,12 +128,25 @@ function A2AViewContent() {
     setPrevDmParam(null);
   }
 
+  // Live wiring resolved first: the /ws/system `a2a.message` stream drives
+  // instant updates, but the socket flaps, so the transcript/list get a REST
+  // poll fallback gated on the connection — poll only while disconnected,
+  // never when the stream is healthy. Without it a dropped socket freezes the
+  // open thread (it has no other refresh path).
+  const {
+    lastMessage,
+    a2aMessages,
+    isConnected,
+    state: connectionState,
+  } = useA2ALiveStream();
+  const a2aPoll = isConnected ? false : 10_000;
+
   const {
     data: conversationData,
     isLoading: loadingConversations,
     error,
     refetch: refetchConversations,
-  } = useA2AConversations(100);
+  } = useA2AConversations(100, true, a2aPoll);
   const {
     data: pairsData,
     isLoading: loadingPairs,
@@ -144,7 +157,7 @@ function A2AViewContent() {
     isLoading: loadingMessages,
     error: messagesError,
     refetch: refetchMessages,
-  } = useA2AMessages(selectedId);
+  } = useA2AMessages(selectedId, { refetchInterval: a2aPoll });
 
   const { register, unregister, refresh } = usePageRefresh();
 
@@ -175,13 +188,8 @@ function A2AViewContent() {
   // Live wiring: every persisted A2A message is announced on /ws/system as an
   // `a2a.message` frame. Invalidate-on-frame (the session-detail idiom) — the
   // frame's excerpt is capped by design, so REST stays the source of truth and
-  // react-query refetches the affected queries.
-  const {
-    lastMessage,
-    a2aMessages,
-    isConnected,
-    state: connectionState,
-  } = useA2ALiveStream();
+  // react-query refetches the affected queries. (The stream itself is resolved
+  // above so the poll fallback can gate on its connection state.)
   useEffect(() => {
     if (lastMessage?.type !== "a2a.message") return;
     queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
@@ -472,7 +480,13 @@ function A2AViewContent() {
                           {" ↔ "}
                           {getAgentDisplayName(selected.agent_b)}
                         </span>
-                        <HelpTip label={selected.status === "active" ? "Actively exchanging messages" : "No longer active"}>
+                        <HelpTip
+                          label={
+                            selected.status === "active"
+                              ? "Actively exchanging messages"
+                              : "No longer active"
+                          }
+                        >
                           <Badge
                             variant={
                               selected.status === "active"
@@ -484,7 +498,9 @@ function A2AViewContent() {
                             {selected.status}
                           </Badge>
                         </HelpTip>
-                        <HelpTip label={new Date(selected.updated_at).toLocaleString()}>
+                        <HelpTip
+                          label={new Date(selected.updated_at).toLocaleString()}
+                        >
                           <span className="text-xs text-muted-foreground ml-auto w-fit">
                             {selected.message_count} msgs · updated{" "}
                             {formatDistanceToNow(new Date(selected.updated_at))}{" "}

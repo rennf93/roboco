@@ -18,12 +18,19 @@ export const a2aLiveKeys = {
 
 // Conversation list — refreshed by WS `a2a.message` invalidation and the
 // manual Refresh button; a short staleTime keeps remounts reasonably fresh.
-export function useA2AConversations(limit?: number, enabled = true) {
+// `refetchInterval` is the caller's poll fallback for when the /ws/system
+// socket is down (the desktop view gates it on the live-stream connection).
+export function useA2AConversations(
+  limit?: number,
+  enabled = true,
+  refetchInterval: number | false = false,
+) {
   return useQuery({
     queryKey: [...a2aLiveKeys.conversations, limit ?? 50],
     queryFn: () => a2aApi.listAdminConversations(limit),
     staleTime: 30_000,
     enabled,
+    refetchInterval,
   });
 }
 
