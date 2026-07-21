@@ -14,7 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { useIsMobile } from "@/hooks/use-is-mobile";
-import { formatTokens, formatBucket } from "@/lib/format";
+import { formatTokens, formatBucket, bucketGranularity } from "@/lib/format";
 import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { UsageTimePoint } from "@/types";
 
@@ -28,8 +28,9 @@ export function UsageTimeSeriesChart({
   isLoading,
 }: UsageTimeSeriesChartProps) {
   const isMobile = useIsMobile();
+  const granularity = bucketGranularity((data ?? []).map((p) => p.bucket));
   const chartData = (data ?? []).map((p) => ({
-    hour: formatBucket(p.bucket),
+    hour: formatBucket(p.bucket, granularity),
     Input: p.tokens_input,
     Output: p.tokens_output,
   }));
@@ -85,6 +86,7 @@ export function UsageTimeSeriesChart({
                 dataKey="hour"
                 tick={{ fontSize: isMobile ? 9 : 10 }}
                 interval="preserveStartEnd"
+                minTickGap={40}
                 axisLine={false}
                 tickLine={false}
               />

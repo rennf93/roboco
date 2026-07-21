@@ -12,7 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
-import { formatBucket } from "@/lib/format";
+import { formatBucket, bucketGranularity } from "@/lib/format";
 import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import type { UsageTimePoint } from "@/types";
 
@@ -31,8 +31,9 @@ function fmtCost(n: number): string {
  * series-shaped endpoint the Overview page's CostTrendChart draws from.
  */
 export function SpendTrendChart({ data, isLoading }: SpendTrendChartProps) {
+  const granularity = bucketGranularity((data ?? []).map((p) => p.bucket));
   const chartData = (data ?? []).map((p) => ({
-    day: formatBucket(p.bucket),
+    day: formatBucket(p.bucket, granularity),
     Spend: p.cost_usd,
   }));
 
