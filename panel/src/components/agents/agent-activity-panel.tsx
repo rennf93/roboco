@@ -23,7 +23,7 @@ import { GitBranch, BookOpen } from "lucide-react";
 import { useUsageTimeSeries } from "@/hooks/use-usage";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
 import { useAgentJournalEntries } from "@/hooks/use-journals";
-import { formatTokens, formatBucket } from "@/lib/format";
+import { formatTokens, formatBucket, bucketGranularity } from "@/lib/format";
 import { chartTooltipStyle } from "@/components/charts/chart-tooltip";
 import { WorkSessionStatus, type UsageTimePoint } from "@/types";
 
@@ -109,6 +109,7 @@ export function AgentActivityPanel({
   const hasTokens = (series ?? []).some(
     (p: UsageTimePoint) => p.total_tokens > 0,
   );
+  const granularity = bucketGranularity((series ?? []).map((p) => p.bucket));
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -145,7 +146,7 @@ export function AgentActivityPanel({
                 </defs>
                 <XAxis
                   dataKey="bucket"
-                  tickFormatter={formatBucket}
+                  tickFormatter={(b) => formatBucket(String(b), granularity)}
                   tick={{ fontSize: 9 }}
                   axisLine={false}
                   tickLine={false}
@@ -163,7 +164,9 @@ export function AgentActivityPanel({
                     formatTokens(typeof value === "number" ? value : 0),
                     "Tokens",
                   ]}
-                  labelFormatter={(label) => formatBucket(String(label))}
+                  labelFormatter={(label) =>
+                    formatBucket(String(label), granularity)
+                  }
                 />
                 <Area
                   type="monotone"

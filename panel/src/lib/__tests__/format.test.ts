@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatTokens, formatBucket } from "@/lib/format";
+import { formatTokens, formatBucket, bucketGranularity } from "@/lib/format";
 
 describe("formatTokens", () => {
   it("renders raw digits below 1000", () => {
@@ -19,21 +19,47 @@ describe("formatTokens", () => {
   });
 });
 
-describe("formatBucket", () => {
-  it("formats a midnight-UTC daily bucket as MM/DD", () => {
-    // Regression guard: a plain "T00:00:00.000Z" bucket must never be
-    // mistaken for an hourly bucket just because minutes/seconds are 0.
-    expect(formatBucket("2026-07-15T00:00:00.000Z")).toBe(
-      new Date("2026-07-15T00:00:00.000Z").getMonth() +
-        1 +
-        "/" +
-        new Date("2026-07-15T00:00:00.000Z").getDate(),
-    );
+describe("bucketGranularity", () => {
+  it("hourly when buckets sit ~1h apart", () => {
+    expect(
+      bucketGranularity([
+        "2026-07-15T00:00:00Z",
+        "2026-07-15T01:00:00Z",
+        "2026-07-15T02:00:00Z",
+      ]),
+    ).toBe("hour");
   });
 
-  it("formats a non-midnight hourly bucket as HH:00", () => {
+  it("daily when buckets sit ~24h apart", () => {
+    expect(
+      bucketGranularity([
+        "2026-07-13T00:00:00Z",
+        "2026-07-14T00:00:00Z",
+        "2026-07-15T00:00:00Z",
+      ]),
+    ).toBe("day");
+  });
+
+  it("defaults to hourly with too few points to tell", () => {
+    expect(bucketGranularity(["2026-07-15T00:00:00Z"])).toBe("hour");
+  });
+});
+
+describe("formatBucket", () => {
+  it("renders a daily bucket as a date, never a bare local hour", () => {
+    // Regression: a midnight-UTC daily bucket used to render as the viewer's
+    // local hour ("02:00" at UTC+2) for every tick. It must be a date.
+    const out = formatBucket("2026-07-15T00:00:00.000Z", "day");
+    expect(out).not.toMatch(/^\d{2}:00$/);
+    expect(out).toContain("15");
+  });
+
+  it("renders an hourly bucket as HH:00", () => {
     const bucket = "2026-07-15T14:00:00.000Z";
-    const expectedHour = new Date(bucket).getHours().toString().padStart(2, "0");
-    expect(formatBucket(bucket)).toBe(`${expectedHour}:00`);
+    const expectedHour = new Date(bucket)
+      .getHours()
+      .toString()
+      .padStart(2, "0");
+    expect(formatBucket(bucket, "hour")).toBe(`${expectedHour}:00`);
   });
 });
