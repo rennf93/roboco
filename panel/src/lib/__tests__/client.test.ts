@@ -30,7 +30,8 @@ vi.mock("@/store/rate-limit-store", () => ({
 // ---------------------------------------------------------------------------
 // Import the function under test AFTER mocks are in place
 // ---------------------------------------------------------------------------
-import { getErrorMessage, isTgSurfacePath } from "@/lib/api/client";
+import { getErrorMessage, isTgSurfacePath, isRetrySafe } from "@/lib/api/client";
+import { AxiosHeaders } from "axios";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -224,5 +225,39 @@ describe("isTgSurfacePath — the /tg login-redirect exemption", () => {
     expect(isTgSurfacePath("/tgsomething")).toBe(false);
     expect(isTgSurfacePath("/login")).toBe(false);
     expect(isTgSurfacePath("/")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRetrySafe — the 429 retry-by-method gate
+// ---------------------------------------------------------------------------
+
+describe("isRetrySafe — 429 retry gated by HTTP method", () => {
+  function config(method: string, headers = new AxiosHeaders()) {
+    return { method, headers } as never;
+  }
+
+  it("retries GET and PUT unconditionally — the explicit PO safe-method carve-out", () => {
+    expect(isRetrySafe(config("get"))).toBe(true);
+    expect(isRetrySafe(config("GET"))).toBe(true);
+    expect(isRetrySafe(config("put"))).toBe(true);
+  });
+
+  it("does not retry POST/PATCH/DELETE without an idempotency key", () => {
+    expect(isRetrySafe(config("post"))).toBe(false);
+    expect(isRetrySafe(config("patch"))).toBe(false);
+    expect(isRetrySafe(config("delete"))).toBe(false);
+  });
+
+  it("retries POST/PATCH/DELETE when the caller attached an idempotency key", () => {
+    const headers = new AxiosHeaders();
+    headers.set("X-Idempotency-Key", "abc123");
+    expect(isRetrySafe(config("post", headers))).toBe(true);
+    expect(isRetrySafe(config("patch", headers))).toBe(true);
+    expect(isRetrySafe(config("delete", headers))).toBe(true);
+  });
+
+  it("returns false when config is missing", () => {
+    expect(isRetrySafe(undefined)).toBe(false);
   });
 });
