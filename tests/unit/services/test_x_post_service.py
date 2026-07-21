@@ -291,7 +291,7 @@ async def test_approve_no_credentials_result(db_session: AsyncSession) -> None:
     assert result is not None
     assert result.status == "no_credentials"
     await db_session.refresh(task)
-    assert task.status == TS.PENDING  # never advanced without credentials
+    assert task.status == TS.PENDING
 
 
 @pytest.mark.asyncio
@@ -628,7 +628,7 @@ async def test_approve_concurrent_edit_does_not_clobber_a_committed_post(
     VideoPostService's identical cross-session regression test."""
     task = await _seed_draft(db_session, body="Original")
     task_id = _id(task)
-    await db_session.commit()  # externally visible to the "concurrent" session below
+    await db_session.commit()
 
     real_get = TaskService.get
     injected = False
