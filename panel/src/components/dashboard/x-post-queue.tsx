@@ -77,6 +77,10 @@ function describeExecuteResult(result: XPostExecuteResult): string {
     return "A post is already in progress for this draft.";
   if (result.status === "no_credentials")
     return "No X credentials configured — set them below first.";
+  if (result.status === "post_failed")
+    return `Posting failed: ${result.detail}`;
+  if (result.status === "redis_unavailable")
+    return "Redis is unavailable — can't acquire the post lock.";
   return `${result.status}: ${result.detail}`;
 }
 

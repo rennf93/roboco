@@ -102,6 +102,11 @@ vi.mock("@/components/projects/project-selector", () => ({
   ),
 }));
 
+const { toast } = vi.hoisted(() => ({
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+}));
+vi.mock("sonner", () => ({ toast }));
+
 import { VideoPostQueue } from "../video-post-queue";
 
 function withQueryClient(ui: ReactNode) {
@@ -119,6 +124,9 @@ describe("VideoPostQueue", () => {
     reject.mockClear();
     requestVideo.mockClear();
     getMediaBlob.mockClear();
+    toast.success.mockClear();
+    toast.warning.mockClear();
+    toast.error.mockClear();
     resolveApproveRef.current = null;
     // jsdom has no Blob URL implementation. Distinct URLs per call so a
     // revoke can be asserted against the specific (stale) one it replaced.
@@ -557,5 +565,69 @@ describe("VideoPostQueue", () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
     expect(document.querySelector("iframe")).not.toBeInTheDocument();
+  });
+
+  // F(silent-bug-sweep #c): every VideoPostService.approve status must
+  // render a distinct, non-swallowed toast — regression guard, no code gap
+  // was found here (describeExecuteResult already branches every one of
+  // these).
+  it.each([
+    [
+      "posted_partial",
+      { status: "posted_partial", posted: { x: "1" }, detail: "tiktok: down" },
+      "Posted to some platforms — tiktok: down",
+    ],
+    [
+      "post_failed",
+      { status: "post_failed", posted: {}, detail: "both platforms down" },
+      "Posting failed: both platforms down",
+    ],
+    [
+      "already_in_progress",
+      { status: "already_in_progress", posted: {}, detail: "" },
+      "A post is already in progress for this draft.",
+    ],
+    [
+      "no_platforms",
+      { status: "no_platforms", posted: {}, detail: "" },
+      "This draft has no target platforms.",
+    ],
+    [
+      "lock_lost",
+      { status: "lock_lost", posted: {}, detail: "" },
+      "The post lock was lost mid-upload — retry the approve.",
+    ],
+    [
+      "redis_unavailable",
+      { status: "redis_unavailable", posted: {}, detail: "" },
+      "Redis is unavailable — can't acquire the post lock.",
+    ],
+  ])("shows distinct feedback for the %s status", async (_, result, message) => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+
+    resolveApproveRef.current?.(result);
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(message));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a success toast for the posted status", async () => {
+    render(withQueryClient(<VideoPostQueue />));
+    await screen.findByText("release");
+    fireEvent.click(screen.getByRole("button", { name: /Approve/ }));
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+
+    resolveApproveRef.current?.({
+      status: "posted",
+      posted: { x: "1", tiktok: "2" },
+      detail: "posted to all platforms",
+    });
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Posted to all platforms."),
+    );
   });
 });
