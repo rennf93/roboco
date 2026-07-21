@@ -6,6 +6,7 @@ import {
   getWebSocketUrl,
 } from "@/lib/websocket/connection";
 import { CEO_AGENT_ID, STREAM_MAX_MESSAGES } from "@/lib/constants";
+import { notificationsApi } from "@/lib/api/notifications";
 
 // Re-export ConnectionState type
 export type { ConnectionState } from "@/lib/websocket/connection";
@@ -251,16 +252,57 @@ export function useNotificationStream() {
     true,
   );
 
+  // connection.ts has no message buffering/replay: a notification published
+  // while the socket is down (disconnected/reconnecting) is gone from the WS
+  // stream forever, not merely delayed. Catch up over REST the moment the
+  // stream recovers from a real gap (not the initial mount's first connect)
+  // so a replay-suppressed dedup below can't hide something the bell never
+  // actually received.
+  const [catchup, setCatchup] = useState<NotificationMessage[]>([]);
+  const everConnectedRef = useRef(false);
+  const hadGapRef = useRef(false);
+  useEffect(() => {
+    if (state === "reconnecting" || state === "disconnected") {
+      hadGapRef.current = true;
+      return;
+    }
+    if (state !== "connected") return;
+    if (everConnectedRef.current && hadGapRef.current) {
+      hadGapRef.current = false;
+      notificationsApi
+        .list({ unread_only: true })
+        .then((res) => {
+          setCatchup(
+            res.items.map((n) => ({
+              type: "notification" as const,
+              notification_id: n.id,
+              notification_type: n.type,
+              subject: n.subject,
+              priority: n.priority,
+              timestamp: n.timestamp,
+            })),
+          );
+        })
+        .catch(() => {
+          // Best-effort: live WS delivery resumes regardless of catch-up
+          // success, so a fetch failure here isn't fatal.
+        });
+    }
+    everConnectedRef.current = true;
+  }, [state]);
+
   // Filter to notification events, de-duplicated by notification_id so a
   // stream replay (e.g. after a websocket reconnect) does not surface — or
   // count — the same notification twice. Walk newest→oldest keeping the most
   // recent copy of each id, then restore arrival order. Events without an id
-  // (older payloads) are always kept.
+  // (older payloads) are always kept. The REST catch-up batch is folded in
+  // ahead of the live WS messages so it can't shadow anything delivered live.
   const notifications = useMemo(() => {
+    const combined = [...catchup, ...messages];
     const seen = new Set<string>();
     const deduped: NotificationMessage[] = [];
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
+    for (let i = combined.length - 1; i >= 0; i--) {
+      const m = combined[i];
       if (m.type !== "notification") continue;
       const id = m.notification_id;
       if (id) {
@@ -271,14 +313,21 @@ export function useNotificationStream() {
     }
     deduped.reverse();
     return deduped;
-  }, [messages]);
+  }, [messages, catchup]);
+
+  // Clear must drop the REST catch-up batch too — otherwise a cleared badge
+  // would immediately repopulate from the still-held catchup state.
+  const clearAll = useCallback(() => {
+    setCatchup([]);
+    clearMessages();
+  }, [clearMessages]);
 
   return {
     state,
     lastMessage,
     notifications,
     allMessages: messages,
-    clearMessages,
+    clearMessages: clearAll,
     isConnected,
     isConnecting,
   };
