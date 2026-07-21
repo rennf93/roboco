@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { agentStateDescription, stateColors } from "./agent-state-badge";
 import { SpawnAgentDialog } from "./spawn-agent-dialog";
 import { EXCLUDE_NON_DM_ROLES } from "@/components/a2a/a2a-new-dm-dialog";
+import { AgentRole } from "@/types";
 import type { AgentUsageRow } from "@/types";
 
 interface AgentCardProps {
@@ -35,6 +36,20 @@ interface AgentCardProps {
   usageRow?: AgentUsageRow | null;
 }
 
+// Human-only roles the CEO reaches through their own dedicated screen, not a
+// 1:1 DM — same chat icon, but it navigates there instead of opening a thread
+// (Intake and the Secretary each run their conversation over a live-session
+// bridge, not A2A).
+const DEDICATED_CHAT: Partial<
+  Record<AgentRole, { href: string; label: string }>
+> = {
+  [AgentRole.PROMPTER]: { href: "/prompter", label: "Open Intake chat" },
+  [AgentRole.SECRETARY]: {
+    href: "/business?tab=secretary",
+    label: "Open Secretary chat",
+  },
+};
+
 export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
   const router = useRouter();
   const stopAgent = useStopAgent();
@@ -42,6 +57,9 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
   // Same exclusion list the New DM dialog enforces (self, plus roles that
   // can't read/answer a DM) — a card for one of those renders no DM button.
   const canDm = !!agent.role && !EXCLUDE_NON_DM_ROLES.includes(agent.role);
+  const dedicatedChat = agent.role
+    ? DEDICATED_CHAT[agent.role as AgentRole]
+    : undefined;
   // "Up" = anything that isn't a terminal/down state. Spawn is offered ONLY when
   // the agent is down; an up agent (active / running / idle / paused / …) shows
   // View Details + Stop instead. We list the DOWN states rather than the up ones
@@ -72,9 +90,15 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
         className: "text-red-500",
       }
     : agentStatus?.waiting_for
-      ? { text: "Waiting: " + agentStatus.waiting_for, className: "text-yellow-600" }
+      ? {
+          text: "Waiting: " + agentStatus.waiting_for,
+          className: "text-yellow-600",
+        }
       : agentStatus?.task_id
-        ? { text: "Task " + agentStatus.task_id.slice(0, 8) + "…", className: "text-muted-foreground" }
+        ? {
+            text: "Task " + agentStatus.task_id.slice(0, 8) + "…",
+            className: "text-muted-foreground",
+          }
         : null;
 
   return (
@@ -101,6 +125,20 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                 </Button>
               </HelpTip>
             )}
+            {dedicatedChat && (
+              <HelpTip label={dedicatedChat.label}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  aria-label={dedicatedChat.label}
+                  title={dedicatedChat.label}
+                  onClick={() => router.push(dedicatedChat.href)}
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                </Button>
+              </HelpTip>
+            )}
             <DropdownMenu>
               <HelpTip label="Agent actions">
                 <DropdownMenuTrigger asChild>
@@ -121,7 +159,10 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                 )}
                 {isActive && (
                   <>
-                    <HelpTip label="Open this agent's status, activity, and live output stream" side="left">
+                    <HelpTip
+                      label="Open this agent's status, activity, and live output stream"
+                      side="left"
+                    >
                       <DropdownMenuItem asChild>
                         <Link href={"/agents/" + agent.id} prefetch={false}>
                           <Activity className="h-4 w-4 mr-2" />
@@ -130,13 +171,19 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                       </DropdownMenuItem>
                     </HelpTip>
                     <DropdownMenuSeparator />
-                    <HelpTip label="Lets the agent finish its current step before stopping" side="left">
+                    <HelpTip
+                      label="Lets the agent finish its current step before stopping"
+                      side="left"
+                    >
                       <DropdownMenuItem onClick={() => handleStop(true)}>
                         <Square className="h-4 w-4 mr-2" />
                         Stop Gracefully
                       </DropdownMenuItem>
                     </HelpTip>
-                    <HelpTip label="Kills the container immediately, even mid-task" side="left">
+                    <HelpTip
+                      label="Kills the container immediately, even mid-task"
+                      side="left"
+                    >
                       <DropdownMenuItem
                         onClick={() => handleStop(false)}
                         className="text-red-600"
