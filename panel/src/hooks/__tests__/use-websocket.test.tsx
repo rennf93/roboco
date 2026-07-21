@@ -57,6 +57,13 @@ vi.mock("@/lib/constants", () => ({
   STREAM_MAX_MESSAGES: 100,
 }));
 
+// use-websocket.ts imports notificationsApi (for useNotificationStream's
+// reconnect catch-up) which transitively pulls in the API client — stub it so
+// this file's unrelated hook tests don't need a real API_URL/axios setup.
+vi.mock("@/lib/api/notifications", () => ({
+  notificationsApi: { list: vi.fn().mockResolvedValue({ items: [] }) },
+}));
+
 import { useWebSocket, _resetSharedSocketsForTest } from "../use-websocket";
 
 interface Frame {
