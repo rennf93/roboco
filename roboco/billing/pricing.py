@@ -8,9 +8,10 @@ Pricing is provider-aware. A model name resolves to one of four cases:
 
 * **Anthropic** — priced from the table below by substring match.
 * **Priced non-Anthropic** — xAI Grok (``grok-build-*``, billed per token via
-  the xAI API) and OpenAI Codex (``gpt-5.3-codex``, a ChatGPT-subscription CLI
+  the xAI API), OpenAI Codex (``gpt-5.3-codex``, a ChatGPT-subscription CLI
   priced here for cost attribution, not because the subscription itself is
-  metered) are priced from the table too. Match by substring like the rest.
+  metered), and Google Gemini (``gemini-2.5-*``, billed per token via the
+  Gemini API) are priced from the table too. Match by substring like the rest.
 * **Free non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix
   or bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
   per-token cost**: local inference runs on owned hardware, and Ollama Cloud
@@ -71,6 +72,16 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # $0.175/1M; OpenAI publishes no cache-write premium, so cache_write is
     # the normal input rate (same convention as grok-build above).
     ("gpt-5.3-codex", 1.75, 14.00, 0.175, 1.75),
+    # Google Gemini — priced non-Anthropic (per-token via the Gemini API), all
+    # three GA models (≤200k context tier for Pro). No cache-rate premium/
+    # discount is published in the spike that sourced these, so cache_read /
+    # cache_write both fall back to the normal input rate (conservative — not
+    # free — rather than an invented discount). "gemini-2.5-flash" is a prefix
+    # of "gemini-2.5-flash-lite"; longest-fragment-wins in _lookup_prices
+    # disambiguates them correctly.
+    ("gemini-2.5-pro", 1.25, 10.00, 1.25, 1.25),
+    ("gemini-2.5-flash-lite", 0.10, 0.40, 0.10, 0.10),
+    ("gemini-2.5-flash", 0.30, 2.50, 0.30, 0.30),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
     ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),

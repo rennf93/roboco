@@ -1,15 +1,16 @@
 """The orchestrator routes only dedicated-backend providers through the registry.
 
-GROK gets the GrokCliProvider; Anthropic / Ollama Cloud / self-hosted (and any
-unknown value) return None so ``_spawn_container`` runs its built-in Claude Code
-path unchanged. This keeps the GROK addition purely additive.
+GROK gets the GrokCliProvider, GEMINI gets the GeminiCliProvider; Anthropic /
+Ollama Cloud / self-hosted (and any unknown value) return None so
+``_spawn_container`` runs its built-in Claude Code path unchanged. This keeps
+the GROK / GEMINI additions purely additive.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from roboco.llm.providers import GrokCliProvider
+from roboco.llm.providers import GeminiCliProvider, GrokCliProvider
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
@@ -22,6 +23,10 @@ def _make_orch() -> AgentOrchestrator:
 
 def test_provider_for_grok_returns_grok_provider() -> None:
     assert isinstance(_make_orch()._provider_for("grok"), GrokCliProvider)
+
+
+def test_provider_for_gemini_returns_gemini_provider() -> None:
+    assert isinstance(_make_orch()._provider_for("gemini"), GeminiCliProvider)
 
 
 def test_provider_for_anthropic_returns_none() -> None:

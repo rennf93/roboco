@@ -285,6 +285,13 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-codex image present'"]
     restart: "no"
 
+  # Gemini (Google, via the official gemini CLI). One-shot delivery roles
+  # only (V1) — no interactive prompter/secretary variant, contrast Grok above.
+  agent-gemini-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-gemini:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-gemini image present'"]
+    restart: "no"
+
   # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
   # into pg extensions. Bare sandboxes use the upstream postgres image, so this
   # is only needed by extension-using projects.
@@ -359,6 +366,10 @@ services:
       # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
       # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
       ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
+      # OAuth login (host ~/.gemini) for Gemini-CLI agents — the orchestrator
+      # mounts <dir>/oauth_creds.json (read-only) into each Gemini agent. Run
+      # `gemini` interactively once on the host to produce it.
+      ROBOCO_HOST_GEMINI_DIR: ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
       # Reachable base URL for commit-trailer links — set to your host's LAN
       # address or domain so the links in commit bodies resolve.
@@ -462,6 +473,13 @@ services:
       - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
       # Codex CLI auth — same shape as the SuperGrok mount above.
       - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
+      # OAuth login for Gemini-CLI agents — mount host ~/.gemini at the SAME
+      # host path the orchestrator hands each Gemini agent's `-v`, so its
+      # oauth_creds.json exists() check passes here AND the agent bind
+      # resolves on the host. Read-ONLY: Google's OAuth refresh token is
+      # reusable and refreshed IN-PROCESS by each agent container's own CLI —
+      # never by the orchestrator — unlike grok's read-write mount above.
+      - ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:ro
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
@@ -471,6 +489,8 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
       # Per-agent CODEX usage capture — same shape as grok-usage above.
       - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
+      # Per-agent GEMINI usage capture (usage.json -> finalizer).
+      - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
       # video engine: NAS-only bind mount, off by default in public registry.
       # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.
