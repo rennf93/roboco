@@ -12,6 +12,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     env:
       GHCR: ghcr.io/rennf93         # GitHub Container Registry namespace
@@ -136,3 +138,52 @@ jobs:
           done
 
           echo "Published roboco-agent-base + roboco-agent-grok + ${#IMAGES[@]} more images to GHCR + Docker Hub at :${VERSION} and :latest"
+
+  pull-smoke:
+    name: Registry pull smoke — verify every published image is pullable
+    needs: publish-images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # This is the exact regression class the docs/CHANGELOG already record
+    # once ("Release images complete" — the release workflow's build matrix
+    # was missing the two Grok sub-images, so docker-compose.registry.yml's
+    # pull failed for every fresh user until the next release). Running the
+    # literal command a user runs, against the tag that was just published,
+    # catches a missing/mistagged image before anyone else does.
+    env:
+      ROBOCO_REGISTRY: ghcr.io/rennf93
+      ROBOCO_VERSION: ${{ needs.publish-images.outputs.version }}
+      # docker-compose.registry.yml hard-requires these three non-empty
+      # (`${VAR:?...}` on the orchestrator/nginx services) just to
+      # INTERPOLATE the file — `pull` never touches their runtime values, so
+      # placeholders are enough to get past that gate (see scripts/bootstrap.sh
+      # for what a real deploy generates here).
+      ROBOCO_ENCRYPTION_KEY: pull-smoke-placeholder-not-a-real-key
+      ROBOCO_AGENT_AUTH_SECRET: pull-smoke-placeholder-not-a-real-secret
+      ROBOCO_PANEL_AGENT_TOKEN: pull-smoke-placeholder-not-a-real-token
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Free up runner disk space
+        run: |
+          # Same trick as publish-images: pulling ~20 images (roboco's own
+          # plus postgres/redis/ollama/nginx) on one runner is disk-heavy.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull every image docker-compose.registry.yml references
+        run: |
+          echo "Pulling ${ROBOCO_REGISTRY}/roboco-*:${ROBOCO_VERSION} (+ upstream deps) — failing on any missing image..."
+          docker compose -f docker-compose.registry.yml pull

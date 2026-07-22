@@ -71,6 +71,15 @@ infra-down:
 	@echo "Stopping infrastructure..."
 	@docker compose down
 
+# One-command bring-up for the registry (pull-and-run) deploy: scaffolds .env
+# with freshly generated secrets on first run (never touches an existing one),
+# pulls + starts docker-compose.registry.yml, then polls until the stack is
+# genuinely ready and prints a doctor-style summary. See scripts/bootstrap.sh
+# for the grounded health/readiness probes.
+.PHONY: quickstart
+quickstart:
+	@./scripts/bootstrap.sh
+
 # Run database migrations
 .PHONY: migrate
 migrate:
@@ -479,6 +488,7 @@ help:
 	@echo "RoboCo - AI Agents Company"
 	@echo ""
 	@echo "Infrastructure:"
+	@echo "  make quickstart               - One-command bring-up (registry pull-and-run)"
 	@echo "  make infra                    - Start PostgreSQL + Redis"
 	@echo "  make infra-down               - Stop infrastructure"
 	@echo "  make migrate                  - Run database migrations"
