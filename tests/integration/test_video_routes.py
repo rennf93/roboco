@@ -265,15 +265,16 @@ async def test_request_video_opens_authoring_task(
     project = (
         await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
     ).scalar_one()
-    resp = await ceo_client.post(
-        "/api/video/request",
-        json={
-            "occasion": "CEO on-demand: launch teaser",
-            "brief": "A short teaser for the new dashboard",
-            "platforms": ["x", "tiktok"],
-            "project_id": str(project.id),
-        },
-    )
+    with _LOCKED[0], _LOCKED[1]:
+        resp = await ceo_client.post(
+            "/api/video/request",
+            json={
+                "occasion": "CEO on-demand: launch teaser",
+                "brief": "A short teaser for the new dashboard",
+                "platforms": ["x", "tiktok"],
+                "project_id": str(project.id),
+            },
+        )
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
     assert body["status"] == "opened"
@@ -396,12 +397,14 @@ async def test_request_video_not_opened_on_duplicate_occasion(
         "platforms": ["x"],
         "project_id": str(project.id),
     }
-    first = await ceo_client.post("/api/video/request", json=payload)
+    with _LOCKED[0], _LOCKED[1]:
+        first = await ceo_client.post("/api/video/request", json=payload)
     assert first.status_code == HTTPStatus.OK
     assert first.json()["status"] == "opened"
     task_id = first.json()["task_id"]
     try:
-        second = await ceo_client.post("/api/video/request", json=payload)
+        with _LOCKED[0], _LOCKED[1]:
+            second = await ceo_client.post("/api/video/request", json=payload)
         assert second.status_code == HTTPStatus.OK
         assert second.json()["status"] == "not_opened"
         assert second.json()["task_id"] is None

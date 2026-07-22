@@ -8,6 +8,7 @@ Secretary-owned and held for the CEO. Asserted against a real Postgres DB.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -21,6 +22,7 @@ from roboco.models.base import AgentRole, AgentStatus, Complexity, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services import video_engine as video_engine_module
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable
 from roboco.services.task import VIDEO_POST_SOURCE, VIDEO_SOURCE, get_task_service
 from sqlalchemy import delete, select
 
@@ -97,6 +99,27 @@ def _mock_local_model(monkeypatch: pytest.MonkeyPatch, reply: str | None) -> Asy
     mock = AsyncMock(return_value=reply)
     monkeypatch.setattr(video_engine_module, "_chat", mock)
     return mock
+
+
+class _AlwaysAcquiredMutex:
+    """Stand-in for ``HeartbeatMutex``: always acquires immediately, no live
+    Redis required (matches the project's ``_no_live_redis`` fixture). Used
+    as the default so every scenario below that isn't specifically testing
+    the occasion-lock behavior is unaffected by its introduction."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    async def acquire(self) -> str | None:
+        return "tok"
+
+    async def release(self, _token: str) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_occasion_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(video_engine_module, "HeartbeatMutex", _AlwaysAcquiredMutex)
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +222,109 @@ async def test_open_video_task_dedupes_same_occasion(
         occasion="release v1.0.0", script="s2", platforms=["x"], brief="b2"
     )
     assert second is None
+    open_tasks = await get_task_service(db_session).list_open_video_posts()
+    assert len(open_tasks) == ONE
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_returns_none_when_occasion_lock_held(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held per-occasion lock (another call already owns it) is a no-op,
+    not an error — it opens nothing and leaves the shared session usable."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+
+    class _HeldMutex:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        async def acquire(self) -> str | None:
+            return None  # another call already holds this occasion's lock
+
+        async def release(self, _token: str) -> None:
+            raise AssertionError("release must not be called when acquire failed")
+
+    monkeypatch.setattr(video_engine_module, "HeartbeatMutex", _HeldMutex)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="release v1.0.0", script="s", platforms=["x"], brief="b"
+    )
+    assert task is None
+    assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_returns_none_when_lock_unavailable(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Redis outage on the occasion lock fails closed (no-op), not a crash."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+
+    class _BrokenMutex:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        async def acquire(self) -> str | None:
+            raise HeartbeatLockUnavailable("redis down")
+
+        async def release(self, _token: str) -> None:
+            raise AssertionError("release must not be called when acquire failed")
+
+    monkeypatch.setattr(video_engine_module, "HeartbeatMutex", _BrokenMutex)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="release v1.0.0", script="s", platforms=["x"], brief="b"
+    )
+    assert task is None
+    assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_concurrent_same_occasion_creates_only_one(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (engine dedup race): ``open_video_task`` is reachable from
+    several genuinely concurrent callers for the same occasion (a double-click
+    on ``/video/request``, or an on-demand call racing the release hook) —
+    unlike the other engines' single-loop ``run_cycle``, two overlapping calls
+    are NOT serialized by the orchestrator's own scheduling. A real
+    ``asyncio.Lock`` stands in for the Redis SET NX mutex's mutual exclusion
+    (no live Redis in tests): the first caller to reach the DB's genuinely
+    suspending await wins the lock and creates the task; the second finds it
+    held and returns None immediately — never both passing the dedup check."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+
+    real_lock = asyncio.Lock()
+
+    class _RaceMutex:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        async def acquire(self) -> str | None:
+            if real_lock.locked():
+                return None
+            await real_lock.acquire()
+            return "tok"
+
+        async def release(self, _token: str) -> None:
+            real_lock.release()
+
+    monkeypatch.setattr(video_engine_module, "HeartbeatMutex", _RaceMutex)
+
+    results = await asyncio.gather(
+        engine.open_video_task(
+            occasion="race me", script="s1", platforms=["x"], brief="b1"
+        ),
+        engine.open_video_task(
+            occasion="race me", script="s2", platforms=["x"], brief="b2"
+        ),
+    )
+    created = [r for r in results if r is not None]
+    assert len(created) == ONE
     open_tasks = await get_task_service(db_session).list_open_video_posts()
     assert len(open_tasks) == ONE
 

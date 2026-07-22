@@ -5484,6 +5484,17 @@ class TaskService(BaseService):
             )
             owning_pm = await self._resolve_pm_for_review(task)
             task.assigned_to = cast("Any", owning_pm) if owning_pm else None
+            # The documenter's claim ends here — unlike submit_for_qa/pass_qa/
+            # fail_qa (which all clear claimed_by + active_claimant_id on their
+            # own review-queue entry), this path pre-assigns a SPECIFIC owning
+            # PM rather than leaving assigned_to null. Without clearing the
+            # stale documenter claimant_id too, `_active_claim_violation`
+            # (content_actions.py) wrongly refuses the newly-assigned PM's own
+            # note()/commit() calls against this task_id before it formally
+            # claims — `assigned_to == agent_id` routes into the active-claim
+            # check, which still sees the documenter as claimant.
+            task.claimed_by = cast("Any", owning_pm) if owning_pm else None
+            task.active_claimant_id = cast("Any", owning_pm) if owning_pm else None
             self.log.info(
                 "Documentation complete, awaiting PM review",
                 task_id=str(task_id),

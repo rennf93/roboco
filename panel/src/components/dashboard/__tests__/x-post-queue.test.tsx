@@ -44,6 +44,11 @@ const { listPosts, approve, reject } = vi.hoisted(() => ({
 
 vi.mock("@/lib/api", () => ({ xApi: { listPosts, approve, reject } }));
 
+const { toast } = vi.hoisted(() => ({
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+}));
+vi.mock("sonner", () => ({ toast }));
+
 import { XPostQueue } from "../x-post-queue";
 
 function withQueryClient(ui: ReactNode) {
@@ -58,6 +63,9 @@ describe("XPostQueue", () => {
     listPosts.mockClear();
     approve.mockClear();
     reject.mockClear();
+    toast.success.mockClear();
+    toast.warning.mockClear();
+    toast.error.mockClear();
     resolveApproveRef.current = null;
   });
   afterEach(() => {
@@ -177,5 +185,56 @@ describe("XPostQueue", () => {
     const { container } = render(withQueryClient(<XPostQueue />));
     await waitFor(() => expect(listPosts).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
+  });
+
+  // F(silent-bug-sweep #c): every XPostService.approve status must render a
+  // distinct, non-swallowed toast — not a blanket success/failure.
+  it.each([
+    ["already_in_progress", "A post is already in progress for this draft."],
+    [
+      "no_credentials",
+      "No X credentials configured — set them below first.",
+    ],
+    ["post_failed", "Posting failed: the X API rejected the tweet"],
+    [
+      "redis_unavailable",
+      "Redis is unavailable — can't acquire the post lock.",
+    ],
+    ["already_posted", "Already posted — no-op."],
+  ])("shows distinct feedback for the %s status", async (status, message) => {
+    render(withQueryClient(<XPostQueue />));
+    const approveButtons = await screen.findAllByRole("button", {
+      name: /Approve/,
+    });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+
+    resolveApproveRef.current?.({
+      status,
+      tweet_id: null,
+      detail: "the X API rejected the tweet",
+    });
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(message));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a success toast for the posted status", async () => {
+    render(withQueryClient(<XPostQueue />));
+    const approveButtons = await screen.findAllByRole("button", {
+      name: /Approve/,
+    });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => expect(approve).toHaveBeenCalled());
+
+    resolveApproveRef.current?.({
+      status: "posted",
+      tweet_id: "1",
+      detail: "ok",
+    });
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Posted to X."),
+    );
   });
 });

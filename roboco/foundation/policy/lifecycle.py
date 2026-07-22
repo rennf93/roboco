@@ -245,6 +245,14 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         frozenset({Role.DOCUMENTER}),
     ),
     StatusTransition(Status.NEEDS_REVISION, Status.CLAIMED, "claim", None),
+    # A PM re-claims an awaiting_pm_review task it already owns (CLAIM_RULES
+    # grants this to CELL_PM/MAIN_PM) — see the "claim" ActionSpec comment.
+    StatusTransition(
+        Status.AWAITING_PM_REVIEW,
+        Status.CLAIMED,
+        "claim",
+        frozenset({Role.CELL_PM, Role.MAIN_PM}),
+    ),
     # Start
     StatusTransition(Status.CLAIMED, Status.IN_PROGRESS, "start", None),
     # Block / pause / resume
@@ -446,6 +454,14 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Status.AWAITING_QA,
                 Status.AWAITING_DOCUMENTATION,
                 Status.AWAITING_PR_REVIEW,
+                # A PM re-claims a review/queue task it already owns (e.g. after
+                # a respawn) via i_will_plan — CLAIM_RULES[CELL_PM/MAIN_PM]
+                # grants AWAITING_PM_REVIEW. Without it here, can_invoke_intent
+                # rejected i_will_plan on an awaiting_pm_review task with
+                # invalid_state even though CLAIM_RULES said it was allowed.
+                # test_claim_rules_match_pre_gateway_table keeps this source set
+                # and CLAIM_RULES in sync.
+                Status.AWAITING_PM_REVIEW,
             }
         ),
         target_status=Status.CLAIMED,
@@ -732,8 +748,22 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # that scopes a developer's leaf-revision: give_me_work only ever offers an
     # agent its own assigned tasks. (A per-instance ownership gate at the gateway
     # would diverge from this spec — the parity invariant forbids that.)
-    Role.CELL_PM: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
-    Role.MAIN_PM: frozenset({Status.PENDING, Status.NEEDS_REVISION}),
+    #
+    # AWAITING_PM_REVIEW: a PM re-claims its own review-queue task (e.g. after
+    # a respawn) via i_will_plan. roboco/services/task.py's
+    # _ROLE_CLAIM_STATUSES already granted this to "cell_pm"/"main_pm" on the
+    # stated belief that "the spec (lifecycle.CLAIM_RULES) grants it" — but
+    # CLAIM_RULES never actually did, so can_invoke_intent silently rejected
+    # every i_will_plan attempt on an awaiting_pm_review task with
+    # invalid_state regardless of what the service layer allowed. Added here
+    # to match; test_claim_rules_match_pre_gateway_table asserts CLAIM_RULES
+    # and the service table stay in sync so they can't diverge again.
+    Role.CELL_PM: frozenset(
+        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PM_REVIEW}
+    ),
+    Role.MAIN_PM: frozenset(
+        {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PM_REVIEW}
+    ),
     Role.PRODUCT_OWNER: frozenset(),
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),

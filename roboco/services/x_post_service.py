@@ -253,7 +253,17 @@ class XPostService(BaseService):
             logger.warning("spotlight video draft failed (best-effort): %s", exc)
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
-        """Record the CEO's reason and cancel the draft (never posted)."""
+        """Record the CEO's reason and cancel the draft (never posted).
+
+        Acquires the same post-mutex ``approve()`` holds (same key, same
+        non-blocking acquire style) so a reject can't interleave with a
+        concurrent in-flight approve — an unguarded write here used to race a
+        locked approve() straight to CANCELLED even while the approve was
+        mid-post, and depending on commit ordering could clobber the
+        approve's own COMPLETED write right after it landed. Fails CLOSED
+        like approve, both when the lock is held (approve mid-post) and when
+        Redis is unreachable — the CEO retries the reject once it clears.
+        """
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source not in X_SOURCES:
             return None
@@ -261,10 +271,32 @@ class XPostService(BaseService):
             raise TaskAlreadyCompletedError(
                 f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
             )
-        markers.set_x_reject_reason(task, reason)
-        task.status = TaskStatus.CANCELLED
-        await self.session.flush()
-        return task
+
+        lock_key = f"{_LOCK_PREFIX}{task_id}"
+        try:
+            token = await self._acquire_lock(lock_key)
+        except _LockUnavailable as exc:
+            logger.error("x-post reject lock unavailable (redis down): %s", exc)
+            return None
+        if token is None:
+            return None  # a concurrent approve is mid-post; refuse the reject
+        try:
+            # Re-read under the lock: a concurrent approve may have posted +
+            # committed COMPLETED between the pre-lock check and here.
+            self.session.expire(task)
+            locked = await get_task_service(self.session).get(task_id)
+            if locked is None:
+                return None
+            if locked.status == TaskStatus.COMPLETED:
+                raise TaskAlreadyCompletedError(
+                    f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
+                )
+            markers.set_x_reject_reason(locked, reason)
+            locked.status = TaskStatus.CANCELLED
+            await self.session.flush()
+            return locked
+        finally:
+            await self._release_lock(lock_key, token)
 
     # ---- Redis single-flight lock (plain SET NX — no heartbeat needed) -----
 

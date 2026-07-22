@@ -10,9 +10,10 @@ under a second — never relying on real wall-clock timing of the defaults.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -335,6 +336,42 @@ async def test_clone_run_times_out_and_kills_proc(
     assert rc == _TIMEOUT_RC
     assert "timed out" in out
     assert proc.killed
+
+
+@pytest.mark.asyncio
+async def test_await_proc_kills_child_on_outer_cancellation() -> None:
+    """Redis mutex pre-lock write audit sibling finding: an outer cancellation
+    (e.g. the release loop's own task being cancelled mid-op) throws
+    ``CancelledError`` into ``_await_proc``'s ``wait_for``, bypassing the
+    ``TimeoutError`` handler. Without a dedicated handler (which
+    ``quality_gate.py``'s ``_run_one`` already has) the child is orphaned and
+    keeps running past the cancelled release op. ``_await_proc`` must kill +
+    reap it and re-raise, mirroring the already-shipped ``quality_gate.py``
+    pattern exactly."""
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+    spawned: dict[str, asyncio.subprocess.Process] = {}
+
+    async def _capturing_create(*args: Any, **kwargs: Any) -> Any:
+        proc = await real_create_subprocess_exec(*args, **kwargs)
+        spawned["proc"] = proc
+        return proc
+
+    with patch(
+        "roboco.services.release_executor.asyncio.create_subprocess_exec",
+        _capturing_create,
+    ):
+        task = asyncio.ensure_future(_run(["sleep", "30"]))
+        while "proc" not in spawned:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)  # let the child actually exec
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    proc = spawned["proc"]
+    assert proc.returncode is not None, "child was not reaped after cancellation"
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)
 
 
 # ---------------------------------------------------------------------------

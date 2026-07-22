@@ -368,10 +368,22 @@ async def test_reject_records_changes_and_cancels_frees_dedup(
     frees and the release manager can re-assess next cycle. The required-changes
     marker stays on the cancelled row for history."""
     task = await _seed_proposal(db_session)
-    resp = await ceo_client.post(
-        "/api/release/proposal/reject",
-        json={"required_changes": "Tighten the CHANGELOG wording for the API change."},
-    )
+    with (
+        patch.object(
+            ReleaseProposalService, "_acquire_release_lock", AsyncMock(return_value="t")
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_release_release_lock",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        resp = await ceo_client.post(
+            "/api/release/proposal/reject",
+            json={
+                "required_changes": "Tighten the CHANGELOG wording for the API change."
+            },
+        )
     assert resp.status_code == HTTPStatus.OK
     assert "Tighten the CHANGELOG" in (resp.json()["required_changes"] or "")
     refreshed = await db_session.get(TaskTable, task.id)
@@ -380,6 +392,24 @@ async def test_reject_records_changes_and_cancels_frees_dedup(
     # The dedup no longer counts it as open — a fresh proposal can originate.
     open_proposals = await TaskService(db_session).list_open_release_proposals()
     assert task.id not in {t.id for t in open_proposals}
+
+
+@pytest.mark.asyncio
+async def test_reject_refused_while_approve_lock_held(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A concurrent approve holds the release mutex (mid ~40min execute);
+    reject must fail closed with 409 instead of racing an unguarded write
+    under it — previously reject() never even attempted the lock."""
+    await _seed_proposal(db_session)
+    with patch.object(
+        ReleaseProposalService, "_acquire_release_lock", AsyncMock(return_value=None)
+    ):
+        resp = await ceo_client.post(
+            "/api/release/proposal/reject",
+            json={"required_changes": "Tighten the CHANGELOG wording."},
+        )
+    assert resp.status_code == HTTPStatus.CONFLICT
 
 
 @pytest.mark.asyncio

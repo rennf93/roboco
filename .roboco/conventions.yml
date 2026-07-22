@@ -99,4 +99,11 @@ rules:
   # routes, no routes in services, no models/routes in panel components, etc.
 
 custom: []
-waivers: []
+waivers:
+  - path: panel/src/hooks/__tests__/use-tasks-null-guards.test.tsx
+    rule: no_components_in_hooks
+    reason: >-
+      `wrapper` is a QueryClientProvider test fixture local to this test file,
+      not a production component — the same pattern already used by the
+      pre-existing use-agents.test.tsx / use-observability.test.tsx hook
+      tests colocated under hooks/__tests__/.
