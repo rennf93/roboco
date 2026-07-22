@@ -64,10 +64,18 @@ services:
       POSTGRES_USER: roboco
       POSTGRES_PASSWORD: roboco
       POSTGRES_DB: roboco
+      # Armed only when ROBOCO_BACKUP_MIRROR_DIR is set in .env; that host
+      # path must live on a DIFFERENT disk (external/remote mount) — a
+      # same-disk mirror protects nothing. Unset → the script skips mirroring.
+      BACKUP_MIRROR_DIR: ${ROBOCO_BACKUP_MIRROR_DIR:+/backups-mirror}
     entrypoint: ["/bin/bash", "/scripts/backup-entrypoint.sh"]
     volumes:
       - ./docker/scripts/backup-entrypoint.sh:/scripts/backup-entrypoint.sh:ro
       - ${ROBOCO_DATA_DIR:-./data}/backups:/backups
+      # Unarmed default deliberately re-mounts the primary backups dir (it
+      # already exists, so no stray root-owned dir is auto-created) — the
+      # script never writes there while BACKUP_MIRROR_DIR is empty.
+      - ${ROBOCO_BACKUP_MIRROR_DIR:-${ROBOCO_DATA_DIR:-./data}/backups}:/backups-mirror
     depends_on:
       postgres:
         condition: service_healthy
