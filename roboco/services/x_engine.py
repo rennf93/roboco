@@ -152,7 +152,12 @@ def _fallback_release_body(
 
 # Bold feature leads in a Keep-a-Changelog release body: "- **Headline (#N).**"
 _CHANGELOG_LEAD_RE = re.compile(r"^- \*\*(?P<lead>.+?)\*\*", re.MULTILINE)
-_CHANGELOG_PR_REF_RE = re.compile(r"\s*\(#\d+(?:,\s*#\d+)*\)")
+# A trailing parenthesized ref list: PR numbers ("#123") and/or GHSA
+# advisory ids ("GHSA-xxxx-xxxx-xxxx"), comma-separated in any mix.
+_CHANGELOG_REF_TOKEN = r"(?:#\d+|GHSA-\w{4}-\w{4}-\w{4})"
+_CHANGELOG_REF_RE = re.compile(
+    rf"\s*\({_CHANGELOG_REF_TOKEN}(?:,\s*{_CHANGELOG_REF_TOKEN})*\)"
+)
 
 
 def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
@@ -167,7 +172,7 @@ def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
     """
     out: list[str] = []
     for m in _CHANGELOG_LEAD_RE.finditer(entry):
-        lead = _CHANGELOG_PR_REF_RE.sub("", m.group("lead")).strip().rstrip(".").strip()
+        lead = _CHANGELOG_REF_RE.sub("", m.group("lead")).strip().rstrip(".").strip()
         if lead:
             out.append(lead)
         if len(out) >= limit:

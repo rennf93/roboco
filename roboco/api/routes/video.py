@@ -307,8 +307,14 @@ _FRAME_NAME_RE = re.compile(r"^frame-(\d+)-of-\d+-at-([\d.]+)s\.png$")
 def _previews_root(project_slug: str, task_id: UUID) -> Path:
     """The container-shared dir request_render extracts frames to — same
     path every agent container mounts (content_actions._render_extract_frames),
-    so this resolves identically regardless of who rendered."""
-    return Path(settings.workspaces_root) / project_slug / ".previews" / task_id.hex[:8]
+    so this resolves identically regardless of who rendered. Resolved (like
+    the sibling composition-preview route resolves its workspace root before
+    calling ``_resolve_preview_path``) — otherwise a symlinked
+    ``workspaces_root`` makes ``candidate.is_relative_to(root)`` mismatch and
+    every legit frame 404s."""
+    return (
+        Path(settings.workspaces_root) / project_slug / ".previews" / task_id.hex[:8]
+    ).resolve()
 
 
 def _list_orientation_frames(dir_path: Path) -> list[PreviewFrameResponse]:

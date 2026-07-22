@@ -25,7 +25,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConventionsTab } from "@/components/conventions/conventions-tab";
-import { Key, KeyRound } from "lucide-react";
+import { Key, KeyRound, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
 import { githubAppApi } from "@/lib/api";
@@ -102,6 +102,28 @@ const SANDBOX_EXTENSIONS: Record<
     },
   ],
 };
+
+// Auto-detect from the git URL host, mirroring
+// roboco/foundation/policy/forge.py's detect_provider: only gitlab.com is
+// auto-detected as non-GitHub for App-binding purposes — github.com and any
+// unrecognized/self-hosted host stay github-ish (a self-hosted forge must
+// set the Forge select explicitly to change this).
+function isAutoDetectedGitlab(gitUrl: string): boolean {
+  const url = gitUrl.trim();
+  let host: string | null = null;
+  if (url.includes("://")) {
+    try {
+      host = new URL(url).hostname.toLowerCase() || null;
+    } catch {
+      host = null;
+    }
+  } else {
+    // scp-like SSH syntax: [user@]host:path
+    const match = /^(?:[^@/]+@)?([^/:]+):/.exec(url);
+    host = match ? match[1].toLowerCase() : null;
+  }
+  return host === "gitlab.com";
+}
 
 const SANDBOX_SERVICE_HINTS: Record<string, string> = {
   postgres:
@@ -218,8 +240,20 @@ function EditProjectForm({
   const appConfigured = !!credStatus?.has_credentials;
   // App auth is GitHub-only; a self-hosted Gitea/GitLab project keeps using
   // its own token below regardless of any installation id already stored.
+  // An "auto" provider still needs a host check — an auto-detected
+  // gitlab.com project stores git_provider=None, so the explicit-string
+  // check alone would wrongly show the App section for it.
   const isNonGithubProvider =
-    gitProvider === "gitea" || gitProvider === "gitlab";
+    gitProvider === "gitea" ||
+    gitProvider === "gitlab" ||
+    (gitProvider === "auto" && isAutoDetectedGitlab(gitUrl));
+
+  // True when saving now would leave this project with no way to
+  // authenticate git operations at all: no App binding AND no PAT (either
+  // explicitly cleared, or never set and no replacement entered).
+  const willHaveNoToken =
+    clearToken || (!project.has_git_token && !newToken.trim());
+  const bothAuthSourcesEmpty = githubInstallationId === null && willHaveNoToken;
 
   const handleRepoSelected = (repo: SelectedRepo) => {
     setGitUrl(repo.git_url);
@@ -486,6 +520,17 @@ function EditProjectForm({
             </div>
           )}
         </div>
+
+        {bothAuthSourcesEmpty && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>
+              Saving now leaves this project with no git credentials at
+              all — no GitHub App binding and no personal access token.
+              Clone, push, and PR operations will fail until one is set.
+            </span>
+          </div>
+        )}
 
         {/* Assigned Cell */}
         <div className="grid gap-2">

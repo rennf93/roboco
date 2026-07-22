@@ -15,6 +15,8 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
@@ -32,6 +34,18 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _generate_rsa_pem() -> str:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+_VALID_PEM = _generate_rsa_pem()
 
 
 def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
@@ -71,14 +85,11 @@ async def test_set_credentials_reports_status_never_plaintext(
 ) -> None:
     resp = await ceo_client.put(
         "/api/github-app/credentials",
-        json={
-            "app_id": "123456",
-            "private_key": "-----BEGIN KEY-----\nsecretpem\n-----END KEY-----",
-        },
+        json={"app_id": "123456", "private_key": _VALID_PEM},
     )
     assert resp.status_code == HTTPStatus.OK
     assert resp.json() == {"has_credentials": True}
-    assert "secretpem" not in resp.text
+    assert _VALID_PEM.splitlines()[1] not in resp.text
 
     status_resp = await ceo_client.get("/api/github-app/credentials")
     assert status_resp.json()["has_credentials"] is True
@@ -94,10 +105,27 @@ async def test_partial_credentials_is_400(ceo_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_malformed_pem_is_400(ceo_client: AsyncClient) -> None:
+    # Compares before/after rather than asserting an absolute False: routes
+    # commit directly (unlike the service-layer tests' rolled-back flush),
+    # so an earlier test in this module may have already left credentials
+    # set — the contract under test is "a rejected PUT changes nothing".
+    before = await ceo_client.get("/api/github-app/credentials")
+    resp = await ceo_client.put(
+        "/api/github-app/credentials",
+        json={"app_id": "123456", "private_key": "not-a-real-pem"},
+    )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+
+    after = await ceo_client.get("/api/github-app/credentials")
+    assert after.json() == before.json()
+
+
+@pytest.mark.asyncio
 async def test_clear_credentials(ceo_client: AsyncClient) -> None:
     await ceo_client.put(
         "/api/github-app/credentials",
-        json={"app_id": "123456", "private_key": "pem-body"},
+        json={"app_id": "123456", "private_key": _VALID_PEM},
     )
     resp = await ceo_client.delete("/api/github-app/credentials")
     assert resp.status_code == HTTPStatus.OK
@@ -105,6 +133,17 @@ async def test_clear_credentials(ceo_client: AsyncClient) -> None:
 
     status_resp = await ceo_client.get("/api/github-app/credentials")
     assert status_resp.json()["has_credentials"] is False
+
+
+@pytest.mark.asyncio
+async def test_clear_credentials_clears_token_cache(ceo_client: AsyncClient) -> None:
+    """Deleting the App credentials must drop any cached installation
+    token — otherwise a revoked/replaced App keeps serving a stale token
+    until the cache entry's own expiry."""
+    with patch("roboco.api.routes.github_app.clear_token_cache") as mock_clear:
+        resp = await ceo_client.delete("/api/github-app/credentials")
+    assert resp.status_code == HTTPStatus.OK
+    mock_clear.assert_called_once()
 
 
 @pytest.mark.asyncio

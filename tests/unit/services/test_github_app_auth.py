@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -20,7 +21,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from roboco.services import github_app_auth
 from roboco.services.github_app_auth import (
     GitHubAppAPIError,
+    GitHubAppError,
     GitHubAppNotConfiguredError,
+    clear_token_cache,
     list_installation_repositories,
     list_installations,
     mint_installation_token,
@@ -62,7 +65,7 @@ def _patch_creds(*, configured: bool = True) -> Any:
 
 
 def _client(
-    *, get: list[MagicMock] | None = None, post: list[MagicMock] | None = None
+    *, get: list[Any] | None = None, post: list[Any] | None = None
 ) -> MagicMock:
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
@@ -161,6 +164,57 @@ async def test_mint_failure_raises_api_error() -> None:
         pytest.raises(GitHubAppAPIError),
     ):
         await mint_installation_token(MagicMock(), 5)
+
+
+@pytest.mark.asyncio
+async def test_mint_network_error_wrapped_as_github_app_error() -> None:
+    """A raw httpx failure (connection refused, DNS, timeout) must not escape
+    as an unexpected exception type — ProjectService._resolve_token only
+    catches GitHubAppError to fall back to the PAT."""
+    client = _client(post=[httpx.ConnectError("connection refused")])
+    with (
+        _patch_creds(),
+        patch("roboco.services.github_app_auth.httpx.AsyncClient", return_value=client),
+        pytest.raises(GitHubAppError) as exc_info,
+    ):
+        await mint_installation_token(MagicMock(), 55)
+    assert not isinstance(exc_info.value, GitHubAppAPIError)
+
+
+@pytest.mark.asyncio
+async def test_mint_corrupted_pem_wrapped_as_github_app_error() -> None:
+    """A corrupted stored private key makes ``jwt.encode`` raise
+    ``InvalidKeyError`` — must also surface as GitHubAppError, not the raw
+    PyJWT exception, so the PAT fallback still triggers."""
+    fake_service = MagicMock()
+    fake_service.get_decrypted = AsyncMock(
+        return_value=GitHubAppCredentialsData(app_id=_APP_ID, private_key="not-a-pem")
+    )
+    with (
+        patch(
+            "roboco.services.github_app_auth.get_github_app_credentials_service",
+            return_value=fake_service,
+        ),
+        pytest.raises(GitHubAppError) as exc_info,
+    ):
+        await mint_installation_token(MagicMock(), 66)
+    assert not isinstance(exc_info.value, GitHubAppAPIError)
+
+
+@pytest.mark.asyncio
+async def test_clear_token_cache_forces_a_fresh_mint() -> None:
+    client = _client(post=[_token_resp("tok-first"), _token_resp("tok-second")])
+    with (
+        _patch_creds(),
+        patch("roboco.services.github_app_auth.httpx.AsyncClient", return_value=client),
+    ):
+        first = await mint_installation_token(MagicMock(), 77)
+        clear_token_cache()
+        second = await mint_installation_token(MagicMock(), 77)
+
+    assert first == "tok-first"
+    assert second == "tok-second"
+    assert client.post.call_count == _SECOND_CALL_COUNT
 
 
 @pytest.mark.asyncio

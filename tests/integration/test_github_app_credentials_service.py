@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from roboco.db.tables import GitHubAppCredentialsTable
 from roboco.services.github_app_credentials import (
     GitHubAppCredentialsService,
@@ -23,9 +25,19 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+
+def _generate_rsa_pem() -> str:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
 _CREDS = {
     "app_id": "123456",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nfake-pem\n-----END PRIVATE KEY-----",
+    "private_key": _generate_rsa_pem(),
 }
 
 
@@ -88,9 +100,16 @@ async def test_rotate_overwrites_previous_values(
     svc: GitHubAppCredentialsService,
 ) -> None:
     await svc.set_credentials(**_CREDS)
-    rotated = {"app_id": "654321", "private_key": _CREDS["private_key"] + "-rotated"}
+    rotated = {"app_id": "654321", "private_key": _generate_rsa_pem()}
     await svc.set_credentials(**rotated)
     decrypted = await svc.get_decrypted()
     assert decrypted is not None
     assert decrypted.app_id == rotated["app_id"]
     assert decrypted.private_key == rotated["private_key"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_pem_is_rejected(svc: GitHubAppCredentialsService) -> None:
+    with pytest.raises(GitHubAppCredentialsValidationError):
+        await svc.set_credentials(app_id="123456", private_key="not-a-pem-at-all")
+    assert await svc.has_credentials() is False

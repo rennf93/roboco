@@ -22,6 +22,7 @@ from roboco.security import guard_deco
 from roboco.services.github_app_auth import (
     GitHubAppAPIError,
     GitHubAppNotConfiguredError,
+    clear_token_cache,
     list_installation_repositories,
     list_installations,
 )
@@ -82,6 +83,7 @@ async def clear_github_app_credentials(
         app_id="", private_key=""
     )
     await db.commit()
+    clear_token_cache()
     return GitHubAppCredentialsStatus(has_credentials=has_creds)
 
 

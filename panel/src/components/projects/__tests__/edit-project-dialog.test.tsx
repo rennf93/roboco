@@ -204,6 +204,38 @@ describe("EditProjectDialog — GitHub App binding", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides the picker for an auto-detected gitlab.com URL (git_provider stored as null)", async () => {
+    renderDialog(
+      makeProject({
+        git_provider: null,
+        git_url: "https://gitlab.com/acme/widgets.git",
+      }),
+    );
+
+    expect(
+      await screen.findByText(/App auth is GitHub-only/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Select repo/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns when saving would clear both the App binding and the PAT", async () => {
+    renderDialog(
+      makeProject({ github_installation_id: null, has_git_token: true }),
+    );
+
+    expect(
+      screen.queryByText(/no git credentials at all/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("switch", { name: /clear token/i }));
+
+    expect(
+      await screen.findByText(/no git credentials at all/i),
+    ).toBeInTheDocument();
+  });
+
   it("binding via the repo picker sets github_installation_id in the submitted payload", async () => {
     renderDialog(makeProject());
 

@@ -125,23 +125,44 @@ def _raise_for_status(resp: httpx.Response, action: str) -> None:
 
 
 async def mint_installation_token(session: AsyncSession, installation_id: int) -> str:
-    """Return a live installation token, minting (and caching) as needed."""
+    """Return a live installation token, minting (and caching) as needed.
+
+    The JWT build, HTTP call, and response parsing all run under one
+    try/except so a raw ``httpx`` exception (network hiccup) or a corrupted-
+    PEM ``jwt.encode`` failure surfaces as a ``GitHubAppError`` instead of an
+    unexpected exception type — ``ProjectService._resolve_token``'s
+    ``except GitHubAppError`` then falls back to the PAT for every failure
+    mode, not just a bad HTTP status.
+    """
     cached = _token_cache.get(installation_id)
     if cached is not None:
         token, expires_at = cached
         if expires_at - _TOKEN_REFRESH_MARGIN_SECONDS > time.time():
             return token
 
-    app_jwt = await _app_jwt(session)
-    url = f"{_api_base()}/app/installations/{installation_id}/access_tokens"
-    async with httpx.AsyncClient(timeout=_timeout()) as client:
-        resp = await client.post(url, headers=_headers(app_jwt))
-    _raise_for_status(resp, "Minting installation token")
+    try:
+        app_jwt = await _app_jwt(session)
+        url = f"{_api_base()}/app/installations/{installation_id}/access_tokens"
+        async with httpx.AsyncClient(timeout=_timeout()) as client:
+            resp = await client.post(url, headers=_headers(app_jwt))
+        _raise_for_status(resp, "Minting installation token")
+        data = resp.json()
+        token = cast("str", data["token"])
+        expires_at = _parse_expiry(data.get("expires_at"))
+    except GitHubAppError:
+        raise
+    except Exception as e:
+        raise GitHubAppError(f"Minting installation token failed: {e}") from e
 
-    data = resp.json()
-    token = cast("str", data["token"])
-    _token_cache[installation_id] = (token, _parse_expiry(data.get("expires_at")))
+    _token_cache[installation_id] = (token, expires_at)
     return token
+
+
+def clear_token_cache() -> None:
+    """Drop every cached installation token — called when the App's
+    credentials are cleared so a stale token can't be served for a binding
+    that no longer has a signing key behind it."""
+    _token_cache.clear()
 
 
 async def list_installations(session: AsyncSession) -> list[Installation]:

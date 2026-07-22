@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from sqlalchemy import select
 
 from roboco.db.tables import GitHubAppCredentialsTable
@@ -25,7 +26,19 @@ if TYPE_CHECKING:
 
 
 class GitHubAppCredentialsValidationError(ValueError):
-    """Raised when a partial (not all-or-nothing) credential set is given."""
+    """Raised when a partial (not all-or-nothing) credential set is given,
+    or the private key isn't a loadable PEM key."""
+
+
+def _validate_private_key_pem(private_key: str) -> None:
+    """Reject an unloadable PEM before it's ever stored, so a fat-fingered
+    paste fails at set time instead of at the first JWT mint."""
+    try:
+        load_pem_private_key(private_key.encode(), password=None)
+    except Exception as e:
+        raise GitHubAppCredentialsValidationError(
+            f"private_key is not a valid PEM private key: {e}"
+        ) from e
 
 
 @dataclass(frozen=True)
@@ -74,6 +87,8 @@ class GitHubAppCredentialsService(BaseService):
                 await self.session.flush()
             self.log.info("GitHub App credentials cleared")
             return False
+
+        _validate_private_key_pem(private_key)
 
         try:
             encrypted_key = encrypt_token(private_key)

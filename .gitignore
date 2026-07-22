@@ -107,6 +107,10 @@ panel/.env.*.local
 
 # motion/ (HyperFrames compositions) + video-renderer (its render sidecar)
 motion/node_modules/
+# the trailing-slash form above only matches a directory — a tracked
+# symlink at this path (e.g. a container-absolute pnpm link) needs its own,
+# slash-less entry or it slips through `git add`/`git status` untracked.
+motion/node_modules
 video-renderer/node_modules/
 # hyperframes lint/preview generates index.html in each composition dir —
 # regenerated locally as needed, not tracked (the sidecar renders

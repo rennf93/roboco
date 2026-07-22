@@ -1456,18 +1456,33 @@ async def test_preview_frame_non_ceo_is_forbidden(db_session: AsyncSession) -> N
     app.dependency_overrides.clear()
 
 
-def test_resolve_preview_path_confines_frame_orientation_traversal(
-    tmp_path: Path,
+def test_previews_root_confines_frame_orientation_traversal_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The preview-frame route composes ``f"{orientation}/{filename}"`` before
-    calling ``_resolve_preview_path`` — same confinement the composition-HTML
-    proxy uses, applied to a task's .previews/ dir instead of its read-clone."""
-    root = (tmp_path / "roboco-x" / ".previews" / "abcd1234").resolve()
-    (root / "vertical").mkdir(parents=True)
-    frame = root / "vertical" / "frame-01-of-1-at-0.5s.png"
+    """Drives the REAL ``_previews_root`` -> ``_resolve_preview_path`` chain
+    (the preview-frame route composes ``f"{orientation}/{filename}"`` before
+    calling ``_resolve_preview_path``) with an UNRESOLVED, symlinked
+    ``workspaces_root`` — the container-mount shape. Before ``_previews_root``
+    resolved its own path, the ``is_relative_to`` confinement check compared a
+    resolved candidate against an unresolved root and 404'd every legit
+    frame; this proves a real frame under the symlink still serves while
+    traversal is still rejected."""
+    real_root = tmp_path / "real-workspaces"
+    real_root.mkdir()
+    symlinked_root = tmp_path / "workspaces-symlink"
+    symlinked_root.symlink_to(real_root)
+    monkeypatch.setattr(cfg, "workspaces_root", str(symlinked_root))
+
+    task_id = uuid4()
+    project_slug = "roboco-x"
+    frame_dir = real_root / project_slug / ".previews" / task_id.hex[:8] / "vertical"
+    frame_dir.mkdir(parents=True)
+    frame = frame_dir / "frame-01-of-1-at-0.5s.png"
     frame.write_bytes(b"png")
     secret = tmp_path / "secret.png"
     secret.write_bytes(b"nope")
+
+    root = video_module._previews_root(project_slug, task_id)
     assert (
         video_module._resolve_preview_path(root, "vertical/frame-01-of-1-at-0.5s.png")
         == frame.resolve()
