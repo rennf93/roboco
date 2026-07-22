@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 
 import pytest
 from roboco import agents_config
@@ -18,7 +17,6 @@ from roboco.foundation.policy.communications import (
     Priority,
 )
 from roboco.models.base import NotificationType
-from roboco.services.gateway import content_actions
 from roboco.services.gateway.envelope import Envelope
 
 _EXPECTED_VERB_RETRY_LIMIT = 3
@@ -77,16 +75,3 @@ def test_envelope_circuit_open_kind_distinct_from_tracing_gap() -> None:
     assert env_co.as_dict()["error"] == "circuit_open"
     assert env_tg.as_dict()["error"] == "tracing_gap"
     assert env_co.as_dict()["error"] != env_tg.as_dict()["error"]
-
-
-def test_no_comms_runtime_guard_in_dm() -> None:
-    """Spec §5.5: no-comms roles' dm() refused at runtime (defense in depth).
-
-    The auditor and pr_reviewer now carry dm/read_a2a (the CEO can DM a
-    mid-flight one and it replies in-thread), so the runtime guard covers only
-    the human-only prompter/secretary — checked against the canonical
-    _NO_COMMS_ROLES set rather than a hardcoded role name. The behavioral test
-    lives in tests/unit/gateway/test_auditor_silent_guard.py.
-    """
-    dm_source = inspect.getsource(content_actions.ContentActions.dm)
-    assert "_NO_COMMS_ROLES" in dm_source, "dm() missing no-comms runtime guard"

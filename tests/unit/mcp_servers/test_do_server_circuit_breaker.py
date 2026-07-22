@@ -35,7 +35,6 @@ _FULL_MANIFEST = {
     "do_tools": [
         "commit",
         "note",
-        "dm",
         "evidence",
         "progress",
         "notify",
@@ -269,50 +268,6 @@ def test_verb_extracted_from_path(do_module: types.ModuleType) -> None:
     assert sdk_body["verb"] == "commit"
 
 
-def test_dict_shaped_error_normalized_to_envelope(do_module: types.ModuleType) -> None:
-    """A RobocoError.to_dict()-shaped response must not TypeError the breaker.
-
-    A dict-shaped `error` is a retry-storm-worthy rejection (the orchestrator's
-    exception handlers surface this shape on 4xx/5xx), so the breaker must count
-    it via the classifier. The dict body is normalized to an Envelope wire format
-    (#232): the agent receives a string `error` kind (not the dict, which violates
-    the Envelope contract) with the message lifted and a remediate. The breaker
-    still counts it (the synthesized string kind is in the counted set).
-    """
-    factory, captured = _make_client(
-        orchestrator_response={
-            "error": {
-                "code": "A2A_ACCESS_DENIED",
-                "message": "be-qa cannot A2A with qa-all",
-                "details": {},
-            }
-        },
-        sdk_response={
-            "verb": "dm",
-            "task_id": None,
-            "attempts": 1,
-            "limit": 3,
-            "window_seconds": 60,
-            "open": False,
-            "circuit_envelope": None,
-        },
-    )
-    # No TypeError; the dict-shaped rejection is normalized + forwarded to the SDK.
-    with patch("httpx.Client", side_effect=factory):
-        result = do_module.dm(recipient="qa-all", text="x")
-    # Normalized to a string-kind Envelope — the dict `error` never reaches the
-    # agent (#232). A2A_ACCESS_DENIED maps to not_authorized (exact-code, #161).
-    assert result["error"] == "not_authorized"
-    assert result["message"] == "be-qa cannot A2A with qa-all"
-    assert isinstance(result["remediate"], str) and result["remediate"]
-    assert result["missing"] == []
-    # SDK breaker MUST still be called so a storm of these counts.
-    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
-    assert len(sdk_calls) == 1
-    # ACCESS_DENIED maps to the not_authorized counted kind.
-    assert sdk_calls[0][1]["rejection_kind"] == "not_authorized"
-
-
 def test_422_validation_failure_counts_as_incomplete_input(
     do_module: types.ModuleType,
 ) -> None:
@@ -390,7 +345,7 @@ def test_dict_shaped_invalid_input_counts_as_incomplete_input(
             "error": {"code": "INVALID_INPUT", "message": "bad payload"}
         },
         sdk_response={
-            "verb": "dm",
+            "verb": "note",
             "task_id": None,
             "attempts": 1,
             "limit": 3,
@@ -400,7 +355,7 @@ def test_dict_shaped_invalid_input_counts_as_incomplete_input(
         },
     )
     with patch("httpx.Client", side_effect=factory):
-        do_module.dm(recipient="be-qa", text="x")
+        do_module.note(text="x")
     sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
     assert len(sdk_calls) == 1
     assert sdk_calls[0][1]["rejection_kind"] == "incomplete_input"

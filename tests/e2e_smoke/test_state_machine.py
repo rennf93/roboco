@@ -9,7 +9,6 @@ race/gate the finding names — a regression dies here.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
 from tests.e2e_smoke.arcs import (
     dev_arc,
@@ -191,29 +190,6 @@ def test_h5_unclaim_from_blocked_clears_snapshot(e2e_stack: E2EStack) -> None:
     assert stack.run_db(_snap) is None, (
         "pre_block_state not cleared after unclaim-from-blocked (H5)"
     )
-
-
-def test_h6_pass_review_survives_a2a_failure(e2e_stack: E2EStack) -> None:
-    """H6: with a2a.send patched to throw, pass_review must still return ok
-    with a warning — the QA-pass transition committed; the side-effect
-    failure must not 500 the verb."""
-    stack = e2e_stack
-    company = seed_company(stack)
-    pid, slug = seed_project(stack, company)
-    tid = seed_task(
-        stack,
-        title="H6 a2a down",
-        description="d",
-        project_id=pid,
-        created_by=company.cell_pm_id,
-        assigned_to=company.dev_id,
-    )
-    dev_arc(stack, company, slug, tid)
-    with patch(
-        "roboco.services.a2a.A2AService.send", side_effect=RuntimeError("a2a down")
-    ):
-        qa_arc(stack, company, tid)
-    assert task_state(stack, tid)["status"] == "awaiting_documentation"
 
 
 def test_l29_pass_qa_routes_through_awaiting_qa(e2e_stack: E2EStack) -> None:

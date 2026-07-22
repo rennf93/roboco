@@ -100,17 +100,15 @@ def test_ensure_vault_assets_materializes_templates_idempotently(
 ) -> None:
     ensure_vault_assets(tmp_path)
     plugins = tmp_path / ".obsidian" / "community-plugins.json"
-    dashboard = tmp_path / "RoboCo" / "_meta" / "dashboard.md"
     kanban = tmp_path / "RoboCo" / "_meta" / "kanban-board.md"
     assert plugins.exists()
-    assert dashboard.exists()
     assert kanban.exists()
     assert "dataview" in plugins.read_text(encoding="utf-8")
 
     # An operator's own edit survives a second call (never overwritten).
-    dashboard.write_text("operator edit", encoding="utf-8")
+    kanban.write_text("operator edit", encoding="utf-8")
     ensure_vault_assets(tmp_path)
-    assert dashboard.read_text(encoding="utf-8") == "operator edit"
+    assert kanban.read_text(encoding="utf-8") == "operator edit"
 
 
 def _db_ctx(db: Any) -> Any:
@@ -121,7 +119,7 @@ def _db_ctx(db: Any) -> Any:
     return _ctx
 
 
-def test_rebuild_writes_agent_task_journal_and_a2a(
+def test_rebuild_writes_agent_task_and_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``main()`` drives ``_rebuild`` via ``asyncio.run`` — this test must
@@ -157,17 +155,7 @@ def test_rebuild_writes_agent_task_journal_and_a2a(
     journal_service.get_or_create_journal = AsyncMock(return_value=journal)
     journal_service.list_entries = AsyncMock(side_effect=[[entry], []])
 
-    conv = MagicMock(id=uuid4(), agent_a="be-dev-1", agent_b="be-pm", task_id=None)
-    conv_result = MagicMock()
-    conv_result.scalars.return_value.all.return_value = [conv]
     db = MagicMock()
-    db.execute = AsyncMock(return_value=conv_result)
-
-    a2a_msg = MagicMock(
-        id=uuid4(), from_agent="be-dev-1", content="hi", created_at=datetime.now(UTC)
-    )
-    a2a_service = MagicMock()
-    a2a_service.get_messages = AsyncMock(return_value=[a2a_msg])
 
     task_note_data = TaskNoteData(
         id=str(task.id),
@@ -186,7 +174,6 @@ def test_rebuild_writes_agent_task_journal_and_a2a(
         patch("roboco.services.task.TaskService", return_value=task_service),
         patch("roboco.services.journal.JournalService", return_value=journal_service),
         patch("roboco.services.project.get_project_service", return_value=MagicMock()),
-        patch("roboco.services.a2a.A2AService", return_value=a2a_service),
         patch(
             "roboco.services.vault_assembly.assemble_task_note_data",
             AsyncMock(return_value=task_note_data),
@@ -197,6 +184,5 @@ def test_rebuild_writes_agent_task_journal_and_a2a(
     assert (tmp_path / "RoboCo" / "Agents" / "be-dev-1.md").exists()
     assert any((tmp_path / "RoboCo" / "Tasks" / "unassigned").glob("*.md"))
     assert any((tmp_path / "RoboCo" / "Journals" / "be-dev-1").glob("*.md"))
-    assert any((tmp_path / "RoboCo" / "A2A").glob("*.md"))
     # asset bootstrap ran too
     assert (tmp_path / ".obsidian" / "community-plugins.json").exists()

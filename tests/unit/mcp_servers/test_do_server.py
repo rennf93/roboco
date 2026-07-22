@@ -19,7 +19,7 @@ _DO_TEST_MANIFEST = {
     "team": "backend",
     "workspace_path": "/tmp/test",
     "flow_tools": [],
-    "do_tools": ["commit", "note", "dm", "notify", "evidence"],
+    "do_tools": ["commit", "note", "notify", "evidence"],
     "read_tools": [],
     "write_tools": [],
     "bash_allowed": True,
@@ -147,25 +147,6 @@ def test_build_headers_omits_unsigned_token(monkeypatch: pytest.MonkeyPatch) -> 
     headers = srv._build_headers()
 
     assert "X-Agent-Token" not in headers
-
-
-def test_dm_posts_all_fields(do_module: Any) -> None:
-    fake_client = MagicMock()
-    fake_client.__enter__.return_value = fake_client
-    fake_response = MagicMock()
-    fake_response.json.return_value = {"status": "sent"}
-    fake_client.post.return_value = fake_response
-
-    with patch("httpx.Client", return_value=fake_client):
-        do_module.dm("be-qa", "review please", task_id="t1", skill="code_review")
-
-    _args, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {
-        "recipient": "be-qa",
-        "text": "review please",
-        "task_id": "t1",
-        "skill": "code_review",
-    }
 
 
 def test_evidence_posts_task_id(do_module: Any) -> None:
