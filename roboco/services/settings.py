@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from roboco.db.tables import SystemSettingTable
+from roboco.db.tables import AgentRole, SystemSettingTable
 from roboco.services.base import BaseService
+from roboco.services.repositories.query_helpers import get_agent_by_role
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,9 +115,11 @@ def _validate_update_id(value: str) -> None:
 _VALIDATORS = {
     "transcript_retention_days": _validate_retention_days,
     # The CEO's panel display name (header chip + Settings User Info card).
-    # No config/migration involved — an unset key just means the panel's
-    # own hardcoded "Renzo" default renders, same as transcript retention's
-    # client-side DEFAULT_RETENTION fallback.
+    # An unset key just means the panel's own hardcoded "Renzo" default
+    # renders, same as transcript retention's client-side DEFAULT_RETENTION
+    # fallback. When set, `SettingsService.set` also writes through to the
+    # CEO agent row's `name` so GET /api/agents (kanban/assignee pickers)
+    # reflects the same name instead of the seeded literal.
     "ceo_name": _validate_ceo_name,
     # Telegram inbound's getUpdates offset cursor. Not a feature flag (absent
     # from FEATURE_FLAGS/the panel card) but reuses this same validated KV
@@ -173,7 +176,20 @@ class SettingsService(BaseService):
             self.session.add(SystemSettingTable(key=key, value=value))
         else:
             existing.value = value
+        if key == "ceo_name":
+            await self._sync_ceo_agent_name(value.strip())
         await self.session.flush()
+
+    async def _sync_ceo_agent_name(self, name: str) -> None:
+        """Write-through: keep the CEO agent row's `name` in sync with the setting.
+
+        Same-transaction as the setting write so the two never disagree.
+        Resolution rides `get_agent_by_role` (earliest-created row wins), the
+        shared duplicate-tolerant lookup every singleton-role consumer uses.
+        """
+        agent = await get_agent_by_role(self.session, AgentRole.CEO)
+        if agent is not None:
+            agent.name = name
 
     async def all(self) -> dict[str, str]:
         """Return every stored setting as a ``{key: value}`` map."""

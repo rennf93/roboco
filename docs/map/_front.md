@@ -59,7 +59,7 @@
 
 ```mermaid
 graph TB
-    CEO["CEO (Human — Renzo)"]
+    CEO["CEO (Human)"]
     Intake["Intake / Prompter<br/>(on-demand, human-only)"]
     Sec["Secretary<br/>(on-demand, human-only)"]
     PRRev["PR Reviewer<br/>(read-only reviewer)"]
