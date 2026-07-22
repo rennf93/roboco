@@ -652,6 +652,10 @@ services:
       ROBOCO_GUARD_ENABLED: ${ROBOCO_GUARD_ENABLED:-true}
       ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-false}
       ROBOCO_GUARD_FAIL_SECURE: ${ROBOCO_GUARD_FAIL_SECURE:-false}
+      # Emergency-lockdown whitelist escape hatch. Without this line here,
+      # setting it in .env silently does nothing — only vars listed in this
+      # stanza reach the container.
+      ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock

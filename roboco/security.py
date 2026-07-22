@@ -339,37 +339,99 @@ def _redis_url() -> str:
 # docker allocates them.
 #
 # The variable-depth proxy chain (guard sees a fixed depth) is handled by
-# ClientIpResolutionMiddleware below: it recursively skips known local hops
-# in X-Forwarded-For and stamps the guard's request.state.client_ip cache,
-# so Tailscale-Serve/host-proxied traffic resolves to the real tailnet/LAN
-# client instead of loopback and no longer rides this exemption.
+# ClientIpResolutionMiddleware below: it resolves the real tailnet/LAN client
+# behind a NAMED set of local proxy hops in X-Forwarded-For (see
+# `_build_trusted_hop_networks`) and stamps the guard's request.state.client_ip
+# cache, so Tailscale-Serve/host-proxied traffic resolves to the real
+# tailnet/LAN client instead of loopback and no longer rides this exemption.
 _INTERNAL_NETWORKS = [
     "127.0.0.1",
     "::1",
     "172.16.0.0/12",
 ]
 
-# XFF entries that can legitimately be a HOP nginx recorded in front of the
-# real client: loopback (a host-terminated proxy like Tailscale Serve) and
-# the docker bridge pool (docker DNAT presents host-originated connections
-# as the bridge gateway). Deliberately NOT the LAN/tailnet ranges — a
-# 192.168.x / 100.64.x XFF entry IS the client, never a hop.
-_TRUSTED_HOP_NETWORKS = ("127.0.0.1/32", "::1/128", "172.16.0.0/12")
+# Docker's default bridge address-pool range — the WHOLE pool, used only by
+# the broader connecting-peer gate below (never the operator-scoped hop set).
+_DOCKER_BRIDGE_POOL = "172.16.0.0/12"
+
+# Connecting-peer gate for ClientIpResolutionMiddleware: the DIRECT TCP peer
+# must be one of these before the middleware consults X-Forwarded-For at
+# all. Deliberately the WHOLE docker bridge pool, unlike the hop-peel set
+# below — nginx itself connects from an arbitrary bridge-allocated address
+# (neither compose file pins a `subnet:`), so it must keep presenting XFF
+# regardless of which address it lands on. A bare connecting-peer match
+# alone stamps nothing: the XFF entries themselves are still checked against
+# the narrower, operator-scoped `_TRUSTED_HOP_NETWORKS`.
+_CONNECTING_PEER_NETWORKS = ("127.0.0.1/32", "::1/128", _DOCKER_BRIDGE_POOL)
+
+
+def _build_trusted_hop_networks() -> tuple[str, ...]:
+    """XFF hop-peel set: loopback ALWAYS, plus operator-named chain peers.
+
+    A peeled entry is a RECORDED PROXY HOP inside X-Forwarded-For (e.g. the
+    docker bridge gateway nginx sees when Tailscale Serve terminates on the
+    host) — not the connecting socket peer (`_CONNECTING_PEER_NETWORKS`
+    above is that separate, deliberately broader check). Default empty
+    (``guard_trusted_chain_peers``): only a loopback rightmost hop ever
+    peels, so a same-bridge container can no longer get its own arbitrary
+    172.x address treated as a trusted hop just by being on the docker
+    bridge — closing the residual where a forged tailnet-CGNAT XFF prefix
+    resolved behind an unnamed 172.x rightmost entry. An operator running
+    Tailscale Serve behind a docker gateway sets
+    ``ROBOCO_GUARD_TRUSTED_CHAIN_PEERS`` to that gateway's exact address
+    (e.g. 172.18.0.1) to keep the chain resolving.
+
+    Peers are parsed with ``ip_address`` — SINGLE addresses only, never a
+    CIDR range — and stored as their own /32 (or /128). A subnet-sized entry
+    (docker's typical bridge allocation is an entirely plausible copy-paste)
+    would readmit every sibling container's real address into the hop set,
+    fully reopening the pre-fix forge hole; ``ip_network(strict=True)``
+    would also silently accept a host-bits typo like "172.18.0.5/24" the
+    operator meant as a plain address. Any entry that isn't a plain IP —
+    CIDRs included — is skipped with a warning rather than crashing config
+    load.
+    """
+    networks = ["127.0.0.1/32", "::1/128"]
+    for raw in settings.guard_trusted_chain_peers.split(","):
+        peer = raw.strip()
+        if not peer:
+            continue
+        try:
+            addr = ip_address(peer)
+        except (ValueError, TypeError):
+            logger.warning(
+                "skipping invalid guard_trusted_chain_peers entry: chain "
+                "peers are single IP addresses; CIDR ranges are rejected "
+                "because a range readmits sibling containers",
+                peer=peer,
+            )
+            continue
+        networks.append(f"{addr}/{addr.max_prefixlen}")
+    return tuple(networks)
+
+
+# Built once at config load, mirroring security_config below — pure, no I/O.
+_TRUSTED_HOP_NETWORKS = _build_trusted_hop_networks()
 
 # Tailscale assigns every tailnet node an address in the CGNAT range. The
 # resolver stamps ONLY a candidate in this range: it makes the fix exactly as
 # wide as the broken case (host-proxied tailnet traffic resolving to a
 # whitelisted hop IP) and no wider — for every other chain shape the stamp
-# abstains and the guard's own depth-1 logic decides, so a same-bridge
-# container relaying a forged public-IP prefix through nginx still resolves
-# to its real bridge IP exactly as before this fix. Residual (accepted): such
-# a container can forge a 100.64/10 prefix — that only DE-privileges it
-# (loses its whitelist exemption; the fake tailnet IP eats the WAF/bans).
+# abstains and the guard's own depth-1 logic decides. Residual (accepted):
+# a compromise of a CONFIGURED chain peer itself (e.g. the docker bridge
+# gateway) could still relay a forged prefix behind it — an unconfigured
+# peer, or any other bridge-allocated address a real container actually
+# has, cannot: it is never in `_TRUSTED_HOP_NETWORKS` by default.
 _TAILNET_NETWORK = "100.64.0.0/10"
 
 # The fixable shape needs at least [client, hop] — one real entry behind one
 # recorded proxy hop.
 _MIN_CHAIN_ENTRIES = 2
+
+# Rightmost gateway IPs already warned about (see
+# `_warn_unconfigured_tailnet_gateway_once`) — bounded by the tiny number of
+# real docker bridge gateways an operator ever runs behind.
+_WARNED_UNCONFIGURED_GATEWAYS: set[str] = set()
 
 
 def _in_networks(ip: str, networks: tuple[str, ...]) -> bool:
@@ -384,23 +446,60 @@ def _is_trusted_hop(ip: str) -> bool:
     return _in_networks(ip, _TRUSTED_HOP_NETWORKS)
 
 
+def _is_trusted_connecting_peer(ip: str) -> bool:
+    return _in_networks(ip, _CONNECTING_PEER_NETWORKS)
+
+
+def _warn_unconfigured_tailnet_gateway_once(rightmost: str, candidate: str) -> None:
+    """Surface the ONE regression this fix leaves genuinely silent: with no
+    chain peers configured, a host-proxied tailnet chain behind a real
+    docker bridge gateway silently reverts /tg to the pre-fix inert-WAF
+    state — zero signal otherwise. Only fires while NOTHING is configured
+    (once any peer is set the operator has already addressed this); logs
+    once per distinct gateway IP per process. Never logs the full XFF —
+    only the rightmost IP, the one an operator needs to act.
+    """
+    if settings.guard_trusted_chain_peers.strip():
+        return
+    if not _in_networks(rightmost, (_DOCKER_BRIDGE_POOL,)):
+        return
+    if not _in_networks(candidate, (_TAILNET_NETWORK,)):
+        return
+    if rightmost in _WARNED_UNCONFIGURED_GATEWAYS:
+        return
+    _WARNED_UNCONFIGURED_GATEWAYS.add(rightmost)
+    logger.warning(
+        "host-proxied tailnet chain detected but no trusted chain peer "
+        "configured — this traffic resolves to a whitelisted bridge IP; "
+        f"set ROBOCO_GUARD_TRUSTED_CHAIN_PEERS to your docker bridge "
+        f"gateway ({rightmost})"
+    )
+
+
 def resolve_forwarded_client_ip(forwarded_for: str) -> str | None:
-    """Resolve the tailnet client behind host-proxy hops; None = abstain.
+    """Resolve the tailnet client behind NAMED host-proxy hops; None = abstain.
 
     fastapi-guard peels a FIXED number of XFF hops (trusted_proxy_depth=1:
     the rightmost entry, which nginx itself recorded). That is correct for
     every chain except one: host-proxied tailnet traffic (Tailscale Serve →
-    nginx) arrives as ``[tailnet-client, <loopback-or-bridge-gateway>]``, so
-    depth-1 resolves it to a whitelisted hop IP and WAF/ban/rate-limit go
+    nginx) arrives as ``[tailnet-client, <loopback-or-configured-gateway>]``,
+    so depth-1 resolves it to a whitelisted hop IP and WAF/ban/rate-limit go
     inert for the whole /tg surface (the documented ceiling).
 
-    This resolver fixes exactly that shape and nothing else: peel trusted
-    hops from the right; the remaining candidate is returned ONLY if at
-    least one hop was peeled and the candidate is in the tailnet CGNAT
-    range. Every other shape — direct LAN client, agent container via nginx
-    (even with a forged public-IP prefix), all-hops operator traffic,
-    malformed entries — returns None, leaving the guard's own depth-1
-    resolution in charge, byte-for-byte identical to before this fix.
+    This resolver fixes exactly that shape and nothing else: peel hops from
+    the right that are loopback or an operator-named chain peer
+    (``guard_trusted_chain_peers``, see `_build_trusted_hop_networks`); the
+    remaining candidate is returned ONLY if at least one hop was peeled and
+    the candidate is in the tailnet CGNAT range. Every other shape — direct
+    LAN client, an agent container relaying via nginx with an UNNAMED 172.x
+    address (even carrying a forged public-IP or tailnet-CGNAT prefix),
+    all-hops operator traffic, malformed entries — returns None, leaving the
+    guard's own depth-1 resolution in charge. With no chain peers configured
+    (the default), only a loopback rightmost hop ever peels — when that
+    abstain is otherwise shaped exactly like a host-proxied tailnet chain
+    behind a real bridge gateway, it is logged once per gateway IP (see
+    `_warn_unconfigured_tailnet_gateway_once`) so the regression isn't
+    silent.
     """
     entries = [e.strip() for e in forwarded_for.split(",") if e.strip()]
     if len(entries) < _MIN_CHAIN_ENTRIES:
@@ -408,8 +507,11 @@ def resolve_forwarded_client_ip(forwarded_for: str) -> str | None:
     idx = len(entries) - 1
     while idx >= 0 and _is_trusted_hop(entries[idx]):
         idx -= 1
-    if idx == len(entries) - 1 or idx < 0:
-        return None  # no hop peeled, or all hops: baseline handles both
+    if idx == len(entries) - 1:
+        _warn_unconfigured_tailnet_gateway_once(entries[-1], entries[-2])
+        return None  # no hop peeled: baseline handles it
+    if idx < 0:
+        return None  # all hops: baseline handles it
     candidate = entries[idx]
     if not _in_networks(candidate, (_TAILNET_NETWORK,)):
         return None
@@ -423,10 +525,12 @@ class ClientIpResolutionMiddleware:
     Pure ASGI, mounted OUTSIDE SecurityMiddleware (added after it, so it runs
     first): guard_core's ``extract_client_ip`` returns a pre-cached
     ``state.client_ip`` verbatim, which is the supported seam for custom
-    resolution. Only honors XFF when the CONNECTING peer is itself a known
-    local hop (nginx's bridge IP / loopback) — a directly-connected client's
-    forged XFF is never consulted here (the guard's own depth-1 logic keeps
-    handling that class unchanged).
+    resolution. Only honors XFF when the CONNECTING peer is itself trusted to
+    present it (nginx's docker-bridge address / loopback —
+    `_CONNECTING_PEER_NETWORKS`, deliberately broader than and independent of
+    the operator-scoped hop-peel set the XFF entries are matched against) —
+    a directly-connected client's forged XFF is never consulted here (the
+    guard's own depth-1 logic keeps handling that class unchanged).
     """
 
     def __init__(self, app: Any) -> None:
@@ -436,7 +540,7 @@ class ClientIpResolutionMiddleware:
         if scope["type"] == "http":
             client = scope.get("client")
             connecting_ip = client[0] if client else None
-            if connecting_ip and _is_trusted_hop(connecting_ip):
+            if connecting_ip and _is_trusted_connecting_peer(connecting_ip):
                 # First occurrence on a repeated header, matching Starlette's
                 # Headers.get — so this layer and the guard's own fallback
                 # read the SAME header value.
@@ -459,7 +563,22 @@ def _guard_whitelist() -> list[str]:
     extra = [
         x.strip() for x in settings.guard_emergency_whitelist.split(",") if x.strip()
     ]
-    return [*_INTERNAL_NETWORKS, *extra]
+    # guard-core's whitelist is EXCLUSIVE once non-empty (guard_core.utils.
+    # is_ip_allowed: a set whitelist replaces, not supplements, the
+    # blacklist check — any non-member IP is refused outright, not merely
+    # unexempted). The resolver above now honestly resolves a host-proxied
+    # tailnet client's real 100.64.0.0/10 address instead of a loopback/
+    # bridge hop, so that address must be a whitelist member or ip_security
+    # rejects it — this blocked the CEO's own tailnet IP live (2026-07-22).
+    # Coupling allowlist membership with scrutiny-exemption here is
+    # deliberate for the tailnet specifically: Tailscale is an authenticated
+    # overlay that gates device membership before a packet ever reaches this
+    # host, so an already-authenticated tailnet peer skipping WAF/ban/rate-
+    # limit is the correct posture, not a gap. The resolver's real-IP
+    # stamping still buys correct attribution in logs/telemetry, and any
+    # FUTURE non-tailnet public exposure still gets full scrutiny — only
+    # 100.64.0.0/10 is exempted here, nothing wider.
+    return [*_INTERNAL_NETWORKS, _TAILNET_NETWORK, *extra]
 
 
 def _emergency_whitelist() -> list[str]:

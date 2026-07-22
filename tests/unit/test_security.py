@@ -209,10 +209,20 @@ def test_internal_agent_mesh_is_whitelisted() -> None:
     """Agents reach the orchestrator directly on the docker bridge, HMAC-
     authenticated; the guard's threat-ban is for the external surface. Without
     this the guard IP-banned agent containers the moment it went active
-    (2026-07-20 incident) and wedged every subsequent gateway verb."""
+    (2026-07-20 incident) and wedged every subsequent gateway verb.
+
+    The tailnet CGNAT range (100.64.0.0/10) rides the same whitelist:
+    guard-core's whitelist is EXCLUSIVE once non-empty (any non-member IP is
+    refused, not merely unexempted), and the resolver now honestly resolves
+    a host-proxied tailnet client to its real 100.64.0.0/10 address instead
+    of a loopback/bridge hop — omitting it here blocked the CEO's own
+    tailnet IP live (2026-07-22 incident). Tailscale is an authenticated
+    overlay gating device membership before a packet arrives, so coupling
+    allowlisting with scrutiny-exemption is the deliberate posture for this
+    one range."""
     cfg = security.build_security_config()
     assert cfg.whitelist is not None
-    for net in ("127.0.0.1", "::1", "172.16.0.0/12"):
+    for net in ("127.0.0.1", "::1", "172.16.0.0/12", "100.64.0.0/10"):
         assert net in cfg.whitelist
 
 

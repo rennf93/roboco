@@ -758,6 +758,28 @@ class Settings(BaseSettings):
             "lockdown, in addition to loopback. Empty = loopback only."
         ),
     )
+    guard_trusted_chain_peers: str = Field(
+        default="",
+        description=(
+            "Comma-separated exact IP address(es), never a range, beyond "
+            "loopback, trusted to appear as a recorded PROXY HOP inside "
+            "X-Forwarded-For when resolving the real client behind a "
+            "host-proxied chain (e.g. Tailscale Serve terminating on the "
+            "docker host in front of nginx). A CIDR/subnet entry is "
+            "rejected (logged, config load still succeeds) rather than "
+            "accepted, since a range would readmit every sibling "
+            "container's real address into the hop set. Empty by default: "
+            "only a loopback rightmost hop peels, so a same-bridge "
+            "container can no longer get its own 172.x address treated as a "
+            "trusted hop just by being on the docker bridge. If Tailscale "
+            "Serve sits behind this host's docker gateway, set this to that "
+            "gateway's exact address (e.g. 172.18.0.1) to keep the "
+            "Serve-behind-gateway chain resolving. Distinct from the docker "
+            "bridge pool nginx itself connects FROM (still trusted "
+            "unconditionally so nginx can keep presenting XFF at all) — this "
+            "only scopes which XFF entries are treated as hops."
+        ),
+    )
 
     # ==========================================================================
     # Production self-healing ("engine 4") — DORMANT by default
