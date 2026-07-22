@@ -267,6 +267,29 @@ class Settings(BaseSettings):
             "unacknowledged. 0 disables the damper (legacy every-tick respawn)."
         ),
     )
+    notification_spawn_max_attempts: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Hard cap on notification-triggered spawns per (agent, notification): "
+            "past this many attempts without the notification being acknowledged, "
+            "stop re-spawning (the notification-driven analogue of the PM respawn "
+            "breaker — these dispatchers carry no task_id so that breaker never "
+            "sees them). Prevents one wedged escalation/alert from respawning its "
+            "recipient every cooldown window indefinitely. 0 disables the cap."
+        ),
+    )
+    notification_spawn_max_age_seconds: int = Field(
+        default=21600,
+        ge=0,
+        description=(
+            "Skip notification-triggered spawns for a notification older than "
+            "this (default 6h). A still-pending notification this stale is wedged "
+            "or reloaded from before a restart — reviving an agent for it acts on "
+            "dead work. Independent of the per-notification expiry and the "
+            "terminal-related-task check. 0 disables the staleness gate."
+        ),
+    )
     notification_ack_ttl_hours: int = Field(
         default=48,
         ge=0,
