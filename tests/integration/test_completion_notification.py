@@ -240,3 +240,49 @@ async def test_get_ceo_agent_tolerates_duplicate_ceo_rows(env: dict) -> None:
     # Does not raise, and pins to the earliest-created (never the later row).
     assert resolved is not None
     assert resolved.id != later_ceo.id
+
+
+@pytest.mark.asyncio
+async def test_get_auditor_agent_tolerates_duplicate_auditor_rows(env: dict) -> None:
+    """Mirrors `test_get_ceo_agent_tolerates_duplicate_ceo_rows`: a second
+    role=AUDITOR row must not make `_get_auditor_agent()` raise
+    MultipleResultsFound — both now delegate to the shared
+    `get_agent_by_role` helper."""
+    db = env["db"]
+    first_auditor = AgentTable(
+        id=uuid4(),
+        name="Auditor 1",
+        slug=f"auditor-{uuid4().hex[:6]}",
+        role=AgentRole.AUDITOR,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db.add(first_auditor)
+    await db.flush()
+    later_auditor = AgentTable(
+        id=uuid4(),
+        name="Auditor 2",
+        slug=f"auditor-{uuid4().hex[:6]}",
+        role=AgentRole.AUDITOR,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+        created_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.add(later_auditor)
+    await db.flush()
+
+    delivery = get_notification_delivery_service(db)
+    resolved = await delivery._get_auditor_agent()
+
+    assert resolved is not None
+    assert resolved.id != later_auditor.id

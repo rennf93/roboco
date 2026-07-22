@@ -62,6 +62,14 @@ on:
       - 'uv.lock'
       - 'alembic.ini'
       - '.github/workflows/ci.yml'
+      # Kept identical to the push trigger's paths above so an external-fork
+      # PR touching only these (panel/docs-only, motion-only, ...) still
+      # fires CI instead of merging on a false "no checks required" green.
+      - 'panel/**'
+      - 'CLAUDE.md'
+      - 'CHANGELOG.md'
+      - 'docs/**'
+      - 'motion/**'
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a

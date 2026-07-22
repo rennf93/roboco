@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
 from roboco.db.tables import AgentTable
+from roboco.models.base import AgentRole
 
 
 def pagination(
@@ -261,4 +262,33 @@ async def get_agent_by_slug(
         Agent table row, or None if not found
     """
     result = await db.execute(select(AgentTable).where(AgentTable.slug == slug))
+    return result.scalar_one_or_none()
+
+
+async def get_agent_by_role(
+    db: AsyncSession,
+    role: AgentRole,
+) -> AgentTable | None:
+    """
+    Get an org-wide singleton-role agent (e.g. CEO, AUDITOR) by role.
+
+    A plain `role == ...` + `scalar_one_or_none()` raises MultipleResultsFound
+    the moment a second row of that role ever exists (a real hazard: shared
+    test DBs and misconfigured seeds both do this). Pin to the
+    earliest-created row instead so the lookup is deterministic and never
+    crashes.
+
+    Args:
+        db: Database session
+        role: The singleton role to resolve (e.g. AgentRole.CEO)
+
+    Returns:
+        The earliest-created agent with this role, or None if none exist
+    """
+    result = await db.execute(
+        select(AgentTable)
+        .where(AgentTable.role == role)
+        .order_by(AgentTable.created_at)
+        .limit(1)
+    )
     return result.scalar_one_or_none()

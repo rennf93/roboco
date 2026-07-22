@@ -7866,10 +7866,8 @@ Start by:
         stop the health loop.
         """
         try:
-            from sqlalchemy import select
-
             from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentTable, NotificationTable
+            from roboco.db.tables import NotificationTable
             from roboco.models.base import (
                 AgentRole,
                 NotificationPriority,
@@ -7878,18 +7876,13 @@ Start by:
             from roboco.services.notification_delivery import (
                 get_notification_delivery_service,
             )
+            from roboco.services.repositories.query_helpers import get_agent_by_role
             from roboco.utils.converters import require_uuid
 
             session_factory = get_session_factory()
             async with session_factory() as db:
-                orch_agent = await db.execute(
-                    select(AgentTable).where(AgentTable.role == AgentRole.AUDITOR)
-                )
-                auditor = orch_agent.scalar_one_or_none()
-                ceo_result = await db.execute(
-                    select(AgentTable).where(AgentTable.role == AgentRole.CEO)
-                )
-                ceo = ceo_result.scalar_one_or_none()
+                auditor = await get_agent_by_role(db, AgentRole.AUDITOR)
+                ceo = await get_agent_by_role(db, AgentRole.CEO)
                 recipients = [a.id for a in (auditor, ceo) if a is not None]
                 if not recipients:
                     logger.warning(
@@ -9550,10 +9543,8 @@ Start by:
         ``_notify_stranded_agent`` — direct DB insert + delivery.deliver().
         """
         try:
-            from sqlalchemy import select as _select
-
             from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentTable, NotificationTable
+            from roboco.db.tables import NotificationTable
             from roboco.models.base import (
                 AgentRole,
                 NotificationPriority,
@@ -9562,6 +9553,7 @@ Start by:
             from roboco.services.notification_delivery import (
                 get_notification_delivery_service,
             )
+            from roboco.services.repositories.query_helpers import get_agent_by_role
             from roboco.utils.converters import require_uuid
 
             # Compute human-friendly duration
@@ -9579,10 +9571,7 @@ Start by:
 
             session_factory = get_session_factory()
             async with session_factory() as db:
-                ceo_result = await db.execute(
-                    _select(AgentTable).where(AgentTable.role == AgentRole.CEO)
-                )
-                ceo = ceo_result.scalar_one_or_none()
+                ceo = await get_agent_by_role(db, AgentRole.CEO)
                 if ceo is None:
                     logger.warning(
                         "CEO agent not found; skipping rate-limit CEO notification",

@@ -86,10 +86,18 @@ async def test_handle_task_blocked_calls_send_blocker() -> None:
     notif.send_blocker_notification = AsyncMock()
     set_event_context(notification_service=notif)
     event = _make_event(
-        EventType.TASK_BLOCKED, task_id=str(uuid4()), team="backend", reason="x"
+        EventType.TASK_BLOCKED,
+        task_id=str(uuid4()),
+        team="backend",
+        reason="x",
+        task_title="Ship the widget",
     )
     await handle_task_status_change(event)
     notif.send_blocker_notification.assert_called_once()
+    assert (
+        notif.send_blocker_notification.call_args.kwargs["task_title"]
+        == "Ship the widget"
+    )
 
 
 @pytest.mark.asyncio
@@ -108,10 +116,17 @@ async def test_handle_task_awaiting_qa() -> None:
     notif.send_qa_ready_notification = AsyncMock()
     set_event_context(notification_service=notif)
     event = _make_event(
-        EventType.TASK_AWAITING_QA, task_id=str(uuid4()), team="backend"
+        EventType.TASK_AWAITING_QA,
+        task_id=str(uuid4()),
+        team="backend",
+        task_title="Ship the widget",
     )
     await handle_task_status_change(event)
     notif.send_qa_ready_notification.assert_called_once()
+    assert (
+        notif.send_qa_ready_notification.call_args.kwargs["task_title"]
+        == "Ship the widget"
+    )
 
 
 @pytest.mark.asyncio
@@ -124,9 +139,14 @@ async def test_handle_task_qa_failed() -> None:
         task_id=str(uuid4()),
         assigned_to="be-dev-1",
         qa_notes="please fix",
+        task_title="Ship the widget",
     )
     await handle_task_status_change(event)
     notif.send_qa_failed_notification.assert_called_once()
+    assert (
+        notif.send_qa_failed_notification.call_args.kwargs["task_title"]
+        == "Ship the widget"
+    )
 
 
 @pytest.mark.asyncio
@@ -145,10 +165,17 @@ async def test_handle_task_awaiting_docs() -> None:
     notif.send_docs_ready_notification = AsyncMock()
     set_event_context(notification_service=notif)
     event = _make_event(
-        EventType.TASK_AWAITING_DOCS, task_id=str(uuid4()), team="backend"
+        EventType.TASK_AWAITING_DOCS,
+        task_id=str(uuid4()),
+        team="backend",
+        task_title="Ship the widget",
     )
     await handle_task_status_change(event)
     notif.send_docs_ready_notification.assert_called_once()
+    assert (
+        notif.send_docs_ready_notification.call_args.kwargs["task_title"]
+        == "Ship the widget"
+    )
 
 
 @pytest.mark.asyncio
@@ -173,9 +200,14 @@ async def test_handle_handoff_created_calls_notification() -> None:
         task_id=str(uuid4()),
         handoff_id=str(uuid4()),
         team="backend",
+        task_title="Ship the widget",
     )
     await handle_handoff_created(event)
     notif.send_handoff_notification.assert_called_once()
+    assert (
+        notif.send_handoff_notification.call_args.kwargs["task_title"]
+        == "Ship the widget"
+    )
 
 
 @pytest.mark.asyncio

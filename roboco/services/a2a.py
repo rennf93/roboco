@@ -1998,11 +1998,13 @@ class A2AService:
         if from_slug != "ceo" or not is_spawnable_agent_slug(to_slug):
             return
         # A wake only helps a role that can actually drain the DM and close
-        # the notification (read_a2a → _ack_pending_wake_notifications). For
-        # a role without it (auditor, pr_reviewer) the row would be unackable
-        # and immortal: it permanently blocks future wakes via the dedup
-        # pre-check and drives futile respawns. Local imports: the gateway
-        # package cycles back into this module at module scope.
+        # the notification (read_a2a → _ack_pending_wake_notifications). Both
+        # auditor and pr_reviewer carry read_a2a now, but role tools are
+        # re-derived here rather than assumed, so a future role without it
+        # still gets the same protection: an unackable row would otherwise be
+        # immortal, permanently blocking future wakes via the dedup pre-check
+        # and driving futile respawns. Local imports: the gateway package
+        # cycles back into this module at module scope.
         from roboco.agents_config import get_agent_role
         from roboco.services.gateway.role_config import get_role_config
 

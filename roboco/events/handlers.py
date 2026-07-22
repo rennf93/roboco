@@ -77,6 +77,7 @@ async def _handle_task_blocked(
         blocker_reason=blocker_reason,
         from_agent=event.source_agent,
         to_pm=_get_pm_id(team),
+        task_title=event.data.get("task_title"),
     )
 
 
@@ -96,6 +97,7 @@ async def _handle_task_awaiting_qa(
         task_id=task_id,
         from_agent=event.source_agent,
         to_qa=_get_qa_id(team),
+        task_title=event.data.get("task_title"),
     )
 
 
@@ -116,6 +118,7 @@ async def _handle_task_qa_failed(
         task_id=task_id,
         qa_notes=qa_notes,
         to_developer=developer_id,
+        task_title=event.data.get("task_title"),
     )
 
 
@@ -135,6 +138,7 @@ async def _handle_task_awaiting_docs(
         task_id=task_id,
         from_agent=event.source_agent,
         to_documenter=_get_doc_id(team),
+        task_title=event.data.get("task_title"),
     )
 
 
@@ -203,6 +207,7 @@ async def handle_handoff_created(event: Event) -> None:
             handoff_id=handoff_id,
             from_agent=from_agent,
             to_documenter=_get_doc_id(team),
+            task_title=event.data.get("task_title"),
         )
 
 

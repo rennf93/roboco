@@ -135,6 +135,7 @@ class NotificationServiceProtocol(Protocol):
         blocker_reason: str,
         from_agent: str | None,
         to_pm: str,
+        task_title: str | None = None,
     ) -> None: ...
 
     async def send_qa_ready_notification(
@@ -142,6 +143,7 @@ class NotificationServiceProtocol(Protocol):
         task_id: str,
         from_agent: str | None,
         to_qa: str,
+        task_title: str | None = None,
     ) -> None: ...
 
     async def send_qa_failed_notification(
@@ -149,6 +151,7 @@ class NotificationServiceProtocol(Protocol):
         task_id: str,
         qa_notes: str,
         to_developer: str,
+        task_title: str | None = None,
     ) -> None: ...
 
     async def send_docs_ready_notification(
@@ -156,6 +159,7 @@ class NotificationServiceProtocol(Protocol):
         task_id: str,
         from_agent: str | None,
         to_documenter: str,
+        task_title: str | None = None,
     ) -> None: ...
 
     async def send_handoff_notification(
@@ -164,6 +168,7 @@ class NotificationServiceProtocol(Protocol):
         handoff_id: str,
         from_agent: str | None,
         to_documenter: str,
+        task_title: str | None = None,
     ) -> None: ...
 
     async def send_a2a_notification(

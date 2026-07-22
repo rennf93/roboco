@@ -37,6 +37,7 @@ from roboco.services.notification_dedup import (
     clear_dedup_key,
 )
 from roboco.services.notification_text import task_display
+from roboco.services.repositories.query_helpers import get_agent_by_role
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -1207,27 +1208,16 @@ class NotificationDeliveryService(BaseService):
     async def _get_ceo_agent(self) -> AgentTable | None:
         """Find the CEO agent (org-wide singleton; earliest-created if many).
 
-        Mirrors `_get_auditor_agent`: a plain one-or-none raises
-        MultipleResultsFound if a second CEO-role row ever exists, so pin to
-        the earliest-created — the canonical seeded CEO — instead.
+        Delegates to the shared `get_agent_by_role` helper — a plain
+        one-or-none raises MultipleResultsFound if a second CEO-role row ever
+        exists, so it pins to the earliest-created (the canonical seeded CEO)
+        instead.
         """
-        result = await self.session.execute(
-            select(AgentTable)
-            .where(AgentTable.role == AgentRole.CEO)
-            .order_by(AgentTable.created_at)
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
+        return await get_agent_by_role(self.session, AgentRole.CEO)
 
     async def _get_auditor_agent(self) -> AgentTable | None:
         """Find the auditor agent (org-wide; earliest-created if many)."""
-        result = await self.session.execute(
-            select(AgentTable)
-            .where(AgentTable.role == AgentRole.AUDITOR)
-            .order_by(AgentTable.created_at)
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
+        return await get_agent_by_role(self.session, AgentRole.AUDITOR)
 
     async def _persist_and_deliver(self, notification: NotificationTable) -> None:
         """Add to session, flush (to get an id), deliver. Caller commits."""

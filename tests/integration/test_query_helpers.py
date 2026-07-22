@@ -13,6 +13,7 @@ from roboco.models import AgentRole, AgentStatus, Team
 from roboco.services.repositories.query_helpers import (
     agent_id_filter,
     days_ago,
+    get_agent_by_role,
     get_agent_by_slug,
     get_agent_slug,
     pagination,
@@ -256,3 +257,48 @@ async def test_get_agent_by_slug(db_session: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_get_agent_by_slug_missing(db_session: AsyncSession) -> None:
     assert await get_agent_by_slug(db_session, "ghost-slug") is None
+
+
+@pytest.mark.asyncio
+async def test_get_agent_by_role_tolerates_duplicate_rows(
+    db_session: AsyncSession,
+) -> None:
+    """A second row of the same singleton role (a real hazard for CEO/AUDITOR
+    in prod, and for the shared test DB here) must not raise
+    MultipleResultsFound — the later-created duplicate is never selected."""
+    earlier = AgentTable(
+        id=uuid4(),
+        name="Auditor Earlier",
+        slug=f"qh-role-a-{uuid4().hex[:8]}",
+        role=AgentRole.AUDITOR,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(earlier)
+    await db_session.flush()
+    later = AgentTable(
+        id=uuid4(),
+        name="Auditor Later",
+        slug=f"qh-role-b-{uuid4().hex[:8]}",
+        role=AgentRole.AUDITOR,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+        created_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db_session.add(later)
+    await db_session.flush()
+
+    resolved = await get_agent_by_role(db_session, AgentRole.AUDITOR)
+
+    assert resolved is not None
+    assert resolved.id != later.id
