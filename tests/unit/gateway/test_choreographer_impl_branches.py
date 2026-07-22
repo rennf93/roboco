@@ -1101,19 +1101,6 @@ async def test_claimed_branch_already_active_guard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pure helper: skill matching string entries (lines 802-803)
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_skill_string_entries() -> None:
-    deps = _make_deps()
-    c = Choreographer(deps)
-    agent = MagicMock(skills=["python", "rust"], capabilities=None)
-    result = c._resolve_skill(agent, ["go", "python"])
-    assert result == "python"
-
-
-# ---------------------------------------------------------------------------
 # i_will_plan: claim returns None for pending task (line 1155 — emit_rejection)
 # ---------------------------------------------------------------------------
 

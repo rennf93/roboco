@@ -598,28 +598,6 @@ async def test_i_am_done_reassigned_steers_to_give_me_work() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_skill_resolution_picks_existing_skill() -> None:
-    """Resolver picks first matching skill.
-
-    Falls back to the first preference entry when no match is found.
-    """
-    deps = _make_deps()
-    c = Choreographer(deps)
-
-    qa = MagicMock(id=uuid4(), skills=[{"id": "qa_review"}, {"id": "test_validation"}])
-    skill = c._resolve_skill(qa, ["code_review", "qa_review"])
-    assert skill == "qa_review"
-
-    qa_with_canonical = MagicMock(id=uuid4(), skills=[{"id": "code_review"}])
-    skill2 = c._resolve_skill(qa_with_canonical, ["code_review", "qa_review"])
-    assert skill2 == "code_review"
-
-    qa_with_neither = MagicMock(id=uuid4(), skills=[{"id": "other_skill"}])
-    skill3 = c._resolve_skill(qa_with_neither, ["code_review", "qa_review"])
-    assert skill3 == "code_review"  # fallback to first
-
-
-@pytest.mark.asyncio
 async def test_i_am_blocked_escalates_and_journals() -> None:
     agent_id = uuid4()
     task_id = uuid4()

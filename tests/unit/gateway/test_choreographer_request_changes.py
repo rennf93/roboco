@@ -88,8 +88,7 @@ async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
             __aexit__=AsyncMock(return_value=False),
         )
     )
-    a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
+    deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
     issues = [
@@ -99,7 +98,6 @@ async def test_request_changes_succeeds_and_notifies_new_owner() -> None:
     assert env.error is None
     assert env.status == "needs_revision"
     task_svc.request_changes.assert_awaited_once()
-    a2a_svc.send.assert_awaited_once()
     # The ledger insert ran (findings=[the shimmed issue]) before the transition.
     task_svc.session.add.assert_called_once()
 

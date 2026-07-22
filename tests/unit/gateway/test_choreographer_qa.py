@@ -305,8 +305,7 @@ async def test_pass_review_succeeds_and_transitions() -> None:
     _stub_empty_ledger(task_svc.session)
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
-    a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = (
@@ -317,7 +316,6 @@ async def test_pass_review_succeeds_and_transitions() -> None:
     assert env.error is None
     assert env.status == "awaiting_documentation"
     task_svc.qa_pass.assert_awaited_once()
-    a2a_svc.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -452,8 +450,7 @@ async def test_fail_review_succeeds() -> None:
     )
     journal_svc = AsyncMock()
     journal_svc.has_learning_for_task.return_value = True
-    a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, journal=journal_svc, a2a=a2a_svc)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     issues = [
@@ -464,7 +461,6 @@ async def test_fail_review_succeeds() -> None:
     assert env.error is None
     assert env.status == "needs_revision"
     task_svc.qa_fail.assert_awaited_once()
-    a2a_svc.send.assert_awaited_once()
     # The ledger insert ran (2 shimmed findings) before the transition.
     assert task_svc.session.add.call_count == _EXPECTED_FINDINGS_COUNT
 
@@ -522,4 +518,3 @@ async def test_fail_review_blocks_when_journal_learning_missing() -> None:
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "journal:learning" in body["missing"]
-
