@@ -116,16 +116,29 @@ You need **Docker** + **Docker Compose** and a Claude Code auth directory on the
 
 ### Option 1 — Run the pre-built images (quickest)
 
-Every release publishes all RoboCo images to both the GitHub Container Registry and Docker Hub, so you can run the full stack without building anything. Use the registry compose:
+Every release publishes all RoboCo images to both the GitHub Container Registry and Docker Hub, so you can run the full stack without building anything. One command brings it up:
 
 ```bash
 git clone https://github.com/rennf93/roboco.git && cd roboco
-cp .env.example .env                                   # then edit in your secrets
-docker compose -f docker-compose.registry.yml pull
-docker compose -f docker-compose.registry.yml up -d
+make quickstart                    # no make? run ./scripts/bootstrap.sh directly
 ```
 
-Choose the registry and version with two env vars (defaults shown):
+`make quickstart` (`scripts/bootstrap.sh`) is idempotent — safe to re-run any time. What it does:
+
+```bash
+cp .env.example .env              # only if missing — an existing .env is never touched
+# ...generates ROBOCO_ENCRYPTION_KEY / ROBOCO_AGENT_AUTH_SECRET / ROBOCO_PANEL_AGENT_TOKEN in place
+
+docker compose -f docker-compose.registry.yml pull
+docker compose -f docker-compose.registry.yml up -d
+
+# ...then polls until the stack is genuinely ready (health, migrations, Ollama
+# models) and prints a doctor-style summary — or fails loud with what to check.
+```
+
+Note: ROBOCO_PANEL_AGENT_TOKEN is a standing CEO credential — blank it if you later arm cloud auth (see `.env.example`).
+
+Choose the registry and version with two env vars (defaults shown) — set them in `.env` before running `make quickstart`:
 
 ```bash
 ROBOCO_REGISTRY=ghcr.io/rennf93   # or docker.io/renzof93
