@@ -12,7 +12,7 @@ import contextlib
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
@@ -54,7 +54,6 @@ from sqlalchemy.ext.asyncio import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from uuid import UUID
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
@@ -1130,7 +1129,7 @@ async def test_reject_redraft_materializes_held_draft_of_same_source_with_new_bo
     assert redraft.confirmed_by_human is False
     assert markers.get_x_draft_body(redraft) == "Revised body."
 
-    await _delete_tasks(db_session, task_id, redraft.id)
+    await _delete_tasks(db_session, task_id, UUID(str(redraft.id)))
 
 
 @pytest.mark.asyncio
@@ -1198,7 +1197,7 @@ async def test_reject_redraft_respects_open_post_cap(
     ids = {t.id for t in open_posts}
     assert ids == {filler.id}  # no redraft — the cap was already at 1
 
-    await _delete_tasks(db_session, task_id, filler.id)
+    await _delete_tasks(db_session, task_id, UUID(str(filler.id)))
 
 
 @pytest.mark.asyncio
