@@ -362,6 +362,9 @@ DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
 # (the grok analogue of reading the Claude transcript from the mounted ~/.claude).
 # Override for local runs.
 GROK_USAGE_DATA_DIR = os.environ.get("ROBOCO_GROK_USAGE_DIR", "/data/grok-usage")
+# Same shape for CODEX agents (roboco.llm.providers.codex_cli_usage writes
+# usage.json here; the finalizer reads it back — see _codex_usage_json).
+CODEX_USAGE_DATA_DIR = os.environ.get("ROBOCO_CODEX_USAGE_DIR", "/data/codex-usage")
 
 # Interactive Grok images (grok-CLI conversation drivers) — selected for the
 # intake / secretary roles when their route resolves to GROK, instead of the
@@ -400,6 +403,21 @@ _GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
 # re-parks (no token burn). Same shape as the 429 exit-75 path (F041).
 _GROK_AUTH_EXIT_CODE = 78
 _GROK_AUTH_RETRY_AFTER_S = 60.0
+
+# A one-shot Codex container exits with these SAME codes for the SAME reasons
+# (its entrypoint mirrors grok's exit-code convention — see
+# docker/scripts/codex-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected OpenAI rate-limit / quota error, 78 (EX_CONFIG) when the
+# codex_auth --check backstop finds the mounted ChatGPT-subscription token
+# missing/expired. Numeric reuse is fine — the checks are scoped by
+# provider_type (ModelProvider.OPENAI vs .GROK), never by exit code alone.
+# Unlike grok's rate-limit park, Codex has no observed re-park storm to back
+# off against yet, so this parks at a flat retry_after (no exponential
+# backoff bookkeeping) — add if operators see a repark cycle in practice.
+_CODEX_RATE_LIMIT_EXIT_CODE = 75
+_CODEX_RATE_LIMIT_RETRY_AFTER_S = 60.0
+_CODEX_AUTH_EXIT_CODE = 78
+_CODEX_AUTH_RETRY_AFTER_S = 60.0
 
 
 # =============================================================================
@@ -1519,6 +1537,47 @@ class AgentOrchestrator:
         except OSError as exc:
             logger.warning(
                 "could not pre-create grok usage dir; grok agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _codex_usage_root() -> Path:
+        """The base dir all per-agent codex usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(CODEX_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-codex-usage"
+
+    @staticmethod
+    def _codex_usage_dir(agent_id: str) -> Path:
+        """Per-agent codex usage dir under :meth:`_codex_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_codex_usage_dir``) and the finalize read side
+        (``_codex_usage_json``), mirroring ``_grok_usage_dir``.
+        """
+        return AgentOrchestrator._codex_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_codex_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's codex usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._codex_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create codex usage dir; codex agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
@@ -2834,6 +2893,8 @@ class AgentOrchestrator:
                 # captured tokens back at finalize via the shared data volume
                 # (see GROK_USAGE_DATA_DIR).
                 "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{config.agent_id}",
+                # Per-agent codex usage dir (OPENAI only); same shape.
+                "codex_usage": f"{DATA_HOST_PATH}/codex-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -2855,6 +2916,9 @@ class AgentOrchestrator:
             "mcp_config": str(config.mcp_config_path),
             "grok_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-grok-usage" / config.agent_id
+            ),
+            "codex_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-codex-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3225,19 +3289,30 @@ class AgentOrchestrator:
         """Build (once) the registry of dedicated provider backends.
 
         Only providers that need a runtime other than the built-in Claude Code
-        container are registered. Today that is GROK (xAI, OpenAI protocol).
+        container are registered. Today that is GROK (xAI) and OPENAI (Codex
+        CLI) — both OpenAI-protocol-shaped subscription CLIs.
         """
         if self._provider_registry is None:
-            from roboco.llm.providers import GrokCliProvider, ProviderRegistry
+            from roboco.llm.providers import (
+                CodexCliProvider,
+                GrokCliProvider,
+                ProviderRegistry,
+            )
             from roboco.models.base import ModelProvider
 
             registry = ProviderRegistry()
-            # Qualify the grok image with the registry namespace + tag so it
+            # Qualify each image with the registry namespace + tag so it
             # resolves in both local-build and registry deploys (parity with
             # get_agent_image for the Claude path).
             registry.register(
                 ModelProvider.GROK,
                 GrokCliProvider(self, image=_qualify_agent_image("roboco-agent-grok")),
+            )
+            registry.register(
+                ModelProvider.OPENAI,
+                CodexCliProvider(
+                    self, image=_qualify_agent_image("roboco-agent-codex")
+                ),
             )
             self._provider_registry = registry
         return self._provider_registry
@@ -6159,6 +6234,65 @@ class AgentOrchestrator:
         except (TypeError, ValueError):
             return 0.0
 
+    def _codex_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read an OPENAI agent's ``usage.json`` (mirrors ``_grok_usage_json``).
+
+        Written by the codex-cli entrypoint (one-shot, post-run) to the
+        per-agent dir under ``_codex_usage_dir``. Returns ``None`` when
+        absent / unreadable.
+        """
+        try:
+            usage_json = self._codex_usage_dir(os.path.basename(agent_id)) / (
+                "usage.json"
+            )
+            data = json.loads(usage_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """An OPENAI agent's token usage from its ``usage.json``.
+
+        Unlike grok's single cumulative total, codex reports a real
+        input/output/cache split (see ``codex_cli_usage``), so this returns
+        the genuine 4-tuple instead of folding everything into output. A
+        WARNING logs on a missing/zero read (a silent mount/uid failure is
+        otherwise indistinguishable from a genuine zero-cost run).
+        """
+        data = self._codex_usage_json(agent_id)
+        tokens = (0, 0, 0, 0)
+        if data:
+            try:
+                tokens = (
+                    int(data.get("tokens_input", 0)),
+                    int(data.get("tokens_output", 0)),
+                    int(data.get("tokens_cache_read", 0)),
+                    int(data.get("tokens_cache_write", 0)),
+                )
+            except (TypeError, ValueError):
+                tokens = (0, 0, 0, 0)
+        if not tokens[0] and not tokens[1]:
+            logger.warning(
+                "OPENAI (codex) agent finalized with no readable usage "
+                "(0 tokens / $0) — check the data dir mount",
+                agent_id=agent_id,
+            )
+        return tokens
+
+    def _codex_usage_turns(self, agent_id: str) -> int:
+        """An OPENAI agent's turn count from its ``usage.json`` (0 if none).
+
+        Codex's JSONL carries a real ``turn.completed`` count (unlike grok,
+        which has no turn signal at all) — see ``codex_cli_usage``.
+        """
+        data = self._codex_usage_json(agent_id)
+        if not data:
+            return 0
+        try:
+            return int(data.get("turns", 0))
+        except (TypeError, ValueError):
+            return 0
+
     async def _enforce_grok_cost_budget(self) -> None:
         """Kill a live GROK container whose captured cost exceeds the cap.
 
@@ -6226,17 +6360,21 @@ class AgentOrchestrator:
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        For a GROK agent, reads the captured ``usage.json`` (no SDK server /
-        Claude transcript exists). Otherwise tries the live SDK ``/usage/status``
-        first; if that misses — the SDK's in-memory counts race container teardown
-        for short-lived agents — it falls back to the agent's Claude Code
-        transcript, which is durable and mounted into this container. Returns
+        For a GROK or OPENAI (codex) agent, reads the captured ``usage.json``
+        (no SDK server / Claude transcript exists for either). Otherwise tries
+        the live SDK ``/usage/status`` first; if that misses — the SDK's
+        in-memory counts race container teardown for short-lived agents — it
+        falls back to the agent's Claude Code transcript, which is durable and
+        mounted into this container. Returns
         ``(input, output, cache_read, cache_write)``.
         """
         from roboco.models.base import ModelProvider
 
-        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+        provider = self.get_provider_for_agent(agent_id)
+        if provider == ModelProvider.GROK.value:
             return self._grok_usage_tokens(agent_id)
+        if provider == ModelProvider.OPENAI.value:
+            return self._codex_usage_tokens(agent_id)
 
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -6276,12 +6414,17 @@ class AgentOrchestrator:
         assistant-message count) for short-lived agents whose SDK counts race
         teardown; ``tool_calls`` has no transcript equivalent and stays 0 ("n/a")
         when the SDK misses. Grok agents have neither — returns ``(0, 0)``.
-        Best-effort: any failure degrades to zeros, never blocks finalize.
+        Codex agents have a real ``turn.completed`` count (from its usage.json)
+        but no tool-call signal — returns ``(turns, 0)``. Best-effort: any
+        failure degrades to zeros, never blocks finalize.
         """
         from roboco.models.base import ModelProvider
 
-        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+        provider = self.get_provider_for_agent(agent_id)
+        if provider == ModelProvider.GROK.value:
             return (0, 0)
+        if provider == ModelProvider.OPENAI.value:
+            return (self._codex_usage_turns(agent_id), 0)
 
         turns = tool_calls = 0
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -6470,19 +6613,23 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet. GROK has no SDK server or Claude transcript,
-        so it routes to its ``usage.json`` — the same early return the finalize
-        path uses, so live USAGE_SNAPSHOT reflects grok agents mid-run too.
+        source has any usage yet. GROK / OPENAI (codex) have no SDK server or
+        Claude transcript, so each routes to its own ``usage.json`` — the same
+        early return the finalize path uses, so live USAGE_SNAPSHOT reflects
+        grok/codex agents mid-run too.
         """
         instance = self._instances.get(agent_id)
-        is_grok = (
-            instance is not None
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.GROK.value
+        provider = (
+            instance.config.provider_type
+            if instance is not None and instance.config is not None
+            else None
         )
-        if is_grok:
+        if provider == ModelProvider.GROK.value:
             grok_tokens = self._grok_usage_tokens(agent_id)
             return grok_tokens if any(grok_tokens) else None
+        if provider == ModelProvider.OPENAI.value:
+            codex_tokens = self._codex_usage_tokens(agent_id)
+            return codex_tokens if any(codex_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
@@ -8091,6 +8238,16 @@ Start by:
         if self._is_grok_auth_exit(instance, exit_code):
             await self._park_grok_auth_unavailable(agent_id, instance)
             return
+        # Codex 429/auth parking: same exit-code convention as grok (see
+        # _CODEX_RATE_LIMIT_EXIT_CODE / _CODEX_AUTH_EXIT_CODE), scoped to
+        # ModelProvider.OPENAI so a numeric-code collision with another
+        # provider's crash can never mis-park.
+        if self._is_codex_rate_limit_exit(instance, exit_code):
+            await self._park_codex_rate_limited(agent_id, instance)
+            return
+        if self._is_codex_auth_exit(instance, exit_code):
+            await self._park_codex_auth_unavailable(agent_id, instance)
+            return
         graceful = exit_code == 0
         # Park the provider on a session/usage limit or a server overload detected
         # in the dead container's output instead of crash-retrying into it. The
@@ -9490,6 +9647,33 @@ Start by:
         )
 
     @staticmethod
+    def _is_codex_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot codex container that exited 75 (OpenAI 429)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _CODEX_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENAI.value
+        )
+
+    @staticmethod
+    def _is_codex_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot codex container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``codex_auth --check`` as a backstop and exits 78
+        when the ChatGPT-subscription token is missing or expired — see
+        ``_CODEX_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _CODEX_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENAI.value
+        )
+
+    @staticmethod
     async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
         """Return the last ``lines`` of a container's combined output, '' on error.
 
@@ -9715,6 +9899,41 @@ Start by:
             instance,
             provider=ModelProvider.GROK.value,
             retry_after=_GROK_AUTH_RETRY_AFTER_S,
+            kind="auth_missing",
+        )
+
+    async def _park_codex_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a codex agent whose run hit an OpenAI 429 (entrypoint exit 75).
+
+        Flat retry_after (no exponential re-park backoff like grok's — see
+        ``_CODEX_RATE_LIMIT_EXIT_CODE``): add the same backoff bookkeeping if
+        Codex is observed re-parking in a tight cycle in practice.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.OPENAI.value,
+            retry_after=_CODEX_RATE_LIMIT_RETRY_AFTER_S,
+            kind="rate_limited",
+        )
+
+    async def _park_codex_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a codex agent whose token was missing/expired (entrypoint exit 78).
+
+        Same park-and-probe shape as the grok auth path: the agent cannot
+        start without a valid token, so crash-retrying burns tokens for zero
+        progress. The dispatcher loop's ``_refresh_codex_auth`` revives the
+        task once ``codex_auth.refresh_if_stale`` mints a fresh token.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.OPENAI.value,
+            retry_after=_CODEX_AUTH_RETRY_AFTER_S,
             kind="auth_missing",
         )
 
@@ -10894,6 +11113,7 @@ Start now: evidence(task_id="{task_id}")
                     )
                 self._dispatch_wake.clear()
                 await self._refresh_grok_auth()
+                await self._refresh_codex_auth()
                 await self._dispatch_all_work()
                 await self._emit_dispatcher_heartbeat()
             except asyncio.CancelledError:
@@ -10931,6 +11151,34 @@ Start now: evidence(task_id="{task_id}")
                 )
         except Exception as exc:
             logger.error("grok auth refresh hook error", error=str(exc))
+
+    async def _refresh_codex_auth(self) -> None:
+        """Keep the host Codex CLI credential live (parity with ``_refresh_grok_auth``).
+
+        Same rationale as the grok refresh: the per-agent mount is read-only,
+        so the orchestrator refreshes the host ``auth.json`` itself before the
+        access JWT expires. Best-effort, throttled, and serial (run once per
+        dispatch tick). Never breaks the loop.
+        """
+        now = datetime.now(UTC)
+        next_check = getattr(self, "_codex_auth_next_check", None)
+        if next_check is not None and now < next_check:
+            return
+        self._codex_auth_next_check = now + timedelta(seconds=60)
+        try:
+            from roboco.llm.providers import codex_auth
+            from roboco.llm.providers.codex import CODEX_AUTH_HOST_PATH
+
+            auth_path = Path(CODEX_AUTH_HOST_PATH) / "auth.json"
+            status = await asyncio.to_thread(codex_auth.refresh_if_stale, auth_path)
+            if status == "refreshed":
+                logger.info("codex auth token refreshed")
+            elif status == "failed":
+                logger.warning(
+                    "codex auth refresh failed; agents may hit an expired token"
+                )
+        except Exception as exc:
+            logger.error("codex auth refresh hook error", error=str(exc))
 
     async def _reconcile_orphan_claims_on_startup(self) -> None:
         """Roll back tasks left in CLAIMED/IN_PROGRESS without a branch.

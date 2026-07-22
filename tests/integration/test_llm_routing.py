@@ -52,7 +52,16 @@ async def llm_setup(
         enabled=True,
         base_url="https://ollama.example.com",
     )
-    db_session.add_all([anthropic, grok, ollama])
+    # Mirrors migration 083_seed_openai_provider's contract: enabled=True at
+    # seed time (no apply_mode="codex" write path exists to flip it later —
+    # see that migration's docstring).
+    openai = ProviderConfigTable(
+        name="openai-test",
+        type=ModelProvider.OPENAI,
+        enabled=True,
+        base_url="https://api.openai.com/v1",
+    )
+    db_session.add_all([anthropic, grok, ollama, openai])
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -194,6 +203,18 @@ async def test_derive_mode_grok_when_only_grok_global(llm_setup: dict) -> None:
         scope=AssignmentScope.GLOBAL, scope_value=None, model_name=grok_model
     )
     assert await svc.derive_mode() == "grok"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_codex_when_only_openai_global(llm_setup: dict) -> None:
+    """A pure-OPENAI global assignment reports "codex", not the catch-all
+    "mix" — the read-only branch derive_mode gained alongside the seed fix."""
+    svc = llm_setup["svc"]
+    codex_model = _first_model_for_type(ModelProvider.OPENAI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=codex_model
+    )
+    assert await svc.derive_mode() == "codex"
 
 
 @pytest.mark.asyncio
@@ -391,6 +412,32 @@ async def test_resolve_for_agent_uses_global_assignment(
     )
     route = await svc.resolve_for_agent("be-dev-1")
     assert route.model_name == model
+
+
+@pytest.mark.asyncio
+async def test_upsert_and_resolve_openai_assignment_roundtrip(
+    llm_setup: dict,
+) -> None:
+    """gpt-5.3-codex through upsert_assignment -> resolve_for_agent, against
+    the seeded OPENAI row (migration 083). Before that seed existed,
+    upsert_assignment's `_get_seeded_provider(ModelProvider.OPENAI)` lookup
+    raised NotFoundError the moment anyone tried this — this is the round
+    trip that would have caught it."""
+    svc = llm_setup["svc"]
+    codex_model = _first_model_for_type(ModelProvider.OPENAI)
+    row = await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=codex_model,
+    )
+    assert row.model_name == codex_model
+
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.provider_type == ModelProvider.OPENAI
+    assert route.model_name == codex_model
+    # The seeded row carries no stored token — Codex authenticates via the
+    # mounted ~/.codex subscription dir, not a decrypted provider token.
+    assert route.auth_token is None
 
 
 @pytest.mark.asyncio
@@ -670,6 +717,23 @@ async def test_get_seeded_provider_unknown_raises(
     svc = ModelRoutingService(db_session)
     with pytest.raises(NotFoundError):
         await svc._get_seeded_provider(ModelProvider.ANTHROPIC)
+
+
+@pytest.mark.asyncio
+async def test_upsert_openai_assignment_without_seed_raises_not_found(
+    db_session: AsyncSession,
+) -> None:
+    """The exact pre-fix failure: assigning a catalog model whose provider
+    type has no seeded `provider_configs` row raises NotFoundError out of
+    `upsert_assignment`. This is what migration `083_seed_openai_provider`
+    fixes — a bare session (no `llm_setup` fixture, so no OPENAI row) proves
+    the seed is load-bearing, not incidental."""
+    svc = ModelRoutingService(db_session)
+    codex_model = _first_model_for_type(ModelProvider.OPENAI)
+    with pytest.raises(NotFoundError):
+        await svc.upsert_assignment(
+            scope=AssignmentScope.GLOBAL, scope_value=None, model_name=codex_model
+        )
 
 
 def test_get_model_routing_service_factory(db_session: AsyncSession) -> None:

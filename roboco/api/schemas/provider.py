@@ -201,9 +201,17 @@ class ApplyModeRequest(BaseModel):
 
 
 class ModeResponse(BaseModel):
-    """Server-side view of the current mode + a snapshot of active rules."""
+    """Server-side view of the current mode + a snapshot of active rules.
 
-    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted", "cost_tiered"]
+    Read-only ``mode`` values are a superset of what ``ApplyModeRequest``
+    accepts: "codex" (OPENAI) can come back from `derive_mode()` (a pure-Codex
+    global assignment), but there is no `apply_mode="codex"` write path — mix
+    mode's per-agent picker is the only way to route to it.
+    """
+
+    mode: Literal[
+        "anthropic", "grok", "codex", "ollama", "mix", "self_hosted", "cost_tiered"
+    ]
     assignments: list[AssignmentResponse]
 
 
@@ -267,7 +275,9 @@ class RoutingPresetApplyResponse(BaseModel):
     `ModeResponse`) plus any per-entry skip notes (e.g. a since-removed
     catalog model) — never a partial/silent apply."""
 
-    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted", "cost_tiered"]
+    mode: Literal[
+        "anthropic", "grok", "codex", "ollama", "mix", "self_hosted", "cost_tiered"
+    ]
     assignments: list[AssignmentResponse]
     skipped: list[str]
 

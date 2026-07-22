@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from roboco.llm.providers import (
     ClaudeCodeProvider,
+    CodexCliProvider,
     GrokCliProvider,
     ProviderError,
     ProviderNotRegisteredError,
@@ -35,6 +36,16 @@ def _isolate_grok_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ~/.grok. Tests that exercise the auth mount create ``auth.json`` themselves."""
     monkeypatch.setattr("roboco.llm.providers.grok.GROK_AUTH_HOST_PATH", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_codex_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point CODEX_AUTH_HOST_PATH at a fresh tmp dir (parity with grok above)."""
+    codex_dir = tmp_path / "codex-auth"
+    monkeypatch.setattr(
+        "roboco.llm.providers.codex.CODEX_AUTH_HOST_PATH", str(codex_dir)
+    )
+    return codex_dir
 
 
 def _config(
@@ -85,6 +96,9 @@ class _FakeHost:
     def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         self.data_dirs_ensured.append(agent_id)
 
+    def _ensure_codex_usage_dir(self, agent_id: str) -> None:
+        self.data_dirs_ensured.append(agent_id)
+
     def _resolve_host_paths(
         self, config: OrchestratorAgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]:
@@ -94,6 +108,7 @@ class _FakeHost:
             else None,
             "settings": str(agent_settings_path) if agent_settings_path else None,
             "grok_usage": f"/host/data/grok-usage/{config.agent_id}",
+            "codex_usage": f"/host/data/codex-usage/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -310,6 +325,156 @@ async def test_grok_spawn_raises_on_docker_failure() -> None:
         pytest.raises(ProviderError, match="boom"),
     ):
         await provider.spawn(_config())
+
+
+# ---------------------------------------------------------------------------
+# CodexCliProvider
+# ---------------------------------------------------------------------------
+
+
+def _codex_config(
+    *,
+    agent_id: str = "be-dev-1",
+    provider_base_url: str | None = "https://api.x.ai/v1",
+    provider_auth_token: str | None = "should-not-leak",
+    mcp_config_path: Path | None = Path("/host/mcp-configs/be-dev-1.json"),
+) -> OrchestratorAgentConfig:
+    return OrchestratorAgentConfig(
+        agent_id=agent_id,
+        blueprint_path=Path("/app/system-prompt.md"),
+        model="gpt-5.3-codex",
+        mcp_config_path=mcp_config_path,
+        claude_session_id="sess-1",
+        provider_type="openai",
+        provider_base_url=provider_base_url,
+        provider_auth_token=provider_auth_token,
+    )
+
+
+async def test_codex_spawn_requires_mcp_config() -> None:
+    provider = CodexCliProvider(_FakeHost())
+    with pytest.raises(ProviderError, match="MCP config"):
+        await provider.spawn(_codex_config(mcp_config_path=None))
+
+
+async def test_codex_spawn_does_not_require_api_key() -> None:
+    # Subscription auth (mounted ~/.codex) — a missing provider key is fine.
+    host = _FakeHost()
+    provider = CodexCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        result = await provider.spawn(_codex_config(provider_auth_token=None))
+    assert result.instance_id == "roboco-agent-be-dev-1"
+
+
+async def test_codex_spawn_no_leaked_key_and_no_anthropic_leak() -> None:
+    host = _FakeHost()
+    provider = CodexCliProvider(host, image="roboco-agent-codex:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_codex_config(), initial_prompt="do the work")
+    cmd = list(exec_mock.call_args.args)
+    assert not any(c.startswith("OPENAI_API_KEY=") for c in cmd)
+    # The provider endpoint must NOT be injected as an Anthropic var.
+    assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
+    assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
+    assert host.mount_config is not None
+    assert host.mount_config.provider_base_url is None
+    assert host.mount_config.provider_auth_token is None
+
+
+async def test_codex_spawn_wires_gateway_env_and_image_last() -> None:
+    host = _FakeHost()
+    provider = CodexCliProvider(host, image="roboco-agent-codex:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        result = await provider.spawn(_codex_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
+    assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
+    assert "ROBOCO_AGENT_MODEL=gpt-5.3-codex" in cmd
+    # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
+    assert host.data_dirs_ensured == ["be-dev-1"]
+    assert "/host/data/codex-usage/be-dev-1:/home/agent/.codex-usage" in cmd
+    assert "ROBOCO_CODEX_USAGE_FILE=/home/agent/.codex-usage/usage.json" in cmd
+    assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
+    assert cmd[-1] == "roboco-agent-codex:test"
+    assert host.removed == ["roboco-agent-be-dev-1"]
+    assert host.remove_stop_reasons == ["pre_spawn_stale_clear"]
+    assert result == SpawnResult(
+        instance_id="roboco-agent-be-dev-1",
+        extra={"container_id": "cid", "model": "gpt-5.3-codex"},
+    )
+
+
+async def test_codex_spawn_mounts_auth_when_present(
+    _isolate_codex_auth: Path,
+) -> None:
+    _isolate_codex_auth.mkdir(parents=True, exist_ok=True)
+    (_isolate_codex_auth / "auth.json").write_text("{}", encoding="utf-8")
+    host = _FakeHost()
+    provider = CodexCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_codex_config())
+    cmd = list(exec_mock.call_args.args)
+    # Mount the host ~/.codex DIRECTORY (ro), not the single auth.json file —
+    # a single-file bind mount pins the inode (same concern grok documents).
+    expected = f"{_isolate_codex_auth}:/home/agent/.codex-auth-ro:ro"
+    assert expected in cmd
+
+
+async def test_codex_spawn_omits_auth_mount_when_absent() -> None:
+    host = _FakeHost()
+    provider = CodexCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_codex_config())
+    cmd = list(exec_mock.call_args.args)
+    assert not any("/home/agent/.codex-auth-ro" in c for c in cmd)
+
+
+async def test_codex_spawn_warns_when_auth_absent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="roboco.llm.providers.codex")
+    host = _FakeHost()
+    provider = CodexCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        await provider.spawn(_codex_config())
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a spawn-time WARNING for the missing host auth.json"
+    msg = warnings[0].getMessage()
+    assert "auth.json" in msg
+    assert "codex login" in msg
+
+
+async def test_codex_spawn_prompt_is_injection_safe() -> None:
+    host = _FakeHost()
+    provider = CodexCliProvider(host)
+    nasty = "--model evil --session-id pwned"
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_codex_config(), initial_prompt=nasty)
+    cmd = list(exec_mock.call_args.args)
+    assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
+    assert nasty not in cmd
+
+
+async def test_codex_spawn_raises_on_docker_failure() -> None:
+    provider = CodexCliProvider(_FakeHost())
+    with (
+        patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(return_value=_proc(returncode=1, stderr=b"boom")),
+        ),
+        pytest.raises(ProviderError, match="boom"),
+    ):
+        await provider.spawn(_codex_config())
 
 
 # ---------------------------------------------------------------------------

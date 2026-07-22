@@ -80,6 +80,10 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # Routes to the GROK provider → GrokCliProvider spawn (api.x.ai/v1). The xAI
     # key is set via PUT /api/providers/grok/key.
     CatalogEntry("grok-build-0.1", ModelProvider.GROK, "Grok Build 0.1"),
+    # --- Codex (OpenAI, official CLI) ---
+    # Routes to the OPENAI provider → CodexCliProvider spawn. Subscription auth
+    # (~/.codex, from `codex login`), no metered API key — parity with Grok.
+    CatalogEntry("gpt-5.3-codex", ModelProvider.OPENAI, "GPT-5.3 Codex"),
 )
 
 
