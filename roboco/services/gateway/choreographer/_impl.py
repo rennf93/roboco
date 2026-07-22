@@ -8079,9 +8079,7 @@ class Choreographer:
         if rejection is not None:
             return rejection
         _role, spec_ctx = spec_gate
-        summary = await self._attach_request_changes_findings(
-            t, agent, role_str, validated
-        )
+        await self._attach_request_changes_findings(t, agent, role_str, validated)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("request_changes", t, agent, spec_ctx)
