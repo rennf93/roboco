@@ -221,5 +221,23 @@ async def test_deliver_to_unknown_or_failing_returns_false() -> None:
     await client.aclose()
 
 
+def test_has_live_agent_tracks_any_session_for_that_agent() -> None:
+    """Backs the "is the Secretary live under ANY session id" check — distinct
+    from is_alive, which needs the caller's own session id."""
+    reg = PrompterLiveRegistry()
+    assert reg.has_live_agent("secretary-1") is False  # nothing open yet
+
+    reg.open("device-a", "secretary-1")
+    assert reg.has_live_agent("secretary-1") is True
+    assert reg.has_live_agent("intake-1") is False  # different agent, untouched
+
+    reg.close("device-a")
+    assert reg.has_live_agent("secretary-1") is False  # closed -> gone
+
+    # A second session id for the SAME agent still counts as live.
+    reg.open("device-b", "secretary-1")
+    assert reg.has_live_agent("secretary-1") is True
+
+
 def test_registry_singleton() -> None:
     assert get_live_registry() is get_live_registry()

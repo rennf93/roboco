@@ -18,8 +18,9 @@ export const a2aLiveKeys = {
 
 // Conversation list — refreshed by WS `a2a.message` invalidation and the
 // manual Refresh button; a short staleTime keeps remounts reasonably fresh.
-// `refetchInterval` is the caller's poll fallback for when the /ws/system
-// socket is down (the desktop view gates it on the live-stream connection).
+// `refetchInterval` is an unconditional poll the caller drives at a faster
+// cadence while /ws/system is down (the desktop view: 20s connected / 8s
+// disconnected) — it never gates off entirely, only speeds up.
 export function useA2AConversations(
   limit?: number,
   enabled = true,
@@ -73,9 +74,10 @@ export function useA2AAdminPairs() {
 
 // Transcript for one conversation. WS frames for the selected conversation
 // invalidate this key; full bodies always come from REST (excerpts are capped).
-// `refetchInterval` defaults to off (the desktop A2A page relies on WS
-// invalidation instead) — the /tg Mini App chat tab has no WS wiring, so it
-// passes a ~10s interval to poll the thread it's actively viewing.
+// `refetchInterval` defaults to off; the desktop A2A page passes the same
+// unconditional poll conversations get (20s connected / 8s disconnected —
+// never gated off), while the /tg Mini App chat tab gates its own ~10s poll
+// off entirely whenever its WS is connected or demo mode is active.
 export function useA2AMessages(
   conversationId: string | null,
   options?: { refetchInterval?: number | false; enabled?: boolean },
@@ -120,6 +122,9 @@ export function useCreateCeoConversation() {
       a2aApi.createConversation(request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
+      queryClient.invalidateQueries({
+        queryKey: a2aLiveKeys.ceoConversations,
+      });
     },
   });
 }
@@ -138,6 +143,9 @@ export function useSendCeoMessage() {
       a2aApi.sendCeoMessage(conversationId, content),
     onSuccess: (_sent, variables) => {
       queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
+      queryClient.invalidateQueries({
+        queryKey: a2aLiveKeys.ceoConversations,
+      });
       queryClient.invalidateQueries({
         queryKey: a2aLiveKeys.messages(variables.conversationId),
       });

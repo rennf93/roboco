@@ -131,7 +131,11 @@ export function AIRoutingCard() {
   const { data: keyStatus } = useOllamaKey();
   const { data: snapshot } = useRoutingMode();
   const { data: selfHostedModels = [] } = useSelfHostedModels();
-  const { data: agentDefs, isLoading: agentsLoading } = useAgentDefinitions();
+  const {
+    data: agentDefs,
+    isLoading: agentsLoading,
+    isError: agentsError,
+  } = useAgentDefinitions();
 
   const agentGroups = useMemo(
     () =>
@@ -662,7 +666,13 @@ export function AIRoutingCard() {
             Leave a row blank to inherit from the global mode. Saving overwrites
             all per-agent overrides with what&apos;s picked here.
           </p>
-          {agentsLoading ? (
+          {agentsError ? (
+            <p className="flex items-center gap-1 rounded-md border p-4 text-xs text-amber-600">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              Couldn&apos;t load the agent roster — per-agent overrides are
+              unavailable until this reloads.
+            </p>
+          ) : agentsLoading ? (
             <div className="divide-y rounded-md border">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="p-4">

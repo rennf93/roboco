@@ -1,8 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TgChatTab } from "../tg-chat-tab";
+
+const { secretaryState, startMock } = vi.hoisted(() => ({
+  secretaryState: { sessionId: null as string | null },
+  startMock: vi.fn(),
+}));
+vi.mock("@/hooks/use-secretary", () => ({
+  useSecretary: () => ({
+    sessionId: secretaryState.sessionId,
+    messages: [],
+    streaming: false,
+    start: startMock,
+    send: vi.fn(),
+    stop: vi.fn(),
+  }),
+}));
+
+const { isActiveMock } = vi.hoisted(() => ({ isActiveMock: vi.fn() }));
+vi.mock("@/lib/api/secretary", () => ({
+  secretaryApi: { isActive: isActiveMock },
+}));
 
 const { mineItems, fleetItems, messages, sendMock, replyMock, markReadMock } =
   vi.hoisted(() => ({
@@ -121,6 +141,10 @@ beforeEach(() => {
   sendMock.mockReset();
   replyMock.mockReset();
   markReadMock.mockReset();
+  secretaryState.sessionId = null;
+  startMock.mockReset().mockResolvedValue("s1");
+  isActiveMock.mockReset();
+  window.localStorage.clear();
 });
 
 describe("TgChatTab — list", () => {
@@ -210,5 +234,47 @@ describe("TgChatTab — threads", () => {
 
     expect(screen.getByText(/Watch-only/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText("Message…")).not.toBeInTheDocument();
+  });
+});
+
+describe("TgChatTab — Secretary cross-device preemption", () => {
+  it("offers Take over instead of auto-starting when a session is live elsewhere", async () => {
+    isActiveMock.mockResolvedValue(true);
+    renderTab();
+
+    await userEvent.click(screen.getByText("Secretary"));
+
+    expect(
+      await screen.findByText(/live on another device/i),
+    ).toBeInTheDocument();
+    expect(startMock).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: /take over/i }));
+    expect(startMock).toHaveBeenCalled();
+  });
+
+  it("auto-starts as before when nothing is live elsewhere", async () => {
+    isActiveMock.mockResolvedValue(false);
+    renderTab();
+
+    await userEvent.click(screen.getByText("Secretary"));
+
+    await waitFor(() => expect(startMock).toHaveBeenCalled());
+    expect(
+      screen.queryByText(/live on another device/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("auto-starts without checking isActive when this device has its own persisted session", async () => {
+    window.localStorage.setItem(
+      "roboco:secretary:live",
+      JSON.stringify({ sessionId: "old", messages: [], savedAt: Date.now() }),
+    );
+    renderTab();
+
+    await userEvent.click(screen.getByText("Secretary"));
+
+    await waitFor(() => expect(startMock).toHaveBeenCalled());
+    expect(isActiveMock).not.toHaveBeenCalled();
   });
 });

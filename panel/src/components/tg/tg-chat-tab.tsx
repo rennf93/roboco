@@ -29,6 +29,7 @@ import {
 } from "@/hooks/use-a2a-live";
 import { useA2ALiveStream } from "@/hooks/use-websocket";
 import { useSecretary, type ChatMessage } from "@/hooks/use-secretary";
+import { secretaryApi } from "@/lib/api/secretary";
 import { CEO_SLUG } from "@/components/a2a/a2a-utils";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { EXCLUDE_NON_DM_ROLES } from "@/components/a2a/a2a-new-dm-dialog";
@@ -167,19 +168,68 @@ function SecretaryPinnedRow({ onOpen }: { onOpen: () => void }) {
   );
 }
 
+// Mirrors useSecretary's own localStorage key (panel/src/hooks/use-secretary.ts,
+// PERSIST_KEY) — read-only here, just to tell "this device has nothing of
+// its own to restore" apart from "a restore is still resolving" before this
+// view decides whether it's safe to auto-start.
+const SECRETARY_PERSIST_KEY = "roboco:secretary:live";
+
+function hasPersistedSecretarySession(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(SECRETARY_PERSIST_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function SecretaryView({ onBack }: { onBack: () => void }) {
   const demo = isTgDemoMode();
   const { sessionId, messages, streaming, start, send, stop } = useSecretary();
   const shown = demo ? DEMO_SECRETARY : messages;
 
-  // One live session per view — start() restores a persisted one when the
-  // hook finds it, so re-entering the chat resumes rather than respawns.
+  // The Secretary is a backend singleton (one container at a time) — a
+  // device with nothing of its own to restore auto-starting anyway would
+  // silently preempt a live session on another device. So this view only
+  // auto-starts unconditionally when it has a session of its own to resume
+  // (unchanged from before); a genuinely fresh device checks the singleton
+  // first and offers an explicit take-over instead of blind-starting.
+  const [activeElsewhere, setActiveElsewhere] = useState(false);
   const startedRef = useRef(false);
   useEffect(() => {
     if (demo || startedRef.current || sessionId) return;
-    startedRef.current = true;
-    start().catch((err) => toast.error(getErrorMessage(err)));
+    if (hasPersistedSecretarySession()) {
+      startedRef.current = true;
+      start().catch((err) => toast.error(getErrorMessage(err)));
+      return;
+    }
+    let cancelled = false;
+    const goAhead = () => {
+      if (cancelled || startedRef.current) return;
+      startedRef.current = true;
+      void start().catch((err) => toast.error(getErrorMessage(err)));
+    };
+    secretaryApi
+      .isActive()
+      .then((active) => {
+        if (cancelled) return;
+        if (active) setActiveElsewhere(true);
+        else goAhead();
+      })
+      // A failed status check shouldn't strand a fresh device with neither
+      // a chat nor a takeover button — fall back to the prior behavior.
+      .catch(goAhead);
+    return () => {
+      cancelled = true;
+    };
   }, [demo, sessionId, start]);
+
+  const takeOver = () => {
+    haptics.tap();
+    setActiveElsewhere(false);
+    startedRef.current = true;
+    void start().catch((err) => toast.error(getErrorMessage(err)));
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const count = shown.length;
@@ -211,70 +261,92 @@ function SecretaryView({ onBack }: { onBack: () => void }) {
         ) : undefined
       }
     >
-      <div
-        ref={scrollRef}
-        className="max-h-[58dvh] space-y-1.5 overflow-y-auto pb-1"
-      >
-        {shown.length === 0 && (
-          <p className="py-10 text-center text-sm text-muted-foreground">
-            {demo || sessionId
-              ? "Ask anything: company state, queues, directives."
-              : "Waking the Secretary…"}
+      {activeElsewhere && !demo && !sessionId ? (
+        <div className="flex flex-col items-center gap-3 py-10 text-center">
+          <p className="text-sm text-muted-foreground">
+            A Secretary session is live on another device.
           </p>
-        )}
-        {shown.map((m, i) => (
-          <div
-            key={i}
+          <button
+            type="button"
+            onClick={takeOver}
             className={cn(
-              "flex",
-              m.role === "user" ? "justify-end" : "justify-start",
+              "rounded-full bg-primary px-4 py-2 text-[15px] font-semibold text-primary-foreground",
+              TG_PRESS,
             )}
           >
-            <div
-              className={cn(
-                "max-w-[82%] rounded-2xl px-3.5 py-2 text-[15px] leading-relaxed",
-                m.role === "user"
-                  ? "rounded-br-md bg-primary text-primary-foreground"
-                  : "rounded-bl-md bg-card",
-              )}
-            >
-              {m.role === "user" ? (
-                <p className="whitespace-pre-wrap break-words">{m.text}</p>
-              ) : (
-                <Markdown
-                  compact
-                  className="prose prose-sm prose-invert max-w-none [&_p]:my-1 first:[&_p]:mt-0 last:[&_p]:mb-0"
+            Take over
+          </button>
+        </div>
+      ) : (
+        <>
+          <div
+            ref={scrollRef}
+            className="max-h-[58dvh] space-y-1.5 overflow-y-auto pb-1"
+          >
+            {shown.length === 0 && (
+              <p className="py-10 text-center text-sm text-muted-foreground">
+                {demo || sessionId
+                  ? "Ask anything: company state, queues, directives."
+                  : "Waking the Secretary…"}
+              </p>
+            )}
+            {shown.map((m, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "flex",
+                  m.role === "user" ? "justify-end" : "justify-start",
+                )}
+              >
+                <div
+                  className={cn(
+                    "max-w-[82%] rounded-2xl px-3.5 py-2 text-[15px] leading-relaxed",
+                    m.role === "user"
+                      ? "rounded-br-md bg-primary text-primary-foreground"
+                      : "rounded-bl-md bg-card",
+                  )}
                 >
-                  {m.text || "…"}
-                </Markdown>
-              )}
-            </div>
+                  {m.role === "user" ? (
+                    <p className="whitespace-pre-wrap break-words">
+                      {m.text}
+                    </p>
+                  ) : (
+                    <Markdown
+                      compact
+                      className="prose prose-sm prose-invert max-w-none [&_p]:my-1 first:[&_p]:mt-0 last:[&_p]:mb-0"
+                    >
+                      {m.text || "…"}
+                    </Markdown>
+                  )}
+                </div>
+              </div>
+            ))}
+            {streaming && shown[shown.length - 1]?.role === "user" && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl rounded-bl-md bg-card px-3.5 py-2.5">
+                  <span className="inline-flex gap-1">
+                    {[0, 1, 2].map((d) => (
+                      <span
+                        key={d}
+                        className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60"
+                        style={{ animationDelay: `${d * 150}ms` }}
+                      />
+                    ))}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
-        ))}
-        {streaming && shown[shown.length - 1]?.role === "user" && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl rounded-bl-md bg-card px-3.5 py-2.5">
-              <span className="inline-flex gap-1">
-                {[0, 1, 2].map((d) => (
-                  <span
-                    key={d}
-                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60"
-                    style={{ animationDelay: `${d * 150}ms` }}
-                  />
-                ))}
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
-      <Composer
-        placeholder={demo ? "Demo mode, sends disabled" : "Message…"}
-        pending={streaming}
-        disabled={demo || (!demo && !sessionId)}
-        onSend={(text) => {
-          void send(text).catch((err) => toast.error(getErrorMessage(err)));
-        }}
-      />
+          <Composer
+            placeholder={demo ? "Demo mode, sends disabled" : "Message…"}
+            pending={streaming}
+            disabled={demo || (!demo && !sessionId)}
+            onSend={(text) => {
+              void send(text).catch((err) => toast.error(getErrorMessage(err)));
+            }}
+          />
+        </>
+      )}
     </TgSubPage>
   );
 }

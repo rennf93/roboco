@@ -158,6 +158,7 @@ async def test_stream_accepts_valid_panel_token(
         ("GET", "/api/secretary/live/unknown/status", None),
         ("POST", "/api/secretary/live/unknown/messages", {"text": "hi"}),
         ("POST", "/api/secretary/live/sess/stop", None),
+        ("GET", "/api/secretary/live/active", None),
     ],
 )
 @pytest.mark.asyncio
@@ -174,6 +175,22 @@ async def test_status_send_stop_reject_missing_token_when_required(
     else:
         r = await auth_client.post(path, json=json)
     assert r.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_is_active_accepts_valid_panel_token_and_reflects_the_registry(
+    auth_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _strict(monkeypatch)
+    headers = {"X-Agent-Token": issue_panel_token()}
+
+    r = await auth_client.get("/api/secretary/live/active", headers=headers)
+    assert r.status_code == HTTPStatus.OK
+    assert r.json() == {"active": False}
+
+    prompter_live.get_live_registry().open("some-device", "secretary-1")
+    r = await auth_client.get("/api/secretary/live/active", headers=headers)
+    assert r.json() == {"active": True}
 
 
 @pytest.mark.asyncio

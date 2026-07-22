@@ -1,18 +1,29 @@
-import { describe, it, expect, vi } from "vitest";
-import { render as rtlRender, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { TgTaskSheet } from "../tg-task-sheet";
 import type { Task } from "@/types";
 import type { TaskFindingsResponse } from "@/lib/api/tasks";
 
-const { findings } = vi.hoisted(() => ({
+const { findings, ceoApprove, ceoReject, unblock } = vi.hoisted(() => ({
   findings: vi.fn<() => { data: TaskFindingsResponse | undefined }>(() => ({
     data: undefined,
   })),
+  ceoApprove: vi.fn(),
+  ceoReject: vi.fn(),
+  unblock: vi.fn(),
 }));
 vi.mock("@/hooks/use-tasks", () => ({
   useTaskFindings: findings,
   taskKeys: { all: ["tasks"] },
+}));
+vi.mock("@/lib/api/tasks", () => ({
+  tasksApi: { ceoApprove, ceoReject, unblock },
+}));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 // The sheet's CEO action block mutates through react-query.
@@ -70,6 +81,14 @@ function task(overrides: Partial<Task> = {}): Task {
     ...overrides,
   } as Task;
 }
+
+beforeEach(() => {
+  ceoApprove.mockReset();
+  ceoReject.mockReset();
+  unblock.mockReset();
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.error).mockClear();
+});
 
 describe("TgTaskSheet", () => {
   it("renders nothing without a task", () => {
@@ -171,5 +190,72 @@ describe("TgTaskSheet", () => {
     expect(
       screen.queryByRole("button", { name: "Approve" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("TgTaskSheet — CEO action interactions", () => {
+  it("clicking Approve calls ceoApprove with the task id and toasts success", async () => {
+    ceoApprove.mockResolvedValue({});
+    render(<TgTaskSheet task={task()} onClose={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(ceoApprove).toHaveBeenCalledWith("t1");
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Approved"),
+    );
+  });
+
+  it("shows the error toast when approve's promise rejects", async () => {
+    ceoApprove.mockRejectedValue(new Error("Approve failed"));
+    render(<TgTaskSheet task={task()} onClose={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Approve failed"),
+    );
+    expect(ceoReject).not.toHaveBeenCalled();
+  });
+
+  it("keeps Send back for revision disabled under the 10-char reason floor", async () => {
+    render(<TgTaskSheet task={task()} onClose={vi.fn()} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Request changes" }),
+    );
+    const textarea = screen.getByPlaceholderText(/at least 10 characters/i);
+    const sendBack = screen.getByRole("button", {
+      name: "Send back for revision",
+    });
+    expect(sendBack).toBeDisabled();
+
+    await userEvent.type(textarea, "too short");
+    expect(sendBack).toBeDisabled();
+    expect(ceoReject).not.toHaveBeenCalled();
+  });
+
+  it("enables Send back at 10+ chars and calls ceoReject with the id and reason", async () => {
+    ceoReject.mockResolvedValue({});
+    render(<TgTaskSheet task={task()} onClose={vi.fn()} />);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Request changes" }),
+    );
+    await userEvent.type(
+      screen.getByPlaceholderText(/at least 10 characters/i),
+      "Please redo the retry backoff",
+    );
+    const sendBack = screen.getByRole("button", {
+      name: "Send back for revision",
+    });
+    expect(sendBack).toBeEnabled();
+
+    await userEvent.click(sendBack);
+
+    expect(ceoReject).toHaveBeenCalledWith("t1", "Please redo the retry backoff");
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Sent back for revision"),
+    );
   });
 });

@@ -95,6 +95,20 @@ class PrompterLiveRegistry:
     def get(self, session_id: str) -> LiveIntakeSession | None:
         return self._sessions.get(session_id)
 
+    def has_live_agent(self, agent_id: str) -> bool:
+        """True if any un-closed session is bound to ``agent_id``.
+
+        Distinct from ``is_alive`` (which checks a *specific* session id the
+        caller already holds): this answers "is the singleton agent behind
+        ``agent_id`` live right now, under ANY session id" — e.g. so a device
+        with no session of its own can tell "a Secretary chat is live
+        elsewhere" apart from "nothing is running" before deciding whether to
+        spawn a competing session against the same one-container singleton.
+        """
+        return any(
+            not s.closed for s in self._sessions.values() if s.agent_id == agent_id
+        )
+
     def is_alive(self, session_id: str) -> bool:
         """True when a live, un-closed session exists for this id.
 

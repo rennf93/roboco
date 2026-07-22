@@ -413,6 +413,27 @@ describe("AIRoutingCard", () => {
     expect(mixSection.querySelector(".animate-pulse")).toBeInTheDocument();
   });
 
+  it("shows an error note (not a silently empty grid) when the roster fetch fails", async () => {
+    useAgentDefinitions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
+    render(withQueryClient(<AIRoutingCard />));
+    await screen.findByText("Per-agent override (mix mode)");
+
+    expect(
+      screen.getByText(/Couldn.t load the agent roster/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 4, name: "Board" }),
+    ).not.toBeInTheDocument();
+    const mixSection = screen
+      .getByText("Per-agent override (mix mode)")
+      .closest("section")!;
+    expect(mixSection.querySelector(".animate-pulse")).not.toBeInTheDocument();
+  });
+
   it("tooltip-wraps the Grok/Ollama key labels and status badges, not the raw Switch", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");

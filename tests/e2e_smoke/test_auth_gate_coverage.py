@@ -12,6 +12,10 @@ the live uvicorn + middleware + dependency stack — no stubbed deps:
 (c) NO credential → ``GET /api/settings`` 401 (``require_panel_token``).
 (d) a REAL CEO session cookie (minted via the auth backend's JWT strategy
     over a seeded CEO user row) → ``GET /api/settings`` 200.
+(e) NO credential → ``GET /api/dashboard/ceo`` 401 (the dashboard router's
+    OWN ``require_panel_token`` gate — a distinct router from (c)/(d), added
+    to close a prior unauthenticated metrics/scorecard exposure).
+(f) the same REAL CEO session cookie → ``GET /api/dashboard/ceo`` 200.
 
 The running uvicorn app reads the same ``roboco.config.settings`` singleton
 per-request, so monkeypatching it live takes effect without a restart.
@@ -135,6 +139,33 @@ def test_settings_real_ceo_cookie_passes(
     )
     assert resp.status_code == HTTPStatus.OK, (
         f"settings real cookie: expected 200, got {resp.status_code} {resp.text[:300]}"
+    )
+
+
+def test_dashboard_no_credential_rejected(
+    e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _arm_cloud_auth(monkeypatch)
+    resp = httpx.get(f"{e2e_stack.base_url}/api/dashboard/ceo", timeout=10)
+    assert resp.status_code == HTTPStatus.UNAUTHORIZED, (
+        f"dashboard no-credential: expected 401, got "
+        f"{resp.status_code} {resp.text[:300]}"
+    )
+
+
+def test_dashboard_real_ceo_cookie_passes(
+    e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _arm_cloud_auth(monkeypatch)
+    user: UserTable = e2e_stack.run_db(_seed_ceo_user)
+    cookie = _mint_ceo_session_cookie(user)
+    resp = httpx.get(
+        f"{e2e_stack.base_url}/api/dashboard/ceo",
+        cookies={"roboco_session": cookie},
+        timeout=10,
+    )
+    assert resp.status_code == HTTPStatus.OK, (
+        f"dashboard real cookie: expected 200, got {resp.status_code} {resp.text[:300]}"
     )
 
 

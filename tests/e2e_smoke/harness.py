@@ -321,6 +321,7 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
 
 def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.middleware import setup_middleware
+    from roboco.api.routes.dashboard import router as dashboard_router
     from roboco.api.routes.health import router as health_router
     from roboco.api.routes.notifications import router as notifications_router
     from roboco.api.routes.orchestrator import router as orchestrator_router
@@ -353,6 +354,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     # require_panel_token dep paths on these routers.
     app.include_router(orchestrator_router, prefix="/api/orchestrator")
     app.include_router(settings_router, prefix="/api/settings")
+    app.include_router(dashboard_router, prefix="/api/dashboard")
     app.include_router(_fake_github_router(gh))
     return app
 

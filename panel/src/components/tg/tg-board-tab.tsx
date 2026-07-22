@@ -216,8 +216,10 @@ function DoneSection({
 }
 
 /** Cockpit Board tab — every task grouped by lifecycle stage, tapping any
- * row opens the read-only task sheet. Demo mode swaps in the canned
- * fixture list, lazily imported so it stays out of the prod bundle. */
+ * row opens the task sheet (which carries the CEO's own decide verbs —
+ * approve / request changes / unblock — when a task is waiting on them).
+ * Demo mode swaps in the canned fixture list, lazily imported so it stays
+ * out of the prod bundle. */
 export function TgBoardTab() {
   const [selected, setSelected] = useState<Task | null>(null);
   const [demoTasks, setDemoTasks] = useState<Task[] | undefined>(undefined);

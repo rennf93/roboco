@@ -90,6 +90,27 @@ async def session_status(session_id: str) -> dict[str, bool]:
     return {"alive": get_live_registry().is_alive(session_id)}
 
 
+# Mirrors the fixed constant the orchestrator opens every Secretary session
+# under (`SECRETARY_AGENT_ID` in roboco/runtime/orchestrator.py — the
+# Secretary is a single seeded, persistent singleton, one container at a
+# time). Duplicated as a literal rather than imported to keep this route
+# decoupled from the orchestrator module.
+_SECRETARY_AGENT_ID = "secretary-1"
+
+
+@router.get("/live/active", dependencies=[Depends(require_panel_token)])
+async def is_active() -> dict[str, bool]:
+    """Is a Secretary live session running right now, under ANY session id?
+
+    Read-only, derived from the registry alone — lets a device with no
+    session id of its own (e.g. a fresh phone chat) tell "someone else is
+    already chatting with the Secretary" apart from "nothing is running"
+    before deciding whether to spawn a competing session against the same
+    one-container singleton.
+    """
+    return {"active": get_live_registry().has_live_agent(_SECRETARY_AGENT_ID)}
+
+
 @router.post("/live/{session_id}/messages", dependencies=[Depends(require_panel_token)])
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)

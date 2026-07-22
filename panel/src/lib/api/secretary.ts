@@ -77,6 +77,17 @@ export const secretaryApi = {
     return data;
   },
 
+  /** Is a Secretary session live right now under ANY session id — lets a
+   * device with none of its own tell "live elsewhere" apart from "nothing
+   * running" before it would otherwise auto-start a competing one against
+   * the single-container singleton. */
+  isActive: async (): Promise<boolean> => {
+    const { data } = await api.get<{ active: boolean }>(
+      "/secretary/live/active",
+    );
+    return data.active;
+  },
+
   /** Deliver the CEO's message to the running Secretary; the reply streams back. */
   sendMessage: async (sessionId: string, text: string): Promise<void> => {
     await api.post(`/secretary/live/${sessionId}/messages`, { text });

@@ -219,6 +219,19 @@ function pctOrDash(v: number | null): string {
 // SHARED SUBCOMPONENTS
 // =============================================================================
 
+/** Inline note for a section whose own query failed while the rest of the
+ * hub loaded fine — without this, a failed agentsQ/teamsQ/modelsQ/deliveryQ/
+ * efficiencyQ silently rendered its zero-backed empty state (e.g. "0% Rework
+ * rate"), indistinguishable from a real zero. */
+function SectionErrorNote({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+      <Warning className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+      <span>Couldn&apos;t load {label}.</span>
+    </div>
+  );
+}
+
 function ErrorCard({ onRetry }: { onRetry: () => void }) {
   return (
     <div
@@ -383,7 +396,9 @@ function Hub({
       />
 
       <TgSection title="By agent">
-        {topAgents.length === 0 ? (
+        {agentsQ.isError ? (
+          <SectionErrorNote label="agent spend" />
+        ) : topAgents.length === 0 ? (
           <p className="py-2 text-sm text-muted-foreground">
             No agent spend yet.
           </p>
@@ -418,7 +433,9 @@ function Hub({
       </TgSection>
 
       <TgSection title="By team">
-        {teamRows.length === 0 ? (
+        {teamsQ.isError ? (
+          <SectionErrorNote label="team spend" />
+        ) : teamRows.length === 0 ? (
           <p className="py-2 text-sm text-muted-foreground">
             No team spend yet.
           </p>
@@ -435,7 +452,9 @@ function Hub({
       </TgSection>
 
       <TgSection title="By model">
-        {modelRows.length === 0 ? (
+        {modelsQ.isError ? (
+          <SectionErrorNote label="model spend" />
+        ) : modelRows.length === 0 ? (
           <p className="py-2 text-sm text-muted-foreground">
             No model spend yet.
           </p>
@@ -452,64 +471,79 @@ function Hub({
       </TgSection>
 
       <TgSection title="Delivery">
-        <div className="grid grid-cols-2 gap-3">
-          <TgStat
-            value={`${((rework?.rate ?? 0) * 100).toFixed(0)}%`}
-            caption="Rework rate"
-            tone={(rework?.rate ?? 0) > 0.2 ? "attention" : "default"}
-          />
-          <TgStat value={rework?.total_completed ?? 0} caption="Completed" />
-          <TgStat
-            value={worstStage ? humanizeHours(worstStage.avg_seconds) : "-"}
-            caption={
-              worstStage ? humanizeStatus(worstStage.status) : "Slowest stage"
-            }
-          />
-          <TgStat
-            value={fmtUsd(rework?.rework_cost_usd ?? 0)}
-            caption="Rework cost"
-          />
-        </div>
-        {bounced.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {bounced.map((a) => (
-              <span
-                key={a.agent_slug}
-                className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground"
-              >
-                {getAgentDisplayName(a.agent_slug)} · {a.bounces} bounces
-              </span>
-            ))}
-          </div>
+        {deliveryQ.isError ? (
+          <SectionErrorNote label="delivery metrics" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <TgStat
+                value={`${((rework?.rate ?? 0) * 100).toFixed(0)}%`}
+                caption="Rework rate"
+                tone={(rework?.rate ?? 0) > 0.2 ? "attention" : "default"}
+              />
+              <TgStat
+                value={rework?.total_completed ?? 0}
+                caption="Completed"
+              />
+              <TgStat
+                value={worstStage ? humanizeHours(worstStage.avg_seconds) : "-"}
+                caption={
+                  worstStage
+                    ? humanizeStatus(worstStage.status)
+                    : "Slowest stage"
+                }
+              />
+              <TgStat
+                value={fmtUsd(rework?.rework_cost_usd ?? 0)}
+                caption="Rework cost"
+              />
+            </div>
+            {bounced.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {bounced.map((a) => (
+                  <span
+                    key={a.agent_slug}
+                    className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground"
+                  >
+                    {getAgentDisplayName(a.agent_slug)} · {a.bounces} bounces
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </TgSection>
 
       <TgSection title="Efficiency">
-        <div className="grid grid-cols-2 gap-3">
-          <TgStat
-            value={`${((efficiency?.cache.cache_hit_rate ?? 0) * 100).toFixed(0)}%`}
-            caption="Cache hit rate"
-          />
-          <TgStat
-            value={fmtUsd(efficiency?.cache.cost_saved_by_cache_usd ?? 0)}
-            caption="Saved by cache"
-          />
-          <TgStat
-            value={fmtUsd(
-              efficiency?.projection.projected_monthly_cost_usd ?? 0,
-            )}
-            caption="Projected monthly"
-          />
-          <TgStat
-            value={`${(efficiency?.spawnWaste.unproductive_pct ?? 0).toFixed(0)}%`}
-            caption="Spawn waste"
-            tone={
-              (efficiency?.spawnWaste.unproductive_pct ?? 0) > 25
-                ? "attention"
-                : "default"
-            }
-          />
-        </div>
+        {efficiencyQ.isError ? (
+          <SectionErrorNote label="efficiency metrics" />
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <TgStat
+              value={`${((efficiency?.cache.cache_hit_rate ?? 0) * 100).toFixed(0)}%`}
+              caption="Cache hit rate"
+            />
+            <TgStat
+              value={fmtUsd(efficiency?.cache.cost_saved_by_cache_usd ?? 0)}
+              caption="Saved by cache"
+            />
+            <TgStat
+              value={fmtUsd(
+                efficiency?.projection.projected_monthly_cost_usd ?? 0,
+              )}
+              caption="Projected monthly"
+            />
+            <TgStat
+              value={`${(efficiency?.spawnWaste.unproductive_pct ?? 0).toFixed(0)}%`}
+              caption="Spawn waste"
+              tone={
+                (efficiency?.spawnWaste.unproductive_pct ?? 0) > 25
+                  ? "attention"
+                  : "default"
+              }
+            />
+          </div>
+        )}
       </TgSection>
     </div>
   );

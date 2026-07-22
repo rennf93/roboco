@@ -18,16 +18,23 @@ interface AcceptanceCriteriaEditorProps {
   error?: string;
 }
 
+// Mirrors the backend cap (acceptance_criteria max_length=7 — see
+// roboco/api/schemas/tasks.py's TaskUpdate and the agent-facing v1 flow
+// schema). Blocking it here means an 8th criterion never round-trips into a
+// swallowed 422 on save.
+const MAX_CRITERIA = 7;
+
 export function AcceptanceCriteriaEditor({
   criteria,
   onChange,
   error,
 }: AcceptanceCriteriaEditorProps) {
   const [newCriterion, setNewCriterion] = useState("");
+  const atMax = criteria.length >= MAX_CRITERIA;
 
   const handleAdd = () => {
     const trimmed = newCriterion.trim();
-    if (trimmed && !criteria.includes(trimmed)) {
+    if (trimmed && !criteria.includes(trimmed) && !atMax) {
       onChange([...criteria, trimmed]);
       setNewCriterion("");
     }
@@ -59,9 +66,10 @@ export function AcceptanceCriteriaEditor({
             Acceptance Criteria <span className="text-destructive">*</span>
           </Label>
         </HelpTip>
-        <HelpTip label="How many criteria are defined so far — at least one is required to submit.">
+        <HelpTip label="How many criteria are defined so far — at least one is required to submit, at most 7.">
           <span className="text-xs text-muted-foreground">
-            {criteria.length} item{criteria.length !== 1 ? "s" : ""}
+            {criteria.length}/{MAX_CRITERIA} item
+            {criteria.length !== 1 ? "s" : ""}
           </span>
         </HelpTip>
       </div>
@@ -103,25 +111,42 @@ export function AcceptanceCriteriaEditor({
 
       {/* Add new criterion */}
       <div className="flex items-center gap-2">
-        <HelpTip label="A specific, testable condition — Enter or Add appends it to the list above.">
+        <HelpTip
+          label={
+            atMax
+              ? "Maximum of 7 acceptance criteria reached — remove one to add another."
+              : "A specific, testable condition — Enter or Add appends it to the list above."
+          }
+        >
           <Input
             value={newCriterion}
             onChange={(e) => setNewCriterion(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Enter acceptance criterion and press Enter..."
+            placeholder={
+              atMax
+                ? "Maximum of 7 criteria reached"
+                : "Enter acceptance criterion and press Enter..."
+            }
+            disabled={atMax}
             className="flex-1"
           />
         </HelpTip>
-        <HelpTip label="Appends the text on the left as a new criterion; disabled until you type something.">
+        <HelpTip
+          label={
+            atMax
+              ? "Maximum of 7 acceptance criteria reached — remove one to add another."
+              : "Appends the text on the left as a new criterion; disabled until you type something."
+          }
+        >
           <span
             className="inline-block"
-            tabIndex={!newCriterion.trim() ? 0 : undefined}
+            tabIndex={!newCriterion.trim() || atMax ? 0 : undefined}
           >
             <Button
               type="button"
               variant="outline"
               onClick={handleAdd}
-              disabled={!newCriterion.trim()}
+              disabled={!newCriterion.trim() || atMax}
             >
               <Plus className="h-4 w-4 mr-1" />
               Add
@@ -132,8 +157,9 @@ export function AcceptanceCriteriaEditor({
 
       {/* Helper text */}
       <p className="text-xs text-muted-foreground">
-        Define at least one acceptance criterion. Each criterion should describe
-        a specific, testable condition for task completion.
+        {atMax
+          ? "Maximum of 7 acceptance criteria reached — remove one to add another."
+          : "Define at least one acceptance criterion. Each criterion should describe a specific, testable condition for task completion."}
       </p>
 
       {/* Error message */}
