@@ -14,6 +14,7 @@ The orchestrator is the BRAIN of the system:
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -6311,6 +6312,7 @@ class AgentOrchestrator:
             if instance and instance.config:
                 model = instance.config.model or "unknown"
             usage_session_id = instance.usage_session_id if instance else None
+            doctrine_version = self._doctrine_version_for_instance(instance)
 
             cost = calculate_cost(
                 model=model,
@@ -6358,6 +6360,7 @@ class AgentOrchestrator:
                             tool_calls=tool_calls,
                             exit_reason=exit_reason,
                             estimated_cost_usd=cost,
+                            doctrine_version=doctrine_version,
                         )
                     )
                     await db.commit()
@@ -6368,6 +6371,7 @@ class AgentOrchestrator:
                         tokens_input=tokens_input,
                         tokens_output=tokens_output,
                         estimated_cost_usd=cost,
+                        doctrine_version=doctrine_version,
                     )
         except Exception as exc:
             logger.warning(
@@ -6375,6 +6379,33 @@ class AgentOrchestrator:
                 agent_id=agent_id,
                 error=str(exc),
             )
+
+    @staticmethod
+    def _doctrine_version_for_instance(instance: AgentInstance | None) -> str | None:
+        """Short hash of the composed system prompt this spawn ran with.
+
+        Reads the SAME file ``_generate_composed_prompt`` wrote at spawn
+        preparation (``config.blueprint_path``) — nothing on the spawn/stop
+        path deletes it, so it is still the exact prompt text this agent ran
+        with. Every provider gets one (the blueprint is composed and written
+        unconditionally in ``_prepare_agent_spawn``, before provider/route
+        resolution) — GROK agents carry a real blueprint file too, same as
+        Claude. Best-effort: a missing/unreadable file (a provider-parked stub
+        instance that never actually spawned — ``blueprint_path=Path()`` — an
+        evicted temp dir, ...) is NULL, never a finalize failure — the eval
+        harness treats an unstamped session as "doctrine unknown", not an
+        error.
+        """
+        if instance is None or instance.config is None:
+            return None
+        blueprint_path = instance.config.blueprint_path
+        if not blueprint_path:
+            return None
+        try:
+            content = blueprint_path.read_text()
+        except OSError:
+            return None
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     async def _fetch_agent_tokens(

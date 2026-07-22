@@ -1904,6 +1904,12 @@ class AgentSpawnSessionTable(Base):
     tool_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     exit_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Short hash of the composed system prompt this spawn ran with (migration
+    # 081_doctrine_version) — lets the eval harness (roboco/eval/) group spawn
+    # sessions by the exact prompt/doctrine version they ran, not just by
+    # model. Stamped at finalize (see _finalize_spawn_session); nullable —
+    # older rows and any read failure carry NULL.
+    doctrine_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # Relationship to snapshots (backref for convenience)
     snapshots: Mapped[list["TokenUsageSnapshotTable"]] = relationship(

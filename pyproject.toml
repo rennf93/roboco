@@ -198,6 +198,13 @@ select = [
 # cost; ARG001 covers FastAPI path params the fake-GitHub handlers must
 # name but not read.
 "tests/e2e_smoke/*.py" = ["PLC0415", "ARG001"]
+# The eval bench (offline CLI, not part of the served app) defers heavy/
+# optional imports — tests.e2e_smoke.harness, roboco.runtime.orchestrator,
+# roboco.services.task, asyncpg — to call time for the same reason
+# tests/e2e_smoke and roboco/services do; PLR0913 covers the stage-driving
+# and scoring call surfaces (task/spawner/role/timeout tuples), same
+# rationale as roboco/services/gateway/**.
+"roboco/eval/*.py" = ["PLC0415", "PLR0913"]
 # PTH119: _grok_usage_json sanitizes the agent id with os.path.basename — the
 # path-injection sanitizer CodeQL's query models; the pathlib equivalent
 # (Path(...).name) is not recognized by that query, so we keep os.path here.
@@ -233,10 +240,18 @@ select = [
 # signature for keyword-argument compatibility (mypy override check), but the
 # stub bodies are empty — ARG002 would require renaming them, which breaks mypy.
 "tests/unit/services/test_optimal_grounding.py" = ["ARG002"]
+# _FakeJudge.score overrides BenchJudge.score — same override-signature
+# rationale as test_optimal_grounding.py above (a fixed fixture/diff/notes
+# stand-in body has nothing to do with those args).
+"tests/e2e_smoke/test_eval_bench.py" = ["ARG002"]
 # Collision-builder test helpers mirror the builder's many keyword inputs
 # (parent/project/intends/migration/shared/sequence) — bundling them would
 # hurt readability more than the arg count hurts.
 "tests/unit/gateway/test_collision_context.py" = ["PLR0913"]
+# _metrics()'s many optional kwargs mirror DeterministicMetrics' own field
+# count (a plain, no-defaults dataclass) — same rationale as the collision
+# builder above.
+"tests/unit/eval/test_scoring.py" = ["PLR0913"]
 
 # =============================================================================
 # MyPy Configuration
@@ -452,8 +467,15 @@ DEP002 = [
     "types-passlib",
     "types-PyYAML",
 ]
-# DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed
-DEP003 = ["starlette"]
+# DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed.
+# "tests": roboco/eval/runner.py deliberately imports tests.e2e_smoke.harness/arcs
+# (the offline eval bench's disposable-project machinery — see that module's
+# docstring) — deptry sees the local `tests` package as an unresolvable
+# transitive import since it isn't a PyPI dependency at all. The runtime side
+# of this is guarded separately (an ImportError there raises a clear "this
+# needs a source checkout" error), so this is a lint-posture ignore, not a
+# correctness gap.
+DEP003 = ["starlette", "tests"]
 
 [dependency-groups]
 dev = [

@@ -706,6 +706,18 @@ ROADMAP_ITEM_SOURCE = "roadmap"
 # the Main PM. The board routing is the start gate; no held-source skip.
 VAULT_NOTE_SOURCE = "vault_note"
 
+# Source tag for a golden-task fixture the offline eval bench
+# (``roboco/eval/``) replays through the real delivery lifecycle to score a
+# (role, model/provider config) cohort. Deliberately absent from every
+# held-source / non-dev-dispatch set above: an eval_bench task is a normal,
+# pre-assigned dev leaf task and must dispatch exactly like one (real spawn,
+# real QA, real docs, real cell-PM merge) — every OTHER engine (self-heal,
+# ci-watch, dep-update, docs-sync, release-manager, X, video, roadmap, vault-
+# intake) only ever queries/dedupes by ITS OWN source constant above, so an
+# eval_bench task is invisible to all of them by construction, not by an
+# explicit exemption.
+EVAL_BENCH_SOURCE = "eval_bench"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
