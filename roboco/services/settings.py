@@ -90,7 +90,6 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("fable_mode_enabled", "Fable + Ponytail doctrine (+ hooks)"),
     ("obsidian_vault_enabled", "Obsidian vault projection"),
     ("vault_intake_enabled", "Vault intake watcher (notes -> held drafts)"),
-    ("vault_report_enabled", "Vault weekly org-report note"),
     ("vault_kb_enabled", "Vault KB ingest (CEO notes -> RAG)"),
     ("telegram_enabled", "Telegram notifications bridge (CEO DMs)"),
     ("telegram_inbound_enabled", "Telegram inbound commands + actionable buttons"),

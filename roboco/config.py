@@ -1920,15 +1920,6 @@ class Settings(BaseSettings):
             "note moves to RoboCo/Archive/<year>/. 0 disables archival."
         ),
     )
-    vault_report_enabled: bool = Field(
-        default=True,
-        description=(
-            "Materialize a weekly RoboCo/Reports/<ISO-week>.md org-report note "
-            "(deterministic, no LLM) and notify the CEO. Needs "
-            "obsidian_vault_enabled."
-        ),
-    )
-
     # Vault KB ingest (V2 item 4): human-authored note folders become one more
     # RAG corpus (IndexType.VAULT_NOTES) — the CEO's own notes become
     # retrievable by the fleet. Inert unless BOTH obsidian_vault_enabled AND

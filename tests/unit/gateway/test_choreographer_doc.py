@@ -221,10 +221,9 @@ async def test_i_documented_succeeds_and_transitions() -> None:
             __aexit__=AsyncMock(return_value=False),
         )
     )
-    a2a_svc = AsyncMock()
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
-    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
@@ -233,7 +232,6 @@ async def test_i_documented_succeeds_and_transitions() -> None:
     assert env.error is None
     assert env.status == "awaiting_pm_review"
     task_svc.docs_complete.assert_awaited_once()
-    a2a_svc.send.assert_awaited_once()
 
 
 def _doc_success_task_svc(task_id: Any, doc_id: Any) -> AsyncMock:
@@ -358,10 +356,9 @@ async def test_i_documented_survives_handoff_failure() -> None:
             __aexit__=AsyncMock(return_value=False),
         )
     )
-    a2a_svc = AsyncMock()
     journal_svc = AsyncMock()
     journal_svc.has_reflect_for_task.return_value = True
-    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
+    deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."

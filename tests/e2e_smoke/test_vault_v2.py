@@ -8,8 +8,7 @@ e2e stack's ephemeral Postgres and a per-test tmp_path vault:
   on create; flag off writes nothing. Nothing vault-side is mocked.
 - Janitor sweep: real seeded task rows, the REAL ``VaultJanitor.run_cycle``
   (real TaskService queries, real reproject/archive paths, real state file).
-  ``vault_report_enabled`` is off so the sweep scenario stays focused on
-  drift repair + archival (the weekly report is unit-covered).
+  The sweep scenario stays focused on drift repair + archival.
 - KB ingest: real notes on disk, the REAL ``VaultKBEngine.run_cycle`` +
   REAL injection guard (scan, containment, frontmatter split, screening,
   content-hash dedup, quarantine callout all real). The ONLY stub is the
@@ -238,7 +237,6 @@ async def test_janitor_cycle_reprojects_archives_and_persists_state(
     counts match what was actually done. No vault code is mocked."""
     vault = _arm_vault(monkeypatch, tmp_path)
     monkeypatch.setattr(settings, "vault_archive_days", 30)
-    monkeypatch.setattr(settings, "vault_report_enabled", False)
     factory, engine = _fresh_factory(e2e_stack.db_url)
     try:
         async with factory() as session:

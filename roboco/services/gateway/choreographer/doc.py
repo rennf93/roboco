@@ -589,7 +589,7 @@ class DocMixin(_Base):
     async def _handoff_to_cell_pm(
         self, doc_agent_id: UUID, task_id: UUID, task: Any
     ) -> None:
-        """Reassign + a2a-notify the cell PM after docs_complete dispatch.
+        """Reassign the cell PM after docs_complete dispatch.
 
         Side effect outside the spec; lives here so ``i_documented``'s
         body stays under the cyclomatic-complexity ceiling.
@@ -598,11 +598,3 @@ class DocMixin(_Base):
         if pm_agent is None:
             return
         await self.task.reassign(task_id, pm_agent.id)
-        if self.a2a:
-            await self.a2a.send(
-                from_agent=doc_agent_id,
-                to_agent=pm_agent.id,
-                skill="task_management",
-                task_id=task_id,
-                body=f"Docs complete for {task.id}. Ready for PM review + merge.",
-            )

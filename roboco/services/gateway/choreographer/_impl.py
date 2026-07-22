@@ -3572,7 +3572,7 @@ class Choreographer:
         )
 
     async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
-        """Reassign + A2A-notify the QA agent for this task's team.
+        """Reassign the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
         reassign to the QA agent so the orchestrator's per-agent task
@@ -3581,41 +3581,6 @@ class Choreographer:
         qa_agent = await self.task.qa_agent_for_team(t.team)
         if qa_agent is not None:
             await self.task.reassign(task_id, qa_agent.id)
-            skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
-            if self.a2a:
-                await self.a2a.send(
-                    from_agent=agent_id,
-                    to_agent=qa_agent.id,
-                    skill=skill,
-                    task_id=task_id,
-                    body=f"Ready for review. PR: {t.pr_url}",
-                )
-
-    def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
-        """Pick first skill in preference list that target_agent has.
-
-        Reads from either ``skills`` (gateway view, list of dicts with
-        ``id`` keys) or ``capabilities`` (SQLAlchemy AgentTable, list of
-        strings). The DB-side AgentTable has no ``skills`` attribute,
-        so a naive ``target_agent.skills`` raises AttributeError on
-        production agents. Falls back to the first entry
-        in ``preference`` when no match is found.
-        """
-        skills_attr = getattr(target_agent, "skills", None)
-        capabilities_attr = getattr(target_agent, "capabilities", None)
-        raw = skills_attr if skills_attr is not None else capabilities_attr
-        have: set[str] = set()
-        for s in raw or []:
-            if isinstance(s, dict):
-                sid = s.get("id")
-                if sid:
-                    have.add(sid)
-            elif isinstance(s, str):
-                have.add(s)
-        for skill in preference:
-            if skill in have:
-                return skill
-        return preference[0]
 
     @staticmethod
     def _build_struggle_body(
@@ -8130,16 +8095,6 @@ class Choreographer:
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="request_changes",
-            )
-        # Close the signal loop — the reject reason must reach whoever owns
-        # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id and self.a2a:
-            await self.a2a.send(
-                from_agent=pm_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"PM merge review needs changes.\n{summary}",
             )
         env = Envelope.ok(
             status=str(t.status),

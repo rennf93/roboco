@@ -838,7 +838,7 @@ class QAMixin(_Base):
     async def _pass_review_documenter_handoff(
         self, qa_agent_id: UUID, task_id: UUID, t: Any
     ) -> str | None:
-        """Best-effort reassign + a2a-notify the team's documenter.
+        """Best-effort reassign the team's documenter.
 
         Returns a warning string when the side-effect failed (the QA-pass
         transition is already committed at this point), else None. Pulled
@@ -849,14 +849,6 @@ class QAMixin(_Base):
             return None
         try:
             await self.task.reassign(task_id, doc_agent.id)
-            if self.a2a:
-                await self.a2a.send(
-                    from_agent=qa_agent_id,
-                    to_agent=doc_agent.id,
-                    skill="documentation",
-                    task_id=task_id,
-                    body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
-                )
         except Exception as exc:
             logger.warning(
                 "pass_review side-effect failed - transition committed, "
@@ -1025,14 +1017,6 @@ class QAMixin(_Base):
                 verb="fail_review",
             )
 
-        if t.assigned_to is not None and self.a2a:
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"QA needs changes.\n{summary}",
-            )
         await self._teardown_sandbox_best_effort(qa_agent_id)
         env = Envelope.ok(
             status=str(t.status),

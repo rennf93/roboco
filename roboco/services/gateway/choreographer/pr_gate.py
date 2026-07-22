@@ -446,17 +446,6 @@ class PRGateMixin(_Base):
             if is_main_pm_root
             else ""
         )
-        try:
-            if self.a2a:
-                await self.a2a.send(
-                    from_agent=reviewer_agent_id,
-                    to_agent=t.assigned_to,
-                    skill="code_review",
-                    task_id=task_id,
-                    body=f"PR review needs changes. {notes}{steer}",
-                )
-        except Exception:
-            logger.exception("pr_fail a2a to owning PM failed", task_id=str(task_id))
 
     async def _attach_pr_fail_findings(
         self, t: Any, agent: Any, role_str: str, findings: list[Any]
