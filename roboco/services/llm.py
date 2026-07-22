@@ -4,7 +4,15 @@ Model Routing Service
 Resolves (provider, model) for a given agent at spawn time using the
 scoped rows in `model_assignments`:
 
-    AGENT_SLUG override  >  ROLE override  >  GLOBAL default
+    AGENT_SLUG override  >  ROLE(":"complexity) override  >  ROLE override
+    >  GLOBAL default
+
+The compound `ROLE(":"complexity)` rung (e.g. "developer:low") is cost-tiered
+routing: a task's `estimated_complexity` (LOW/MEDIUM/HIGH, lowercased) lets an
+operator pin a role to a cheaper model at a given complexity without touching
+the plain ROLE row everything else still uses. It reuses the existing ROLE
+scope + `scope_value` column — no schema change — so an absent compound row
+is a pure no-op that falls through to the plain ROLE row exactly as before.
 
 If none apply, falls back to the legacy `ROLE_MODEL_MAP` + implicit
 Anthropic provider so deployments with zero rows behave exactly as
@@ -35,7 +43,11 @@ from sqlalchemy import select
 
 from roboco.agents_config import get_agent_role
 from roboco.config import settings
-from roboco.db.tables import ModelAssignmentTable, ProviderConfigTable
+from roboco.db.tables import (
+    ModelAssignmentTable,
+    ProviderConfigTable,
+    RoutingPresetTable,
+)
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import (
     MODEL_CATALOG_BY_NAME,
@@ -59,6 +71,18 @@ if TYPE_CHECKING:
 
 _OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
 _log = structlog.get_logger(__name__)
+
+# Day-1 cost-tiered seed applied by apply_mode('cost_tiered'): (role,
+# complexity, model_name). "haiku" is the catalog's cheap Anthropic tier
+# (see MODEL_CATALOG_BY_NAME) — developer's LOW-complexity work is
+# mechanical/cache-dominated the same way QA already runs on haiku
+# (ROLE_MODEL_MAP). developer is the only entry: qa/documenter already
+# default to haiku in ROLE_MODEL_MAP (no saving to seed), and cell_pm is
+# deliberately excluded from complexity overrides entirely — a coordinator
+# role, never offered a row (see _COMPLEXITY_OVERRIDE_ROLES in
+# api/routes/provider.py). Extend this tuple to seed more role:complexity
+# rows; nothing else needs editing.
+_COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = (("developer", "low", "haiku"),)
 
 
 async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
@@ -124,8 +148,17 @@ class ModelRoutingService(BaseService):
 
     service_name: ClassVar[str] = "model_routing"
 
-    async def resolve_for_agent(self, agent_slug: str) -> AgentRoute:
+    async def resolve_for_agent(
+        self, agent_slug: str, complexity: str | None = None
+    ) -> AgentRoute:
         """Resolve routing for `agent_slug` using the precedence ladder.
+
+        `complexity` (lowercase "low"/"medium"/"high", from a task's
+        `estimated_complexity`) enables the cost-tiered `ROLE(":"complexity)`
+        rung — see module docstring. Passing `None` (the default; also what
+        every non-task spawn gets) is byte-identical to the pre-cost-tiering
+        behavior: with no compound row ever created, this rung is a pure
+        no-op regardless of what's passed here.
 
         Never raises for a normal agent — decrypt failures, unreachable
         self-hosted servers, and missing agents all downgrade to the
@@ -133,7 +166,7 @@ class ModelRoutingService(BaseService):
         routing miss.
         """
         role = get_agent_role(agent_slug) or ""
-        resolved = await self._resolve_assignment(agent_slug, role)
+        resolved = await self._resolve_assignment(agent_slug, role, complexity)
         if resolved is not None and resolved.provider.enabled:
             route = await self._route_from_resolved(resolved, agent_slug)
             if route is not None:
@@ -158,12 +191,25 @@ class ModelRoutingService(BaseService):
         return self._legacy_route(role)
 
     async def _resolve_assignment(
-        self, agent_slug: str, role: str
+        self, agent_slug: str, role: str, complexity: str | None = None
     ) -> _ResolvedAssignment | None:
-        """Walk the precedence ladder: agent override > role override > global."""
+        """Walk the precedence ladder:
+
+        agent override > role+complexity override > role override > global.
+
+        The role+complexity rung tries the compound `scope_value`
+        (e.g. "developer:low") under the existing ROLE scope before falling
+        to the plain role row — reusing AssignmentScope.ROLE, no schema
+        change. A missing compound row (the common case — cost-tiering is
+        opt-in) falls straight through to the plain ROLE lookup below.
+        """
         resolved = await self._find_assignment(
             scope=AssignmentScope.AGENT_SLUG, scope_value=agent_slug
         )
+        if resolved is None and role and complexity:
+            resolved = await self._find_assignment(
+                scope=AssignmentScope.ROLE, scope_value=f"{role}:{complexity}"
+            )
         if resolved is None and role:
             resolved = await self._find_assignment(
                 scope=AssignmentScope.ROLE, scope_value=role
@@ -398,6 +444,24 @@ class ModelRoutingService(BaseService):
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.GROK)
 
+    async def resolve_provider_for_model(
+        self, model_name: str
+    ) -> ProviderConfigTable | None:
+        """Resolve which provider row `model_name` would route to — catalog
+        lookup first, LOCAL fallback for self-hosted names (mirrors
+        `upsert_assignment`'s own resolution order). ``None`` means the model
+        is genuinely unknown: no catalog entry AND no LOCAL provider seeded.
+
+        Read-only — exposed so a caller (the complexity-override endpoint)
+        can check `.enabled` / `.base_url` on the resolved row BEFORE writing
+        an assignment, instead of writing first and discovering at spawn time
+        that the target provider was never configured.
+        """
+        entry = MODEL_CATALOG_BY_NAME.get(model_name)
+        if entry is not None:
+            return await self._get_seeded_provider(entry.provider_type)
+        return await self._find_local_provider()
+
     async def _get_seeded_provider(
         self, provider_type: ModelProvider
     ) -> ProviderConfigTable:
@@ -444,9 +508,11 @@ class ModelRoutingService(BaseService):
     ) -> None:
         """Apply a routing "mode" in a single transactional call.
 
-        All modes below preserve AGENT_SLUG pins — only ROLE/GLOBAL rows are
-        replaced, so a per-agent override survives a mode switch (mixed-provider
-        routing is already a supported state; see "mix").
+        All modes below preserve AGENT_SLUG pins AND compound ROLE(":"complexity)
+        cost-tier overrides — only plain ROLE/GLOBAL rows are replaced, so a
+        per-agent override or a curated complexity override both survive a
+        mode switch (mixed-provider routing is already a supported state; see
+        "mix"). See `_wipe_mode_switch_assignments` for why both are spared.
 
         Modes:
           - "anthropic":   wipe role/global assignments so every spawn falls
@@ -462,6 +528,14 @@ class ModelRoutingService(BaseService):
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
             catalog) are automatically routed to the LOCAL provider.
+          - "cost_tiered": UNLIKE every mode above, this does NOT wipe
+            anything — it seeds/re-upserts the day-1 `_COST_TIERED_SEED`
+            compound ROLE(":"complexity) rows on top of whatever routing is
+            already in place (AGENT_SLUG pins, ROLE rows, GLOBAL default all
+            untouched). Idempotent: re-applying just re-upserts the same rows.
+            Only ever reached via an explicit PUT/POST call (this method has
+            exactly one caller: the `POST /providers` route) — never from
+            startup, a migration, or a background loop.
         """
         if mode == "anthropic":
             await self._apply_anthropic()
@@ -473,22 +547,48 @@ class ModelRoutingService(BaseService):
             await self._apply_self_hosted(default_model)
         elif mode == "mix":
             await self._apply_mix(per_agent)
+        elif mode == "cost_tiered":
+            await self._apply_cost_tiered()
         else:
             raise ValueError(
                 f"Unknown mode '{mode}'."
-                " Use 'anthropic', 'grok', 'ollama', 'self_hosted', or 'mix'."
+                " Use 'anthropic', 'grok', 'ollama', 'self_hosted', 'mix',"
+                " or 'cost_tiered'."
             )
 
-    async def _apply_anthropic(self) -> None:
-        """Wipe role/global assignments so every spawn uses the legacy Anthropic
-        path. AGENT_SLUG pins are preserved — mixed-provider routing is a
-        supported state (see `_apply_mix`)."""
+    async def _wipe_mode_switch_assignments(self) -> None:
+        """Delete plain ROLE/GLOBAL assignments on a mode switch — sparing two
+        curated layers that behave like per-agent pins, not "mode" state:
+
+        - AGENT_SLUG pins (the original carve-out).
+        - Compound ROLE(":"complexity) cost-tier overrides — an operator-built
+          curated layer exactly like AGENT_SLUG pins, same rationale: they're
+          deliberate, individually-authored routing decisions, not part of the
+          coarse "flip everyone to X" a mode switch represents.
+
+        Without the second carve-out, flipping to Anthropic/Grok/Ollama/
+        Self-Hosted silently wiped complexity overrides behind a success
+        toast — a repeat of the 2026-07-17 incident where these same buttons
+        wiped AGENT_SLUG pins. `_apply_mix` doesn't call this (it never
+        touches ROLE/GLOBAL rows at all, so compound rows were already safe
+        there); `_apply_cost_tiered` doesn't either (it's purely additive).
+        """
         await self.session.execute(
             sa_delete(ModelAssignmentTable).where(
-                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
+                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG,
+                ~(
+                    (ModelAssignmentTable.scope == AssignmentScope.ROLE)
+                    & ModelAssignmentTable.scope_value.contains(":")
+                ),
             )
         )
         await self.session.flush()
+
+    async def _apply_anthropic(self) -> None:
+        """Wipe role/global assignments so every spawn uses the legacy Anthropic
+        path. AGENT_SLUG pins and complexity overrides are preserved — see
+        `_wipe_mode_switch_assignments`."""
+        await self._wipe_mode_switch_assignments()
         self.log.info("Mode applied: anthropic (role/global assignments cleared)")
 
     async def _apply_grok(self, default_model: str | None) -> None:
@@ -499,14 +599,10 @@ class ModelRoutingService(BaseService):
         must be enabled here for resolve_for_agent() to route to it, mirroring
         self_hosted enabling LOCAL. Without it the seeded GROK row stays
         disabled (no key set) and agents fall back to Anthropic at spawn even
-        in grok mode. AGENT_SLUG pins are preserved (see `_apply_mix`).
+        in grok mode. AGENT_SLUG pins and complexity overrides are preserved
+        (see `_wipe_mode_switch_assignments`).
         """
-        await self.session.execute(
-            sa_delete(ModelAssignmentTable).where(
-                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
-            )
-        )
-        await self.session.flush()
+        await self._wipe_mode_switch_assignments()
         grok = await self._get_seeded_provider(ModelProvider.GROK)
         provider_svc = ProviderService(self.session)
         await provider_svc.update_provider(
@@ -524,13 +620,9 @@ class ModelRoutingService(BaseService):
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.
 
-        AGENT_SLUG pins are preserved (see `_apply_mix`)."""
-        await self.session.execute(
-            sa_delete(ModelAssignmentTable).where(
-                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
-            )
-        )
-        await self.session.flush()
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        `_wipe_mode_switch_assignments`)."""
+        await self._wipe_mode_switch_assignments()
         model_name = default_model or OLLAMA_DEFAULT_MODEL
         await self.upsert_assignment(
             scope=AssignmentScope.GLOBAL,
@@ -541,17 +633,13 @@ class ModelRoutingService(BaseService):
 
     async def _apply_self_hosted(self, default_model: str | None) -> None:
         """Wipe role/global assignments, enable the LOCAL provider, point GLOBAL
-        at it. AGENT_SLUG pins are preserved (see `_apply_mix`)."""
+        at it. AGENT_SLUG pins and complexity overrides are preserved (see
+        `_wipe_mode_switch_assignments`)."""
         if not default_model:
             raise ValueError(
                 "self_hosted mode requires a default_model (self-hosted model name)"
             )
-        await self.session.execute(
-            sa_delete(ModelAssignmentTable).where(
-                ModelAssignmentTable.scope != AssignmentScope.AGENT_SLUG
-            )
-        )
-        await self.session.flush()
+        await self._wipe_mode_switch_assignments()
         # Enable the LOCAL provider row so resolve_for_agent() will use it.
         local = await self._find_local_provider()
         if local is None:
@@ -593,6 +681,165 @@ class ModelRoutingService(BaseService):
                 model_name=model_name,
             )
         self.log.info("Mode applied: mix", agents=len(per_agent))
+
+    async def _apply_cost_tiered(self) -> None:
+        """Seed the day-1 cost-tiered compound overrides (see `_COST_TIERED_SEED`).
+
+        Unlike every other mode, this does not delete anything first — it is
+        a pure additive upsert on top of whatever routing already exists, so
+        AGENT_SLUG pins, plain ROLE rows, and the GLOBAL default all survive
+        untouched. Idempotent: re-running just re-upserts the same two rows.
+        """
+        for role, complexity, model_name in _COST_TIERED_SEED:
+            await self.upsert_assignment(
+                scope=AssignmentScope.ROLE,
+                scope_value=f"{role}:{complexity}",
+                model_name=model_name,
+            )
+        self.log.info(
+            "Mode applied: cost_tiered",
+            seeded=[f"{r}:{c}->{m}" for r, c, m in _COST_TIERED_SEED],
+        )
+
+    # =========================================================================
+    # ROUTING PRESETS (named, full snapshots — consumed by api/routes/provider.py)
+    # =========================================================================
+
+    async def list_routing_presets(self) -> list[RoutingPresetTable]:
+        """List saved presets, newest first (payload included; the route
+        strips it down to id/name/created_at for the list response)."""
+        result = await self.session.execute(
+            select(RoutingPresetTable).order_by(RoutingPresetTable.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_routing_preset(self, preset_id: UUID) -> RoutingPresetTable | None:
+        return await self.session.get(RoutingPresetTable, preset_id)
+
+    async def save_routing_preset(self, name: str) -> RoutingPresetTable:
+        """Snapshot the FULL current routing state under `name`.
+
+        Captures exactly what `GET /providers` + `GET /providers/complexity-
+        overrides` already serve — the derived mode label plus every current
+        `model_assignments` row (GLOBAL / plain ROLE / compound
+        ROLE(":"complexity) / AGENT_SLUG all together) — so a preset is "what
+        the card currently shows". Raises ValueError on an empty or
+        already-taken name (the route maps that to 409).
+        """
+        if not name:
+            raise ValueError("Preset name must not be empty")
+        existing = await self.session.execute(
+            select(RoutingPresetTable).where(RoutingPresetTable.name == name)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise ValueError(f"A preset named '{name}' already exists")
+
+        mode = await self.derive_mode()
+        assignments = await self.list_assignments()
+        payload: dict[str, Any] = {
+            "mode": mode,
+            "assignments": [
+                {
+                    "scope": a.scope.value,
+                    "scope_value": a.scope_value,
+                    "provider_type": a.provider.type.value,
+                    "model_name": a.model_name,
+                }
+                for a in assignments
+            ],
+        }
+        row = RoutingPresetTable(name=name, payload=payload)
+        self.session.add(row)
+        await self.session.flush()
+        self.log.info("Routing preset saved", name=name, rows=len(assignments))
+        return row
+
+    async def delete_routing_preset(self, preset_id: UUID) -> None:
+        row = await self.get_routing_preset(preset_id)
+        if row is None:
+            raise NotFoundError(
+                resource_type="RoutingPreset", resource_id=str(preset_id)
+            )
+        await self.session.delete(row)
+        await self.session.flush()
+        self.log.info("Routing preset deleted", name=row.name)
+
+    async def _validate_preset_entry(
+        self, entry: dict[str, Any]
+    ) -> tuple[AssignmentScope, str | None, str] | None:
+        """Validate one preset payload entry WITHOUT writing anything.
+
+        Replicates every check `upsert_assignment` would apply — scope shape
+        (`_validate_scope`) and a resolvable provider
+        (`resolve_provider_for_model`) — so `apply_routing_preset` can vet the
+        whole payload before touching the DB. Returns the parsed
+        `(scope, scope_value, model_name)` tuple when valid, else `None`.
+        """
+        model_name = entry.get("model_name")
+        scope_raw = entry.get("scope")
+        if not model_name or not isinstance(scope_raw, str):
+            return None
+        try:
+            scope = AssignmentScope(scope_raw)
+            scope_value = entry.get("scope_value")
+            self._validate_scope(scope, scope_value)
+        except ValueError:
+            return None
+        try:
+            if await self.resolve_provider_for_model(model_name) is None:
+                return None
+        except NotFoundError:
+            return None
+        return scope, scope_value, model_name
+
+    async def apply_routing_preset(self, preset_id: UUID) -> list[str]:
+        """Replace EVERY current `model_assignments` row with the preset's
+        snapshot — a full swap, unlike `apply_mode()`'s pin-preserving modes:
+        a preset's whole point is restoring the exact full state it captured,
+        AGENT_SLUG pins included.
+
+        Validate-all-FIRST: every payload entry is checked (scope shape +
+        a resolvable provider — the same rules `upsert_assignment` enforces)
+        BEFORE anything is deleted, so the wipe never runs on the strength of
+        a payload that hasn't been fully vetted. Only entries that validated
+        are written; a since-removed catalog model (or any other now-invalid
+        entry) is skipped and reported in the returned notes — it never
+        aborts the entries that DID validate. Nothing here calls
+        `session.commit()` (the route does, once, after this returns), so an
+        unexpected failure during the write phase leaves the prior routing
+        state intact once the caller's transaction rolls back rather than
+        landing half-swapped.
+        """
+        preset = await self.get_routing_preset(preset_id)
+        if preset is None:
+            raise NotFoundError(
+                resource_type="RoutingPreset", resource_id=str(preset_id)
+            )
+
+        valid: list[tuple[AssignmentScope, str | None, str]] = []
+        notes: list[str] = []
+        for entry in preset.payload.get("assignments", []):
+            parsed = await self._validate_preset_entry(entry)
+            if parsed is None:
+                notes.append(
+                    f"Skipped {entry.get('scope')}:{entry.get('scope_value')} "
+                    f"({entry.get('model_name')}) — invalid or unavailable "
+                    "model/scope"
+                )
+            else:
+                valid.append(parsed)
+
+        # Only now — every remaining entry has been vetted — replace the
+        # current routing state.
+        await self.session.execute(sa_delete(ModelAssignmentTable))
+        await self.session.flush()
+        for scope, scope_value, model_name in valid:
+            await self.upsert_assignment(
+                scope=scope, scope_value=scope_value, model_name=model_name
+            )
+
+        self.log.info("Routing preset applied", name=preset.name, skipped=len(notes))
+        return notes
 
     # =========================================================================
     # INTERNAL

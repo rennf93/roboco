@@ -47,7 +47,7 @@ def _wire(monitor: dict[str, Any]) -> Any:
     async def _git_context(_gc: Any, _tid: str | None) -> None:
         return None
 
-    async def _route(_aid: str) -> Any:
+    async def _route(_aid: str, _tid: str | None = None) -> Any:
         monitor["route_calls"] += 1
         return SimpleNamespace(
             provider_type=SimpleNamespace(value="anthropic"),

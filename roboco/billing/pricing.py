@@ -110,6 +110,23 @@ def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
     return best_prices
 
 
+def input_price_per_million(model: str) -> float:
+    """Return `model`'s per-1M-token input price — the cost-tier comparator.
+
+    Used by the cost-tiered complexity-override endpoints (downgrade-only
+    policy) to rank two models against each other without needing a separate
+    explicit tier ordering: the input rate already orders the Claude tiers
+    (haiku < sonnet < opus) and prices Grok below Sonnet, so "costlier" reduces
+    to "higher input price". A model with no pricing-table match (self-hosted,
+    Ollama Cloud — genuinely free per-token) returns ``0.0``, the cheapest
+    possible rank, so it can never be rejected as "costlier".
+    """
+    if not model:
+        return 0.0
+    prices = _lookup_prices(model.lower())
+    return prices[0] if prices else 0.0
+
+
 @dataclass(frozen=True)
 class CostResult:
     """Estimated cost plus pricing attribution (#65).

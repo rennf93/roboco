@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   providersApi,
   type ApplyModePayload,
+  type ComplexityLevel,
+  type ComplexityOverride,
   type SelfHostedConfigPayload,
 } from "@/lib/api/providers";
 
@@ -14,6 +16,9 @@ export const providerKeys = {
   selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
   selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
   selfHostedTest: () => [...providerKeys.all, "self-hosted-test"] as const,
+  complexityOverrides: () =>
+    [...providerKeys.all, "complexity-overrides"] as const,
+  presets: () => [...providerKeys.all, "presets"] as const,
 };
 
 export function useCatalog() {
@@ -77,6 +82,11 @@ export function useApplyMode() {
     mutationFn: (payload: ApplyModePayload) => providersApi.applyMode(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
+      // Complexity overrides survive a mode switch (see the backend's
+      // _wipe_mode_switch_assignments carve-out) but the mode-apply response
+      // doesn't carry them — refresh separately so the card doesn't show a
+      // stale list. Mirrors useApplyPreset, which already invalidates both.
+      qc.invalidateQueries({ queryKey: providerKeys.complexityOverrides() });
     },
   });
 }
@@ -133,6 +143,90 @@ export function useRefreshSelfHostedModels() {
   return useMutation({
     mutationFn: async () => {
       await qc.invalidateQueries({ queryKey: providerKeys.selfHostedModels() });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Complexity overrides
+// ---------------------------------------------------------------------------
+
+export function useComplexityOverrides() {
+  return useQuery({
+    queryKey: providerKeys.complexityOverrides(),
+    queryFn: () => providersApi.getComplexityOverrides(),
+    staleTime: 30_000,
+  });
+}
+
+export function useSetComplexityOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ComplexityOverride) =>
+      providersApi.setComplexityOverride(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.complexityOverrides() });
+    },
+  });
+}
+
+export function useDeleteComplexityOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      role,
+      complexity,
+    }: {
+      role: string;
+      complexity: ComplexityLevel;
+    }) => providersApi.deleteComplexityOverride(role, complexity),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.complexityOverrides() });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Routing presets
+// ---------------------------------------------------------------------------
+
+export function useRoutingPresets() {
+  return useQuery({
+    queryKey: providerKeys.presets(),
+    queryFn: () => providersApi.listPresets(),
+    staleTime: 30_000,
+  });
+}
+
+export function useSavePreset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => providersApi.savePreset(name),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.presets() });
+    },
+  });
+}
+
+export function useApplyPreset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => providersApi.applyPreset(id),
+    onSuccess: () => {
+      // A preset fully replaces the routing state — refresh everything the
+      // card renders off of, not just the mode snapshot.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+      qc.invalidateQueries({ queryKey: providerKeys.complexityOverrides() });
+    },
+  });
+}
+
+export function useDeletePreset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => providersApi.deletePreset(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.presets() });
     },
   });
 }

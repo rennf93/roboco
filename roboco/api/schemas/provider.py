@@ -6,11 +6,13 @@ Minimal surface that backs the Settings UI:
  - set / clear / check the single Ollama Cloud API key
  - configure / test / discover the self-hosted (LOCAL) Ollama server
  - read current routing assignments (so the UI renders Mix mode)
- - apply a routing mode (anthropic | grok | ollama | mix | self_hosted)
+ - apply a routing mode (anthropic | grok | ollama | mix | self_hosted | cost_tiered)
+ - read/write/delete cost-tiered complexity overrides (compound ROLE rows)
 """
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003  (pydantic needs the type at runtime)
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID  # noqa: TC003  (pydantic needs the type at runtime)
 
@@ -20,7 +22,7 @@ from roboco.models.base import AssignmentScope, ModelProvider  # noqa: TC001
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
-    from roboco.db.tables import ModelAssignmentTable
+    from roboco.db.tables import ModelAssignmentTable, RoutingPresetTable
 
 
 # =============================================================================
@@ -187,9 +189,13 @@ class ApplyModeRequest(BaseModel):
       `per_agent` are routed to the LOCAL provider automatically.
     - mode="self_hosted": clear every assignment; enable LOCAL provider;
       set GLOBAL default to `default_model` (a self-hosted model name).
+    - mode="cost_tiered": seed the day-1 cost-tiered compound ROLE(":"complexity)
+      rows (see `ModelRoutingService._COST_TIERED_SEED`). Unlike every mode
+      above, nothing is cleared first — purely additive on top of whatever
+      routing already exists.
     """
 
-    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted", "cost_tiered"]
     default_model: str | None = None
     per_agent: dict[str, str] | None = None
 
@@ -197,5 +203,77 @@ class ApplyModeRequest(BaseModel):
 class ModeResponse(BaseModel):
     """Server-side view of the current mode + a snapshot of active rules."""
 
-    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted", "cost_tiered"]
     assignments: list[AssignmentResponse]
+
+
+# =============================================================================
+# COMPLEXITY OVERRIDES (cost-tiered routing: compound ROLE(":"complexity) rows)
+# =============================================================================
+
+
+class ComplexityOverrideRequest(BaseModel):
+    """Upsert one ROLE(":"complexity) cost-tiered override.
+
+    `role` is validated at the route (not here) against a fixed allowlist —
+    a rejected coordinator/board/CEO-facing role gets the deliberate
+    tier-pinning message instead of a generic 422. `model_name` must resolve
+    to a tier no costlier than that role's `ROLE_MODEL_MAP` baseline
+    (downgrade-only by policy), also enforced at the route.
+    """
+
+    role: str
+    complexity: Literal["low", "high"]
+    model_name: str
+
+
+class ComplexityOverrideResponse(BaseModel):
+    """One active ROLE(":"complexity) cost-tiered override row.
+
+    `warning` is set only by the PUT response (never by GET's listing) when
+    the model crosses provider families relative to the role's Anthropic
+    baseline (e.g. an Anthropic role pinned to a Grok/Ollama/self-hosted
+    model) — allowed, but surfaced so it's never a silent switch.
+    """
+
+    role: str
+    complexity: Literal["low", "high"]
+    model_name: str
+    warning: str | None = None
+
+
+# =============================================================================
+# ROUTING PRESETS (named, full snapshots of the routing state)
+# =============================================================================
+
+
+class RoutingPresetSummary(BaseModel):
+    """One saved preset — list view. No `payload` here; the panel doesn't
+    need the snapshot contents until it actually applies one."""
+
+    id: UUID
+    name: str
+    created_at: datetime
+
+
+class SaveRoutingPresetRequest(BaseModel):
+    """Snapshot the CURRENT routing state under `name`."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class RoutingPresetApplyResponse(BaseModel):
+    """Result of applying a preset: the fresh mode snapshot (same shape as
+    `ModeResponse`) plus any per-entry skip notes (e.g. a since-removed
+    catalog model) — never a partial/silent apply."""
+
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted", "cost_tiered"]
+    assignments: list[AssignmentResponse]
+    skipped: list[str]
+
+
+def routing_preset_to_summary(row: RoutingPresetTable) -> RoutingPresetSummary:
+    """Convert a RoutingPresetTable row to its list-view summary."""
+    return RoutingPresetSummary(
+        id=require_uuid(row.id), name=row.name, created_at=row.created_at
+    )
