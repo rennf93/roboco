@@ -212,8 +212,18 @@ def test_internal_agent_mesh_is_whitelisted() -> None:
     (2026-07-20 incident) and wedged every subsequent gateway verb."""
     cfg = security.build_security_config()
     assert cfg.whitelist is not None
-    for net in ("127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+    for net in ("127.0.0.1", "::1", "172.16.0.0/12"):
         assert net in cfg.whitelist
+
+
+def test_internal_mesh_whitelist_excludes_full_rfc1918() -> None:
+    """10.0.0.0/8 and 192.168.0.0/16 cover any real LAN client hitting nginx,
+    not just the docker mesh — an nginx-forwarded 192.168.x.x browser must NOT
+    ride the same exemption as authenticated agent traffic."""
+    cfg = security.build_security_config()
+    assert cfg.whitelist is not None
+    for net in ("10.0.0.0/8", "192.168.0.0/16"):
+        assert net not in cfg.whitelist
 
 
 def test_guard_whitelist_appends_emergency_extras(

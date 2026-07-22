@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer — fastapi-guard 7.2.2 / guard-core 3.3.0.
+"""RoboCo HTTP security layer — fastapi-guard 7.3.0 / guard-core 3.5.0.
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -319,22 +319,37 @@ def _redis_url() -> str:
     return f"redis://{settings.redis_host}:{settings.redis_port}/0"
 
 
-# RFC1918 + loopback: the internal agent mesh. Agents reach the orchestrator
-# DIRECTLY on the docker bridge (172.x → roboco-orchestrator:8000, no nginx
-# hop), HMAC-authenticated — the guard's WAF/threat-ban is for the EXTERNAL
-# attack surface arriving through nginx, not for authenticated internal
-# traffic. Without this the guard IP-banned agent containers the moment it
-# went active (2026-07-20): one journal/note body tripping a signature banned
-# the whole container's IP, wedging every subsequent verb (dm, i_am_idle, ...).
-# Robust against XFF spoofing: trusted_proxy_depth=1 means the effective IP for
-# an nginx-forwarded request is the real client (public, non-matching), so an
-# external attacker cannot spoof themselves into this range.
+# Loopback + docker's bridge pool: the internal agent mesh ONLY. Agents reach
+# the orchestrator DIRECTLY on the docker bridge (172.x →
+# roboco-orchestrator:8000, no nginx hop), HMAC-authenticated — the guard's
+# WAF/IP-ban/rate-limit is for the EXTERNAL attack surface arriving through
+# nginx, not for authenticated internal traffic. Without this the guard
+# IP-banned agent containers the moment it went active (2026-07-20): one
+# journal/note body tripping a signature banned the whole container's IP,
+# wedging every subsequent verb (dm, i_am_idle, ...).
+#
+# Deliberately NOT 10.0.0.0/8 or 192.168.0.0/16: those also cover any real LAN
+# client hitting nginx, not just the docker mesh. With trusted_proxy_depth=1,
+# nginx forwards a LAN client's own real IP via XFF (extract_client_ip peels
+# it correctly) — so a genuine 192.168.x.x browser would skip WAF/ban/rate-
+# limit right alongside actual agent traffic. 172.16.0.0/12 is docker's
+# default bridge address-pool range: neither compose file pins an explicit
+# `subnet:` for roboco_default/roboco_data, so this has to cover whatever
+# docker allocates them.
+#
+# Known ceiling: this can't tell a real docker-bridge peer apart from
+# host-loopback/NAT'd traffic landing on the same address family. A request
+# proxied through the host (e.g. Tailscale Serve terminating on
+# 127.0.0.1:3000) still resolves, after nginx's one XFF hop, to loopback or
+# the bridge gateway IP — both inside this range — so it still rides the
+# exemption. A second XFF hop ahead of nginx (Tailscale Serve prepends the
+# tailnet peer's real IP before nginx appends its own) is silently lost:
+# trusted_proxy_depth=1 always peels the RIGHTMOST XFF entry, which is the
+# hop nginx itself recorded, not the original tailnet client.
 _INTERNAL_NETWORKS = [
     "127.0.0.1",
     "::1",
-    "10.0.0.0/8",
     "172.16.0.0/12",
-    "192.168.0.0/16",
 ]
 
 

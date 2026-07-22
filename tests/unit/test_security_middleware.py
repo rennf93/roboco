@@ -170,6 +170,37 @@ class TestActiveModeStillBlocksThreats:
         assert resp.status_code != HTTPStatus.OK
 
 
+_DOCKER_BRIDGE_PEER = "172.18.0.5"
+_BENIGN_BODY = {"description": "add a login button"}
+
+
+class TestNginxForwardedClientIP:
+    """The internal-mesh whitelist is docker-bridge/loopback only (not full
+    RFC1918) — so extract_client_ip's real resolution, not just CIDR
+    membership, decides who rides the exemption. A trusted-proxy peer with no
+    XFF (the real agent-mesh shape) resolves to itself and stays exempt; the
+    same peer forwarding a LAN client's IP via XFF resolves to that real
+    client IP, which must NOT be exempt."""
+
+    def test_docker_bridge_peer_without_xff_is_whitelisted(self) -> None:
+        with _client(_guarded_app(passive=False, ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post("/task", json=_BENIGN_BODY)
+        assert resp.status_code == HTTPStatus.OK
+
+    def test_nginx_forwarded_lan_client_is_not_whitelisted(self) -> None:
+        """nginx (the docker-bridge peer) forwards a genuine 192.168.x.x LAN
+        client via X-Forwarded-For; trusted_proxy_depth=1 makes guard resolve
+        the real LAN IP (not the nginx peer), which the narrowed whitelist no
+        longer covers."""
+        with _client(_guarded_app(passive=False, ip=_DOCKER_BRIDGE_PEER)) as client:
+            resp = client.post(
+                "/task",
+                json=_BENIGN_BODY,
+                headers={"X-Forwarded-For": "192.168.1.50"},
+            )
+        assert resp.status_code != HTTPStatus.OK
+
+
 class TestDecoyPaths:
     """Surface N: scanner/decoy URL paths are detected by the WAF url-path scan.
 
