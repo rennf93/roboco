@@ -89,7 +89,7 @@ export function TgSheet({
             type="button"
             aria-label="Close"
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-full bg-muted text-muted-foreground transition-transform active:scale-90"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-muted-foreground transition-transform active:scale-90"
           >
             <X weight="bold" className="h-4 w-4" />
           </button>

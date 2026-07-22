@@ -1,5 +1,16 @@
+import type { Viewport } from "next";
 import Script from "next/script";
 import localFont from "next/font/local";
+
+// Scoped to the (tg) group: viewport-fit=cover is what makes the
+// env(safe-area-inset-*) paddings below resolve to real values on notched
+// phones. The dashboard shell has no safe-area handling, so it must NOT
+// inherit cover (content would sit under the sensor housing in landscape).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 
 // The brand display face — the same vendored Share Tech Mono the motion/
 // video compositions use for their headline moments. Exposed as a CSS
@@ -45,7 +56,7 @@ export default function TelegramLayout({
         src="https://telegram.org/js/telegram-web-app.js"
         strategy="afterInteractive"
       />
-      <main className="flex-1 overflow-auto pt-[env(safe-area-inset-top)]">
+      <main className="flex-1 overflow-x-hidden overflow-y-auto pt-[env(safe-area-inset-top)]">
         {children}
       </main>
     </div>

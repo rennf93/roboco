@@ -268,7 +268,7 @@ export function TgTaskSheet({
           </div>
 
           {task.description && (
-            <p className="whitespace-pre-line text-sm leading-relaxed text-muted-foreground">
+            <p className="whitespace-pre-line break-words text-sm leading-relaxed text-muted-foreground">
               {task.description}
             </p>
           )}

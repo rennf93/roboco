@@ -187,7 +187,7 @@ function CockpitShell() {
           aria-label={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}
           onClick={() => setInboxOpen(true)}
           className={cn(
-            "relative flex h-9 w-9 items-center justify-center rounded-full bg-card text-muted-foreground",
+            "relative flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted-foreground",
             TG_PRESS,
           )}
         >

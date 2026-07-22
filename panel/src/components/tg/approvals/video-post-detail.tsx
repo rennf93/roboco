@@ -72,7 +72,7 @@ function CutPlayer({ post }: { post: VideoPost }) {
         {(Object.keys(CUT_LABELS) as VideoCut[]).map((c) => (
           <Button
             key={c}
-            size="sm"
+            size="default"
             variant={cut === c ? "default" : "outline"}
             disabled={!paths[c]}
             onClick={() => setCut(c)}
@@ -88,7 +88,7 @@ function CutPlayer({ post }: { post: VideoPost }) {
           controls
           playsInline
           className={cn(
-            "w-full rounded-md bg-black",
+            "w-full rounded-md bg-black object-contain",
             cut === "vertical"
               ? "aspect-[9/16] max-h-[60dvh]"
               : "aspect-square",
