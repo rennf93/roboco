@@ -933,6 +933,7 @@ class AgentOrchestrator:
         instance._instances = {}
         instance._last_audit_spawn_at = None
         instance._notification_spawn_at = {}
+        instance._notification_spawn_count = {}
         return instance
 
     def __init__(
@@ -1060,6 +1061,11 @@ class AgentOrchestrator:
         # retries if it is still unacked. In-memory by design (a restart just
         # allows one immediate retry — a tick damper, not durable state).
         self._notification_spawn_at: dict[tuple[str, str], float] = {}
+        # Hard-cap counter companion to _notification_spawn_at: spawns per
+        # (agent, notification) so a wedged escalation stops respawning its
+        # target past notification_spawn_max_attempts (the no-task_id analogue
+        # of the PM respawn breaker). In-memory (a restart allows a fresh run).
+        self._notification_spawn_count: dict[tuple[str, str], int] = {}
         # Cluster C5: a board review is a two-reviewer gate — BOTH the Product
         # Owner and the Head of Marketing must review a board/coordination task
         # before it is handed to the CEO for Approve & Start. Once both have
@@ -4486,10 +4492,19 @@ class AgentOrchestrator:
     def _notification_spawn_cooled(
         self, agent_slug: str, notification_id: str | None
     ) -> bool:
-        """True when this (agent, notification) spawned within the cooldown.
+        """True when this (agent, notification) spawn is suppressed.
 
-        Returns False — and stamps the pair — when a spawn is allowed. A
-        notification with no id is never damped (fail-open: better one extra
+        Two guards: the cross-tick cooldown (one spawn per window), AND a hard
+        cap — past ``notification_spawn_max_attempts`` spawns for the same
+        notification without it being acknowledged, stop re-spawning entirely.
+        Without the cap a wedged escalation/alert whose recipient never resolves
+        it re-spawns that recipient every window forever (these dispatchers
+        carry no task_id, so the PM respawn breaker never sees them). The cap is
+        id-scoped: a fresh escalation (new notification id) is unaffected, and a
+        resolved one stops being fetched and prunes out.
+
+        Returns False — and stamps + counts the pair — when a spawn is allowed.
+        A notification with no id is never damped (fail-open: better one extra
         spawn than a silently dropped escalation).
         """
         if not notification_id:
@@ -4499,19 +4514,115 @@ class AgentOrchestrator:
         store: dict[tuple[str, str], float] = self.__dict__.setdefault(
             "_notification_spawn_at", {}
         )
+        counts: dict[tuple[str, str], int] = self.__dict__.setdefault(
+            "_notification_spawn_count", {}
+        )
         key = (agent_slug, str(notification_id))
         now = time.monotonic()
         cooldown = settings.notification_spawn_cooldown_seconds
         last = store.get(key)
         if last is not None and (now - last) < cooldown:
             return True
+        if self._notification_spawn_over_cap(key, store, counts, now):
+            return True
+        counts[key] = counts.get(key, 0) + 1
         store[key] = now
         if len(store) > self._NOTIFICATION_COOLDOWN_PRUNE_AT:
-            cutoff = now - cooldown
-            self._notification_spawn_at = {
-                k: v for k, v in store.items() if v >= cutoff
-            }
+            self._prune_notification_spawn_maps(now - cooldown)
         return False
+
+    def _notification_spawn_over_cap(
+        self,
+        key: tuple[str, str],
+        store: dict[tuple[str, str], float],
+        counts: dict[tuple[str, str], int],
+        now: float,
+    ) -> bool:
+        """True (and suppresses the spawn) once ``key`` has spawned
+        ``notification_spawn_max_attempts`` times without the notification being
+        acknowledged — the no-task_id analogue of the PM respawn breaker.
+        Re-stamps so the capped entry survives pruning (which would otherwise
+        drop the count and reset the cap); logs exactly once at the trip.
+        """
+        max_attempts = settings.notification_spawn_max_attempts
+        attempts = counts.get(key, 0)
+        if not (max_attempts and attempts >= max_attempts):
+            return False
+        store[key] = now
+        if attempts == max_attempts:
+            counts[key] = attempts + 1
+            logger.warning(
+                "escalation respawn loop broken — a notification kept "
+                "respawning its target without being acknowledged; "
+                "suppressing further spawns until it is resolved",
+                agent_slug=key[0],
+                notification_id=key[1],
+                attempts=attempts,
+                max_attempts=max_attempts,
+            )
+        return True
+
+    def _prune_notification_spawn_maps(self, cutoff: float) -> None:
+        """Drop cooldown/count entries stamped before ``cutoff`` (both maps
+        stay aligned so a surviving cap keeps its count)."""
+        self._notification_spawn_at = {
+            k: v for k, v in self._notification_spawn_at.items() if v >= cutoff
+        }
+        survivors = set(self._notification_spawn_at)
+        self._notification_spawn_count = {
+            k: v for k, v in self._notification_spawn_count.items() if k in survivors
+        }
+
+    @staticmethod
+    def _parse_iso_dt(value: Any) -> datetime | None:
+        """Parse a notification's ISO timestamp to an aware UTC datetime, or
+        None if absent/unparseable. Naive values are assumed UTC."""
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+    async def _fetch_task_status(
+        self, client: httpx.AsyncClient, task_id: str
+    ) -> str | None:
+        """Best-effort GET /tasks/{id} → status string (None on any failure —
+        fail-open so a fetch hiccup never suppresses a real escalation)."""
+        try:
+            resp = await client.get(f"{self._api_url}/tasks/{task_id}")
+            if resp.status_code == http_status.HTTP_200_OK:
+                status = resp.json().get("status")
+                return str(status) if status is not None else None
+        except Exception as exc:
+            logger.debug("notification task-status fetch failed", error=str(exc))
+        return None
+
+    async def _notification_has_live_work(
+        self, client: httpx.AsyncClient, notif: dict[str, Any]
+    ) -> bool:
+        """False when a notification has no live work behind it — the 'is there
+        actually something to do' gate for notification-triggered spawns. Three
+        obvious markers: it has expired, it is stale past the spawn-age window
+        (wedged / reloaded from before a restart), or its related task is
+        already terminal (the work is done). Fail-open: an unparseable field or
+        a failed task fetch never suppresses a spawn.
+        """
+        now = datetime.now(UTC)
+        expires = self._parse_iso_dt(notif.get("expires_at"))
+        if expires is not None and expires <= now:
+            return False
+        max_age = settings.notification_spawn_max_age_seconds
+        ts = self._parse_iso_dt(notif.get("timestamp"))
+        if max_age and ts is not None and (now - ts).total_seconds() > max_age:
+            return False
+        task_id = notif.get("related_task_id")
+        if task_id:
+            status = await self._fetch_task_status(client, str(task_id))
+            if status in ("completed", "cancelled"):
+                return False
+        return True
 
     def _is_parallel_phase_claim(
         self, task: dict[str, Any], dev_uuid: str | None
@@ -13722,6 +13833,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
                 if self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
+                if not await self._notification_has_live_work(client, notif):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_escalation_prompt(notif),
@@ -13752,6 +13865,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     continue
 
                 if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
+                if not await self._notification_has_live_work(client, notif):
                     continue
                 await self.spawn_agent(
                     agent_id=agent_slug,

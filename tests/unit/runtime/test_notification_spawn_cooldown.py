@@ -59,6 +59,67 @@ def test_missing_notification_id_never_damped() -> None:
         assert orch._notification_spawn_at == {}
 
 
+def test_hard_cap_breaks_respawn_loop() -> None:
+    """Past max_attempts spawns for one unacked notification, the target is
+    suppressed forever — the loop breaker for no-task_id escalations."""
+    orch = _orch()
+    with (
+        patch.object(settings, "notification_spawn_cooldown_seconds", 600),
+        patch.object(settings, "notification_spawn_max_attempts", 3),
+        patch("roboco.runtime.orchestrator.time.monotonic") as clock,
+    ):
+        # Each retry lands in a fresh cooldown window (advance past 600s).
+        for i in range(3):
+            clock.return_value = 1_000.0 + i * 700
+            assert orch._notification_spawn_cooled("fe-pm", "stuck") is False
+        # 4th+ window: cap tripped — suppressed despite the cooldown elapsing.
+        for i in range(3, 8):
+            clock.return_value = 1_000.0 + i * 700
+            assert orch._notification_spawn_cooled("fe-pm", "stuck") is True
+        # A different notification is unaffected by another's cap.
+        clock.return_value = 9_000.0
+        assert orch._notification_spawn_cooled("fe-pm", "other") is False
+
+
+def test_zero_max_attempts_disables_cap() -> None:
+    orch = _orch()
+    with (
+        patch.object(settings, "notification_spawn_cooldown_seconds", 600),
+        patch.object(settings, "notification_spawn_max_attempts", 0),
+        patch("roboco.runtime.orchestrator.time.monotonic") as clock,
+    ):
+        # Cap off: only the cooldown gates, every elapsed window respawns.
+        for i in range(20):
+            clock.return_value = 1_000.0 + i * 700
+            assert orch._notification_spawn_cooled("fe-pm", "stuck") is False
+
+
+def test_cap_survives_prune() -> None:
+    """A capped entry stays suppressed even after a prune sweep fires (the
+    prune must not drop the count and reset the cap)."""
+    orch = _orch()
+    prune_at = AgentOrchestrator._NOTIFICATION_COOLDOWN_PRUNE_AT
+    with (
+        patch.object(settings, "notification_spawn_cooldown_seconds", 600),
+        patch.object(settings, "notification_spawn_max_attempts", 2),
+        patch("roboco.runtime.orchestrator.time.monotonic") as clock,
+    ):
+        clock.return_value = 10_000.0
+        assert orch._notification_spawn_cooled("fe-pm", "stuck") is False
+        clock.return_value = 10_700.0
+        assert orch._notification_spawn_cooled("fe-pm", "stuck") is False
+        clock.return_value = 11_400.0
+        assert orch._notification_spawn_cooled("fe-pm", "stuck") is True  # capped
+        # Force a prune sweep with many fresh keys.
+        for i in range(prune_at + 1):
+            orch._notification_spawn_cooled("be-pm", f"n{i}")
+        # Advance well past the cooldown so only the surviving cap — not the
+        # cooldown — can suppress the next "stuck" check. A prune that dropped
+        # the count would reset the cap and allow a spawn (return False) here.
+        clock.return_value = 20_000.0
+        assert orch._notification_spawn_cooled("fe-pm", "stuck") is True
+
+
 def test_map_prunes_expired_entries() -> None:
     orch = _orch()
     prune_at = AgentOrchestrator._NOTIFICATION_COOLDOWN_PRUNE_AT
