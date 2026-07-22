@@ -261,9 +261,17 @@ class ReleaseProposalService(BaseService):
             # route commit/HTTP 504'd left the proposal non-terminal). The old
             # `== "published"`-only check wedged already_published open forever.
             if result.status in ("published", "already_published"):
-                task.status = TaskStatus.COMPLETED
-                await self.session.flush()
                 release_project_id = cast("UUID | None", task.project_id)
+                task.status = TaskStatus.COMPLETED
+                # Commit while still holding the release lock so COMPLETED is
+                # durable before release — otherwise a racing reject() could
+                # acquire the lock the instant we drop it, re-read a row whose
+                # COMPLETED write is only flushed (invisible to its own session
+                # under READ COMMITTED), pass its guard, and flip the published
+                # proposal to CANCELLED before the background caller commits.
+                # (Mirrors XPostService._post's commit-under-lock.) The drafts
+                # below are best-effort side effects; the caller commits them.
+                await self.session.commit()
                 await self._draft_x_post(report, release_project_id)
                 await self._draft_video(report, release_project_id)
                 await self._draft_docs_update(report)

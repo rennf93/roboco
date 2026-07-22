@@ -23,6 +23,7 @@ from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, TaskNature, TaskStatus, TaskType
 from roboco.models.base import Team as T
+from roboco.services.release_executor import ReleaseResult
 from roboco.services.release_proposal import (
     ReleaseProposalService,
     TaskAlreadyCompletedError,
@@ -260,5 +261,65 @@ async def test_reject_concurrent_approve_completes_during_lock_wait(
         assert final.status == TaskStatus.COMPLETED
         # The reject must never have landed on the just-published row.
         assert markers.get_release_required_changes(final) is None
+    finally:
+        await _dispose(fresh, fresh_engine)
+
+
+@pytest.mark.asyncio
+async def test_approve_commits_completed_under_lock(
+    db_session: AsyncSession, _test_database_url: str
+) -> None:
+    """Redis mutex commit-after-unlock audit regression for ``approve()``: the
+    published COMPLETED write must be committed while the release lock is still
+    held. Pre-fix ``approve()`` only flushed and left the durable commit to the
+    background caller — after the lock had already dropped — so a reject() that
+    acquired the lock in that window re-read a not-yet-committed row and could
+    flip the published proposal to CANCELLED. Proven cross-session: a fresh
+    connection sees COMPLETED the moment approve returns, before any caller
+    commit. Mirrors XPostService._post's commit-under-lock.
+    """
+    task = await _seed_proposal(db_session)
+    task_id = cast("UUID", task.id)
+    await db_session.commit()
+
+    fake_executor = AsyncMock()
+    fake_executor.execute = AsyncMock(
+        return_value=ReleaseResult(
+            status="published",
+            version=_VERSION,
+            files_changed=["pyproject.toml"],
+            commit_sha="abc123",
+            release_url=f"https://example.com/releases/v{_VERSION}",
+            detail="ok",
+        )
+    )
+
+    with (
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=fake_executor),
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_acquire_release_lock",
+            AsyncMock(return_value="tok"),
+        ),
+        patch.object(ReleaseProposalService, "_heartbeat_loop", AsyncMock()),
+        patch.object(ReleaseProposalService, "_finalize_release_lock", AsyncMock()),
+        patch.object(ReleaseProposalService, "_close_redis", AsyncMock()),
+        patch.object(ReleaseProposalService, "_draft_x_post", AsyncMock()),
+        patch.object(ReleaseProposalService, "_draft_video", AsyncMock()),
+        patch.object(ReleaseProposalService, "_draft_docs_update", AsyncMock()),
+    ):
+        result = await ReleaseProposalService(db_session).approve(task_id)
+
+    assert result is not None
+    assert result.status == "published"
+
+    fresh, fresh_engine = await _fresh_session(_test_database_url)
+    try:
+        final = await fresh.get(TaskTable, task_id)
+        assert final is not None
+        assert final.status == TaskStatus.COMPLETED  # committed under the lock
     finally:
         await _dispose(fresh, fresh_engine)

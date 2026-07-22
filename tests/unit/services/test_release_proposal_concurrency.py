@@ -31,6 +31,7 @@ def _task(*, source: str = "release_manager") -> MagicMock:
 def _session() -> MagicMock:
     s = MagicMock()
     s.flush = AsyncMock()
+    s.commit = AsyncMock()
     return s
 
 
