@@ -7,6 +7,7 @@ fixture) so approve exercises the real post + status-transition path.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, cast
@@ -27,6 +28,8 @@ from roboco.models.base import (
 from roboco.models.base import TaskNature as TN
 from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
+from roboco.services import x_engine as x_engine_module
+from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
@@ -41,6 +44,7 @@ from roboco.services.x_post_service import (
     XPostService,
     get_x_post_service,
 )
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -961,3 +965,295 @@ async def test_approve_feature_spotlight_video_failure_does_not_break_post(
     assert result.status == "posted"
     await db_session.refresh(task)
     assert task.status == TS.COMPLETED
+
+
+# --------------------------------------------------------------------------- #
+# Reject -> redraft (CEO feedback loop): a non-blank reject reason schedules
+# XEngine.redraft_from_rejection to run only after this session's transaction
+# actually commits (`defer_after_commit`), via a FRESH session opened from
+# `get_session_factory()` — patched here to the same test database
+# `db_session` uses, since the production singleton points elsewhere in
+# tests. Mirrors `test_notification_delivery_phantom.py`'s drain helpers
+# (duplicated locally rather than imported — this project's convention for
+# a small pure test helper, not a service internal).
+# --------------------------------------------------------------------------- #
+
+
+def _drain_tasks(session: AsyncSession) -> list[asyncio.Task[object]]:
+    return list(session.info.get("_roboco_drain_tasks", []))
+
+
+async def _await_drain(session: AsyncSession) -> None:
+    tasks = _drain_tasks(session)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _redraft_engine_factory(
+    url: str,
+) -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:
+    """A session factory on a brand-new engine bound to the SAME test
+    database `db_session` uses — what `_schedule_redraft`'s deferred closure
+    opens via `get_session_factory()` at drain time, patched here instead of
+    the (unreachable-in-tests) production singleton."""
+    engine = create_async_engine(url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    return factory, engine
+
+
+async def _delete_tasks(session: AsyncSession, *task_ids: UUID) -> None:
+    """Delete these task rows and commit.
+
+    The tests below exercise a REAL `session.commit()` (required to fire the
+    after-commit redraft), and `_test_database_url` is a SESSION-scoped
+    database shared by every test in the whole run — an uncommitted row is
+    cleaned up by `db_session`'s own rollback-at-teardown, but a committed
+    one is durable and would leak an open draft into every later test (in
+    this file and any other) that counts/lists open X drafts. Explicit
+    cleanup restores the shared DB to a clean slate.
+    """
+    await session.execute(delete(TaskTable).where(TaskTable.id.in_(task_ids)))
+    await session.commit()
+
+
+@contextmanager
+def _redraft_lock_free() -> Iterator[None]:
+    """Patch XEngine's redraft-dedup lock helpers (class-level, since the
+    deferred `_redraft()` closure constructs a fresh `XEngine` each time) so
+    the redraft's check+originate exercises its real path without touching
+    the (test-blocked) Redis — mirrors `_lock_free()` above for the post
+    mutex."""
+    with (
+        patch.object(
+            x_engine_module.XEngine,
+            "_acquire_redraft_lock",
+            AsyncMock(return_value="tok"),
+        ),
+        patch.object(
+            x_engine_module.XEngine,
+            "_release_redraft_lock",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_reject_with_reason_schedules_deferred_redraft(
+    db_session: AsyncSession,
+) -> None:
+    """A non-blank reason enqueues the redraft on the after-commit outbox —
+    nothing runs before the transaction actually commits."""
+    task = await _seed_draft(db_session)
+    with _lock_free():
+        await _svc(db_session).reject(_id(task), "Too vague")
+    assert db_session.info.get("_roboco_pending_bus_publishes")
+
+
+@pytest.mark.asyncio
+async def test_reject_blank_reason_schedules_no_redraft(
+    db_session: AsyncSession,
+) -> None:
+    """Preserves current semantics: a blank/whitespace reason is a plain
+    cancel, nothing scheduled."""
+    task = await _seed_draft(db_session)
+    with _lock_free():
+        await _svc(db_session).reject(_id(task), "   ")
+    assert not db_session.info.get("_roboco_pending_bus_publishes")
+
+
+@pytest.mark.asyncio
+async def test_reject_redraft_materializes_held_draft_of_same_source_with_new_body(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    _test_database_url: str,
+) -> None:
+    """End to end: reject with a reason -> commit -> drain -> a fresh HELD
+    draft of the SAME source, carrying the local model's revised body.
+
+    Pins the fresh-session contract two ways: `db_session` is CLOSED before
+    the drain runs (SQLAlchemy silently reopens a connection on reuse, so
+    this alone can't force a raise — it's included anyway per spec, and
+    still proves the drain doesn't NEED the request session kept open); the
+    real teeth is `get_x_engine` wrapped to capture the actual session
+    XEngine is constructed with and asserting it is NOT `db_session` — that
+    catches a "captured self.session instead of opening a fresh one"
+    regression regardless of `.close()`'s (non-)effect.
+    """
+    # A non-empty brand_voice skips XEngine's one-time nudge notification —
+    # this test's own commit would otherwise durably flip that GLOBAL
+    # "already nudged" system_settings flag for the rest of the suite.
+    await get_company_goals_service(db_session).upsert(
+        {"brand_voice": "Confident, concise, no fluff."}
+    )
+    monkeypatch.setattr(
+        x_engine_module, "_chat", AsyncMock(return_value="Revised body.")
+    )
+    task = await _seed_draft(db_session, source=X_POST_SOURCE, body="Original body")
+    task_id = _id(task)
+
+    factory, engine = await _redraft_engine_factory(_test_database_url)
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+
+    captured_sessions: list[AsyncSession] = []
+    real_get_x_engine = x_engine_module.get_x_engine
+
+    def _capturing_get_x_engine(
+        session: AsyncSession, client: XClient | None = None
+    ) -> x_engine_module.XEngine:
+        captured_sessions.append(session)
+        return real_get_x_engine(session, client=client)
+
+    monkeypatch.setattr(x_engine_module, "get_x_engine", _capturing_get_x_engine)
+
+    with _redraft_lock_free():
+        try:
+            with _lock_free():
+                await _svc(db_session).reject(task_id, "Needs a concrete detail")
+            await db_session.commit()
+            await db_session.close()
+            await _await_drain(db_session)
+        finally:
+            await engine.dispose()
+
+    assert len(captured_sessions) == 1
+    assert captured_sessions[0] is not db_session
+
+    open_posts = await _svc(db_session).list_open_posts()
+    redrafts = [t for t in open_posts if t.id != task_id]
+    assert len(redrafts) == 1
+    redraft = redrafts[0]
+    assert redraft.source == X_POST_SOURCE
+    assert redraft.status == TS.PENDING
+    assert redraft.confirmed_by_human is False
+    assert markers.get_x_draft_body(redraft) == "Revised body."
+
+    await _delete_tasks(db_session, task_id, redraft.id)
+
+
+@pytest.mark.asyncio
+async def test_reject_redraft_local_model_failure_originates_nothing(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    _test_database_url: str,
+) -> None:
+    """A local-model failure at redraft time never ships a degraded copy —
+    the reject stays a plain cancel with no fresh draft."""
+    monkeypatch.setattr(
+        x_engine_module, "_chat", AsyncMock(side_effect=RuntimeError("ollama down"))
+    )
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    task_id = _id(task)
+
+    factory, engine = await _redraft_engine_factory(_test_database_url)
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+    with _redraft_lock_free():
+        try:
+            with _lock_free():
+                updated = await _svc(db_session).reject(task_id, "Needs work")
+            assert updated is not None
+            assert updated.status == TS.CANCELLED
+            await db_session.commit()
+            await _await_drain(db_session)
+        finally:
+            await engine.dispose()
+
+    open_posts = await _svc(db_session).list_open_posts()
+    assert open_posts == []
+
+    await _delete_tasks(db_session, task_id)
+
+
+@pytest.mark.asyncio
+async def test_reject_redraft_respects_open_post_cap(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    _test_database_url: str,
+) -> None:
+    """The shared open-post cap blocks the redraft exactly like it blocks any
+    other origination — an unrelated open draft filling the cap means the
+    rejected item gets no revision this cycle."""
+    monkeypatch.setattr(cfg, "x_max_open_posts", 1)
+    monkeypatch.setattr(
+        x_engine_module, "_chat", AsyncMock(return_value="Revised body.")
+    )
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    task_id = _id(task)
+    filler = await _seed_draft(db_session, source=X_REPLY_SOURCE, body="Filler reply")
+
+    factory, engine = await _redraft_engine_factory(_test_database_url)
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+    with _redraft_lock_free():
+        try:
+            with _lock_free():
+                await _svc(db_session).reject(task_id, "Needs a concrete detail")
+            await db_session.commit()
+            await _await_drain(db_session)
+        finally:
+            await engine.dispose()
+
+    open_posts = await _svc(db_session).list_open_posts()
+    ids = {t.id for t in open_posts}
+    assert ids == {filler.id}  # no redraft — the cap was already at 1
+
+    await _delete_tasks(db_session, task_id, filler.id)
+
+
+@pytest.mark.asyncio
+async def test_reject_survives_deferred_session_factory_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redraft failure at drain time (here: the fresh-session open itself
+    blowing up) must never break the reject — it already committed CANCELLED
+    before this best-effort seam ever runs."""
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    task_id = _id(task)
+
+    def _boom() -> async_sessionmaker[AsyncSession]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("roboco.db.base.get_session_factory", _boom)
+    with _lock_free():
+        updated = await _svc(db_session).reject(task_id, "Needs work")
+    assert updated is not None
+    assert updated.status == TS.CANCELLED
+
+    await db_session.commit()
+    await _await_drain(db_session)  # must not raise
+
+    await db_session.refresh(updated)
+    assert updated.status == TS.CANCELLED
+    assert markers.get_x_reject_reason(updated) == "Needs work"
+
+    await _delete_tasks(db_session, task_id)
+
+
+@pytest.mark.asyncio
+async def test_reject_replayed_on_already_cancelled_is_noop(
+    db_session: AsyncSession,
+) -> None:
+    """A second reject() on an already-CANCELLED task (a stale/replayed
+    request — e.g. a double-tapped Telegram button) is idempotent: it
+    returns the task UNCHANGED, never re-flushes the reason, and schedules
+    NO second redraft — mirroring approve()'s already_rejected
+    short-circuit. Pre-fix this re-flushed CANCELLED and scheduled another
+    redraft on every replay."""
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    task_id = _id(task)
+    with _lock_free():
+        first = await _svc(db_session).reject(task_id, "Needs work")
+    assert first is not None
+    assert first.status == TS.CANCELLED
+    # The first reject scheduled its own redraft — clear the pending queue
+    # so the assertion below is unambiguous about what the SECOND call does.
+    db_session.info.pop("_roboco_pending_bus_publishes", None)
+
+    with _lock_free():
+        second = await _svc(db_session).reject(task_id, "A completely different reason")
+    assert second is not None
+    assert second.status == TS.CANCELLED
+    # Unchanged: the replay's reason must NOT overwrite the original.
+    assert markers.get_x_reject_reason(second) == "Needs work"
+    assert not db_session.info.get("_roboco_pending_bus_publishes")

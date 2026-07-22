@@ -31,6 +31,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 import httpx
 import redis.asyncio as redis
@@ -57,6 +58,7 @@ from roboco.services.task import (
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
     X_REPLY_SOURCE,
+    X_SOURCES,
     TaskCreateRequest,
     get_task_service,
 )
@@ -82,6 +84,30 @@ _MIN_MENTION_CHARS = 3
 # XEngine._maybe_nudge_brand_voice) — durable across restarts, unlike a
 # Redis TTL guard.
 _BRAND_VOICE_NUDGE_KEY = "x_brand_voice_nudge_sent"
+
+# redraft-dedup lock (see _redraft_from_rejection): closes the check-then-act
+# TOCTOU on _redraft_already_open — two deferred closures racing for the SAME
+# identity would otherwise both pass the dedup check (each sees nothing
+# committed yet from the other under READ COMMITTED) and both originate.
+# Plain SET NX + Lua compare-and-del, mirroring XPostService._acquire_lock /
+# _release_lock (same style, a different key namespace) rather than a shared
+# helper — this codebase duplicates this small pattern per service
+# (release_proposal.py, prompter.py, x_post_service.py all carry their own).
+_REDRAFT_LOCK_PREFIX = "roboco:x_redraft:"
+_REDRAFT_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
+_REDRAFT_RELEASE_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+
+class _RedraftLockUnavailable(Exception):
+    """Redis is unreachable for the redraft-dedup lock — distinct from "the
+    lock is held" (both end in the same skip-the-redraft outcome), mirroring
+    XPostService's _LockUnavailable."""
 
 
 # Ported from agents/prompts/identities/head-marketing.md's VOICE GUIDE (the
@@ -194,6 +220,21 @@ def _release_prompt(
         "never has to truncate mid-sentence. End on substance, not a "
         "slogan.\n\n"
         f"Highlights:\n{bullets}\n"
+    )
+
+
+def _revision_prompt(
+    rejected_body: str, reason: str, voice: str, product_name: str, context: str
+) -> str:
+    extra = f"\n{context}\n" if context else ""
+    return (
+        f"{voice}\n\n"
+        "The CEO rejected this draft tweet with feedback below. Revise it "
+        "into ONE new tweet (max 280 characters) that fully addresses the "
+        f"feedback for {product_name} — do not just repeat the rejected "
+        f"wording.\n{extra}\n"
+        f"Rejected draft:\n{rejected_body}\n\n"
+        f"CEO's feedback (address every point):\n{reason}\n"
     )
 
 
@@ -1018,6 +1059,271 @@ class XEngine(BaseService):
             feature_slug=feature_slug,
         )
         return task
+
+    # ---- reject -> redraft (CEO feedback loop) -----------------------------
+
+    async def redraft_from_rejection(
+        self, post_task: TaskTable, reason: str
+    ) -> TaskTable | None:
+        """Route a CEO's rejection reason into a fresh held draft of the SAME
+        source, mirroring ``VideoEngine.reauthor_from_rejection``.
+
+        Reads the rejected draft's source-specific reference marker (release
+        version for x_post, mention ref for x_reply, feature ref for
+        x_feature) and asks the local model to revise the rejected body with
+        the CEO's reason folded in as guidance. Falls back gracefully: a
+        local-model failure or empty draft originates NOTHING — a degraded
+        copy is worse than none (see ``_draft_revision_body``).
+
+        Deduped like ``VideoEngine.open_video_task``'s occasion scoping: a
+        redraft is skipped while one is already open for the same underlying
+        item (``_redraft_already_open``), so a repeated reject can't stack
+        drafts — but once that redraft is itself rejected (CANCELLED, so
+        excluded from ``list_open_x_posts``), a further redraft is allowed.
+        Also respects the shared open-post cap. The check+originate runs
+        under a per-identity Redis lock (``_acquire_redraft_lock`` — plain
+        SET NX, mirroring ``XPostService._acquire_lock``) so two deferred
+        closures racing for the SAME identity can't both pass the dedup
+        check and both originate; a held lock or an unreachable Redis skips
+        the redraft rather than risking a duplicate (the CEO can re-reject).
+
+        Best-effort: never raises. Any failure (unresolvable project,
+        local-model error) logs a warning and returns None — the caller's
+        reject must succeed regardless of this seam.
+        """
+        try:
+            return await self._redraft_from_rejection(post_task, reason)
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: redraft from rejection failed",
+                task_id=str(post_task.id),
+                error=str(exc),
+            )
+            return None
+
+    async def _redraft_from_rejection(
+        self, post_task: TaskTable, reason: str
+    ) -> TaskTable | None:
+        if post_task.source not in X_SOURCES:
+            return None
+        identity = self._redraft_identity(post_task)
+        if identity is None:
+            # No stable discriminator to lock on (shouldn't happen for a real
+            # draft) — proceed unlocked, same as before this identity existed.
+            return await self._redraft_from_rejection_body(post_task, reason)
+        lock_key = f"{_REDRAFT_LOCK_PREFIX}{identity[0]}:{identity[1]}"
+        try:
+            token = await self._acquire_redraft_lock(lock_key)
+        except _RedraftLockUnavailable as exc:
+            self.log.warning(
+                "x-engine: redraft lock unavailable (redis down); skipping redraft",
+                task_id=str(post_task.id),
+                error=str(exc),
+            )
+            return None
+        if token is None:
+            self.log.info(
+                "x-engine: a redraft is already in flight for this item; "
+                "skipping (the concurrent holder is already originating one)",
+                task_id=str(post_task.id),
+            )
+            return None
+        try:
+            return await self._redraft_from_rejection_body(post_task, reason)
+        finally:
+            await self._release_redraft_lock(lock_key, token)
+
+    async def _redraft_from_rejection_body(
+        self, post_task: TaskTable, reason: str
+    ) -> TaskTable | None:
+        """The check+originate critical section, run under the per-identity
+        redraft lock (or unlocked for an identity-less task — see caller)."""
+        open_posts = await get_task_service(self.session).list_open_x_posts()
+        if self._redraft_already_open(post_task, open_posts):
+            return None
+        if len(open_posts) >= settings.x_max_open_posts:
+            self.log.warning(
+                "x-engine: open-post cap reached; not redrafting rejected post",
+                task_id=str(post_task.id),
+            )
+            return None
+        project = await self._resolve_redraft_project(post_task)
+        if project is None or project.id is None:
+            self.log.warning(
+                "x-engine: project not resolvable; skipping redraft",
+                task_id=str(post_task.id),
+            )
+            return None
+        return await self._materialize_redraft(post_task, reason, project)
+
+    async def _acquire_redraft_lock(self, lock_key: str) -> str | None:
+        """Non-blocking SET NX — mirrors XPostService._acquire_lock (same
+        style, a different key namespace)."""
+        token = uuid4().hex
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                acquired = await conn.set(
+                    lock_key, token, nx=True, ex=_REDRAFT_LOCK_TTL_SECONDS
+                )
+                return token if acquired else None
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            raise _RedraftLockUnavailable(str(exc)) from exc
+
+    async def _release_redraft_lock(self, lock_key: str, token: str) -> None:
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                await conn.eval(_REDRAFT_RELEASE_SCRIPT, 1, lock_key, token)
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: redraft lock release failed (redis)", error=str(exc)
+            )
+
+    def _redraft_already_open(
+        self, post_task: TaskTable, open_posts: list[TaskTable]
+    ) -> bool:
+        """True when a redraft is already open for the SAME underlying item
+        (matched by ``_redraft_identity``) — the occasion-scoped dedup
+        ``open_video_task`` does for video, adapted to X's three sources. An
+        identity-less task (shouldn't happen for a real draft) never dedups."""
+        identity = self._redraft_identity(post_task)
+        if identity is None:
+            return False
+        return any(self._redraft_identity(t) == identity for t in open_posts)
+
+    def _redraft_identity(self, task: TaskTable) -> tuple[str, str] | None:
+        """(source, key) discriminating one draft's underlying item from
+        another of the same source: release version for x_post, mention id
+        for x_reply, feature slug for x_feature. None when the task carries
+        no such marker."""
+        if task.source == X_POST_SOURCE:
+            version = markers.get_x_release_version(task)
+            return (X_POST_SOURCE, version) if version else None
+        if task.source == X_REPLY_SOURCE:
+            mention_id = (markers.get_x_mention_ref(task) or {}).get("id")
+            return (X_REPLY_SOURCE, str(mention_id)) if mention_id else None
+        if task.source == X_FEATURE_SOURCE:
+            slug = (markers.get_x_feature_ref(task) or {}).get("slug")
+            return (X_FEATURE_SOURCE, str(slug)) if slug else None
+        return None
+
+    async def _resolve_redraft_project(
+        self, post_task: TaskTable
+    ) -> ProjectTable | None:
+        """The rejected draft's own project (every ``_originate_post`` call
+        sets one), or None when unresolvable."""
+        if post_task.project_id is None:
+            return None
+        return await get_project_service(self.session).get(
+            cast("UUID", post_task.project_id)
+        )
+
+    async def _materialize_redraft(
+        self, post_task: TaskTable, reason: str, project: ProjectTable
+    ) -> TaskTable | None:
+        product_name = await get_company_goals_service(
+            self.session
+        ).resolve_product_name(project)
+        rejected_body = (
+            markers.get_x_draft_body(post_task) or post_task.description or ""
+        )
+        body = await self._draft_revision_body(
+            post_task=post_task,
+            rejected_body=rejected_body,
+            reason=reason,
+            product_name=product_name,
+        )
+        if body is None:
+            self.log.info(
+                "x-engine: local model produced no revision; skipping redraft "
+                "(no degraded copy)",
+                task_id=str(post_task.id),
+            )
+            return None
+        task = await self._originate_post(
+            title=post_task.title or "X post revision",
+            body=body,
+            source=post_task.source,
+            project_id=cast("UUID", project.id),
+        )
+        self._carry_redraft_markers(task, post_task)
+        await self.session.flush()
+        self.log.info(
+            "x-engine: redraft opened after CEO rejection (held for CEO)",
+            rejected_task_id=str(post_task.id),
+            redraft_id=str(task.id),
+        )
+        return task
+
+    async def _draft_revision_body(
+        self,
+        *,
+        post_task: TaskTable,
+        rejected_body: str,
+        reason: str,
+        product_name: str,
+    ) -> str | None:
+        """The clamped revision body, or None when the local model produced
+        nothing usable — mirrors ``_draft_reply_body``'s no-degraded-copy
+        posture (see ``redraft_from_rejection``)."""
+        voice = await self._voice_guide(product_name)
+        context = self._redraft_context(post_task)
+        try:
+            draft = await _chat(
+                _revision_prompt(rejected_body, reason, voice, product_name, context)
+            )
+        except Exception as exc:
+            self.log.warning(
+                "x-engine: local-model redraft failed (no degraded copy)",
+                task_id=str(post_task.id),
+                error=str(exc),
+            )
+            return None
+        stripped = (draft or "").strip()
+        return _clamp_tweet(stripped) if stripped else None
+
+    def _redraft_context(self, post_task: TaskTable) -> str:
+        """One line of source-specific factual grounding folded into the
+        revision prompt, so the redraft doesn't drift from what the post is
+        actually about."""
+        if post_task.source == X_POST_SOURCE:
+            version = markers.get_x_release_version(post_task)
+            return (
+                f"This is a release announcement for version {version}."
+                if version
+                else ""
+            )
+        if post_task.source == X_REPLY_SOURCE:
+            text = (markers.get_x_mention_ref(post_task) or {}).get("text")
+            return f"This is a reply to this X mention:\n{text}" if text else ""
+        if post_task.source == X_FEATURE_SOURCE:
+            title = (markers.get_x_feature_ref(post_task) or {}).get("title")
+            return f"This is a feature-spotlight post about: {title}." if title else ""
+        return ""
+
+    def _carry_redraft_markers(self, new_task: TaskTable, post_task: TaskTable) -> None:
+        """Copy the rejected draft's source-specific reference marker onto the
+        redraft so it renders identically in the panel queue/history and is
+        itself reject/approve-able through the normal flow. The feature
+        source's seen-slug bookkeeping is NOT repeated here — the original
+        draft already marked it seen at authoring time."""
+        if post_task.source == X_POST_SOURCE:
+            version = markers.get_x_release_version(post_task)
+            if version:
+                markers.set_x_release_version(new_task, version)
+        elif post_task.source == X_REPLY_SOURCE:
+            ref = markers.get_x_mention_ref(post_task)
+            if ref:
+                markers.set_x_mention_ref(new_task, ref)
+        elif post_task.source == X_FEATURE_SOURCE:
+            ref = markers.get_x_feature_ref(post_task)
+            if ref:
+                markers.set_x_feature_ref(new_task, ref)
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:
