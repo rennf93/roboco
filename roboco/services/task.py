@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstanceState
 
 from roboco.db.tables import (
+    AgentSpawnSessionTable,
     AgentTable,
     JournalEntryTable,
     JournalTable,
@@ -8195,6 +8196,104 @@ class TaskService(BaseService):
             for dep_id, dep_status in dep_result.all()
             if dep_status not in terminal
         ]
+
+    async def project_month_spend_usd(self, project_id: UUID) -> float:
+        """This calendar month's summed agent-spawn cost for a project's tasks.
+
+        Backs the claim-time monthly-budget guard (``ROBOCO_TASK_BUDGETS_ENABLED``).
+        ``agent_spawn_sessions.task_id`` is a plain ``String(36)``, not a real
+        FK (see ``AgentSpawnSessionTable``), so the join casts ``tasks.id`` to
+        text. A still-open session's ``estimated_cost_usd`` stays null until
+        close (``AgentOrchestrator._finalize_spawn_session``) — summing that
+        column alone undercounts N parallel long-running sessions as $0 while
+        they're open, which is exactly the case a claim-time budget guard must
+        not miss. So this fetches per-row token/cost columns (one query, no
+        server-side SUM) and prices any still-open row from its periodically-
+        refreshed token counts via the same ``calculate_cost`` the
+        orchestrator's task-budget sweep uses (``_task_spend_usd``).
+
+        Month attribution is deliberately ``started_at``-bucketed: a session
+        that starts in one calendar month and closes in the next counts
+        entirely against its START month, never split pro-rata across the
+        boundary. Accepted simplification — a claim-time guard only needs to
+        be roughly current, not a settled ledger; the tiny sliver of a
+        month-spanning session's tail is a rounding error against a monthly
+        cap, not a correctness bug.
+        """
+        from roboco.billing.pricing import calculate_cost
+
+        month_start = datetime.now(UTC).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        task_id_str = cast("Any", TaskTable.id).cast(String)
+        result = await self.session.execute(
+            select(
+                AgentSpawnSessionTable.estimated_cost_usd,
+                AgentSpawnSessionTable.ended_at,
+                AgentSpawnSessionTable.model,
+                AgentSpawnSessionTable.tokens_input,
+                AgentSpawnSessionTable.tokens_output,
+                AgentSpawnSessionTable.tokens_cache_read,
+                AgentSpawnSessionTable.tokens_cache_write,
+            )
+            .select_from(AgentSpawnSessionTable)
+            .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
+            .where(
+                TaskTable.project_id == project_id,
+                AgentSpawnSessionTable.started_at >= month_start,
+            )
+        )
+        total = 0.0
+        for row in result.all():
+            if row.estimated_cost_usd is not None:
+                total += row.estimated_cost_usd
+            elif row.ended_at is None:
+                total += calculate_cost(
+                    model=row.model,
+                    tokens_input=row.tokens_input,
+                    tokens_output=row.tokens_output,
+                    tokens_cache_read=row.tokens_cache_read,
+                    tokens_cache_write=row.tokens_cache_write,
+                )
+        return total
+
+    async def task_spend_usd(self, task_id: UUID) -> float:
+        """Total agent-spawn spend for one task: closed sessions'
+        ``estimated_cost_usd`` + the live cost of any still-open session.
+
+        Scoped to one task instead of a project+month — otherwise identical
+        to ``project_month_spend_usd``'s open-session handling: a still-open
+        session's cost stays null until close, so it's priced from its
+        periodically-refreshed token counts via ``calculate_cost``. Backs the
+        orchestrator's per-task budget sweep and ``unblock``'s budget-breach
+        re-check (both need "is this task still over its own cap").
+        """
+        from roboco.billing.pricing import calculate_cost
+
+        rows = (
+            (
+                await self.session.execute(
+                    select(AgentSpawnSessionTable).where(
+                        AgentSpawnSessionTable.task_id == str(task_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        total = 0.0
+        for row in rows:
+            if row.estimated_cost_usd is not None:
+                total += row.estimated_cost_usd
+            elif row.ended_at is None:
+                total += calculate_cost(
+                    model=row.model,
+                    tokens_input=row.tokens_input,
+                    tokens_output=row.tokens_output,
+                    tokens_cache_read=row.tokens_cache_read,
+                    tokens_cache_write=row.tokens_cache_write,
+                )
+        return total
 
     async def inherit_unmet_dependencies(
         self, subtask_id: UUID, parent_id: UUID

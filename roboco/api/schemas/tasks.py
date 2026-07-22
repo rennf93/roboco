@@ -210,6 +210,10 @@ class TaskUpdate(BaseModel):
     )
     priority: int | None = Field(default=None, ge=0, le=3)
     sequence: int | None = Field(default=None, ge=0)  # Order within siblings
+    # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). An explicit null clears it back
+    # to "use the TaskType default" — handled at the route layer like the
+    # other _NULLABLE_TASK_FIELDS (TaskService.update() itself skips None).
+    budget_usd: float | None = Field(default=None, ge=0)
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
 
@@ -306,6 +310,8 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     priority: int
     sequence: int  # Order number within siblings
+    # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). Null = use the TaskType default.
+    budget_usd: float | None = None
     nature: TaskNature  # Technical or non-technical work
 
     # Task Type & Git Configuration (all tasks follow git workflow)
@@ -881,6 +887,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         status=task.status,
         priority=task.priority,
         sequence=task.sequence,
+        budget_usd=getattr(task, "budget_usd", None),
         nature=task.nature,
         task_type=task.task_type,
         project_id=to_python_uuid(task.project_id),

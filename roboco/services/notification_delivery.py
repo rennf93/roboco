@@ -1164,6 +1164,58 @@ class NotificationDeliveryService(BaseService):
             task_id=task_id, subject=notification.subject, actionable=True
         )
 
+    async def notify_ceo_of_budget_breach(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        cap_usd: float,
+        spend_usd: float,
+    ) -> None:
+        """Create + deliver the CEO budget-breach notification.
+
+        Shaped exactly like ``notify_ceo_of_escalation`` (APPROVAL/HIGH,
+        actionable Telegram keyboard) — the CEO's options are the same shape
+        (raise the cap, or leave it blocked). There is no human escalator
+        here (the orchestrator's budget sweep triggers this), so ``from_agent``
+        falls back to the task's own assignee, mirroring
+        ``notify_ceo_of_completion``'s fallback.
+
+        Names BOTH remediation steps: raising ``budget_usd`` alone does not
+        resume the task — a PM must still call ``unblock`` (or the panel
+        equivalent). ``unblock`` itself re-checks spend-vs-cap
+        (``markers.BUDGET_BLOCKED``) and refuses while still over, so a raise
+        that didn't actually clear the cap is caught there, not silently
+        re-breached.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Budget exceeded: {task.title or 'Unknown task'}",
+            body=(
+                f"Task {task_display(task, task_id)} was stopped and blocked: "
+                f"its cost budget (${cap_usd:,.2f}) is exceeded — "
+                f"${spend_usd:,.2f} spent so far.\n\n"
+                "Two steps to resume it: 1) raise the task's Budget (USD) "
+                "field (task detail, or the project's Monthly Budget if "
+                "that's the cap), 2) have its PM call unblock — it stays "
+                "blocked until unblock runs, and refuses again if the cap "
+                "still isn't cleared. Or leave it blocked / cancel it."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+        )
+        await self._persist_and_deliver(notification)
+        await self._notify_telegram(
+            task_id=task_id, subject=notification.subject, actionable=True
+        )
+
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
 

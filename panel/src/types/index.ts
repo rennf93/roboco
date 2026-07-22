@@ -224,6 +224,8 @@ export interface Task {
   acceptance_criteria: string[];
   status: TaskStatus;
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
+  // Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). null = use the task-type default.
+  budget_usd?: number | null;
   sequence: number; // Order number within siblings
   team: Team;
   created_by: string;
@@ -1059,6 +1061,9 @@ export interface Project {
   video_engine_enabled: boolean;
   dep_update_command: string | null;
   dep_update_paths: string[] | null;
+  // Calendar-month cap on summed agent-spawn spend across this project's
+  // tasks; null = no cap. Only enforced when ROBOCO_TASK_BUDGETS_ENABLED is on.
+  monthly_budget_usd: number | null;
   sandbox_services: string[] | null;
   sandbox_extensions: Record<string, string[]> | null;
   // Runtime state
@@ -1123,6 +1128,8 @@ export interface ProjectUpdate {
   video_engine_enabled?: boolean;
   dep_update_command?: string;
   dep_update_paths?: string[];
+  // null clears the cap (no cap); omitted leaves unchanged.
+  monthly_budget_usd?: number | null;
   sandbox_services?: string[];
   sandbox_extensions?: Record<string, string[]>;
 }

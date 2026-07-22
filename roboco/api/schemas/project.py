@@ -57,6 +57,7 @@ class ProjectResponse(BaseModel):
     video_engine_enabled: bool = False
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
+    monthly_budget_usd: float | None = None
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
 
@@ -211,6 +212,7 @@ class ProjectUpdateRequest(BaseModel):
     video_engine_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
+    monthly_budget_usd: float | None = None
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
 
@@ -303,6 +305,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         video_engine_enabled=bool(project.video_engine_enabled),
         dep_update_command=project.dep_update_command,
         dep_update_paths=project.dep_update_paths,
+        monthly_budget_usd=getattr(project, "monthly_budget_usd", None),
         sandbox_services=project.sandbox_services,
         sandbox_extensions=project.sandbox_extensions,
         workspace_path=project.workspace_path,

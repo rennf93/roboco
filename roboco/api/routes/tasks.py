@@ -213,7 +213,7 @@ _MIN_NOTES_CHARS = 20
 # After TaskService.update() gains its not-None guard, null-clears for these
 # fields are handled at the route layer by direct setattr on the ORM object.
 _NULLABLE_TASK_FIELDS: frozenset[str] = frozenset(
-    {"assigned_to", "parent_task_id", "project_id"}
+    {"assigned_to", "parent_task_id", "project_id", "budget_usd"}
 )
 
 # Structural / ownership fields a bare task owner (UPDATE_OWN) must NOT
@@ -222,7 +222,8 @@ _NULLABLE_TASK_FIELDS: frozenset[str] = frozenset(
 # delegation plan. These are PM/ASSIGN-gated operations; the verb layer gates
 # them to PM roles (reassign/delegate/triage), so the REST PATCH surface must
 # not let an owner bypass that by setattr-ing them directly. Only a caller with
-# the higher ASSIGN permission may set them.
+# the higher ASSIGN permission may set them. budget_usd joins this set too — a
+# self-serve budget raise on your own task would defeat the whole cap.
 _PRIVILEGED_UPDATE_FIELDS: frozenset[str] = frozenset(
     {
         "assigned_to",
@@ -232,6 +233,7 @@ _PRIVILEGED_UPDATE_FIELDS: frozenset[str] = frozenset(
         "blocker_ids",
         "plan",
         "project_id",
+        "budget_usd",
     }
 )
 

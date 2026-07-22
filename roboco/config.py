@@ -384,6 +384,17 @@ class Settings(BaseSettings):
             "gates. Off => the standard i_am_done path is unchanged."
         ),
     )
+    task_budgets_enabled: bool = Field(
+        default=False,
+        description=(
+            "Per-task and per-project cost budgets. When on: a claim is "
+            "refused once a project's monthly_budget_usd is reached (summed "
+            "agent-spawn spend across its tasks this calendar month), and the "
+            "budget sweep blocks an active task whose own budget_usd (or the "
+            "TaskType default) is breached, notifying the CEO. Off => neither "
+            "cap is ever consulted, regardless of project/task field values."
+        ),
+    )
 
     # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)

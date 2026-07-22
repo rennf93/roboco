@@ -7624,17 +7624,127 @@ Start by:
             return None
         return data if isinstance(data, dict) else None
 
-    async def _sweep_budget_exceeded(self) -> None:
-        """Stop agents whose per-session SDK budget reports halt=true.
+    async def _task_budget_breach(self, task_id_str: str) -> tuple[float, float] | None:
+        """``(cap_usd, spend_usd)`` if this task's own $ budget is breached.
 
-        Each agent's SDK server is reachable at
+        ``None`` when unbreached OR the task has already left claimed/
+        in_progress (a stale re-check racing the task's own progress — not a
+        breach). The cap is ``task.budget_usd``, falling back to the
+        TaskType default (``effective_task_budget_usd`` — the same resolver
+        ``unblock``'s re-check uses) when null. Spend is
+        ``TaskService.task_spend_usd`` (closed-session cost + open-session
+        live-token pricing via ``calculate_cost`` — a DB-only read off
+        ``_sweep_token_snapshots``'s periodically-refreshed token columns, no
+        fresh SDK round-trip needed for "cheaply available").
+        """
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.agent_loop import effective_task_budget_usd
+        from roboco.models.base import TaskStatus
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(task_id_str)
+        except InvalidIdentifierError:
+            return None
+        async with get_db_context() as db:
+            svc = TaskService(db)
+            task = await svc.get(task_id)
+            if task is None or task.status not in (
+                TaskStatus.CLAIMED,
+                TaskStatus.IN_PROGRESS,
+            ):
+                return None
+            cap_usd = effective_task_budget_usd(task)
+            spend_usd = await svc.task_spend_usd(task_id)
+        if spend_usd < cap_usd:
+            return None
+        return cap_usd, spend_usd
+
+    async def _handle_task_budget_breach(
+        self, task_id_str: str, *, cap_usd: float, spend_usd: float
+    ) -> None:
+        """Block a task whose own $ budget is breached and notify the CEO.
+
+        Runs BEFORE ``stop_agent`` so its ``release_claim`` unclaim (which
+        only fires from claimed/in_progress — see ``_force_unclaim_to_pending``)
+        finds the task already ``BLOCKED`` and no-ops: the task never bounces
+        through ``pending`` for an instant re-claim to re-burn the same
+        budget. ``blocker_resolver_type=HUMAN`` keeps the dispatcher from ever
+        respawning onto it (``_is_hitl_blocked``) — only the CEO raising the
+        cap (or cancelling) moves it forward. Best-effort: a failure here logs
+        and lets the caller's ``stop_agent`` proceed regardless — one more
+        tick of a live over-budget agent is the safer failure mode than
+        crashing the sweep.
+        """
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.models.base import BlockerResolverType, TaskStatus
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(task_id_str)
+        except InvalidIdentifierError as exc:
+            logger.warning(
+                "task budget breach had malformed task id",
+                task_id_str=task_id_str,
+                error=str(exc),
+            )
+            return
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                task = await svc.get(task_id)
+                if task is None or task.status not in (
+                    TaskStatus.CLAIMED,
+                    TaskStatus.IN_PROGRESS,
+                ):
+                    return
+                task.blocker_resolver_type = BlockerResolverType.HUMAN
+                markers.mark_budget_blocked(task)
+                await svc.admin_set_status(
+                    task_id, TaskStatus.BLOCKED, actor_role="system"
+                )
+                delivery = get_notification_delivery_service(db)
+                await delivery.notify_ceo_of_budget_breach(
+                    task=task,
+                    task_id=task_id,
+                    cap_usd=cap_usd,
+                    spend_usd=spend_usd,
+                )
+        except Exception as exc:
+            logger.warning(
+                "task budget-breach block/notify failed",
+                task_id=task_id_str,
+                error=str(exc),
+            )
+
+    async def _sweep_budget_exceeded(self) -> None:
+        """Stop agents whose per-session SDK budget reports halt=true, OR
+        (when ``ROBOCO_TASK_BUDGETS_ENABLED`` is on) whose active task's own
+        $ budget is breached.
+
+        Tool-call halt: each agent's SDK server is reachable at
         `http://roboco-agent-{agent_id}:9000/budget/status` on the shared
-        agent network. A budget-exceeded agent gets a forced stop with a
-        `budget_exceeded` reason; the task is already being auto-substituted
-        by the post-tool hook on the agent side.
+        agent network; the task is already being auto-substituted by the
+        post-tool hook on the agent side, so a release_claim stop suffices.
+
+        Task $ budget: `_task_budget_breach` compares accumulated spend
+        (agent_spawn_sessions) against task.budget_usd / the TaskType
+        default. Unlike the tool-call path this explicitly BLOCKs the task
+        (see `_handle_task_budget_breach`) before the agent is stopped, and
+        notifies the CEO — a breached $ cap needs a human decision (raise
+        the cap or leave it blocked), not just a silent re-queue.
         """
         if not self._instances:
             return
+        from roboco.config import settings as _settings
+
+        task_budgets_on = _settings.task_budgets_enabled
         async with httpx.AsyncClient(
             timeout=3.0, headers=_system_api_headers()
         ) as client:
@@ -7644,33 +7754,102 @@ Start by:
                     AgentState.WAITING_SHORT,
                 ):
                     continue
-                url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/budget/status"
-                data = await self._fetch_budget_status(client, url, agent_id)
-                if data is None or not data.get("halt"):
-                    continue
-                logger.warning(
-                    "Agent budget exceeded; terminating container",
-                    agent_id=agent_id,
-                    total_calls=data.get("total"),
-                    halt_threshold=data.get("halt_threshold"),
+                await self._check_budget_for_agent(
+                    client, agent_id, instance, task_budgets_on
                 )
-                try:
-                    # release_claim=True: a budget-exceeded agent is terminated
-                    # for cost overruns and will not continue its task, so hand
-                    # the claim back to the pool now instead of waiting for the
-                    # reaper's TTL.
-                    await self.stop_agent(
-                        agent_id,
-                        graceful=True,
-                        release_claim=True,
-                        stop_reason="budget_sweep",
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to stop budget-exceeded agent",
-                        agent_id=agent_id,
-                        error=str(e),
-                    )
+
+    async def _check_budget_for_agent(
+        self,
+        client: httpx.AsyncClient,
+        agent_id: str,
+        instance: Any,
+        task_budgets_on: bool,
+    ) -> None:
+        """Stop one agent if its tool-call budget halted OR its task's $
+        budget breached. Extracted from ``_sweep_budget_exceeded`` (xenon
+        complexity budget) — see that method's docstring for the two triggers.
+        """
+        url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/budget/status"
+        data = await self._fetch_budget_status(client, url, agent_id)
+        task_breach = await self._maybe_task_budget_breach(instance, task_budgets_on)
+        tool_call_halt = bool(data and data.get("halt"))
+        if not tool_call_halt and task_breach is None:
+            return
+        await self._stop_budget_exceeded_agent(agent_id, instance, data, task_breach)
+
+    async def _maybe_task_budget_breach(
+        self, instance: Any, task_budgets_on: bool
+    ) -> tuple[float, float] | None:
+        """``_task_budget_breach`` for the instance's task, or None inert."""
+        if not task_budgets_on or not instance.current_task_id:
+            return None
+        return await self._task_budget_breach(instance.current_task_id)
+
+    async def _resolve_budget_stop_reason(
+        self,
+        agent_id: str,
+        instance: Any,
+        data: dict[str, Any] | None,
+        task_breach: tuple[float, float] | None,
+    ) -> str:
+        """Block + notify on a task breach, else log the tool-call halt.
+
+        Either way returns the ``stop_reason`` the caller passes to
+        ``stop_agent``.
+        """
+        if task_breach is None or not instance.current_task_id:
+            logger.warning(
+                "Agent budget exceeded; terminating container",
+                agent_id=agent_id,
+                total_calls=data.get("total") if data else None,
+                halt_threshold=data.get("halt_threshold") if data else None,
+            )
+            return "budget_sweep"
+        cap_usd, spend_usd = task_breach
+        logger.warning(
+            "Task budget exceeded; blocking task and terminating container",
+            agent_id=agent_id,
+            task_id=instance.current_task_id,
+            cap_usd=cap_usd,
+            spend_usd=round(spend_usd, 4),
+        )
+        await self._handle_task_budget_breach(
+            instance.current_task_id, cap_usd=cap_usd, spend_usd=spend_usd
+        )
+        return "budget_exceeded_task"
+
+    async def _stop_budget_exceeded_agent(
+        self,
+        agent_id: str,
+        instance: Any,
+        data: dict[str, Any] | None,
+        task_breach: tuple[float, float] | None,
+    ) -> None:
+        """Resolve the stop reason (blocking + notifying on a task breach
+        first) then gracefully stop the agent, releasing its claim.
+
+        release_claim=True mirrors the tool-call-halt path. On a task breach
+        the task is already BLOCKED (`_resolve_budget_stop_reason` ran the
+        block+notify first), so stop_agent's own release-to-pending unclaim
+        finds it out of claimed/in_progress and no-ops — it never bounces
+        through pending for an instant re-claim to re-burn the same budget.
+        """
+        stop_reason = await self._resolve_budget_stop_reason(
+            agent_id, instance, data, task_breach
+        )
+        try:
+            await self.stop_agent(
+                agent_id,
+                graceful=True,
+                release_claim=True,
+                stop_reason=stop_reason,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to stop budget-exceeded agent",
+                agent_id=agent_id,
+                error=str(e),
+            )
 
     @staticmethod
     async def _inspect_container_state(

@@ -122,6 +122,7 @@ class ChoreographerHelpers:
         task: Any,
         role_str: str | None = None,
         skip_dev_guards: bool = False,
+        check_project_budget: bool = False,
     ) -> Envelope | None:
         raise NotImplementedError
 

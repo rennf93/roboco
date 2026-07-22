@@ -120,6 +120,9 @@ function EditTaskDialogInner({
       ? new Date(task.target_date).toISOString().slice(0, 16)
       : "",
   );
+  const [budgetUsd, setBudgetUsd] = useState<string>(
+    task.budget_usd != null ? String(task.budget_usd) : "",
+  );
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const updateTask = useUpdateTask();
@@ -143,6 +146,15 @@ function EditTaskDialogInner({
     }
     setAcError(undefined);
 
+    const trimmedBudget = budgetUsd.trim();
+    const parsedBudget = trimmedBudget ? Number(trimmedBudget) : null;
+    if (trimmedBudget && (Number.isNaN(parsedBudget) || parsedBudget! <= 0)) {
+      toast.error(
+        "Budget must be greater than 0 — leave it empty for the task-type default",
+      );
+      return;
+    }
+
     const trimmedCriteria = acceptanceCriteria
       .map((c) => c.trim())
       .filter(Boolean);
@@ -164,6 +176,7 @@ function EditTaskDialogInner({
           project_id: projectId,
           assigned_to: assignedTo,
           target_date: targetDate ? new Date(targetDate).toISOString() : null,
+          budget_usd: parsedBudget,
           ...(criteriaChanged && { acceptance_criteria: trimmedCriteria }),
         },
       });
@@ -336,6 +349,26 @@ function EditTaskDialogInner({
                   value={targetDate}
                   onChange={(e) => setTargetDate(e.target.value)}
                 />
+              </div>
+
+              {/* Budget (USD) */}
+              <div className="space-y-2">
+                <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = use the task-type default.">
+                  <Label>Budget (USD)</Label>
+                </HelpTip>
+                <Input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  placeholder="Task-type default"
+                  value={budgetUsd}
+                  onChange={(e) => setBudgetUsd(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Must be greater than 0 — a 0 budget would block the task
+                  before it spends a cent. Leave blank for the task-type
+                  default.
+                </p>
               </div>
 
               {/* Git Configuration Section */}

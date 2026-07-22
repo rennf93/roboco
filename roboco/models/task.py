@@ -166,6 +166,17 @@ class Task(TimestampMixin):
         default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)"
     )
 
+    # Cost budget (feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED). Null = fall
+    # back to the TaskType default (see foundation/policy/agent_loop.py
+    # TASK_TYPE_DEFAULT_BUDGET_USD) when the flag is on; a pure no-op off.
+    budget_usd: float | None = Field(
+        default=None,
+        description=(
+            "Cap on this task's own accumulated agent-spawn spend "
+            "(estimated_cost_usd). Null = use the TaskType default."
+        ),
+    )
+
     # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: TaskType = Field(
         default=TaskType.CODE, description="Type of task (code, research, etc.)"
@@ -432,6 +443,7 @@ class TaskUpdate(RobocoBase):
     description: str | None = None
     acceptance_criteria: list[str] | None = None
     priority: int | None = Field(default=None, ge=0, le=3)
+    budget_usd: float | None = Field(default=None, ge=0)
     status: TaskStatus | None = None
     assigned_to: UUID | None = None
     target_date: datetime | None = None
