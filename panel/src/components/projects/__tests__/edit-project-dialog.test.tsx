@@ -5,6 +5,9 @@ import type { ReactNode } from "react";
 import React from "react";
 import { Team } from "@/types";
 import type { Project } from "@/types";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // jsdom has no ResizeObserver; Radix Switch (the always-rendered "Active"
 // toggle) measures its thumb via one on mount — mirrors
@@ -117,6 +120,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     video_engine_enabled: false,
     dep_update_command: null,
     dep_update_paths: null,
+    monthly_budget_usd: null,
     sandbox_services: null,
     sandbox_extensions: null,
     workspace_path: null,
@@ -383,5 +387,106 @@ describe("EditProjectDialog — Protected Branches", () => {
       updates: { protected_branches?: string[] };
     };
     expect(call.updates.protected_branches).toEqual(["master", "slave"]);
+  });
+});
+
+describe("EditProjectDialog — Monthly Budget (USD)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCredentialsStatus.mockResolvedValue({ has_credentials: true });
+    mutateAsync.mockResolvedValue(makeProject());
+    useUpdateProject.mockReturnValue({ mutateAsync, isPending: false });
+  });
+
+  function openAutonomySection() {
+    fireEvent.click(
+      screen.getByRole("button", { name: /Show Autonomous Maintenance/i }),
+    );
+  }
+
+  // fireEvent.submit(form) rather than clicking the Save button — this
+  // dialog's Tabs-wrapped form doesn't reliably translate a button click
+  // into a submit event under jsdom; submitting the form directly is the
+  // same idiom create-task-dialog.test.tsx already uses.
+  function submit() {
+    fireEvent.submit(document.querySelector("form")!);
+  }
+
+  it("pre-fills the stored monthly_budget_usd", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: 42 }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    expect(screen.getByLabelText(/Monthly Budget/i)).toHaveValue(42);
+  });
+
+  it("rejects 0 with an inline error and does not submit", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: null }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
+      target: { value: "0" },
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/greater than 0/i),
+      );
+    });
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative budget the same way", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: null }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
+      target: { value: "-5" },
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/greater than 0/i),
+      );
+    });
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("submits null when cleared (no cap)", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: 42 }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
+      target: { value: "" },
+    });
+    submit();
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { monthly_budget_usd?: number | null };
+    };
+    expect(call.updates.monthly_budget_usd).toBeNull();
+  });
+
+  it("submits a positive cap as a number", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: null }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
+      target: { value: "100" },
+    });
+    submit();
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { monthly_budget_usd?: number | null };
+    };
+    expect(call.updates.monthly_budget_usd).toBe(100);
   });
 });

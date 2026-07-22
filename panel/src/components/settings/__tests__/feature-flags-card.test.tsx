@@ -176,4 +176,26 @@ describe("FeatureFlagsCard — M42 off-transition confirm + pending-keys Set", (
     expect(screen.getByText(/wikilinked Obsidian vault/i)).toBeInTheDocument();
     expect(screen.getByText(/board-review drafts/i)).toBeInTheDocument();
   });
+
+  // task_budgets_enabled joined FLAG_DESCRIPTIONS + FLAG_TOOLTIPS together —
+  // guard both stay in sync the same way the vault/docs-sync case above does.
+  it("renders the description and tooltip for task_budgets_enabled", async () => {
+    getFeatureFlags.mockResolvedValueOnce({
+      flags: [
+        {
+          key: "task_budgets_enabled",
+          label: "Task/project cost budgets",
+          enabled: false,
+        },
+      ],
+      note: "Changes take effect on the next backend restart.",
+    });
+    render(withQueryClient(<FeatureFlagsCard />));
+
+    expect(
+      await screen.findByText(/per-project monthly and per-task cost caps/i),
+    ).toBeInTheDocument();
+    const label = screen.getByText("Task/project cost budgets");
+    expect(label.getAttribute("data-state")).toBe("closed");
+  });
 });

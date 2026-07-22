@@ -209,6 +209,10 @@ class TaskTable(Base):
         nullable=True,
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    # Cost budget (migration 079, feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED).
+    # Null falls back to the TaskType default when the flag is on; a pure
+    # no-op off. Enforced periodically by the orchestrator's budget sweep.
+    budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Task Type & Git Configuration (all tasks follow git workflow)
     task_type: Mapped[TaskType] = mapped_column(
@@ -560,6 +564,11 @@ class ProjectTable(Base):
     dep_update_paths: Mapped[list[str] | None] = mapped_column(
         ARRAY(String), nullable=True
     )
+
+    # Cost budgets (migration 079, feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED).
+    # Null = no cap, regardless of the flag. Enforced at claim time against
+    # this calendar month's summed agent-spawn spend across the project's tasks.
+    monthly_budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Sandboxed per-agent-spawn DB/Redis opt-in. A project participates only
     # when sandbox_services is set (e.g. ["postgres", "redis"]); values are
@@ -1908,6 +1917,9 @@ class AgentSpawnSessionTable(Base):
         Index("ix_agent_spawn_sessions_started_at", "started_at"),
         Index("ix_agent_spawn_sessions_ended_at", "ended_at"),
         Index("ix_agent_spawn_sessions_team", "team"),
+        # Migration 080: serves the per-project monthly-spend claim guard and
+        # the per-task budget sweep, both of which filter on bare task_id.
+        Index("ix_agent_spawn_sessions_task_id", "task_id"),
     )
 
 

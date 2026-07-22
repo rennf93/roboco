@@ -519,3 +519,26 @@ def mark_block_flip_notified(task: HasMarkers) -> None:
     set_marker(
         task, BLOCK_FLIP_COUNT, {"count": get_block_flip_count(task), "notified": True}
     )
+
+
+# --- budget-breach block ----------------------------------------------------
+# Stamped by the orchestrator's task-budget sweep the moment it BLOCKs a task
+# for exceeding its $ budget (ROBOCO_TASK_BUDGETS_ENABLED). `unblock` consults
+# it to re-check spend-vs-cap: still over refuses (naming the budget
+# remediation) so a PM can't silently re-breach the same cap the next tick;
+# under (the CEO raised it) clears the marker and lets the unblock through.
+# No historical cap/spend stored here — the re-check always reads live values.
+
+BUDGET_BLOCKED = "budget_blocked"
+
+
+def mark_budget_blocked(task: HasMarkers) -> None:
+    set_marker(task, BUDGET_BLOCKED, True)
+
+
+def is_budget_blocked(task: HasMarkers) -> bool:
+    return bool(get_marker(task, BUDGET_BLOCKED, False))
+
+
+def clear_budget_blocked(task: HasMarkers) -> None:
+    clear_marker(task, BUDGET_BLOCKED)

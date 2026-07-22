@@ -36,6 +36,7 @@ from roboco.services.gateway.choreographer.collision import build_collision_cont
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
+    project_budget_exceeded_guard,
     unmet_dependency_guard,
 )
 from roboco.services.gateway.envelope import Envelope
@@ -1148,6 +1149,7 @@ class Choreographer:
         task: Any,
         role_str: str | None = None,
         skip_dev_guards: bool = False,
+        check_project_budget: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -1170,6 +1172,17 @@ class Choreographer:
         developer starting a code task do not apply (the dependency guard still
         runs). See ``claim_gate_review`` (#192).
 
+        ``check_project_budget`` (default False — explicit opt-in, not
+        inferred from role/verb) scopes the project monthly-budget guard to
+        genuinely work-STARTING claims: ``i_will_work_on`` / ``i_will_plan``
+        pass True. A project at cap still has non-negotiable in-flight work
+        to finish — QA's ``claim_review``, the PR gate's
+        ``claim_gate_review``, ``claim_doc_task``, and inbound
+        ``claim_pr_review`` all pass False (the default) so reviewing/
+        documenting/merging what's already been paid for never wedges behind
+        an exhausted cap whose incremental cost is negligible next to the
+        sunk spend.
+
         Pre-gateway location: _helpers.py:124-204.
         """
         if not skip_dev_guards and role_str not in self._COORDINATOR_ROLES:
@@ -1179,38 +1192,106 @@ class Choreographer:
             paused = await self.task.list_paused_for_agent(agent_id)
             if guard := paused_tasks_guard(paused, task.id):
                 return guard
-        dep_ids = list(task.dependency_ids)
-        if dep_ids:
-            unmet = await self.task.unmet_dependency_ids(dep_ids)
-            if guard := unmet_dependency_guard(task, unmet):
-                # Re-check before mutating: the read above is an unlocked SELECT,
-                # and an upstream dependency may have reached a terminal state
-                # (completed/cancelled) in the microseconds between that read and
-                # now. Dependencies are monotonic — unmet -> met only, terminal
-                # states never reopen — so a fresh read that now finds them met
-                # stays met, and the task can proceed. Releasing it anyway would
-                # needlessly clear its branch + abandon its WorkSession and
-                # bounce the assignee, only for the dependency-completion
-                # re-dispatch to re-dispatch + re-claim it a moment later. Skip
-                # the release and let the caller proceed (return None). The
-                # cross-task residual window (upstream completes between this
-                # re-check and the release below) is not closable by a row lock
-                # on the dependent — but the re-check narrows the window from
-                # [first read -> release] to [re-check -> release] and, in the
-                # common case, the first read already sees met (no guard).
-                fresh_unmet = await self.task.unmet_dependency_ids(dep_ids)
-                if not fresh_unmet:
-                    return None
-                # Still unmet — park the dependency-gated task back to pending so
-                # the orchestrator stops respawning its assignee (the respawn
-                # loop targets only claimed/in_progress) and the dispatch
-                # dependency filter holds it until the upstream completes. No-op
-                # unless the task is currently claimed/in_progress.
-                await self.task.release_dependency_blocked_claim(task.id)
-                return guard
+        if guard := await self._dependency_claim_guard(task):
+            return guard
+        if check_project_budget and (
+            guard := await self._project_budget_claim_guard(task)
+        ):
+            return guard
         if skip_dev_guards:
             return None
         return await self._lane_claim_guard(task)
+
+    async def _dependency_claim_guard(self, task: Any) -> Envelope | None:
+        """Refuse claim while the task has non-terminal dependencies.
+
+        Extracted from ``_run_claim_guards`` (xenon return-count budget).
+        """
+        dep_ids = list(task.dependency_ids)
+        if not dep_ids:
+            return None
+        unmet = await self.task.unmet_dependency_ids(dep_ids)
+        guard = unmet_dependency_guard(task, unmet)
+        if guard is None:
+            return None
+        # Re-check before mutating: the read above is an unlocked SELECT, and
+        # an upstream dependency may have reached a terminal state
+        # (completed/cancelled) in the microseconds between that read and now.
+        # Dependencies are monotonic — unmet -> met only, terminal states never
+        # reopen — so a fresh read that now finds them met stays met, and the
+        # task can proceed. Releasing it anyway would needlessly clear its
+        # branch + abandon its WorkSession and bounce the assignee, only for
+        # the dependency-completion re-dispatch to re-dispatch + re-claim it a
+        # moment later. Skip the release and let the caller proceed (return
+        # None). The cross-task residual window (upstream completes between
+        # this re-check and the release below) is not closable by a row lock
+        # on the dependent — but the re-check narrows the window from [first
+        # read -> release] to [re-check -> release] and, in the common case,
+        # the first read already sees met (no guard).
+        fresh_unmet = await self.task.unmet_dependency_ids(dep_ids)
+        if not fresh_unmet:
+            return None
+        # Still unmet — park the dependency-gated task back to pending so the
+        # orchestrator stops respawning its assignee (the respawn loop targets
+        # only claimed/in_progress) and the dispatch dependency filter holds it
+        # until the upstream completes. No-op unless the task is currently
+        # claimed/in_progress.
+        await self.task.release_dependency_blocked_claim(task.id)
+        return guard
+
+    async def _project_budget_claim_guard(self, task: Any) -> Envelope | None:
+        """Refuse claim once the task's project has spent its monthly cap.
+
+        Inert unless ``ROBOCO_TASK_BUDGETS_ENABLED`` is on AND the task's
+        project has ``monthly_budget_usd`` set — a task with no project (a
+        branchless coordination root) or a project with no cap never even
+        reaches the spend query.
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.task_budgets_enabled:
+            return None
+        project = getattr(task, "project", None)
+        if project is None:
+            return None
+        monthly_budget_usd = getattr(project, "monthly_budget_usd", None)
+        if monthly_budget_usd is None:
+            return None
+        month_spend_usd = await self.task.project_month_spend_usd(project.id)
+        return project_budget_exceeded_guard(task, monthly_budget_usd, month_spend_usd)
+
+    async def _budget_unblock_guard(self, t: Any) -> Envelope | None:
+        """Refuse ``unblock`` on a budget-blocked task while still over cap.
+
+        Inert unless ``ROBOCO_TASK_BUDGETS_ENABLED`` is on AND the task
+        carries the ``BUDGET_BLOCKED`` marker (stamped by the orchestrator's
+        task-budget sweep at breach time — see
+        ``AgentOrchestrator._handle_task_budget_breach``); a task blocked for
+        any other reason (dependency, manual escalation) never reaches the
+        spend query. Clears the marker on success so a later, unrelated block
+        on the same task is never mistaken for a stale budget breach.
+        """
+        from roboco.config import settings as _settings
+        from roboco.foundation.policy.agent_loop import effective_task_budget_usd
+
+        if not _settings.task_budgets_enabled or not markers.is_budget_blocked(t):
+            return None
+        spend_usd = await self.task.task_spend_usd(t.id)
+        cap_usd = effective_task_budget_usd(t)
+        if spend_usd >= cap_usd:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {t.id} is still over its cost budget: "
+                    f"${cap_usd:,.2f} cap, ${spend_usd:,.2f} spent."
+                ),
+                remediate=(
+                    "raise the task's Budget (USD) field (or the project's "
+                    "Monthly Budget if that's the actual cap) before calling "
+                    "unblock again"
+                ),
+            )
+        markers.clear_budget_blocked(t)
+        return None
 
     async def _lane_claim_guard(self, task: Any) -> Envelope | None:
         """Refuse a code leaf behind an earlier open same-assignee sibling.
@@ -1361,11 +1442,13 @@ class Choreographer:
                 verb=verb_name,
             )
         # Concurrency guards still apply on resumption (paused / already-active
-        # in another task).
+        # in another task). check_project_budget=True: resuming i_will_work_on
+        # / i_will_plan is still a work-STARTING claim.
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
             role_str=role_str,
+            check_project_budget=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -1477,6 +1560,7 @@ class Choreographer:
             agent_id=ctx.agent_id,
             task=t,
             role_str=role_str,
+            check_project_budget=True,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -6866,6 +6950,19 @@ class Choreographer:
                     ),
                     context_briefing=await self._briefing_for(pm_agent_id, task_id),
                 ).with_introspection(task=t, role=role),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="unblock",
+            )
+
+        # Budget-breach block: re-check spend-vs-cap before letting the PM
+        # clear it. Without this, a PM unblock on a task the orchestrator's
+        # sweep blocked for a $ overrun would silently re-breach the same cap
+        # the very next tick if the CEO's raise didn't actually clear it (or
+        # never raised it at all).
+        if guard := await self._budget_unblock_guard(t):
+            return await self._emit_rejection(
+                guard.with_introspection(task=t, role=role),
                 agent_id=pm_agent_id,
                 task_id=task_id,
                 verb="unblock",

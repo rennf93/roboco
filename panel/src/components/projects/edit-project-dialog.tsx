@@ -237,6 +237,9 @@ function EditProjectForm({
   const [depUpdatePaths, setDepUpdatePaths] = useState(
     (project.dep_update_paths || []).join(", "),
   );
+  const [monthlyBudgetUsd, setMonthlyBudgetUsd] = useState(
+    project.monthly_budget_usd != null ? String(project.monthly_budget_usd) : "",
+  );
   const sandboxServices = project.sandbox_services || [];
   const [sandboxSet, setSandboxSet] = useState<Set<string>>(
     new Set(sandboxServices),
@@ -312,6 +315,15 @@ function EditProjectForm({
       return;
     }
 
+    const trimmedBudget = monthlyBudgetUsd.trim();
+    const parsedBudget = trimmedBudget ? Number(trimmedBudget) : null;
+    if (trimmedBudget && (Number.isNaN(parsedBudget) || parsedBudget! <= 0)) {
+      toast.error(
+        "Monthly budget must be greater than 0 — leave it empty for no cap",
+      );
+      return;
+    }
+
     // Build update payload
     const updates: ProjectUpdate = {
       name,
@@ -342,6 +354,9 @@ function EditProjectForm({
             .map((p) => p.trim())
             .filter(Boolean)
         : undefined,
+      // Sent explicitly (never coerced to undefined) so clearing the input
+      // actually clears the stored cap instead of being dropped.
+      monthly_budget_usd: parsedBudget,
       sandbox_services: [...sandboxSet],
       sandbox_extensions: (() => {
         const extObj: Record<string, string[]> = {};
@@ -800,6 +815,26 @@ function EditProjectForm({
 
         {showAutonomy && (
           <>
+            <div className="grid gap-2">
+              <HelpTip label="Calendar-month cap on this project's summed agent-spawn spend; a claim is refused once reached. Requires the task-budgets flag armed fleet-wide (ROBOCO_TASK_BUDGETS_ENABLED). Leave blank for no cap.">
+                <Label htmlFor="monthly_budget_usd">Monthly Budget (USD)</Label>
+              </HelpTip>
+              <Input
+                id="monthly_budget_usd"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={monthlyBudgetUsd}
+                onChange={(e) => setMonthlyBudgetUsd(e.target.value)}
+                placeholder="No cap"
+              />
+              <p className="text-xs text-muted-foreground">
+                Claims are refused once this month&apos;s spend reaches the cap.
+                Must be greater than 0 — a 0 budget would block every claim
+                immediately. Leave blank for no cap.
+              </p>
+            </div>
+
             <div className="flex items-center justify-between">
               <HelpTip label="Opens a fix task automatically when this repo's default-branch CI goes red. Also requires the CI-watch engine armed fleet-wide (ROBOCO_CI_WATCH_ENABLED) to actually run.">
                 <Label htmlFor="ci_watch_enabled">

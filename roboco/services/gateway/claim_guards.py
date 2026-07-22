@@ -83,6 +83,32 @@ def paused_tasks_guard(
     )
 
 
+def project_budget_exceeded_guard(
+    target_task: Any, monthly_budget_usd: float | None, month_spend_usd: float
+) -> Envelope | None:
+    """Refuse claim once the task's project has spent its monthly cap.
+
+    Only fires when ``monthly_budget_usd`` is set (``None`` = no cap, the
+    guard is inert) — the caller resolves both the project's cap and this
+    calendar month's summed agent-spawn spend (a DB read) so this predicate
+    stays pure, mirroring ``unmet_dependency_guard``. At-or-over the cap
+    refuses; strictly under it passes.
+    """
+    if monthly_budget_usd is None or month_spend_usd < monthly_budget_usd:
+        return None
+    return Envelope.invalid_state(
+        message=(
+            f"task {target_task.id}'s project has reached its monthly budget "
+            f"(${monthly_budget_usd:,.2f} cap, ${month_spend_usd:,.2f} spent "
+            "this calendar month)."
+        ),
+        remediate=(
+            "wait for next calendar month, or raise the project's Monthly "
+            "Budget (USD) field in project settings"
+        ),
+    )
+
+
 def unmet_dependency_guard(
     target_task: Any, unmet_dependency_ids: list[UUID]
 ) -> Envelope | None:

@@ -174,6 +174,7 @@ export const projectsApi = {
         video_engine_enabled: false,
         dep_update_command: null,
         dep_update_paths: null,
+        monthly_budget_usd: null,
         sandbox_services: null,
         sandbox_extensions: null,
         workspace_path: null,
