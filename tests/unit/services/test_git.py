@@ -178,9 +178,12 @@ async def test_push_task_branch_runs_codegen_before_push() -> None:
     push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
     _bind(svc, "push", push_mock)
 
-    await svc.push_task_branch(uuid4(), uuid4())
+    agent_id = uuid4()
+    await svc.push_task_branch(agent_id, uuid4())
 
-    codegen_mock.assert_awaited_once_with("feature/backend/abc", Path("/tmp/ws"))
+    codegen_mock.assert_awaited_once_with(
+        "feature/backend/abc", Path("/tmp/ws"), actor_agent_id=agent_id
+    )
 
 
 @pytest.mark.asyncio
@@ -224,9 +227,12 @@ async def test_push_branch_runs_codegen_before_push() -> None:
     push_mock = AsyncMock(return_value=(branch_name, _PUSHED_COMMIT_COUNT))
     _bind(svc, "push", push_mock)
 
-    await svc.push_branch(branch_name)
+    actor_id = uuid4()
+    await svc.push_branch(branch_name, actor_agent_id=actor_id)
 
-    codegen_mock.assert_awaited_once_with(branch_name, Path("/tmp/ws"))
+    codegen_mock.assert_awaited_once_with(
+        branch_name, Path("/tmp/ws"), actor_agent_id=actor_id
+    )
 
 
 @pytest.mark.asyncio
@@ -452,9 +458,109 @@ async def test_run_codegen_and_commit_noop_when_no_task() -> None:
 
 @pytest.mark.asyncio
 async def test_run_codegen_and_commit_commits_drift() -> None:
-    """Codegen runs clean but produces drift -> add -A + a task-prefixed commit."""
+    """Codegen runs clean but produces NEW drift -> scoped `git add --` (not
+    `-A`) + a task-prefixed commit, and the commit is linked to the task."""
     task_id = uuid4()
-    task = MagicMock(id=task_id, branch_name="feature/backend/abc")
+    agent_id = uuid4()
+    task = MagicMock(id=task_id, branch_name="feature/backend/abc", assigned_to=None)
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    link_mock = AsyncMock()
+    _bind(svc, "_link_commit_to_task", link_mock)
+    calls: list[list[str]] = []
+    status_calls = 0
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        nonlocal status_calls
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args == ["status", "--porcelain"]:
+            status_calls += 1
+            # Clean before codegen runs; codegen dirties one new path.
+            res.stdout = "" if status_calls == 1 else " M docs/rag/lifecycle/foo.md\n"
+        elif args[0] == "rev-parse":
+            res.stdout = "abc123deadbeef\n"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    gate_result = GateResult(passed=True, output="ok")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit(
+            "feature/backend/abc", Path("/tmp/ws"), actor_agent_id=agent_id
+        )
+
+    assert ["add", "--", "docs/rag/lifecycle/foo.md"] in calls
+    assert not any(c[:2] == ["add", "-A"] for c in calls)
+    expected_message = f"[{str(task_id)[:8]}] regenerate generated artifacts"
+    commit_call = next(c for c in calls if c[0] == "commit")
+    assert commit_call == ["commit", "-m", expected_message]
+    link_mock.assert_awaited_once_with(
+        task_id, "abc123deadbeef", expected_message, agent_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_excludes_pre_existing_dirty_file() -> None:
+    """A file already dirty before codegen ran (e.g. crash-orphaned edits the
+    resume no-op left behind) must never be swept into the auto-commit, even
+    though codegen also touches it — only genuinely NEW drift is staged."""
+    task_id = uuid4()
+    task = MagicMock(id=task_id, branch_name="feature/backend/abc", assigned_to=None)
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    _bind(svc, "_link_commit_to_task", AsyncMock())
+    calls: list[list[str]] = []
+    status_calls = 0
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        nonlocal status_calls
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args == ["status", "--porcelain"]:
+            status_calls += 1
+            res.stdout = (
+                " M crash_orphaned.txt\n"
+                if status_calls == 1
+                else " M crash_orphaned.txt\n M docs/rag/lifecycle/foo.md\n"
+            )
+        elif args[0] == "rev-parse":
+            res.stdout = "deadbeef\n"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    gate_result = GateResult(passed=True, output="ok")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
+
+    add_call = next(c for c in calls if c[0] == "add")
+    assert add_call == ["add", "--", "docs/rag/lifecycle/foo.md"]
+    assert "crash_orphaned.txt" not in add_call
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_noop_when_no_new_drift() -> None:
+    """Codegen only touches what was already dirty pre-run -> the newly-dirty
+    set is empty, so nothing is staged or committed even though the worktree
+    is dirty both before and after."""
+    task = MagicMock(id=uuid4(), branch_name="feature/backend/abc")
     project = MagicMock(codegen_command="make codegen", slug="roboco")
     svc = _service()
     _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
@@ -466,7 +572,7 @@ async def test_run_codegen_and_commit_commits_drift() -> None:
         calls.append(args)
         res = MagicMock()
         res.returncode = 0
-        res.stdout = " M docs/rag/lifecycle/foo.md\n" if args[0] == "status" else ""
+        res.stdout = " M pre_existing.txt\n" if args[0] == "status" else ""
         return res
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
@@ -477,13 +583,7 @@ async def test_run_codegen_and_commit_commits_drift() -> None:
     ):
         await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
 
-    assert ["add", "-A"] in calls
-    commit_call = next(c for c in calls if c[0] == "commit")
-    assert commit_call == [
-        "commit",
-        "-m",
-        f"[{str(task_id)[:8]}] regenerate generated artifacts",
-    ]
+    assert not any(c[0] in ("add", "commit") for c in calls)
 
 
 @pytest.mark.asyncio
@@ -525,8 +625,16 @@ async def test_run_codegen_and_commit_fail_open_on_command_failure() -> None:
     _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
     _bind(svc, "_project_for_task", AsyncMock(return_value=project))
     _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
-    run_git_mock = AsyncMock()
-    _bind(svc, "_run_git", run_git_mock)
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
     gate_result = GateResult(passed=False, failures=("codegen",), output="boom")
     with patch(
         "roboco.services.git.run_quality_commands",
@@ -534,9 +642,56 @@ async def test_run_codegen_and_commit_fail_open_on_command_failure() -> None:
     ):
         await svc._run_codegen_and_commit("feature/backend/abc", Path("/tmp/ws"))
 
-    # Never even checks git status — a failed codegen command skips straight
-    # through without touching git.
-    run_git_mock.assert_not_awaited()
+    # Only the pre-codegen baseline status is read (needed for the eventual
+    # diff); a failed codegen command skips the post-run status, add, and
+    # commit entirely.
+    assert calls == [["status", "--porcelain"]]
+
+
+@pytest.mark.asyncio
+async def test_run_codegen_and_commit_links_commit_to_task() -> None:
+    """The auto-commit is linked to the task/work-session the same way every
+    other commit path is (`_link_commit_to_task`), using the resolved HEAD
+    sha and the threaded-through actor agent id."""
+    task_id = uuid4()
+    agent_id = uuid4()
+    task = MagicMock(id=task_id, branch_name="feature/backend/abc", assigned_to=None)
+    project = MagicMock(codegen_command="make codegen", slug="roboco")
+    svc = _service()
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=task))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=project))
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
+    link_mock = AsyncMock()
+    _bind(svc, "_link_commit_to_task", link_mock)
+    status_calls = 0
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        nonlocal status_calls
+        res = MagicMock()
+        res.returncode = 0
+        if args == ["status", "--porcelain"]:
+            status_calls += 1
+            res.stdout = "" if status_calls == 1 else " M docs/rag/lifecycle/foo.md\n"
+        elif args[0] == "rev-parse":
+            res.stdout = "cafebabe1234\n"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    gate_result = GateResult(passed=True, output="ok")
+    with patch(
+        "roboco.services.git.run_quality_commands",
+        AsyncMock(return_value=gate_result),
+    ):
+        await svc._run_codegen_and_commit(
+            "feature/backend/abc", Path("/tmp/ws"), actor_agent_id=agent_id
+        )
+
+    expected_message = f"[{str(task_id)[:8]}] regenerate generated artifacts"
+    link_mock.assert_awaited_once_with(
+        task_id, "cafebabe1234", expected_message, agent_id
+    )
 
 
 @pytest.mark.asyncio

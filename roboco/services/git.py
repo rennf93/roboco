@@ -299,6 +299,11 @@ def _git_ownership_scope(args: list[str]) -> str:
 # Expected number of parts in various git outputs
 _REV_LIST_PARTS = 2
 
+# `git status --porcelain`: 2 status columns + 1 space precede the path
+_PORCELAIN_PATH_OFFSET = 3
+# A quoted path needs at least its two surrounding quote characters
+_MIN_QUOTED_TOKEN_LEN = 2
+
 # GitHub REST API status codes
 _GH_UNPROCESSABLE = 422
 # merges-API success codes: 201 = merge commit created + pushed; 204 = nothing
@@ -1784,7 +1789,9 @@ class GitService(BaseService):
         workspace = await self.get_workspace(project.slug, agent_id)
         # Regenerate + commit any codegen drift BEFORE the push carries it —
         # a no-op unless the project sets codegen_command.
-        await self._run_codegen_and_commit(str(task.branch_name), workspace)
+        await self._run_codegen_and_commit(
+            str(task.branch_name), workspace, actor_agent_id=agent_id
+        )
         # Push the task's branch BY NAME, independent of the current checkout.
         # The dev's clone is shared across tasks, so by the QA-submission /
         # open_pr boundary it is usually parked on a LATER task's branch; the
@@ -4257,7 +4264,79 @@ class GitService(BaseService):
         command = getattr(project, "codegen_command", None)
         return command if isinstance(command, str) and command else None
 
-    async def _run_codegen_and_commit(self, branch_name: str, workspace: Path) -> None:
+    @staticmethod
+    def _porcelain_paths(status_output: str) -> set[str]:
+        """Path(s) named by each ``git status --porcelain`` line.
+
+        A rename line (``R  old -> new``) contributes BOTH sides — staging
+        only the new path would leave the old path's deletion unstaged. A
+        quoted path (git wraps a path containing unusual characters in
+        double quotes) has its surrounding quotes stripped.
+        """
+        paths: set[str] = set()
+        for line in status_output.splitlines():
+            if len(line) <= _PORCELAIN_PATH_OFFSET:
+                continue
+            rest = line[_PORCELAIN_PATH_OFFSET:]
+            raw_tokens = rest.split(" -> ") if " -> " in rest else (rest,)
+            for raw_token in raw_tokens:
+                candidate = raw_token.strip()
+                if (
+                    len(candidate) >= _MIN_QUOTED_TOKEN_LEN
+                    and candidate[0] == '"'
+                    and candidate[-1] == '"'
+                ):
+                    candidate = candidate[1:-1]
+                if candidate:
+                    paths.add(candidate)
+        return paths
+
+    @classmethod
+    def _new_codegen_drift_paths(cls, before: str, after: str) -> list[str]:
+        """Paths newly dirty in ``after`` that were clean in ``before``.
+
+        Identity is the path, not the full status line, so a file already
+        dirty pre-codegen is excluded even if codegen also touched it —
+        only genuinely new drift gets staged.
+        """
+        return sorted(cls._porcelain_paths(after) - cls._porcelain_paths(before))
+
+    async def _link_codegen_commit(
+        self,
+        worktree: Path,
+        task: Any,
+        task_id: UUID,
+        message: str,
+        actor_agent_id: UUID | None,
+    ) -> None:
+        """Best-effort link of the just-made codegen commit to its task.
+
+        Mirrors every other commit path's ``_link_commit_to_task`` call so
+        this commit lands in ``task.commits``/the WorkSession instead of
+        being invisible to QA/PM/CEO review surfaces. A resolution failure
+        here only logs — the commit already landed and the caller's push
+        must proceed regardless (see ``_run_codegen_and_commit``).
+        """
+        link_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        if link_agent_id is None:
+            self.log.warning(
+                "codegen_commit_link_skipped_no_agent", task_id=str(task_id)
+            )
+            return
+        sha_result = await self._run_git(worktree, ["rev-parse", "HEAD"], check=False)
+        sha = sha_result.stdout.strip()
+        if not sha:
+            self.log.warning("codegen_commit_sha_unresolved", task_id=str(task_id))
+            return
+        await self._link_commit_to_task(task_id, sha, message, link_agent_id)
+
+    async def _run_codegen_and_commit(
+        self,
+        branch_name: str,
+        workspace: Path,
+        *,
+        actor_agent_id: UUID | None = None,
+    ) -> None:
         """Regenerate + commit codegen drift in the branch's worktree before push.
 
         Some projects check in generated artifacts (rendered docs, generated
@@ -4267,6 +4346,17 @@ class GitService(BaseService):
         back to the task that caused it. Running the project's
         ``codegen_command`` here means any drift lands in the SAME push that's
         about to open/update the PR, so CI never sees it stale.
+
+        Staging is scoped to what codegen ITSELF newly dirtied: a
+        ``git status --porcelain`` snapshot taken before the codegen command
+        runs is diffed against one taken after, and only the paths absent
+        from the first are staged. A file already dirty in the worktree
+        before codegen ran (e.g. crash-orphaned edits the resume path left
+        behind) is never swept into this commit, even if codegen also
+        touched it — CI's own drift gate stays the safety net for any
+        residual drift. The resulting commit is linked to the task/work
+        session (`_link_codegen_commit`) so it isn't invisible to
+        QA/PM/CEO review surfaces.
 
         Fail-open by design: a broken/timing-out codegen command, or any
         resolution failure (missing task/project, worktree trouble), logs a
@@ -4288,6 +4378,9 @@ class GitService(BaseService):
             task_id = require_uuid(task.id)
             worktree = self._worktree_for_task(workspace, task_id)
             await self._ensure_worktree_for_commit(workspace, worktree, branch_name)
+            before = await self._run_git(
+                worktree, ["status", "--porcelain"], check=False
+            )
             result = await run_quality_commands(worktree, [("codegen", command)])
             if not result.passed:
                 self.log.warning(
@@ -4297,19 +4390,18 @@ class GitService(BaseService):
                     output=result.output_excerpt,
                 )
                 return
-            status = await self._run_git(
+            after = await self._run_git(
                 worktree, ["status", "--porcelain"], check=False
             )
-            if not status.stdout.strip():
-                return  # codegen ran clean — nothing to commit
-            await self._run_git(worktree, ["add", "-A"])
-            await self._run_git(
-                worktree,
-                [
-                    "commit",
-                    "-m",
-                    f"[{str(task_id)[:8]}] regenerate generated artifacts",
-                ],
+            new_paths = self._new_codegen_drift_paths(before.stdout, after.stdout)
+            if not new_paths:
+                self.log.info("codegen_no_new_drift", task_id=str(task_id))
+                return  # codegen touched nothing beyond pre-existing drift
+            await self._run_git(worktree, ["add", "--", *new_paths])
+            message = f"[{str(task_id)[:8]}] regenerate generated artifacts"
+            await self._run_git(worktree, ["commit", "-m", message])
+            await self._link_codegen_commit(
+                worktree, task, task_id, message, actor_agent_id
             )
         except Exception as exc:
             self.log.warning(
@@ -4453,7 +4545,9 @@ class GitService(BaseService):
         )
         # Regenerate + commit any codegen drift BEFORE this first push opens
         # the PR — a no-op unless the project sets codegen_command.
-        await self._run_codegen_and_commit(branch_name, workspace)
+        await self._run_codegen_and_commit(
+            branch_name, workspace, actor_agent_id=actor_agent_id
+        )
         # Push the NAMED branch, not the workspace's current checkout. The
         # clone root is shared across a dev's tasks and (F123) parked on the
         # default branch while the task branch lives in a per-task worktree;
