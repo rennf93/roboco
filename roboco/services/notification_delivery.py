@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import and_, event, select
+from sqlalchemy import CursorResult, and_, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -27,9 +27,14 @@ from roboco.agents_config import (
     get_pm_for_agent,
     get_pm_for_team,
 )
+from roboco.config import settings
 from roboco.db.tables import AgentTable, NotificationTable, TaskTable
 from roboco.events import Event, EventType, get_event_bus
-from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
+from roboco.foundation.policy.communications import (
+    ACK_REQUIRED_BY_TYPE,
+    ReescalationPolicy,
+    reescalation_decision,
+)
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
 from roboco.services.base import BaseService, NotFoundError
 from roboco.services.notification_dedup import (
@@ -338,20 +343,45 @@ class NotificationDeliveryService(BaseService):
             recipient_count=len(n.to_agents or []),
             ack_count=len(n.acked_by or []),
             expired_at=n.expires_at.isoformat() if n.expires_at else None,
+            reescalation_count=n.reescalation_count,
+        )
+
+    def _log_permanently_unacked(self, n: NotificationTable) -> None:
+        """One-time terminal log: `n` hit the re-escalation cap and will never
+        be re-escalated again (fires exactly once, on the tick of its last
+        permitted re-escalation). Carries both totals so "seen and ignored"
+        (delivered > 0, recipients just never acked) reads distinctly from
+        "route never worked" (delivered == 0 despite every attempt — a
+        broken escalation chain, e.g. no configured up-role)."""
+        self.log.warning(
+            "Notification permanently unacked — re-escalation cap reached",
+            notification_id=str(n.id),
+            type=n.type.value if n.type else None,
+            priority=n.priority.value if n.priority else None,
+            recipient_count=len(n.to_agents or []),
+            ack_count=len(n.acked_by or []),
+            reescalation_count=n.reescalation_count,
+            reescalation_delivered_count=n.reescalation_delivered_count,
         )
 
     async def sweep_expired_notifications(self) -> int:
-        """Re-escalate then log ack-required notifications past `expires_at`.
+        """Re-escalate (per a backoff schedule) then log ack-required
+        notifications past `expires_at`.
 
         `NotificationTable.expires_at` existed but nothing acted on it. This
         sweep surfaces notifications that have become stale. For an
         ack-required row still unacked past the threshold, the recipient's
-        up-role (the PM's PM, or the CEO) is re-notified BEFORE the row is
-        logged as expired — so an inattentive PM can't both miss a blocker
-        and prevent anyone upstream from seeing it. Non-ack-required rows
-        and already-acked rows are not re-escalated. We log rather than
-        auto-cancel because the notification is the record; rewriting
-        status would be ambiguous. Returns the count of stale unacked items.
+        up-role (the PM's PM, or the CEO) is re-notified — but only when
+        `reescalation_decision` says it's due: the first re-escalation fires
+        immediately at expiry, each one after that backs off exponentially
+        (`notification_reescalation_base_seconds`, doubling, capped at 24h),
+        and past `notification_max_reescalations` the row is left alone for
+        good. Without the schedule, a static pile of stale rows re-escalated
+        on every ~1min sweep tick forever. Non-ack-required rows and
+        already-acked rows are never re-escalated. We log rather than
+        auto-cancel because the notification is the record; rewriting status
+        would be ambiguous. Returns the count of stale unacked items (not just
+        the ones actually re-escalated this tick).
         """
         now = datetime.now(UTC)
         result = await self.session.execute(
@@ -374,36 +404,109 @@ class NotificationDeliveryService(BaseService):
             if n.requires_ack and not self._notification_is_fully_acked(n)
         ]
         for n in unacked:
-            await self._re_escalate_unacked(n)
-            self._log_expired_notification(n)
+            await self._maybe_reescalate(n, now)
         return len(unacked)
 
-    async def _re_escalate_unacked(self, n: NotificationTable) -> None:
+    async def _maybe_reescalate(self, n: NotificationTable, now: datetime) -> None:
+        """Re-escalate `n` only when its backoff schedule says it's due.
+
+        `_persist_and_deliver`'s 60s dedup guard does NOT backstop a
+        concurrent double-sweep here: `BLOCKER_ESCALATION` — the type every
+        re-escalation notification is created as — is not in
+        `_LOOP_PRONE_TYPES` (notification_dedup.py), so that guard returns
+        False unconditionally for it. The real guard is
+        `_claim_reescalation_slot`'s compare-and-set: it must succeed BEFORE
+        any delivery is attempted, so two sweep ticks racing the same row
+        can never both deliver.
+        """
+        decision = reescalation_decision(
+            now=now,
+            expires_at=cast("datetime", n.expires_at),
+            count=n.reescalation_count,
+            last_reescalated_at=n.last_reescalated_at,
+            policy=ReescalationPolicy(
+                base_seconds=settings.notification_reescalation_base_seconds,
+                max_reescalations=settings.notification_max_reescalations,
+            ),
+        )
+        if decision != "due":
+            return  # "wait": not due yet; "capped": already logged + done
+        if not await self._claim_reescalation_slot(n, now):
+            return  # another sweep tick already claimed this attempt
+        delivered = await self._re_escalate_unacked(n)
+        n.reescalation_delivered_count += delivered
+        if n.reescalation_count >= settings.notification_max_reescalations:
+            self._log_permanently_unacked(n)
+        else:
+            self._log_expired_notification(n)
+
+    async def _claim_reescalation_slot(
+        self, n: NotificationTable, now: datetime
+    ) -> bool:
+        """Compare-and-set claim on `n`'s attempt slot, BEFORE any delivery.
+
+        A guarded `UPDATE ... WHERE id = :id AND reescalation_count = :n`:
+        Postgres takes a row lock, so a concurrent claim against the same
+        `reescalation_count` value blocks until this one commits, then loses
+        (0 rows matched — the count already moved). Only the winner proceeds
+        to `_re_escalate_unacked`. The slot is consumed (count bumped) even
+        though delivery hasn't happened yet: a transient delivery failure
+        still burns an attempt, which is what stops a permanently-broken
+        escalation chain from looping forever rather than eventually capping.
+        """
+        result = await self.session.execute(
+            update(NotificationTable)
+            .where(
+                NotificationTable.id == n.id,
+                NotificationTable.reescalation_count == n.reescalation_count,
+            )
+            .values(
+                reescalation_count=n.reescalation_count + 1, last_reescalated_at=now
+            )
+            .execution_options(synchronize_session=False)
+        )
+        # UPDATE always yields a CursorResult (has `.rowcount`); `execute`'s
+        # declared return type is the generic `Result` supertype, so peel it.
+        claimed = cast("CursorResult[Any]", result).rowcount == 1
+        if claimed:
+            # Mirror the winning UPDATE onto the in-memory object so the rest
+            # of this tick (and the eventual `reescalation_delivered_count`
+            # flush) sees consistent state. SQLAlchemy will re-flush these
+            # same two columns with the caller's next commit — a harmless
+            # no-op re-write of the value we just committed, not a bug.
+            n.reescalation_count += 1
+            n.last_reescalated_at = now
+        return claimed
+
+    async def _re_escalate_unacked(self, n: NotificationTable) -> int:
         """Re-send an unacked ack-required notification to each non-acking
-        recipient's up-role before expiry. Best-effort: a missing chain,
-        target, or a dedup-suppressed re-fire is logged-and-skipped, never
-        raises — the expiry log still fires. The loop-prone dedup guard in
-        `_persist_and_deliver` caps repeat re-escalations within the 60s
-        window so a tight sweep loop can't flood the upstream role."""
+        recipient's up-role. Best-effort: a missing chain or target is
+        logged-and-skipped, never raises. Returns how many recipients were
+        actually re-notified — used to distinguish a broken escalation chain
+        (0 delivered despite an attempt) from one that works but is ignored."""
         acked = {str(a) for a in (n.acked_by or [])}
+        delivered = 0
         for recipient_id in n.to_agents or []:
             if str(recipient_id) in acked:
                 continue
-            await self._re_escalate_recipient(n, cast("UUID", recipient_id))
+            if await self._re_escalate_recipient(n, cast("UUID", recipient_id)):
+                delivered += 1
+        return delivered
 
     async def _re_escalate_recipient(
         self, n: NotificationTable, recipient_id: UUID
-    ) -> None:
-        """Resolve one recipient's up-role and re-fire the escalation."""
+    ) -> bool:
+        """Resolve one recipient's up-role and re-fire the escalation.
+        Returns True iff it was actually persisted+delivered."""
         recipient = await self._get_agent_by_id(recipient_id)
         if not recipient or not recipient.slug:
-            return
+            return False
         target_slug = get_escalation_target(recipient.slug)
         if not target_slug:
-            return
+            return False
         target = await self._get_agent_by_slug(target_slug)
         if not target:
-            return
+            return False
         notification = NotificationTable(
             type=NotificationType.BLOCKER_ESCALATION,
             priority=NotificationPriority.HIGH,
@@ -422,7 +525,7 @@ class NotificationDeliveryService(BaseService):
             acked_by=[],
         )
         try:
-            await self._persist_and_deliver(notification)
+            return await self._persist_and_deliver(notification)
         except Exception as e:
             self.log.warning(
                 "Re-escalation deliver failed",
@@ -430,6 +533,7 @@ class NotificationDeliveryService(BaseService):
                 target_slug=target_slug,
                 error=str(e),
             )
+            return False
 
     async def get_pending_for_agent(
         self,
@@ -1219,8 +1323,18 @@ class NotificationDeliveryService(BaseService):
         """Find the auditor agent (org-wide; earliest-created if many)."""
         return await get_agent_by_role(self.session, AgentRole.AUDITOR)
 
-    async def _persist_and_deliver(self, notification: NotificationTable) -> None:
-        """Add to session, flush (to get an id), deliver. Caller commits."""
+    async def _persist_and_deliver(self, notification: NotificationTable) -> bool:
+        """Add to session, flush (to get an id), deliver. Caller commits.
+
+        Returns True iff actually persisted+delivered, False if suppressed by
+        the 60s dedup guard below. That guard only ever applies to
+        `_LOOP_PRONE_TYPES` (notification_dedup.py) — BLOCKER_ESCALATION,
+        the type re-escalations use, is NOT one of them, so for that path
+        this always returns True or raises; the real double-delivery guard
+        for re-escalations is the CAS claim in
+        `NotificationDeliveryService._claim_reescalation_slot`, upstream of
+        this call.
+        """
         # Re-fire guard (loop-prone types): this path skips the DB dedup, so
         # apply the same 60s Redis SET-NX window. Fail-open on Redis down.
         # Casts peel the SA UUID column type-leak for the type checker.
@@ -1241,10 +1355,11 @@ class NotificationDeliveryService(BaseService):
                 if notification.related_task_id is not None
                 else None,
             )
-            return
+            return False
         self.session.add(notification)
         await self.session.flush()
         await self.deliver(require_uuid(notification.id))
+        return True
 
     # =========================================================================
     # API-FACING LIST + CRUD (consumed by api/routes/notifications.py)

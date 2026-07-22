@@ -1041,6 +1041,24 @@ class NotificationTable(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Re-escalation backoff (sweep_expired_notifications): how many times this
+    # row has been re-escalated past expiry, and when the last one fired —
+    # drives the exponential schedule so a static pile of stale rows doesn't
+    # re-fire every sweep tick forever. `reescalation_count` is the attempt
+    # counter (bumped by a compare-and-set claim even when delivery then
+    # fails); `reescalation_delivered_count` is how many of those attempts
+    # actually reached a recipient — the two can diverge (a broken escalation
+    # chain burns attempts with zero deliveries).
+    reescalation_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    reescalation_delivered_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_reescalated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False

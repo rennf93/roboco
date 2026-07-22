@@ -6,9 +6,15 @@ Single source of truth for:
   - NotificationType -> requires_ack mapping (replaces 7 hand-set callsites in
     services/notification_delivery.py)
   - Priority enum (re-exports models.base.NotificationPriority for SQLAlchemy compat)
+  - Re-escalation backoff schedule (pure; consumed by
+    services/notification_delivery.py's sweep)
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Literal
 
 from roboco.foundation.identity import Role
 from roboco.models.base import NotificationPriority, NotificationType
@@ -94,3 +100,51 @@ ACK_REQUIRED_BY_TYPE: dict[NotificationType, bool] = {
     NotificationType.MENTION: False,  # chat @mention, no ack
     NotificationType.A2A_REQUEST: False,  # request/reply lives at message layer
 }
+
+
+# Doubling-schedule ceiling: no re-escalation ever waits longer than this
+# between attempts, however high `notification_max_reescalations` is set.
+REESCALATION_INTERVAL_CAP_SECONDS = 24 * 3600
+
+ReescalationDecision = Literal["due", "wait", "capped"]
+
+
+@dataclass(frozen=True)
+class ReescalationPolicy:
+    """The two `settings.notification_*` knobs the backoff schedule reads,
+    bundled so `reescalation_decision` stays under the 5-arg lint ceiling —
+    they always travel together (both come straight from `settings`),
+    unlike the per-row facts (`now`/`expires_at`/`count`/`last_reescalated_at`)."""
+
+    base_seconds: int
+    max_reescalations: int
+
+
+def reescalation_decision(
+    *,
+    now: datetime,
+    expires_at: datetime,
+    count: int,
+    last_reescalated_at: datetime | None,
+    policy: ReescalationPolicy,
+) -> ReescalationDecision:
+    """Pure per-notification re-escalation backoff decision.
+
+    Schedule: the first re-escalation (``count == 0``) is due at
+    ``expires_at`` itself. Each one after that doubles the wait from
+    ``policy.base_seconds`` (1h, 2h, 4h, 8h, ...) measured from
+    ``last_reescalated_at``, capped at ``REESCALATION_INTERVAL_CAP_SECONDS``.
+    Past ``policy.max_reescalations``, always "capped" — the caller must
+    never act on it again. A legacy row with no backoff state reads as
+    ``count=0``, preserving the original first-fire-at-expiry behaviour.
+    """
+    if count >= policy.max_reescalations:
+        return "capped"
+    if count == 0:
+        due_at = expires_at
+    else:
+        interval = min(
+            policy.base_seconds * (2 ** (count - 1)), REESCALATION_INTERVAL_CAP_SECONDS
+        )
+        due_at = (last_reescalated_at or expires_at) + timedelta(seconds=interval)
+    return "due" if now >= due_at else "wait"
