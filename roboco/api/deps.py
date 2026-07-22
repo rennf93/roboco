@@ -32,7 +32,6 @@ from roboco.db.tables import AgentTable, UserTable
 from roboco.foundation.identity import BOARD_ROLES, DEV_ROLES, PM_ROLES, Role
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
-from roboco.services.a2a import A2AService
 from roboco.services.audit import get_audit_service
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
@@ -739,7 +738,6 @@ async def get_choreographer(
             task=TaskService(db_session),
             work_session=WorkSessionService(db_session),
             git=GitService(db_session),
-            a2a=A2AService(db_session),
             journal=JournalService(db_session),
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
@@ -762,7 +760,6 @@ async def get_content_actions(
         ContentActionsDeps(
             task=TaskService(db_session),
             git=GitService(db_session),
-            a2a=A2AService(db_session),
             journal=JournalService(db_session),
             workspace=WorkspaceService(db_session),
             notifications=NotificationService(),

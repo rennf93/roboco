@@ -181,61 +181,6 @@ async def test_note_without_task_id_skips_ownership_check() -> None:
 
 
 # ---------------------------------------------------------------------------
-# dm — explicit task_id ownership
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_dm_with_task_id_blocks_when_not_assignee() -> None:
-    """dm(task_id=X) where X is owned by someone else is rejected."""
-    agent_id = uuid4()
-    other_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=other_id)
-    task_svc = AsyncMock()
-    task_svc.get.return_value = task_obj
-    a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.dm(
-        agent_id=agent_id,
-        recipient="be-qa-1",
-        text="DM about someone else's task",
-        task_id=task_id,
-    )
-    body = env.as_dict()
-    assert body["error"] == "not_authorized"
-    a2a_svc.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_dm_with_task_id_owned_by_caller_succeeds() -> None:
-    agent_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(
-        id=task_id,
-        status="in_progress",
-        assigned_to=agent_id,
-        active_claimant_id=agent_id,
-    )
-    task_svc = AsyncMock()
-    task_svc.get.return_value = task_obj
-    a2a_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.dm(
-        agent_id=agent_id,
-        recipient="be-qa-1",
-        text="DM about my own task",
-        task_id=task_id,
-    )
-    assert env.error is None
-    a2a_svc.send.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
 # evidence — explicit task_id ownership
 # ---------------------------------------------------------------------------
 

@@ -15,7 +15,7 @@ import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -39,9 +39,6 @@ from roboco.services.notification_dedup import (
 from roboco.services.notification_text import task_display
 from roboco.utils.converters import require_uuid
 
-if TYPE_CHECKING:
-    from roboco.models.metrics import TaskMetrics
-
 _log = structlog.get_logger(service="notification_delivery")
 
 
@@ -61,25 +58,9 @@ def _esc_attr(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _format_completion_body(task: TaskTable, metrics: "TaskMetrics | None") -> str:
-    """Human-readable completion summary — real effort vs wall-clock, not a lone
-    wall-clock figure. Degrades to wall-clock-only (turns 'n/a') when there are
-    no spawn sessions / pre-turns-migration data."""
-    title = task.title or "Untitled"
-    if metrics is None:
-        return f"Task '{title}' completed."
-    wall_h = round(metrics.wall_clock_seconds / 3600, 1)
-    active_h = round(metrics.active_runtime_seconds / 3600, 1)
-    turns = str(metrics.turns) if metrics.turns else "n/a"
-    return (
-        f"Task '{title}' completed.\n\n"
-        f"Active effort: {active_h}h across {metrics.stints} stint(s) "
-        f"({turns} turns, {metrics.tool_calls} tool-calls)\n"
-        f"Wall-clock: {wall_h}h\n"
-        f"Revisions: {metrics.revision_count} "
-        f"({metrics.qa_fails} QA / {metrics.pr_fails} PR)\n"
-        f"Cost: ${round(metrics.cost_usd, 2)}"
-    )
+def _format_completion_body(task: TaskTable) -> str:
+    """Human-readable completion summary."""
+    return f"Task '{task.title or 'Untitled'}' completed."
 
 
 # =============================================================================
@@ -1060,21 +1041,13 @@ class NotificationDeliveryService(BaseService):
         )
 
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
-        """CEO-facing completion notification with the granular effort breakdown.
+        """CEO-facing completion notification.
 
-        Replaces the coarse "completed in Xh" wall-clock figure with real effort
-        vs wall-clock + turns/stints/revisions/cost from the per-task metrics.
-        Best-effort: a metrics or delivery failure must never block completion.
+        Best-effort: a delivery failure must never block completion.
         """
         ceo = await self._get_ceo_agent()
         if not ceo:
             return
-        from roboco.services.metrics import MetricsService
-
-        try:
-            metrics = await MetricsService(self.session).get_task_metrics(task_id)
-        except Exception:  # metrics are best-effort — degrade to wall-clock-only
-            metrics = None
         from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
         notification = NotificationTable(
             type=NotificationType.ALERT,
@@ -1082,7 +1055,7 @@ class NotificationDeliveryService(BaseService):
             from_agent=from_agent,
             to_agents=[ceo.id],
             subject=f"Completed: {(task.title or 'Untitled')[:60]}",
-            body=_format_completion_body(task, metrics),
+            body=_format_completion_body(task),
             related_task_id=task_id,
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
         )

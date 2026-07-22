@@ -126,25 +126,6 @@ async def test_note_garbage_scope_returns_invalid_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dm_with_no_task_context_returns_invalid_state() -> None:
-    """POST /api/v1/do/dm with no task context returns invalid_state envelope."""
-    mock_actions = MagicMock(spec=ContentActions)
-    mock_actions.dm = AsyncMock(return_value=_make_envelope(status="invalid_state"))
-    client = TestClient(_build_app(mock_actions))
-
-    resp = client.post(
-        "/api/v1/do/dm",
-        json={"recipient": "be-qa-1", "text": "please review"},
-        headers=_HEADERS,
-    )
-
-    assert resp.status_code == _HTTP_200
-    body = resp.json()
-    assert body["status"] == "invalid_state"
-    mock_actions.dm.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_evidence_with_task_id_returns_evidence_envelope() -> None:
     """POST /api/v1/do/evidence with task_id returns 200 with evidence in response."""
     evidence_payload = {"commits": ["abc123"], "diff_summary": "added 3 files"}

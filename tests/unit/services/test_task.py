@@ -187,16 +187,12 @@ async def test_agent_for_returns_view_with_role_team_skills(
     monkeypatch.setattr(
         "roboco.agents_config.get_escalation_target", lambda _slug: "main_pm"
     )
-    monkeypatch.setattr(
-        "roboco.agents_config.get_agent_skills",
-        lambda _slug: [{"id": "task_management"}],
-    )
     view = await svc.agent_for(uuid4())
     assert isinstance(view, GatewayAgentView)
     assert view.role == "cell_pm"
     assert view.team == "backend"
     assert view.escalation_target == "main_pm"
-    assert view.skills == [{"id": "task_management"}]
+    assert view.skills == []
 
 
 @pytest.mark.asyncio

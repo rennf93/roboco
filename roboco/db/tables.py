@@ -5,6 +5,7 @@ ORM mappings for all RoboCo data models.
 """
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID as PyUUID
 from uuid import uuid4
@@ -29,7 +30,6 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from roboco.db.base import Base
-from roboco.models.a2a import A2AConversationStatus, A2AMessageKind
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -1355,6 +1355,23 @@ class IndexedDocumentTable(Base):
 # =============================================================================
 
 
+class A2AConversationStatus(StrEnum):
+    """Lifecycle status for a persistent A2A conversation."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CLOSED = "closed"
+
+
+class A2AMessageKind(StrEnum):
+    """Kind of message stored in a persistent A2A conversation."""
+
+    MESSAGE = "message"
+    REQUEST = "request"
+    RESPONSE = "response"
+    SYSTEM = "system"
+
+
 class A2AConversationTable(Base):
     """
     Persistent A2A conversation between two agents.
@@ -1463,9 +1480,6 @@ class A2AMessageTable(Base):
         nullable=False,
         default=A2AMessageKind.MESSAGE,
     )
-    # Capability this A2A concerns (e.g. ``code_review``); nullable for legacy /
-    # unspecified messages. Migration 054.
-    skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Threading
     response_to_id: Mapped[UUID | None] = mapped_column(
@@ -1970,64 +1984,6 @@ class DailyUsageRollupTable(Base):
         ),
         Index("ix_daily_rollups_date", "date"),
         Index("ix_daily_rollups_agent_slug", "agent_slug"),
-    )
-
-
-class MemberPerformanceDailyTable(Base):
-    """Pre-aggregated daily per-member performance (the granular scorecard rollup).
-
-    One row per (date, member_kind, agent_slug), populated by the orchestrator
-    sweeper from agent_spawn_sessions + audit_log. The CEO is a first-class
-    ``member_kind='ceo'`` row with ``agent_slug=''`` — a distinct natural-key
-    tuple from every ``member_kind='agent'`` row, so it never collides.
-    Overwrite-upsert on the natural key makes the sweep idempotent. All counters
-    default 0.
-    """
-
-    __tablename__ = "member_performance_daily"
-
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-    date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
-    member_kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    agent_slug: Mapped[str] = mapped_column(String(100), nullable=False, default="")
-    team: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    tasks_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tasks_first_pass: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    revisions_caused: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    revisions_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    active_runtime_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
-    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    ceo_approval_dwell_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
-    ceo_unblock_dwell_seconds: Mapped[int] = mapped_column(
-        BigInteger, nullable=False, default=0
-    )
-    godmode_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    # The four CEO-approved extras (+ blocked_seconds).
-    qa_reviews_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    qa_reviews_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    escalations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    blocked_others: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    idle_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    blocked_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "date", "member_kind", "agent_slug", name="uq_member_perf_day"
-        ),
-        Index("ix_member_perf_date", "date"),
-        Index("ix_member_perf_agent_slug", "agent_slug"),
-        Index("ix_member_perf_team", "team"),
-        Index("ix_member_perf_kind", "member_kind"),
     )
 
 

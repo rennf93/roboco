@@ -19,11 +19,10 @@ from sqlalchemy import func, select
 from sqlalchemy.types import Date
 
 from roboco.config import settings
-from roboco.db.tables import AgentSpawnSessionTable, TaskTable
+from roboco.db.tables import AgentSpawnSessionTable, AgentTable, TaskTable
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import AgentStatus, TaskStatus
 from roboco.services.base import BaseService
-from roboco.services.dashboard import get_dashboard_service
 from roboco.services.task import get_task_service
 from roboco.services.usage import get_usage_service
 
@@ -110,13 +109,33 @@ class TgCockpitService(BaseService):
     async def fleet(self) -> dict[str, Any]:
         """Live-agent snapshot with per-agent task titles — shared by the
         Today brief and the bot's ``/agents`` command."""
-        snapshot = await get_dashboard_service(self.session).get_all_agent_status()
-        agents: list[dict[str, Any]] = snapshot.get("agents", [])
-        working = [a for a in agents if a.get("current_task_id")][:_WORKING_AGENT_CAP]
+        result = await self.session.execute(select(AgentTable))
+        agents = result.scalars().all()
+        status_counts: dict[str, int] = {s.value: 0 for s in AgentStatus}
+        agent_list: list[dict[str, Any]] = []
+        for agent in agents:
+            agent_list.append(
+                {
+                    "id": str(agent.id),
+                    "name": agent.name,
+                    "role": agent.role.value,
+                    "team": agent.team.value if agent.team else None,
+                    "status": agent.status.value,
+                    "current_task_id": (
+                        str(agent.current_task_id) if agent.current_task_id else None
+                    ),
+                }
+            )
+            status_counts[agent.status.value] = (
+                status_counts.get(agent.status.value, 0) + 1
+            )
+        working = [a for a in agent_list if a.get("current_task_id")][
+            :_WORKING_AGENT_CAP
+        ]
         titles = await self._task_titles([a["current_task_id"] for a in working])
         return {
-            "total": snapshot.get("total", len(agents)),
-            "by_status": snapshot.get("by_status", {}),
+            "total": len(agent_list),
+            "by_status": status_counts,
             "working": [
                 {
                     "name": a.get("name", ""),

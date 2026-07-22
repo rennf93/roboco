@@ -8923,7 +8923,6 @@ class TaskService(BaseService):
         escalation_target + skills so the Choreographer reads one object.
         """
         from roboco.agents_config import (
-            get_agent_skills,
             get_escalation_target,
         )
 
@@ -8947,7 +8946,7 @@ class TaskService(BaseService):
             role=role_value,
             team=team_value,
             escalation_target=get_escalation_target(slug),
-            skills=get_agent_skills(slug),
+            skills=[],
         )
 
     async def _agent_with_role_and_team(

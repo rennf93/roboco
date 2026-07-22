@@ -8,7 +8,7 @@ so historical rows (and Grok agents, which have no Claude transcript) read 0,
 surfaced as "n/a" in the UI rather than a misleading "0 iterations".
 
 Revision ID: 055_spawn_session_turns
-Revises: 054_a2a_message_skill
+Revises: 053_playbook_archived_attr
 Create Date: 2026-07-01
 """
 
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "055_spawn_session_turns"
-down_revision = "054_a2a_message_skill"
+down_revision = "053_playbook_archived_attr"
 branch_labels: dict[str, str] | None = None
 depends_on: dict[str, str] | None = None
 

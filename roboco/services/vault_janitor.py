@@ -1,4 +1,4 @@
-"""VaultJanitor — drift repair + archival + weekly org-report, one sweep.
+"""VaultJanitor — drift repair + archival, one sweep.
 
 Projection freshness is best-effort by design (event seams can be missed),
 so this closes the loop by periodically re-checking DB state against the
@@ -6,12 +6,10 @@ filesystem.
 
 The orchestrator loop (``_vault_janitor_loop``) ticks hourly, but this
 service only does real work when a JSON state file under the vault root
-(``RoboCo/_meta/.janitor_state.json``) says a day (sweep) or an ISO week
-(report) has actually elapsed — restart-proof, unlike a naive
-sleep-then-once-a-day loop that never fires again once the orchestrator
-restarts more often than daily. Gated on ``obsidian_vault_enabled`` only
-(the umbrella flag); the weekly report additionally checks
-``vault_report_enabled``.
+(``RoboCo/_meta/.janitor_state.json``) says a day has actually elapsed —
+restart-proof, unlike a naive sleep-then-once-a-day loop that never fires
+again once the orchestrator restarts more often than daily. Gated on
+``obsidian_vault_enabled`` only.
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import TaskTable
-    from roboco.services.vault_writer import OrgReportData, VaultWriter
+    from roboco.services.vault_writer import VaultWriter
 
 # Loop cadence: the orchestrator ticks this often; dueness (below) governs
 # whether a tick actually does anything.
@@ -85,14 +83,9 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def _iso_week(now: datetime) -> str:
-    iso = now.isocalendar()
-    return f"{iso.year}-W{iso.week:02d}"
-
-
 class VaultJanitor(BaseService):
     """One state-gated sweep: changed-task re-projection, sample drift
-    verification, archival, and (weekly) the org-report note."""
+    verification, and archival."""
 
     service_name = "vault_janitor"
 
@@ -108,11 +101,6 @@ class VaultJanitor(BaseService):
             self.log.info(
                 "vault_drift_repaired", count=repaired, archived=archived, failed=failed
             )
-        if settings.vault_report_enabled:
-            week = _iso_week(now)
-            if state.get("last_report_week") != week:
-                await self._run_weekly_report(week)
-                state["last_report_week"] = week
         _save_state(state)
         return {"repaired": repaired, "archived": archived, "failed": failed}
 
@@ -277,65 +265,6 @@ class VaultJanitor(BaseService):
         marker = cutoff if drained else (last or watermark)
         state["archive_watermark"] = marker.isoformat()
         return archived, failed
-
-    async def _run_weekly_report(self, week: str) -> None:
-        from roboco.services.metrics import get_metrics_service
-        from roboco.services.usage import get_usage_service
-        from roboco.services.vault_writer import (
-            BottleneckRow,
-            OrgReportData,
-            StageTimingRow,
-            TeamReworkRow,
-            get_vault_writer,
-        )
-
-        metrics_svc = get_metrics_service(self.session)
-        velocity = await metrics_svc.get_velocity(days=7)
-        stages = await metrics_svc.get_cycle_time_by_stage(days=7)
-        bottlenecks = await metrics_svc.get_bottleneck_distribution(days=7)
-        rework = await metrics_svc.get_rework_metrics(days=7)
-        usage = await get_usage_service(self.session).get_summary(period="7d")
-
-        data = OrgReportData(
-            week=week,
-            tasks_completed=velocity.tasks_completed,
-            tasks_created=velocity.tasks_created,
-            completion_rate=velocity.completion_rate,
-            avg_cycle_hours=velocity.avg_completion_hours,
-            rework_rate=rework.rate,
-            rework_cost_usd=rework.rework_cost_usd,
-            total_cost_usd=float(usage.get("total_cost_usd", 0.0)),
-            total_tokens=int(usage.get("total_tokens", 0)),
-            stages=tuple(
-                StageTimingRow(s.status, s.avg_seconds, s.sample_size) for s in stages
-            ),
-            bottlenecks=tuple(
-                BottleneckRow(b.status, b.cumulative_seconds, b.pct_of_total)
-                for b in bottlenecks.by_stage
-            ),
-            by_team_rework=tuple(TeamReworkRow(t.team, t.rate) for t in rework.by_team),
-        )
-        path = get_vault_writer().write_org_report(data)
-        await self._notify_weekly_report(week, path, data)
-
-    async def _notify_weekly_report(
-        self, week: str, path: Path, data: OrgReportData
-    ) -> None:
-        """Best-effort: a notification failure never fails the sweep."""
-        try:
-            from roboco.services.notification import NotificationService
-
-            summary = (
-                f"{data.tasks_completed} completed, {data.rework_rate:.0%} rework, "
-                f"${data.total_cost_usd:.2f} spent"
-            )
-            await NotificationService().send_weekly_report_notification(
-                week=week, note_path=str(path), summary_line=summary
-            )
-        except Exception as e:
-            self.log.warning(
-                "weekly-report notification failed (best-effort)", error=str(e)
-            )
 
 
 def get_vault_janitor(session: AsyncSession) -> VaultJanitor:

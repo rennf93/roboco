@@ -3,7 +3,7 @@ RoboCo Services
 
 Phase 2: Communication, transcription, and permissions.
 Phase 3: Intelligence - RAG, knowledge base, and journals.
-Phase 5: Management - Tasks, kanban, metrics, dashboards.
+Phase 5: Management - Tasks, kanban, dashboards.
 """
 
 from roboco.services.audit import (
@@ -22,10 +22,6 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
-from roboco.services.dashboard import (
-    DashboardService,
-    get_dashboard_service,
-)
 from roboco.services.extraction import ExtractionResult, ExtractionService
 from roboco.services.journal import (
     GrowthMetrics,
@@ -36,14 +32,6 @@ from roboco.services.journal import (
 from roboco.services.kanban import (
     KanbanService,
     get_kanban_service,
-)
-from roboco.services.metrics import (
-    AgentMetrics,
-    BlockerMetrics,
-    MetricsService,
-    TeamMetrics,
-    VelocityMetrics,
-    get_metrics_service,
 )
 from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import (
@@ -67,13 +55,10 @@ from roboco.services.task import (
 from roboco.services.transcription import TranscriptionService
 
 __all__ = [
-    "AgentMetrics",
     "AuditEventType",
     "AuditService",
     "BaseService",
-    "BlockerMetrics",
     "ConflictError",
-    "DashboardService",
     "ExtractionResult",
     "ExtractionService",
     "GrowthMetrics",
@@ -81,7 +66,6 @@ __all__ = [
     "JournalService",
     "JournalStats",
     "KanbanService",
-    "MetricsService",
     "NotFoundError",
     "NotificationDeliveryService",
     "NotificationService",
@@ -95,17 +79,13 @@ __all__ = [
     "SingletonHolder",
     "SingletonService",
     "TaskService",
-    "TeamMetrics",
     "TranscriptionService",
     "UnauthorizedError",
     "ValidationError",
-    "VelocityMetrics",
     "close_optimal_service",
     "get_audit_service",
-    "get_dashboard_service",
     "get_journal_service",
     "get_kanban_service",
-    "get_metrics_service",
     "get_notification_delivery_service",
     "get_optimal_service",
     "get_task_service",

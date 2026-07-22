@@ -686,26 +686,6 @@ def propose_video(
     )
 
 
-def dm(
-    recipient: str,
-    text: str,
-    task_id: str | None = None,
-    skill: str | None = None,
-) -> dict[str, Any]:
-    """A2A message. Auto-creates conversation; auto-resolves skill if needed.
-
-    Args:
-        recipient: Target agent slug (e.g. `be-pm`, `be-dev-1`, `ceo`).
-        text: Message body.
-        task_id: Optional; auto-filled from your active task if omitted.
-        skill: Optional skill slug to scope the conversation.
-    """
-    return _post(
-        "/api/v1/do/dm",
-        {"recipient": recipient, "text": text, "task_id": task_id, "skill": skill},
-    )
-
-
 def notify(
     target: str,
     text: str,
@@ -973,25 +953,6 @@ def pr_update(
     )
 
 
-def read_messages() -> dict[str, Any]:
-    """Mark all your unread A2A direct messages as read.
-
-    Call this when ``i_am_idle()`` soft-blocks you on unread A2A — it clears
-    your direct-message inbox so you can idle. Notifications are separate: use
-    ``notify_list`` / ``notify_get`` / ``notify_ack`` for those.
-    """
-    return _post("/api/v1/do/read_messages", {})
-
-
-def read_a2a() -> dict[str, Any]:
-    """Read the bodies of your unread A2A direct messages (and mark them read).
-
-    Unlike ``read_messages`` (which only clears the unread counter), this
-    returns what other agents actually said to you so you can act on it.
-    """
-    return _post("/api/v1/do/read_a2a", {})
-
-
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -1004,7 +965,6 @@ _TOOLS: dict[str, Any] = {
     "propose_roadmap": propose_roadmap,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_video": propose_video,
-    "dm": dm,
     "notify": notify,
     "evidence": evidence,
     "request_sandbox": request_sandbox,
@@ -1014,8 +974,6 @@ _TOOLS: dict[str, Any] = {
     "notify_get": notify_get,
     "notify_ack": notify_ack,
     "pr_update": pr_update,
-    "read_messages": read_messages,
-    "read_a2a": read_a2a,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,

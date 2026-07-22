@@ -156,13 +156,6 @@ class ProposeVideoRequest(BaseModel):
     input_props: dict[str, Any] | None = None
 
 
-class DmRequest(BaseModel):
-    recipient: str  # agent slug
-    text: str = Field(..., min_length=1)
-    task_id: UUID | None = None
-    skill: str | None = None
-
-
 class NotifyRequest(BaseModel):
     target: str  # agent slug
     text: str = Field(..., min_length=1)
@@ -228,10 +221,6 @@ class NotifyGetRequest(BaseModel):
 
 class NotifyAckRequest(BaseModel):
     notification_id: UUID
-
-
-class ReadMessagesRequest(BaseModel):
-    """No params — clears the caller's unread A2A inbox (X-Agent-ID header)."""
 
 
 class PRUpdateRequest(BaseModel):

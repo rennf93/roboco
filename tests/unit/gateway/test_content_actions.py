@@ -568,55 +568,6 @@ async def test_note_auto_fills_task_id_from_active_task() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_dm_no_active_task_no_explicit_task_id_returns_invalid_state() -> None:
-    """dm without any task context is rejected with a clear error."""
-    deps = _make_deps()
-    ca = ContentActions(deps)
-    agent_id = uuid4()
-
-    env = await ca.dm(
-        agent_id=agent_id,
-        recipient="be-qa-1",
-        text="Can you review this when you have a moment?",
-    )
-    body = env.as_dict()
-
-    assert body["error"] == "invalid_state"
-    assert "task_id" in body["message"]
-    deps.a2a.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_dm_with_active_task_succeeds() -> None:
-    """dm auto-injects task_id from active task and sends."""
-    agent_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress")
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = task_obj
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
-    a2a_svc = AsyncMock()
-
-    deps = _make_deps(task=task_svc, a2a=a2a_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.dm(
-        agent_id=agent_id,
-        recipient="be-qa-1",
-        text="PR is ready for review.",
-        skill="code_review",
-    )
-    body = env.as_dict()
-
-    assert body["error"] is None
-    assert body["task_id"] == str(task_id)
-    a2a_svc.send.assert_awaited_once()
-    call_kwargs = a2a_svc.send.call_args.kwargs
-    assert call_kwargs["to_agent"] == "be-qa-1"
-    assert call_kwargs["skill"] == "code_review"
-
-
 # ---------------------------------------------------------------------------
 # evidence
 # ---------------------------------------------------------------------------

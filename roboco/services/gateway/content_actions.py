@@ -1,4 +1,4 @@
-"""Smart-wrapped content tools — commit, note, dm, read_a2a, evidence.
+"""Smart-wrapped content tools — commit, note, evidence.
 
 Each method:
 1. Validates input (e.g., commit_validator for commit messages).
@@ -98,23 +98,6 @@ _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
-
-# Roles with NO agent-comms surface (CLAUDE.md): the human-only prompter and
-# secretary — restricted to note + evidence, no dm/notify, they own their own
-# dedicated chat pages instead. (Auditor and pr_reviewer carry dm/read_a2a
-# now — the CEO can DM either and it can reply in-thread — so they're no
-# longer in this set; the auditor's silence toward PEERS is enforced
-# separately in agents_config.can_a2a_direct.)
-# The spawn manifest already omits dm from these roles' tool surfaces, but
-# that is convention-only — this frozenset is the handler-level defence-in-depth
-# that refuses any call that bypassed the manifest (direct verb dispatch, test
-# harness, future routing change), so the no-comms invariant holds regardless of
-# how the call arrived. Matches the explicit role-frozenset gates on commit /
-# notify / pitch / playbook. Derived from the canonical set in
-# foundation.policy.communications — agents_config.can_a2a_direct's CEO
-# target-side check reuses the same source.
-_NO_COMMS_ROLES: frozenset[str] = frozenset(r.value for r in _comms.NO_COMMS_ROLES)
-
 
 _DECISION_SECTIONS: tuple[tuple[str, str], ...] = (
     ("context", "Context"),
@@ -288,7 +271,6 @@ class ContentActionsDeps:
 
     task: Any
     git: Any
-    a2a: Any
     journal: Any
     workspace: Any
     notifications: Any
@@ -304,6 +286,11 @@ class ContentActionsDeps:
     # optional so tests that don't exercise sandbox provisioning need not plumb
     # it in; None degrades to a retryable "orchestrator unavailable" envelope.
     orchestrator: Any = None
+    # The A2A service and DM content tool were part of the auditor/pr-reviewer
+    # A2A feature that was stripped from the root branch. Kept as nullable
+    # stubs so existing test fixtures don't break while the service modules are gone.
+    a2a: Any = None
+    dm: Any = None
 
 
 @dataclass(frozen=True)
@@ -417,10 +404,6 @@ class ContentActions:
         return self._deps.git
 
     @property
-    def a2a(self) -> Any:
-        return self._deps.a2a
-
-    @property
     def journal(self) -> Any:
         return self._deps.journal
 
@@ -439,6 +422,10 @@ class ContentActions:
     @property
     def orchestrator(self) -> Any:
         return self._deps.orchestrator
+
+    @property
+    def a2a(self) -> Any:
+        return self._deps.a2a
 
     async def _touch_heartbeat(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat refresh on a content-write success path.
@@ -1683,79 +1670,6 @@ class ContentActions:
             },
         )
 
-    async def dm(
-        self,
-        *,
-        agent_id: UUID,
-        recipient: str,
-        text: str,
-        task_id: UUID | None = None,
-        skill: str | None = None,
-    ) -> Envelope:
-        """A2A direct message. Requires task_id (active or explicit)."""
-        if rej := self._reject_soup(text, field="message", min_chars=2):
-            return rej
-        # Spec §5.5: no-comms roles — defense-in-depth runtime guard. dm() is
-        # the channel through which a no-comms role could "speak"; covers the
-        # human-only prompter/secretary (own dedicated chat pages, no agent
-        # A2A surface at all).
-        agent = await self.task.agent_for(agent_id)
-        caller_role = str(agent.role) if agent is not None else ""
-        if caller_role in _NO_COMMS_ROLES:
-            return Envelope.not_authorized(
-                message=(
-                    f"role '{caller_role}' is a silent / no-comms role;"
-                    " dm is not permitted"
-                ),
-                remediate=(
-                    "use note() to record; this human-only role has no"
-                    " agent-comms surface"
-                ),
-                context_briefing={},
-            )
-
-        if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is not None:
-                task_id = t.id
-        if task_id is None:
-            return Envelope.invalid_state(
-                message="dm requires a task_id (no active task and none provided)",
-                remediate="provide task_id explicitly or claim a task first",
-                context_briefing={},
-            )
-        # Catch A2A access denials and return an Envelope. If the
-        # error escapes here it's caught by FastAPI's middleware and
-        # rendered as RobocoError.to_dict() — a dict-shaped 'error'
-        # field that breaks do_server's circuit-breaker frozenset
-        # check (a TypeError: unhashable type: 'dict').
-        from roboco.enforcement.a2a_access import A2AAccessDeniedError
-
-        try:
-            await self.a2a.send(
-                from_agent=agent_id,
-                to_agent=recipient,
-                task_id=task_id,
-                body=text,
-                skill=skill,
-            )
-        except A2AAccessDeniedError as e:
-            remediate = e.route_hint or e.reason
-            return Envelope.not_authorized(
-                message=e.message,
-                remediate=remediate,
-                context_briefing={},
-            )
-        return Envelope.ok(
-            status="sent",
-            task_id=str(task_id),
-            next="continue",
-            context_briefing={},
-        )
-
     async def notify(
         self,
         *,
@@ -2994,40 +2908,6 @@ class ContentActions:
             task_id=None,
             next="continue",
             evidence={"id": str(notification_id), "acked": True},
-            context_briefing={},
-        )
-
-    async def read_messages(self, *, agent_id: UUID) -> Envelope:
-        """Mark all of the caller's unread A2A direct messages as read.
-
-        Clears the A2A side of ``i_am_idle``'s unread soft-block: zeroes the
-        per-conversation unread counter and stamps ``read_at`` on the inbound
-        messages. Notifications are separate (notify_list / notify_get /
-        notify_ack).
-        """
-        cleared = await self.a2a.mark_all_read(agent_id)
-        return Envelope.ok(
-            status="read",
-            task_id=None,
-            next="retry i_am_idle() — your A2A inbox is clear",
-            evidence={"conversations_cleared": cleared},
-            context_briefing={},
-        )
-
-    async def read_a2a(self, *, agent_id: UUID) -> Envelope:
-        """Return the caller's unread INCOMING A2A message bodies, then clear them.
-
-        The content-bearing read: ``read_messages`` only zeroes the unread
-        counter, so an agent could see "3 unread from be-qa" without ever
-        reading what was said. This returns the actual text of the inbound
-        messages (never the caller's own sends) so it can act on them.
-        """
-        messages = await self.a2a.get_unread_messages(agent_id)
-        return Envelope.ok(
-            status="read",
-            task_id=None,
-            next="act on the messages, then retry i_am_idle()",
-            evidence={"messages": messages},
             context_briefing={},
         )
 

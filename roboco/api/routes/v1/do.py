@@ -16,7 +16,6 @@ from roboco.api.schemas.v1.do import (
     ArchivePlaybookRequest,
     CommitRequest,
     CurateVaultRequest,
-    DmRequest,
     DraftPlaybookRequest,
     EvidenceRequest,
     NoteRequest,
@@ -30,14 +29,12 @@ from roboco.api.schemas.v1.do import (
     ProposeRoadmapRequest,
     ProposeVideoRequest,
     PRUpdateRequest,
-    ReadMessagesRequest,
     RejectPlaybookRequest,
     RequestRenderRequest,
     RequestSandboxRequest,
 )
 from roboco.security import (
     guard_deco,
-    prompt_injection_validator,
     secret_exfil_validator,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -207,29 +204,6 @@ async def do_propose_video(
     return envelope_to_response(env, request)
 
 
-@router.post("/dm")
-@guard_deco.rate_limit(requests=60, window=60)
-@guard_deco.max_request_size(size_bytes=65536)
-@guard_deco.custom_validation(prompt_injection_validator)
-@guard_deco.content_type_filter(["application/json"])
-@guard_deco.suspicious_detection(enabled=True)
-@guard_deco.behavior_analysis(_RUNAWAY_RULES)
-async def do_dm(
-    request: Request,
-    body: DmRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.dm(
-        agent_id=x_agent_id,
-        recipient=body.recipient,
-        text=body.text,
-        task_id=body.task_id,
-        skill=body.skill,
-    )
-    return envelope_to_response(env, request)
-
-
 @router.post("/notify")
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
@@ -363,28 +337,6 @@ async def do_notify_ack(
         agent_id=x_agent_id,
         notification_id=body.notification_id,
     )
-    return envelope_to_response(env, request)
-
-
-@router.post("/read_messages")
-async def do_read_messages(
-    request: Request,
-    _body: ReadMessagesRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.read_messages(agent_id=x_agent_id)
-    return envelope_to_response(env, request)
-
-
-@router.post("/read_a2a")
-async def do_read_a2a(
-    request: Request,
-    _body: ReadMessagesRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.read_a2a(agent_id=x_agent_id)
     return envelope_to_response(env, request)
 
 

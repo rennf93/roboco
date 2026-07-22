@@ -25,7 +25,6 @@ import argparse
 import asyncio
 import shutil
 import sys
-from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -118,32 +117,8 @@ async def _rebuild_journals(
 
 
 async def _rebuild_a2a(writer: Any, db: Any) -> None:
-    from sqlalchemy import select
-
-    from roboco.db.tables import A2AConversationTable
-    from roboco.services.a2a import A2AService
-    from roboco.services.vault_writer import A2AMessageData, TaskLinkRef
-
-    a2a_service = A2AService(db)
-    conv_rows = (await db.execute(select(A2AConversationTable))).scalars().all()
-    epoch = datetime.min.replace(tzinfo=UTC)
-    for conv in conv_rows:
-        messages = await a2a_service.get_messages(conv.id, conv.agent_a, limit=500)
-        task_ref = TaskLinkRef(id=str(conv.task_id)) if conv.task_id else None
-        for msg in sorted(messages, key=lambda m: m.created_at or epoch):
-            writer.append_a2a_message(
-                A2AMessageData(
-                    conversation_id=str(conv.id),
-                    message_id=str(msg.id),
-                    from_agent=msg.from_agent,
-                    to_agent=(
-                        conv.agent_b if msg.from_agent == conv.agent_a else conv.agent_a
-                    ),
-                    content=msg.content,
-                    timestamp=msg.created_at or epoch,
-                    task_ref=task_ref,
-                )
-            )
+    """A2A vault projection is currently out of scope; kept as a no-op hook."""
+    pass
 
 
 async def _rebuild(vault_root: Path) -> None:

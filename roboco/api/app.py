@@ -16,12 +16,9 @@ from roboco.api.auth.routes import mount_cloud_auth
 from roboco.api.auth.seed import ensure_seed_user_startup
 from roboco.api.deps import _auth_required, get_orchestrator_or_none
 from roboco.api.middleware import setup_middleware
-from roboco.api.routes.a2a import router as a2a_router
-from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
-from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.github_app import router as github_app_router
@@ -369,10 +366,6 @@ def create_app() -> FastAPI:
     # Health check
     app.include_router(health_router, tags=["Health"])
 
-    # A2A Protocol: Well-known endpoints at root level
-    # (/.well-known/agent.json, /agents/{id}/.well-known/agent.json)
-    app.include_router(a2a_wellknown_router, tags=["A2A Protocol"])
-
     # API v1
     api_prefix = "/api"
 
@@ -525,24 +518,11 @@ def create_app() -> FastAPI:
         tags=["Kanban"],
     )
 
-    app.include_router(
-        dashboard_router,
-        prefix=f"{api_prefix}/dashboard",
-        tags=["Dashboard"],
-    )
-
     # Phase 7: Agent Runtime
     app.include_router(
         orchestrator_router,
         prefix=f"{api_prefix}/orchestrator",
         tags=["Orchestrator"],
-    )
-
-    # A2A Protocol: API endpoints
-    app.include_router(
-        a2a_router,
-        prefix=f"{api_prefix}/a2a",
-        tags=["A2A Protocol"],
     )
 
     # Git Integration

@@ -849,13 +849,14 @@ class QAMixin(_Base):
             return None
         try:
             await self.task.reassign(task_id, doc_agent.id)
-            await self.a2a.send(
-                from_agent=qa_agent_id,
-                to_agent=doc_agent.id,
-                skill="documentation",
-                task_id=task_id,
-                body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
-            )
+            if self.a2a:
+                await self.a2a.send(
+                    from_agent=qa_agent_id,
+                    to_agent=doc_agent.id,
+                    skill="documentation",
+                    task_id=task_id,
+                    body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
+                )
         except Exception as exc:
             logger.warning(
                 "pass_review side-effect failed - transition committed, "
@@ -1024,7 +1025,7 @@ class QAMixin(_Base):
                 verb="fail_review",
             )
 
-        if t.assigned_to is not None:
+        if t.assigned_to is not None and self.a2a:
             await self.a2a.send(
                 from_agent=qa_agent_id,
                 to_agent=t.assigned_to,

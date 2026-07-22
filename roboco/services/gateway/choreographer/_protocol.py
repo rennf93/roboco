@@ -38,10 +38,10 @@ class ChoreographerHelpers:
     task: Any
     work_session: Any
     git: Any
-    a2a: Any
     journal: Any
     audit: Any
     evidence_repo: Any
+    a2a: Any
 
     async def _emit_rejection(
         self,

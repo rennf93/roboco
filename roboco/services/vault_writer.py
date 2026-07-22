@@ -240,92 +240,6 @@ class AgentNoteData:
     team: str | None = None
 
 
-@dataclass(frozen=True)
-class StageTimingRow:
-    status: str
-    avg_seconds: float
-    sample_size: int
-
-
-@dataclass(frozen=True)
-class BottleneckRow:
-    status: str
-    cumulative_seconds: float
-    pct_of_total: float
-
-
-@dataclass(frozen=True)
-class TeamReworkRow:
-    team: str
-    rate: float
-
-
-@dataclass(frozen=True)
-class OrgReportData:
-    """Plain values for one weekly org-report note. The janitor assembles
-    this from ``MetricsService``/``UsageService`` dataclasses — kept plain
-    here so ``VaultWriter`` stays DB-free."""
-
-    week: str  # ISO week, e.g. "2026-W28"
-    tasks_completed: int
-    tasks_created: int
-    completion_rate: float
-    avg_cycle_hours: float | None
-    rework_rate: float
-    rework_cost_usd: float
-    total_cost_usd: float
-    total_tokens: int
-    stages: tuple[StageTimingRow, ...] = ()
-    bottlenecks: tuple[BottleneckRow, ...] = ()
-    by_team_rework: tuple[TeamReworkRow, ...] = ()
-
-
-def _org_report_body(data: OrgReportData) -> list[str]:
-    cycle = (
-        f"{data.avg_cycle_hours:.1f}h" if data.avg_cycle_hours is not None else "n/a"
-    )
-    body = [
-        f"# Org report — {data.week}",
-        "",
-        "## Velocity",
-        f"- Tasks completed: {data.tasks_completed}",
-        f"- Tasks created: {data.tasks_created}",
-        f"- Completion rate: {data.completion_rate:.0%}",
-        f"- Avg cycle time: {cycle}",
-    ]
-    if data.stages:
-        body += [
-            "",
-            "## Cycle time by stage",
-            "",
-            "| Stage | Avg (h) | Samples |",
-            "|---|---|---|",
-        ]
-        body += [
-            f"| {s.status} | {s.avg_seconds / 3600:.1f} | {s.sample_size} |"
-            for s in data.stages
-        ]
-    if data.bottlenecks:
-        body += ["", "## Top bottlenecks", "", "| Stage | % of dwell |", "|---|---|"]
-        body += [f"| {b.status} | {b.pct_of_total:.0%} |" for b in data.bottlenecks[:3]]
-    body += [
-        "",
-        "## Rework",
-        f"- Rate: {data.rework_rate:.0%}",
-        f"- Cost: ${data.rework_cost_usd:.2f}",
-    ]
-    if data.by_team_rework:
-        body += ["", "| Team | Rate |", "|---|---|"]
-        body += [f"| {t.team} | {t.rate:.0%} |" for t in data.by_team_rework]
-    body += [
-        "",
-        "## Cost",
-        f"- Total: ${data.total_cost_usd:.2f}",
-        f"- Tokens: {data.total_tokens:,}",
-    ]
-    return body
-
-
 class VaultWriter:
     """Pure file-system materializer, rooted at ``root`` (``ROBOCO_VAULT_PATH``)."""
 
@@ -339,9 +253,6 @@ class VaultWriter:
 
     def _archive_root(self) -> Path:
         return self.root / "RoboCo" / "Archive"
-
-    def _reports_root(self) -> Path:
-        return self.root / "RoboCo" / "Reports"
 
     def _journals_root(self) -> Path:
         return self.root / "RoboCo" / "Journals"
@@ -541,37 +452,6 @@ class VaultWriter:
         frontmatter = {"role": data.role, "team": data.team}
         body = f"# {data.name}\n\nRole: {data.role}\nTeam: {data.team or '(none)'}\n"
         path.write_text(_render_note(frontmatter, body), encoding="utf-8")
-        return path
-
-    # --- reports -------------------------------------------------------------- #
-
-    def write_org_report(self, data: OrgReportData) -> Path:
-        """Deterministic weekly org-report note — one file per ISO week
-        (re-running the same week overwrites it in place, no duplicates).
-        Numbers live in frontmatter too so Dataview can chart week-over-week
-        trends."""
-        directory = self._reports_root()
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{data.week}.md"
-        frontmatter = {
-            "week": data.week,
-            "tasks_completed": data.tasks_completed,
-            "tasks_created": data.tasks_created,
-            "completion_rate": round(data.completion_rate, 4),
-            "avg_cycle_hours": (
-                round(data.avg_cycle_hours, 2)
-                if data.avg_cycle_hours is not None
-                else None
-            ),
-            "rework_rate": round(data.rework_rate, 4),
-            "rework_cost_usd": round(data.rework_cost_usd, 2),
-            "total_cost_usd": round(data.total_cost_usd, 2),
-            "total_tokens": data.total_tokens,
-        }
-        path.write_text(
-            _render_note(frontmatter, "\n".join(_org_report_body(data))),
-            encoding="utf-8",
-        )
         return path
 
 

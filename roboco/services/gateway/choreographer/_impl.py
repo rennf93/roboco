@@ -260,7 +260,6 @@ class ChoreographerDeps:
     task: Any
     work_session: Any
     git: Any
-    a2a: Any
     journal: Any
     audit: Any
     evidence_repo: Any
@@ -279,6 +278,10 @@ class ChoreographerDeps:
     # Optional so existing callsites that don't exercise the rate-limit path
     # don't have to plumb it in.
     stream_bus: Any = None
+    # The A2A service was part of the auditor/pr-reviewer DM feature that was
+    # stripped from the root branch. Kept as a nullable stub so existing test
+    # fixtures don't break while the service module itself is gone.
+    a2a: Any = None
 
 
 @dataclass(frozen=True)
@@ -411,10 +414,6 @@ class Choreographer:
         return self._deps.git
 
     @property
-    def a2a(self) -> Any:
-        return self._deps.a2a
-
-    @property
     def journal(self) -> Any:
         return self._deps.journal
 
@@ -437,6 +436,10 @@ class Choreographer:
     @property
     def stream_bus(self) -> Any:
         return self._deps.stream_bus
+
+    @property
+    def a2a(self) -> Any:
+        return self._deps.a2a
 
     async def _touch(self, task_id: UUID | None) -> None:
         """Best-effort heartbeat write; silent on missing task."""
@@ -3579,13 +3582,14 @@ class Choreographer:
         if qa_agent is not None:
             await self.task.reassign(task_id, qa_agent.id)
             skill = self._resolve_skill(qa_agent, ["code_review", "qa_review"])
-            await self.a2a.send(
-                from_agent=agent_id,
-                to_agent=qa_agent.id,
-                skill=skill,
-                task_id=task_id,
-                body=f"Ready for review. PR: {t.pr_url}",
-            )
+            if self.a2a:
+                await self.a2a.send(
+                    from_agent=agent_id,
+                    to_agent=qa_agent.id,
+                    skill=skill,
+                    task_id=task_id,
+                    body=f"Ready for review. PR: {t.pr_url}",
+                )
 
     def _resolve_skill(self, target_agent: Any, preference: list[str]) -> str:
         """Pick first skill in preference list that target_agent has.
@@ -8129,7 +8133,7 @@ class Choreographer:
             )
         # Close the signal loop — the reject reason must reach whoever owns
         # the revision (mirrors fail_review / the pr_fail loop-closer).
-        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
+        if t.assigned_to is not None and t.assigned_to != pm_agent_id and self.a2a:
             await self.a2a.send(
                 from_agent=pm_agent_id,
                 to_agent=t.assigned_to,

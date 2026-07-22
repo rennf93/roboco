@@ -12,16 +12,6 @@ from roboco.api.schemas.common import (
     list_response,
     success_response,
 )
-from roboco.api.schemas.dashboard import (
-    AuditorDashboard,
-    AuditorFlag,
-    AuditorReport,
-    CEOOverview,
-    CreateFlagRequest,
-    CreateReportRequest,
-    FlagSeverity,
-    TeamHealth,
-)
 from roboco.api.schemas.health import HealthResponse, ReadinessResponse
 from roboco.api.schemas.journals import (
     CreateEntryRequest,
@@ -93,11 +83,6 @@ __all__ = [
     "AgentStatusResponse",
     # Common
     "ApiResponse",
-    # Dashboard
-    "AuditorDashboard",
-    "AuditorFlag",
-    "AuditorReport",
-    "CEOOverview",
     # Tasks
     "CheckpointRequest",
     "ClaimRequest",
@@ -106,8 +91,6 @@ __all__ = [
     "CommitRequest",
     # Journals
     "CreateEntryRequest",
-    "CreateFlagRequest",
-    "CreateReportRequest",
     "DecisionLogRequest",
     "ErrorCode",
     "ErrorDetail",
@@ -115,7 +98,6 @@ __all__ = [
     # Stream
     "ExtractedMessageResponse",
     "ExtractionResponse",
-    "FlagSeverity",
     "GeneralEntryRequest",
     "GrowthMetricsResponse",
     # Health
@@ -157,7 +139,6 @@ __all__ = [
     "TaskReflectionRequest",
     "TaskResponse",
     "TaskUpdate",
-    "TeamHealth",
     "TeamTasksQuery",
     "TokenEstimateRequest",
     "TokenEstimateResponse",

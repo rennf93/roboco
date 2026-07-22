@@ -7,7 +7,7 @@ today's behavior (no sandbox, the legacy ``_append_gate_env`` prod-creds
 injection stays byte-for-byte unchanged for them).
 
 Revision ID: 057_project_sandbox_services
-Revises: 056_member_perf_daily
+Revises: 055_spawn_session_turns
 Create Date: 2026-07-03
 """
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "057_project_sandbox_services"
-down_revision = "056_member_perf_daily"
+down_revision = "055_spawn_session_turns"
 branch_labels: dict[str, str] | None = None
 depends_on: dict[str, str] | None = None
 

@@ -447,13 +447,14 @@ class PRGateMixin(_Base):
             else ""
         )
         try:
-            await self.a2a.send(
-                from_agent=reviewer_agent_id,
-                to_agent=t.assigned_to,
-                skill="code_review",
-                task_id=task_id,
-                body=f"PR review needs changes. {notes}{steer}",
-            )
+            if self.a2a:
+                await self.a2a.send(
+                    from_agent=reviewer_agent_id,
+                    to_agent=t.assigned_to,
+                    skill="code_review",
+                    task_id=task_id,
+                    body=f"PR review needs changes. {notes}{steer}",
+                )
         except Exception:
             logger.exception("pr_fail a2a to owning PM failed", task_id=str(task_id))
 

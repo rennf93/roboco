@@ -31,22 +31,19 @@ class RoleConfig:
     description: str
 
 
-# Wave 1 receivers — every role with inbox access gets notify_list/get/ack for
-# notifications and read_messages for A2A, so `i_am_idle()`'s unread soft-block
-# is satisfiable rather than a permanent dead-end.
+# Notification receivers — every role with inbox access gets notify_list/get/ack
+# so `i_am_idle()`'s unread soft-block is satisfiable rather than a permanent
+# dead-end. The A2A DM backend was stripped from this branch.
 _NOTIFY_RECEIVER = (
     "notify_list",
     "notify_get",
     "notify_ack",
-    "read_messages",
-    "read_a2a",
 )
 
 _DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
 _DEV_DO = (
     "commit",
     "note",
-    "dm",
     "evidence",
     "progress",
     "pr_update",
@@ -69,7 +66,6 @@ _DEV_DO = (
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
 _QA_DO = (
     "note",
-    "dm",
     "evidence",
     "draft_playbook",
     "request_sandbox",
@@ -83,7 +79,6 @@ _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
 _DOC_DO = (
     "commit",
     "note",
-    "dm",
     "evidence",
     "progress",
     "pr_update",
@@ -94,7 +89,6 @@ _DOC_DO = (
 _CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
 _CELL_PM_DO = (
     "note",
-    "dm",
     "notify",
     "evidence",
     "pr_update",
@@ -105,7 +99,6 @@ _CELL_PM_DO = (
 _MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
 _MAIN_PM_DO = (
     "note",
-    "dm",
     "notify",
     "evidence",
     "pr_update",
@@ -118,7 +111,6 @@ _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = (
     "note",
     "pitch",
-    "dm",
     "notify",
     "evidence",
     *_NOTIFY_RECEIVER,
@@ -140,17 +132,12 @@ _HEAD_MARKETING_DO = (
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
-# no ack (silent observer — wouldn't ack notifications). It now carries
-# dm/read_a2a so the CEO can open a DM with a mid-flight auditor and it can
-# reply in-thread, but it still never INITIATES peer A2A — that's enforced in
-# agents_config.can_a2a_direct, not by omitting the tool.
+# no ack (silent observer — wouldn't ack notifications).
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
 # its surface (approve/reject/archive are KB curation actions, not agent comms).
 _AUDITOR_DO = (
     "note",
     "evidence",
-    "dm",
-    "read_a2a",
     "approve_playbook",
     "reject_playbook",
     "archive_playbook",
@@ -161,12 +148,9 @@ _AUDITOR_DO = (
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
 # from the lifecycle spec (a dedicated review trio, not QA's). It reads diffs and
-# records findings (note/evidence); the change-request is posted server-side. It
-# now carries dm/read_a2a so the CEO can reach one mid-review and it can reply
-# in-thread; its only INITIATION target stays its owning cell_pm/main_pm
-# (agents_config._check_pr_reviewer_a2a).
+# records findings (note/evidence); the change-request is posted server-side.
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
-_PR_REVIEWER_DO = ("note", "evidence", "dm", "read_a2a", "notify_list", "notify_get")
+_PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get")
 
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER

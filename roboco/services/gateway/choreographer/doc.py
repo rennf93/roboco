@@ -598,10 +598,11 @@ class DocMixin(_Base):
         if pm_agent is None:
             return
         await self.task.reassign(task_id, pm_agent.id)
-        await self.a2a.send(
-            from_agent=doc_agent_id,
-            to_agent=pm_agent.id,
-            skill="task_management",
-            task_id=task_id,
-            body=f"Docs complete for {task.id}. Ready for PM review + merge.",
-        )
+        if self.a2a:
+            await self.a2a.send(
+                from_agent=doc_agent_id,
+                to_agent=pm_agent.id,
+                skill="task_management",
+                task_id=task_id,
+                body=f"Docs complete for {task.id}. Ready for PM review + merge.",
+            )
