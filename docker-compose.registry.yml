@@ -420,6 +420,12 @@ services:
       # Spawn preflight — inert in practice (every real delivery role is
       # gateway-enabled); carried at OFF for parity with the build compose.
       ROBOCO_SPAWN_PREFLIGHT_ENABLED: ${ROBOCO_SPAWN_PREFLIGHT_ENABLED:-false}
+      # fastapi-guard's emergency-lockdown whitelist escape hatch. Carried
+      # here even though the guard trio itself (ENABLED/PASSIVE_MODE/
+      # FAIL_SECURE, see the declared-contract note above) is intentionally
+      # omitted — inert while guard stays off by default, but reaches the
+      # container the moment an operator arms guard by hand-editing this file.
+      ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
       # Cloud auth (FastAPI Users): login-gates the panel/API when exposed
       # beyond localhost. OFF by default (matches config default, unlike the
       # build compose which arms it for the personal deploy). Set
