@@ -276,6 +276,10 @@ export function AIRoutingCard() {
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.GROK,
   );
+  const catalogOpenaiOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.OPENAI,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.ANTHROPIC,
@@ -1033,6 +1037,29 @@ export function AIRoutingCard() {
                               </SelectGroup>
                             )}
 
+                            {/* Codex (OpenAI) models */}
+                            {catalogOpenaiOnly.length > 0 && (
+                              <SelectGroup>
+                                <SelectLabel>
+                                  <ProviderBadge variant="openai" />
+                                  Codex (OpenAI)
+                                </SelectLabel>
+                                {catalogOpenaiOnly.map(
+                                  (c: {
+                                    model_name: string;
+                                    display_name: string;
+                                  }) => (
+                                    <SelectItem
+                                      key={c.model_name}
+                                      value={c.model_name}
+                                    >
+                                      {c.display_name}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectGroup>
+                            )}
+
                             {/* Ollama Cloud models */}
                             {catalogOllamaOnly.length > 0 && (
                               <SelectGroup>
@@ -1247,19 +1274,21 @@ function errMsg(e: unknown): string {
 function ProviderBadge({
   variant,
 }: {
-  variant: "anthropic" | "grok" | "ollama" | "self-hosted";
+  variant: "anthropic" | "grok" | "openai" | "ollama" | "self-hosted";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
     ollama: "bg-violet-500/20 text-violet-700 dark:text-violet-400",
     "self-hosted": "bg-purple-500/20 text-purple-700 dark:text-purple-400",
     grok: "bg-teal-500/20 text-teal-700 dark:text-teal-400",
+    openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
     ollama: "O",
     "self-hosted": "S",
     grok: "G",
+    openai: "C",
   };
   return (
     <span

@@ -191,7 +191,10 @@ class ModelProvider(StrEnum):
     Messages API, so GROK agents run through a dedicated OpenAI-protocol
     provider (roboco.llm.providers.grok), not ANTHROPIC_BASE_URL injection.
     The xAI key is set via PUT /api/providers/grok/key.
-    `OPENAI` is reserved for future use.
+    `OPENAI` routes through the official Codex CLI on a ChatGPT subscription
+    (roboco.llm.providers.codex.CodexCliProvider), mirroring GROK's shape: a
+    mounted subscription credential (`~/.codex`), not a metered API key.
+    One-shot delivery roles only — no interactive intake/secretary support.
     """
 
     ANTHROPIC = "anthropic"

@@ -8,7 +8,9 @@ Pricing is provider-aware. A model name resolves to one of four cases:
 
 * **Anthropic** — priced from the table below by substring match.
 * **Priced non-Anthropic** — xAI Grok (``grok-build-*``, billed per token via
-  the xAI API) is priced from the table too. Match by substring like the rest.
+  the xAI API) and OpenAI Codex (``gpt-5.3-codex``, a ChatGPT-subscription CLI
+  priced here for cost attribution, not because the subscription itself is
+  metered) are priced from the table too. Match by substring like the rest.
 * **Free non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix
   or bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
   per-token cost**: local inference runs on owned hardware, and Ollama Cloud
@@ -64,6 +66,11 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # read is $0.20/1M; xAI publishes no cache-write premium, so cache_write is
     # the normal input rate. https://docs.x.ai/developers/models
     ("grok-build", 1.00, 2.00, 0.20, 1.00),
+    # OpenAI Codex — priced non-Anthropic (per-token, ChatGPT-subscription CLI
+    # but priced as if metered for cost attribution). Cached-input read is
+    # $0.175/1M; OpenAI publishes no cache-write premium, so cache_write is
+    # the normal input rate (same convention as grok-build above).
+    ("gpt-5.3-codex", 1.75, 14.00, 0.175, 1.75),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
     ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),

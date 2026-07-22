@@ -379,7 +379,7 @@ class ModelRoutingService(BaseService):
 
     async def derive_mode(
         self,
-    ) -> Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]:
+    ) -> Literal["anthropic", "grok", "codex", "ollama", "mix", "self_hosted"]:
         """Return the current "mode" label for the Settings UI.
 
         Decision tree matches what `apply_mode` writes:
@@ -387,6 +387,12 @@ class ModelRoutingService(BaseService):
           - only a global row, Ollama Cloud → "ollama"
           - only a global row, LOCAL        → "self_hosted"
           - anything else                   → "mix"
+
+        "codex" (OPENAI) is READ-only here — there is no `apply_mode="codex"`
+        write path (mix mode's per-agent picker is the only way to route to
+        it), so this branch exists purely so a pure-OPENAI global assignment
+        (however it got there) reports its real provider instead of the
+        catch-all "mix".
         """
         assignments = await self.list_assignments()
         if not assignments:
@@ -397,6 +403,8 @@ class ModelRoutingService(BaseService):
         if only_global:
             if assignments[0].provider.type == ModelProvider.GROK:
                 return "grok"
+            if assignments[0].provider.type == ModelProvider.OPENAI:
+                return "codex"
             if assignments[0].provider.type == ModelProvider.OLLAMA_CLOUD:
                 return "ollama"
             if assignments[0].provider.type == ModelProvider.LOCAL:
