@@ -400,6 +400,23 @@ _BASE_INHERIT_ROLES = frozenset({"developer", "cell_pm", "main_pm"})
 _BASE_INHERIT_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.NEEDS_REVISION})
 
 
+def _should_inherit_base(
+    original_branch_name: str | None,
+    project_id: Any,
+    agent_role: str | None,
+    original_status: Any,
+) -> bool:
+    """True iff this claim should merge the advanced upstream base in:
+    a pre-existing branch on a project task, claimed by a WORK role, from a
+    pre-review status. Kept out of ``_finalize_claim`` for complexity budget."""
+    return bool(
+        original_branch_name
+        and project_id
+        and agent_role in _BASE_INHERIT_ROLES
+        and original_status in _BASE_INHERIT_STATUSES
+    )
+
+
 def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
     """Split a CEO rejection reason into a ledger Finding's (actual, evidence).
 
@@ -3315,11 +3332,8 @@ class TaskService(BaseService):
         # i_will_plan re-claim of its own AWAITING_PM_REVIEW task must not
         # move a branch that already passed QA + the PR gate. A fresh cut
         # (original_branch_name unset) already branches from the live base.
-        if (
-            original_branch_name
-            and task.project_id
-            and agent_role in _BASE_INHERIT_ROLES
-            and original_status in _BASE_INHERIT_STATUSES
+        if _should_inherit_base(
+            original_branch_name, task.project_id, agent_role, original_status
         ):
             await self._inherit_upstream_base(task, agent_id)
 
