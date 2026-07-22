@@ -84,6 +84,16 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # Routes to the OPENAI provider → CodexCliProvider spawn. Subscription auth
     # (~/.codex, from `codex login`), no metered API key — parity with Grok.
     CatalogEntry("gpt-5.3-codex", ModelProvider.OPENAI, "GPT-5.3 Codex"),
+    # --- Gemini (Google, official gemini CLI) ---
+    # Routes to the GEMINI provider → GeminiCliProvider spawn (OAuth login, not
+    # a metered key — see roboco.llm.providers.gemini). One-shot delivery roles
+    # only (V1). All three GA ids, most-capable (and default, ROBOCO_GEMINI_CLI_MODEL)
+    # first, down to the cheapest.
+    CatalogEntry("gemini-2.5-pro", ModelProvider.GEMINI, "Gemini 2.5 Pro"),
+    CatalogEntry("gemini-2.5-flash", ModelProvider.GEMINI, "Gemini 2.5 Flash"),
+    CatalogEntry(
+        "gemini-2.5-flash-lite", ModelProvider.GEMINI, "Gemini 2.5 Flash Lite"
+    ),
 )
 
 

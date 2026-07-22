@@ -406,6 +406,21 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Gemini Image Builder (Google Gemini via the official gemini CLI).
+  # One-shot delivery roles only (V1) — no interactive prompter/secretary
+  # variant exists for Gemini yet, contrast the Grok images above.
+  # ==========================================================================
+  agent-gemini-image:
+    build:
+      context: .
+      dockerfile: docker/agent-gemini.Dockerfile
+    image: roboco-agent-gemini
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Gemini image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
   # Only pulled by the provisioner when a venture requests pg extensions; bare
   # sandboxes stay on the light upstream postgres image. See
@@ -491,6 +506,10 @@ services:
       # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
       # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
       ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}
+      # OAuth login (host ~/.gemini) for Gemini-CLI agents — the orchestrator
+      # mounts <dir>/oauth_creds.json (read-only) into each Gemini agent. Run
+      # `gemini` interactively once on the host to produce it.
+      ROBOCO_HOST_GEMINI_DIR: ${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so
@@ -690,6 +709,14 @@ services:
       # the orchestrator auto-refreshes the access token in place
       # (codex_auth.refresh_if_stale); each agent's own mount stays read-only.
       - ${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}:${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}
+      # OAuth login for Gemini-CLI agents — mount the host ~/.gemini at the
+      # SAME host path the orchestrator passes to each Gemini agent's `-v`, so
+      # its oauth_creds.json exists() check passes here AND the agent bind
+      # resolves on the host. Read-ONLY: unlike grok's single-use SuperGrok
+      # token, Google's OAuth refresh token is reusable and refreshed
+      # IN-PROCESS by each agent container's own CLI — never by the
+      # orchestrator — so no read-write access is needed here.
+      - ${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:ro
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
@@ -704,6 +731,9 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
       # Per-agent CODEX usage capture — same shape as grok-usage above.
       - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
+      # Per-agent GEMINI usage capture: each Gemini agent writes usage.json
+      # under <agent_id>/; the finalizer reads the captured tokens/cost back here.
+      - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
       # Persistent logs — survive `docker compose down/up`. Orchestrator and
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.

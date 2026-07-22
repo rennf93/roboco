@@ -1861,6 +1861,30 @@ class Settings(BaseSettings):
             "ROBOCO_CODEX_CLI_MODEL"
         ),
     )
+    # Base retry_after when parking the GEMINI provider on a quota/rate-limit
+    # exit (see roboco.runtime.orchestrator._park_gemini_rate_limited, which
+    # backs this off exponentially on repeated re-parks within one episode —
+    # same shape as grok's park, but grok hardcodes its base as a module
+    # constant; Gemini's is a tunable Setting since an operator may want a
+    # different cadence for Google's own OAuth-quota reset window).
+    gemini_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the GEMINI provider on a "
+            "quota/rate-limit exit; override via "
+            "ROBOCO_GEMINI_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    gemini_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the GEMINI provider on a "
+            "missing/invalid OAuth credential (entrypoint preflight exit 41); "
+            "override via ROBOCO_GEMINI_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose

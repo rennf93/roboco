@@ -258,7 +258,8 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
 _OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
 
 # ponytail: marker map drives the detector — adding a provider later is a
-# table row, not a new branch. Grok is deliberately absent (exit-75 detector).
+# table row, not a new branch. Grok and Gemini are deliberately absent (both
+# use their own exit-75 detectors instead of a text-marker scan).
 _RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
     ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
@@ -419,6 +420,36 @@ _CODEX_RATE_LIMIT_EXIT_CODE = 75
 _CODEX_RATE_LIMIT_RETRY_AFTER_S = 60.0
 _CODEX_AUTH_EXIT_CODE = 78
 _CODEX_AUTH_RETRY_AFTER_S = 60.0
+
+# In-orchestrator path where each GEMINI agent's usage capture is visible —
+# the gemini analogue of GROK_USAGE_DATA_DIR (see there for the mount shape).
+GEMINI_USAGE_DATA_DIR = os.environ.get("ROBOCO_GEMINI_USAGE_DIR", "/data/gemini-usage")
+
+# A one-shot Gemini container exits with this code (EX_TEMPFAIL) when the run's
+# captured stdout carried a quota/rate-limit error (gemini-cli-agent-
+# entrypoint.sh remaps the CLI's generic exit 1 to this via
+# roboco.llm.providers.gemini_cli_usage.classify_exit_code — the CLI itself has
+# no dedicated exit code for this case, unlike grok's own text-grep detector).
+# Same numeric value as grok's exit-75 detector (both are "try again later"),
+# but checked by a SEPARATE provider-scoped predicate (_is_gemini_rate_limit_exit)
+# so the two providers park independently.
+_GEMINI_RATE_LIMIT_EXIT_CODE = 75
+# Gemini, like grok, has no real recovery probe (an OAuth-login daily quota cap
+# has no cheap API to poll remaining balance) — the probe loop clears a park on
+# a timer, and a still-active quota re-parks. Back the re-park retry_after off
+# exponentially within one episode so the churn dampens, mirroring
+# _GROK_REPARK_BACKOFF_CAP / _GROK_REPARK_EPISODE_GAP_S exactly.
+_GEMINI_REPARK_BACKOFF_CAP = 4
+_GEMINI_REPARK_EPISODE_GAP_S = 1500.0
+# A one-shot Gemini container exits with this code (the CLI's own dedicated
+# auth-failure code, source-verified) when the entrypoint's OAuth-credential
+# preflight found the mounted credential missing/empty. Unlike grok's exit 78,
+# no orchestrator-side refresher daemon proactively mints a new token here —
+# Google's refresh token is reusable and refreshed IN-PROCESS by the CLI itself
+# (see roboco.llm.providers.gemini) — so a genuinely bad/missing credential
+# re-parks flat (no exponential backoff) until an operator fixes it on the
+# host, exactly like grok's own auth-exit park.
+_GEMINI_AUTH_EXIT_CODE = 41
 
 
 # =============================================================================
@@ -1125,6 +1156,19 @@ class AgentOrchestrator:
         # actually lifted) resets the count for the next episode.
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
+        # Gemini re-park backoff state — same shape as grok's above, tracked
+        # separately so the two providers' rate-limit episodes never interfere.
+        self._gemini_last_park_at: datetime | None = None
+        self._gemini_repark_count: int = 0
+        # Configurable retry_after base for GEMINI parks (operators may want to
+        # tune these for Google's own OAuth-quota reset cadence, unlike grok's
+        # hardcoded equivalents — see settings.gemini_rate_limit_retry_after_seconds).
+        self._gemini_rate_limit_retry_after_s: float = (
+            settings.gemini_rate_limit_retry_after_seconds
+        )
+        self._gemini_auth_retry_after_s: float = (
+            settings.gemini_auth_retry_after_seconds
+        )
 
     def _init_engine_loop_task_slots(self) -> None:
         """Task handles for the default-off engine loops. Split out of
@@ -1579,6 +1623,49 @@ class AgentOrchestrator:
         except OSError as exc:
             logger.warning(
                 "could not pre-create codex usage dir; codex agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _gemini_usage_root() -> Path:
+        """The base dir all per-agent gemini usage dirs live under (no agent id).
+
+        Branched compose-vs-local exactly like :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(GEMINI_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-gemini-usage"
+
+    @staticmethod
+    def _gemini_usage_dir(agent_id: str) -> Path:
+        """Per-agent gemini usage dir under :meth:`_gemini_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_gemini_usage_dir``) and the finalize read side
+        (``_gemini_usage_json``) — see :meth:`_grok_usage_dir`'s docstring for
+        the ``_safe_agent_path_segment`` traversal-rejection rationale, shared
+        verbatim here.
+        """
+        return AgentOrchestrator._gemini_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_gemini_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's gemini usage dir (world-writable) before the mount.
+
+        Same EACCES rationale as :meth:`_ensure_grok_usage_dir`: a missing
+        Linux bind-mount source is auto-created ``root:root``, so the non-root
+        ``agent`` user would fail to write ``usage.json`` there without this.
+        """
+        target = self._gemini_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create gemini usage dir; gemini agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
@@ -2896,6 +2983,9 @@ class AgentOrchestrator:
                 "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{config.agent_id}",
                 # Per-agent codex usage dir (OPENAI only); same shape.
                 "codex_usage": f"{DATA_HOST_PATH}/codex-usage/{config.agent_id}",
+                # Per-agent gemini usage dir (GEMINI only); same shape as
+                # grok_usage above (see GEMINI_USAGE_DATA_DIR).
+                "gemini_usage": f"{DATA_HOST_PATH}/gemini-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -2920,6 +3010,9 @@ class AgentOrchestrator:
             ),
             "codex_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-codex-usage" / config.agent_id
+            ),
+            "gemini_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-gemini-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3290,12 +3383,15 @@ class AgentOrchestrator:
         """Build (once) the registry of dedicated provider backends.
 
         Only providers that need a runtime other than the built-in Claude Code
-        container are registered. Today that is GROK (xAI) and OPENAI (Codex
-        CLI) — both OpenAI-protocol-shaped subscription CLIs.
+        container are registered. Today that is GROK (xAI, OpenAI protocol),
+        OPENAI (Codex CLI, subscription-shaped like GROK), and GEMINI (Google,
+        official CLI, one-shot delivery roles only — see
+        roboco.llm.providers.gemini for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
                 CodexCliProvider,
+                GeminiCliProvider,
                 GrokCliProvider,
                 ProviderRegistry,
             )
@@ -3313,6 +3409,12 @@ class AgentOrchestrator:
                 ModelProvider.OPENAI,
                 CodexCliProvider(
                     self, image=_qualify_agent_image("roboco-agent-codex")
+                ),
+            )
+            registry.register(
+                ModelProvider.GEMINI,
+                GeminiCliProvider(
+                    self, image=_qualify_agent_image("roboco-agent-gemini")
                 ),
             )
             self._provider_registry = registry
@@ -6267,6 +6369,24 @@ class AgentOrchestrator:
         """
         return self._read_usage_json_contained(self._codex_usage_root(), agent_id)
 
+    def _gemini_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a GEMINI agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
+
+        Written to the per-agent data dir by the gemini-cli entrypoint
+        (one-shot, post-run); read back from the same branched dir the writer
+        mounts (``_gemini_usage_dir``). Returns ``None`` when absent/unreadable
+        — see ``_grok_usage_json`` for the ``os.path.basename`` traversal note,
+        applied identically here.
+        """
+        try:
+            usage_json = (
+                self._gemini_usage_dir(os.path.basename(agent_id)) / "usage.json"
+            )
+            data = json.loads(usage_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.
 
@@ -6309,6 +6429,41 @@ class AgentOrchestrator:
             return int(data.get("turns", 0))
         except (TypeError, ValueError):
             return 0
+
+    def _gemini_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A GEMINI agent's token usage from its ``usage.json``.
+
+        The entrypoint's usage capture already priced each model's real
+        input/output split at its OWN rate (unlike grok's single-model
+        blanket), but flattens to one ``total_tokens`` for this shape — so,
+        like grok, the whole total folds into output here. A WARNING is
+        logged on a missing/zero read (a silent mount/uid failure is otherwise
+        indistinguishable from a genuine zero-cost run).
+        """
+        data = self._gemini_usage_json(agent_id)
+        total = 0
+        if data:
+            try:
+                total = int(data.get("total_tokens", 0))
+            except (TypeError, ValueError):
+                total = 0
+        if not total:
+            logger.warning(
+                "GEMINI agent finalized with no readable usage "
+                "(0 tokens / $0) — check the data dir mount",
+                agent_id=agent_id,
+            )
+        return (0, total, 0, 0)
+
+    def _gemini_cost_usd(self, agent_id: str) -> float:
+        """A GEMINI agent's captured cost from its ``usage.json`` (0 if none)."""
+        data = self._gemini_usage_json(agent_id)
+        if not data:
+            return 0.0
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     async def _enforce_grok_cost_budget(self) -> None:
         """Kill a live GROK container whose captured cost exceeds the cap.
@@ -6377,12 +6532,12 @@ class AgentOrchestrator:
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        For a GROK or OPENAI (codex) agent, reads the captured ``usage.json``
-        (no SDK server / Claude transcript exists for either). Otherwise tries
-        the live SDK ``/usage/status`` first; if that misses — the SDK's
-        in-memory counts race container teardown for short-lived agents — it
-        falls back to the agent's Claude Code transcript, which is durable and
-        mounted into this container. Returns
+        For a GROK, OPENAI (codex), or GEMINI agent, reads the captured
+        ``usage.json`` (no SDK server / Claude transcript exists for any of
+        them). Otherwise tries the live SDK ``/usage/status`` first; if that
+        misses — the SDK's in-memory counts race container teardown for
+        short-lived agents — it falls back to the agent's Claude Code
+        transcript, which is durable and mounted into this container. Returns
         ``(input, output, cache_read, cache_write)``.
         """
         from roboco.models.base import ModelProvider
@@ -6392,6 +6547,8 @@ class AgentOrchestrator:
             return self._grok_usage_tokens(agent_id)
         if provider == ModelProvider.OPENAI.value:
             return self._codex_usage_tokens(agent_id)
+        if provider == ModelProvider.GEMINI.value:
+            return self._gemini_usage_tokens(agent_id)
 
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -6430,15 +6587,15 @@ class AgentOrchestrator:
         For ``turns`` only there is a durable Claude-transcript fallback (unique
         assistant-message count) for short-lived agents whose SDK counts race
         teardown; ``tool_calls`` has no transcript equivalent and stays 0 ("n/a")
-        when the SDK misses. Grok agents have neither — returns ``(0, 0)``.
-        Codex agents have a real ``turn.completed`` count (from its usage.json)
-        but no tool-call signal — returns ``(turns, 0)``. Best-effort: any
-        failure degrades to zeros, never blocks finalize.
+        when the SDK misses. Grok and Gemini agents have neither — returns
+        ``(0, 0)``. Codex agents have a real ``turn.completed`` count (from
+        its usage.json) but no tool-call signal — returns ``(turns, 0)``.
+        Best-effort: any failure degrades to zeros, never blocks finalize.
         """
         from roboco.models.base import ModelProvider
 
         provider = self.get_provider_for_agent(agent_id)
-        if provider == ModelProvider.GROK.value:
+        if provider in (ModelProvider.GROK.value, ModelProvider.GEMINI.value):
             return (0, 0)
         if provider == ModelProvider.OPENAI.value:
             return (self._codex_usage_turns(agent_id), 0)
@@ -6630,10 +6787,12 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet. GROK / OPENAI (codex) have no SDK server or
-        Claude transcript, so each routes to its own ``usage.json`` — the same
-        early return the finalize path uses, so live USAGE_SNAPSHOT reflects
-        grok/codex agents mid-run too.
+        source has any usage yet. GROK / OPENAI (codex) / GEMINI have no SDK
+        server or Claude transcript, so each routes to its own ``usage.json``
+        — the same early return the finalize path uses, so live
+        USAGE_SNAPSHOT reflects grok/codex/gemini agents mid-run too (in
+        practice a one-shot run's usage.json is written only post-run, so
+        this is a no-op ``None`` until the run ends).
         """
         instance = self._instances.get(agent_id)
         provider = (
@@ -6641,12 +6800,18 @@ class AgentOrchestrator:
             if instance is not None and instance.config is not None
             else None
         )
-        if provider == ModelProvider.GROK.value:
-            grok_tokens = self._grok_usage_tokens(agent_id)
-            return grok_tokens if any(grok_tokens) else None
-        if provider == ModelProvider.OPENAI.value:
-            codex_tokens = self._codex_usage_tokens(agent_id)
-            return codex_tokens if any(codex_tokens) else None
+        # One-shot CLIs (no SDK server / Claude transcript) each read their own
+        # captured usage.json — collapsed into a lookup so a third such
+        # provider is one dict entry, not another branch.
+        usage_json_readers = {
+            ModelProvider.GROK.value: self._grok_usage_tokens,
+            ModelProvider.OPENAI.value: self._codex_usage_tokens,
+            ModelProvider.GEMINI.value: self._gemini_usage_tokens,
+        }
+        read_usage_json = usage_json_readers.get(provider) if provider else None
+        if read_usage_json is not None:
+            cli_tokens = read_usage_json(agent_id)
+            return cli_tokens if any(cli_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
@@ -8227,6 +8392,31 @@ Start by:
             return True
         return False
 
+    async def _maybe_park_for_known_exit(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> bool:
+        """Park the agent's provider on a recognized rate-limit/auth exit code.
+
+        Grok, Codex, and Gemini each run a one-shot CLI with no live SDK/usage
+        signal, so a 429-equivalent or missing-credential exit is detected
+        purely from the exit code (see the individual ``_is_*_exit`` checks).
+        Tries each provider's pair in turn; returns True on the first match
+        (having already awaited its ``_park_*`` call), False when none match.
+        """
+        checks = (
+            (self._is_grok_rate_limit_exit, self._park_grok_rate_limited),
+            (self._is_grok_auth_exit, self._park_grok_auth_unavailable),
+            (self._is_codex_rate_limit_exit, self._park_codex_rate_limited),
+            (self._is_codex_auth_exit, self._park_codex_auth_unavailable),
+            (self._is_gemini_rate_limit_exit, self._park_gemini_rate_limited),
+            (self._is_gemini_auth_exit, self._park_gemini_auth_unavailable),
+        )
+        for is_exit, park in checks:
+            if is_exit(instance, exit_code):
+                await park(agent_id, instance)
+                return True
+        return False
+
     async def _handle_stopped_container(
         self, agent_id: str, instance: Any, exit_code: int | None
     ) -> None:
@@ -8240,30 +8430,12 @@ Start by:
         do nothing; non-zero exits keep the existing crash-retry behaviour.
         """
         cid = instance.container_id[:12] if instance.container_id else None
-        # Grok 429 parking (B4): a one-shot grok run that hit an xAI 429 exits
-        # 75 (set by grok-cli-agent-entrypoint.sh). Park the provider instead of
-        # crash-retrying so the spawn guard suppresses the respawn loop; the
-        # probe-resume loop revives the task when the limit lifts.
-        if self._is_grok_rate_limit_exit(instance, exit_code):
-            await self._park_grok_rate_limited(agent_id, instance)
-            return
-        # Grok auth-missing parking (F041): a one-shot grok run whose entrypoint
-        # found the token missing/expired exits 78 (EX_CONFIG). Park the provider
-        # instead of crash-retrying — the agent can't start without a valid token,
-        # so respawning burns tokens for zero progress. The probe-resume loop
-        # revives the task once grok_auth.refresh_if_stale mints a fresh token.
-        if self._is_grok_auth_exit(instance, exit_code):
-            await self._park_grok_auth_unavailable(agent_id, instance)
-            return
-        # Codex 429/auth parking: same exit-code convention as grok (see
-        # _CODEX_RATE_LIMIT_EXIT_CODE / _CODEX_AUTH_EXIT_CODE), scoped to
-        # ModelProvider.OPENAI so a numeric-code collision with another
-        # provider's crash can never mis-park.
-        if self._is_codex_rate_limit_exit(instance, exit_code):
-            await self._park_codex_rate_limited(agent_id, instance)
-            return
-        if self._is_codex_auth_exit(instance, exit_code):
-            await self._park_codex_auth_unavailable(agent_id, instance)
+        # Grok/Codex/Gemini rate-limit + auth-missing parking: each one-shot
+        # CLI mirrors the same "recognized exit code -> park the provider"
+        # shape (see the individual _is_*_exit / _park_* pairs), so a single
+        # dispatch loop replaces what would otherwise be 6 near-identical
+        # early returns (keeps this function's branching flat for PLR0911).
+        if await self._maybe_park_for_known_exit(agent_id, instance, exit_code):
             return
         graceful = exit_code == 0
         # Park the provider on a session/usage limit or a server overload detected
@@ -9691,6 +9863,33 @@ Start by:
         )
 
     @staticmethod
+    def _is_gemini_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot gemini container that exited 75 (quota/rate-limit)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GEMINI_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GEMINI.value
+        )
+
+    @staticmethod
+    def _is_gemini_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot gemini container that exited 41 (OAuth credential gone).
+
+        The entrypoint's preflight refuses to run (exit 41 — the CLI's own
+        dedicated auth-failure code) when the mounted ``~/.gemini/oauth_creds.json``
+        is missing/empty. See ``_GEMINI_AUTH_EXIT_CODE`` for the full rationale.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GEMINI_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GEMINI.value
+        )
+
+    @staticmethod
     async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
         """Return the last ``lines`` of a container's combined output, '' on error.
 
@@ -9951,6 +10150,59 @@ Start by:
             instance,
             provider=ModelProvider.OPENAI.value,
             retry_after=_CODEX_AUTH_RETRY_AFTER_S,
+            kind="auth_missing",
+        )
+
+    async def _park_gemini_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a gemini agent whose run hit a quota/rate-limit (entrypoint exit 75).
+
+        Same repark-backoff shape as ``_park_grok_rate_limited`` (F097): Gemini
+        has no real recovery probe either (an OAuth-login daily quota cap has
+        no cheap balance-check API), so the probe loop clears the park
+        optimistically on a timer and a still-active quota re-parks. Back the
+        re-park ``retry_after`` off exponentially within one episode so the
+        churn dampens; a gap past ``_GEMINI_REPARK_EPISODE_GAP_S`` starts a
+        fresh episode at the base retry_after.
+        """
+        from roboco.models.base import ModelProvider
+
+        now = datetime.now(UTC)
+        last = self._gemini_last_park_at
+        if (
+            last is not None
+            and (now - last).total_seconds() < _GEMINI_REPARK_EPISODE_GAP_S
+        ):
+            self._gemini_repark_count += 1
+        else:
+            self._gemini_repark_count = 0
+        self._gemini_last_park_at = now
+        backoff = 2 ** min(self._gemini_repark_count, _GEMINI_REPARK_BACKOFF_CAP)
+        base = getattr(self, "_gemini_rate_limit_retry_after_s", 60.0)
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.GEMINI.value,
+            retry_after=base * backoff,
+            kind="rate_limited",
+        )
+
+    async def _park_gemini_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a gemini agent whose OAuth credential was missing (entrypoint exit 41).
+
+        Unlike grok's exit-78 auth park, no orchestrator-side refresher daemon
+        proactively mints a new token here (see ``_GEMINI_AUTH_EXIT_CODE`` and
+        ``roboco.llm.providers.gemini``'s module docstring for why none is
+        needed for a genuinely PRESENT-but-stale credential); a genuinely
+        missing/invalid one re-parks flat until an operator fixes it on the
+        host — same flat (no-backoff) shape as grok's own auth park.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.GEMINI.value,
+            retry_after=getattr(self, "_gemini_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
 
@@ -11707,7 +11959,11 @@ Start now: evidence(task_id="{task_id}")
         forever (#73). Returns the slug only for a non-GROK ACTIVE instance whose
         heartbeat has been stale longer than ``claude_stuck_kill_seconds`` — a
         recent heartbeat, no owner, a GROK provider (handled by the wedged-grok
-        path), or a non-ACTIVE instance all yield ``None``.
+        path), or a non-ACTIVE instance all yield ``None``. The bucket is
+        provider-agnostic by construction (it excludes GROK specifically, not
+        an allowlist of what it includes) — GEMINI (a one-shot CLI runtime with
+        no SDK server either) falls into this same generic "non-GROK" bucket
+        for free, with no dedicated wedge-kill path of its own.
         """
         from roboco.models.base import ModelProvider
 

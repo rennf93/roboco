@@ -195,6 +195,11 @@ class ModelProvider(StrEnum):
     (roboco.llm.providers.codex.CodexCliProvider), mirroring GROK's shape: a
     mounted subscription credential (`~/.codex`), not a metered API key.
     One-shot delivery roles only — no interactive intake/secretary support.
+    `GEMINI` is Google's Gemini via the official `gemini` CLI, authenticated by
+    an OAuth login (mounted `~/.gemini/oauth_creds.json`) rather than a metered
+    API key — the same subscription-style auth shape as GROK. Routes through a
+    dedicated provider (roboco.llm.providers.gemini), never
+    ANTHROPIC_BASE_URL injection.
     """
 
     ANTHROPIC = "anthropic"
@@ -202,6 +207,7 @@ class ModelProvider(StrEnum):
     OPENAI = "openai"
     LOCAL = "local"
     GROK = "grok"
+    GEMINI = "gemini"
 
 
 class AssignmentScope(StrEnum):
