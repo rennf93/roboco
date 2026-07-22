@@ -8,9 +8,10 @@ posts — asserted against a real Postgres DB.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -47,6 +48,8 @@ from roboco.services.x_client import MAX_TWEET_CHARS, XClient, XMention, XPostRe
 from sqlalchemy import select
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
@@ -998,6 +1001,266 @@ async def test_materialize_feature_spotlight_enforces_280_chars(
     body = markers.get_x_draft_body(draft)
     assert body is not None
     assert len(body) <= MAX_TWEET_CHARS
+
+
+# --------------------------------------------------------------------------- #
+# redraft_from_rejection — CEO reject feedback loop (mirrors VideoEngine.
+# reauthor_from_rejection). ``post_task.status = TS.CANCELLED`` below mirrors
+# XPostService.reject: by the time redraft_from_rejection runs, the rejected
+# draft is already cancelled and excluded from list_open_x_posts.
+# --------------------------------------------------------------------------- #
+
+
+@contextmanager
+def _redraft_lock_free() -> Iterator[None]:
+    """Patch XEngine's redraft-dedup lock helpers so a test exercises the
+    real check+originate path without touching the (test-blocked, see
+    conftest's `_no_live_redis`) Redis — mirrors test_x_post_service.py's
+    `_lock_free()` for the post-mutex. Every redraft test below that expects
+    the redraft to actually run needs this; the dedicated lock-held test
+    patches the SAME methods on the instance instead, to assert the opposite."""
+    with (
+        patch.object(
+            x_engine_module.XEngine,
+            "_acquire_redraft_lock",
+            AsyncMock(return_value="tok"),
+        ),
+        patch.object(
+            x_engine_module.XEngine,
+            "_release_redraft_lock",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_release_post_carries_version_and_new_body(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(
+        version=_VERSION, highlights=["feat: x"]
+    )
+    assert post_task is not None
+    original_body = markers.get_x_draft_body(post_task)
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper revised release announcement.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(
+            post_task, "Too vague, name the feature"
+        )
+    assert redraft is not None
+    assert redraft.id != post_task.id
+    assert redraft.source == X_POST_SOURCE
+    assert redraft.status == TS.PENDING
+    assert redraft.confirmed_by_human is False
+    assert markers.get_x_release_version(redraft) == _VERSION
+    body = markers.get_x_draft_body(redraft)
+    assert body == "A sharper revised release announcement."
+    assert body != original_body
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_reply_carries_mention_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+    engine = x_engine_module.XEngine(
+        db_session, client=_FakeClient(mentions=[_mention("m1", text="great work")])
+    )
+    result = await engine.run_cycle()
+    assert len(result) == ONE
+    post_task = result[0]
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A better reply.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too generic")
+    assert redraft is not None
+    assert redraft.source == X_REPLY_SOURCE
+    ref = markers.get_x_mention_ref(redraft)
+    assert ref is not None
+    assert ref["id"] == "m1"
+    assert markers.get_x_draft_body(redraft) == "A better reply."
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_feature_carries_feature_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+    post_task = await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="org-memory",
+        feature_title="Organizational Memory Loop",
+        body="Did you know RoboCo agents learn from every completed task?",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper spotlight tweet.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too dry")
+    assert redraft is not None
+    assert redraft.source == X_FEATURE_SOURCE
+    ref = markers.get_x_feature_ref(redraft)
+    assert ref is not None
+    assert ref["slug"] == "org-memory"
+    # No duplicate seen-slug insert — the original materialize already marked it.
+    assert await engine.is_feature_seen("org-memory") is True
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_local_model_failure_originates_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local-model failure must never ship a degraded copy — no redraft."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert post_task is not None
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    monkeypatch.setattr(
+        x_engine_module, "_chat", AsyncMock(side_effect=RuntimeError("ollama down"))
+    )
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Needs work")
+    assert redraft is None
+    open_posts = await get_task_service(db_session).list_open_x_posts()
+    assert open_posts == []
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_empty_local_model_reply_originates_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert post_task is not None
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, None)
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Needs work")
+    assert redraft is None
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_respects_open_cap(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_max_open_posts=1)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(version="1.0.0", highlights=[])
+    assert post_task is not None
+    post_task.status = TS.CANCELLED  # rejected; no longer counts toward the cap
+    await db_session.flush()
+
+    # Fill the cap with an unrelated open draft (a mention reply).
+    filler_client = _FakeClient(mentions=[_mention("cap-fill")])
+    filler_engine = x_engine_module.XEngine(db_session, client=filler_client)
+    filler = await filler_engine.run_cycle()
+    assert len(filler) == ONE
+
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Needs work")
+    assert redraft is None
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_dedupes_while_open_then_allows_after_rejection(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redraft is skipped while one is already open for the same item —
+    mirroring VideoEngine's occasion-scoped dedup — so a repeated reject
+    can't stack unbounded drafts. But once THAT redraft is itself rejected
+    (CANCELLED, so excluded from list_open_x_posts), a further redraft
+    proceeds: a genuine second revision round still works."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert post_task is not None
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    with _redraft_lock_free():
+        _mock_local_model(monkeypatch, "First revision.")
+        first_redraft = await engine.redraft_from_rejection(
+            post_task, "Round 1 feedback"
+        )
+        assert first_redraft is not None
+
+        # A second reject of the already-cancelled original must not stack
+        # another draft while the first redraft is still open.
+        again = await engine.redraft_from_rejection(post_task, "Round 1 feedback again")
+        assert again is None
+
+        # Once the first redraft is itself rejected, a further redraft proceeds.
+        first_redraft.status = TS.CANCELLED
+        await db_session.flush()
+        _mock_local_model(monkeypatch, "Second revision.")
+        second_redraft = await engine.redraft_from_rejection(
+            first_redraft, "Round 2 feedback"
+        )
+    assert second_redraft is not None
+    assert second_redraft.id != first_redraft.id
+    assert markers.get_x_draft_body(second_redraft) == "Second revision."
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_skipped_when_lock_held(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent redraft already holding the per-identity lock makes this
+    call skip rather than race the dedup check — closes the TOCTOU where two
+    deferred closures for the SAME identity could otherwise both pass
+    ``_redraft_already_open`` and both originate. A skipped redraft is safe:
+    the concurrent holder is already originating one, and the CEO can always
+    re-reject."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    post_task = await engine.draft_release_post(version=_VERSION, highlights=[])
+    assert post_task is not None
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    # Simulate a concurrent redraft already holding the lock for this identity.
+    release = AsyncMock()
+    monkeypatch.setattr(engine, "_acquire_redraft_lock", AsyncMock(return_value=None))
+    monkeypatch.setattr(engine, "_release_redraft_lock", release)
+
+    redraft = await engine.redraft_from_rejection(post_task, "Needs work")
+    assert redraft is None
+    release.assert_not_awaited()  # never acquired, so never released
+    open_posts = await get_task_service(db_session).list_open_x_posts()
+    assert open_posts == []
 
 
 # --------------------------------------------------------------------------- #

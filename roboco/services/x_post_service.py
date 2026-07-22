@@ -30,6 +30,7 @@ from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
+from roboco.services.notification_delivery import defer_after_commit
 from roboco.services.task import X_FEATURE_SOURCE, X_SOURCES, get_task_service
 from roboco.services.x_client import MAX_TWEET_CHARS, build_x_client
 from roboco.services.x_credentials import get_x_credentials_service
@@ -253,7 +254,9 @@ class XPostService(BaseService):
             logger.warning("spotlight video draft failed (best-effort): %s", exc)
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
-        """Record the CEO's reason and cancel the draft (never posted).
+        """Record the CEO's reason, cancel the draft (never posted), and — for
+        a non-blank reason — schedule a redraft of the same source once this
+        transaction commits.
 
         Acquires the same post-mutex ``approve()`` holds (same key, same
         non-blocking acquire style) so a reject can't interleave with a
@@ -263,40 +266,125 @@ class XPostService(BaseService):
         approve's own COMPLETED write right after it landed. Fails CLOSED
         like approve, both when the lock is held (approve mid-post) and when
         Redis is unreachable — the CEO retries the reject once it clears.
+
+        Idempotent on an already-CANCELLED target — a stale/replayed reject
+        (e.g. a double-tapped Telegram button) returns the task UNCHANGED
+        rather than re-flushing the reason and, worse, scheduling ANOTHER
+        redraft; mirrors ``_approve_locked``'s ``already_rejected``
+        short-circuit on the approve side.
+
+        The redraft itself is scheduled via ``_schedule_redraft`` (see its
+        docstring for why it's deferred rather than inline) — a redraft
+        failure never fails or delays this call, and a blank/whitespace
+        reason schedules nothing (plain cancel semantics unchanged).
         """
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source not in X_SOURCES:
             return None
-        if task.status == TaskStatus.COMPLETED:
-            raise TaskAlreadyCompletedError(
-                f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
-            )
+        terminal = self._reject_terminal_check(task, task_id)
+        if terminal is not None:
+            return terminal
 
         lock_key = f"{_LOCK_PREFIX}{task_id}"
-        try:
-            token = await self._acquire_lock(lock_key)
-        except _LockUnavailable as exc:
-            logger.error("x-post reject lock unavailable (redis down): %s", exc)
-            return None
+        token = await self._try_acquire_reject_lock(lock_key)
         if token is None:
-            return None  # a concurrent approve is mid-post; refuse the reject
+            return None  # redis down, or a concurrent approve is mid-post
         try:
             # Re-read under the lock: a concurrent approve may have posted +
-            # committed COMPLETED between the pre-lock check and here.
+            # committed COMPLETED between the pre-lock check and here, or a
+            # concurrent reject may have already landed CANCELLED.
             self.session.expire(task)
             locked = await get_task_service(self.session).get(task_id)
             if locked is None:
                 return None
-            if locked.status == TaskStatus.COMPLETED:
-                raise TaskAlreadyCompletedError(
-                    f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
-                )
+            terminal = self._reject_terminal_check(locked, task_id)
+            if terminal is not None:
+                return terminal
             markers.set_x_reject_reason(locked, reason)
             locked.status = TaskStatus.CANCELLED
             await self.session.flush()
-            return locked
         finally:
             await self._release_lock(lock_key, token)
+        # Outside the lock, after the cancel is flushed: a non-blank reason
+        # schedules the redraft. Never inline here (see _schedule_redraft).
+        if reason.strip():
+            self._schedule_redraft(task_id, reason)
+        return locked
+
+    def _reject_terminal_check(
+        self, task: TaskTable, task_id: UUID
+    ) -> TaskTable | None:
+        """Shared by the pre-lock and locked-under-mutex checks in
+        ``reject``: raises on COMPLETED (already posted, can't be
+        rejected), returns ``task`` unchanged on CANCELLED (an idempotent
+        replay — e.g. a double-tapped Telegram button — is a no-op, never
+        re-flushing the reason or scheduling ANOTHER redraft), else None to
+        mean "not terminal, proceed with the cancel"."""
+        if task.status == TaskStatus.COMPLETED:
+            raise TaskAlreadyCompletedError(
+                f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
+            )
+        if task.status == TaskStatus.CANCELLED:
+            return task
+        return None
+
+    async def _try_acquire_reject_lock(self, lock_key: str) -> str | None:
+        """``_acquire_lock`` wrapped so a Redis-down failure and an
+        already-held lock look identical to the caller (both mean "can't
+        safely reject right now") — collapses two ``reject()`` return
+        sites (and the try/except) into one, under the complexity gate."""
+        try:
+            return await self._acquire_lock(lock_key)
+        except _LockUnavailable as exc:
+            logger.error("x-post reject lock unavailable (redis down): %s", exc)
+            return None
+
+    def _schedule_redraft(self, task_id: UUID, reason: str) -> None:
+        """Enqueue XEngine.redraft_from_rejection to run only after THIS
+        session's transaction actually commits (``defer_after_commit`` —
+        registers on ``self.session``'s own ``after_commit``/``after_rollback``
+        events, so it fires regardless of whether the caller commits inside
+        this service call or, as the real route does, right after it
+        returns; a rollback drops it, never redrafting a reject that never
+        became durable).
+
+        Deferred rather than inline for two reasons: ``reject`` is an HTTP
+        route handler and the local-model call inside the redraft can take
+        seconds — the response must not block on it; and by the time the
+        deferred callable actually runs, the request's own ``AsyncSession``
+        may already be closing (FastAPI tears it down once the route
+        returns). So the callable opens a FRESH session from the process
+        session factory instead of touching ``self.session`` — the same
+        fresh-session-in-a-background-task shape ``TaskService.
+        _inject_proactive_context`` uses for its own post-commit background
+        write. Best-effort throughout: any failure (session error, project
+        unresolvable, local-model down) only logs.
+        """
+
+        async def _redraft() -> None:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import TaskTable
+            from roboco.services.x_engine import get_x_engine
+
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    fresh = await session.get(TaskTable, task_id)
+                    if fresh is None:
+                        return
+                    redrafted = await get_x_engine(session).redraft_from_rejection(
+                        fresh, reason
+                    )
+                    if redrafted is not None:
+                        await session.commit()
+            except Exception as exc:  # best-effort: never break the drain
+                logger.warning(
+                    "x-post redraft-after-commit failed for task %s: %s",
+                    task_id,
+                    exc,
+                )
+
+        defer_after_commit(self.session, _redraft)
 
     # ---- Redis single-flight lock (plain SET NX — no heartbeat needed) -----
 
