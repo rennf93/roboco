@@ -302,6 +302,27 @@ class Settings(BaseSettings):
             "(legacy: expires_at stays NULL, notifications never expire)."
         ),
     )
+    notification_reescalation_base_seconds: int = Field(
+        default=3600,
+        ge=1,
+        description=(
+            "Base interval for the per-notification re-escalation backoff: "
+            "the first re-escalation fires at expiry, each one after that "
+            "doubles the wait from this base (1h, 2h, 4h, 8h, ...) capped at "
+            "24h between attempts. Without this a static pile of expired, "
+            "still-unacked notifications re-escalates every sweep tick "
+            "(~1min) forever."
+        ),
+    )
+    notification_max_reescalations: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Hard cap on re-escalations per notification. Past this many "
+            "attempts a still-unacked notification is logged once as "
+            "permanently-unacked and never re-escalated again."
+        ),
+    )
     audit_interval_seconds: int = Field(
         default=21600,
         ge=0,
