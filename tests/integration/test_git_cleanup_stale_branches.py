@@ -336,13 +336,17 @@ async def test_unknown_project_returns_zeroed_result(
 
 @pytest.mark.asyncio
 async def test_delete_task_branch_refuses_env_ladder_rung_directly(
-    cleanup_setup: dict[str, Any],
+    cleanup_setup: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The chokepoint guard, not just the sweep's candidate filter: even a
     direct ``delete_task_branch`` call (e.g. the cancel-path caller in
-    task.py) must refuse a branch that is an environment-ladder rung — the
-    generic ``_delete_remote_branch_best_effort`` primitive's own
-    main/master/develop skip predates the ladder model and doesn't know it."""
+    task.py) must refuse a branch that is an environment-ladder rung. This
+    protection now lives entirely inside the shared
+    ``_delete_remote_branch_best_effort`` chokepoint (via
+    ``_protected_branches_for_deletion``) rather than as a local check in
+    ``delete_task_branch`` — so this test exercises the REAL chokepoint
+    (the fixture's ``AsyncMock`` stub for it is bypassed) and proves the
+    rung short-circuits before any network probe."""
     project = cleanup_setup["project"]
     project.environments = [
         {"name": "head", "branch": "develop"},
@@ -350,8 +354,12 @@ async def test_delete_task_branch_refuses_env_ladder_rung_directly(
     ]
     await cleanup_setup["db"].flush()
 
-    ok = await cleanup_setup["svc"].delete_task_branch(project.slug, "develop")
+    svc = GitService(cleanup_setup["db"])
+    monkeypatch.setattr(svc, "_token_for_project", AsyncMock(return_value="tok"))
+    dependents = AsyncMock(return_value=False)
+    monkeypatch.setattr(svc, "_branch_has_open_dependents", dependents)
+
+    ok = await svc.delete_task_branch(project.slug, "develop")
 
     assert ok is False
-    remote_delete = cleanup_setup["svc"]._delete_remote_branch_best_effort
-    remote_delete.assert_not_awaited()
+    dependents.assert_not_awaited()
