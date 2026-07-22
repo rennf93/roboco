@@ -1180,6 +1180,34 @@ class GitService(BaseService):
             return "master"
         return head_branch(project)
 
+    async def _protected_branches_for(self, project_slug: str | None) -> frozenset[str]:
+        """The project's own ``protected_branches``, normalized.
+
+        Consulted by every hardcoded rebase/delete safety gate as a UNION
+        with its own literal set — this can only ADD branches to what's
+        refused, never remove one, so a missing/unresolvable project or an
+        emptied field degrades to exactly the prior hardcoded-only behavior.
+        Branch names are matched case-sensitively (git refs are); entries are
+        stripped of surrounding whitespace defensively.
+        """
+        if not project_slug:
+            return frozenset()
+        try:
+            project = await get_project_service(self.session).get_by_slug(project_slug)
+        except Exception as e:
+            # Fail-open by design (additive-only protection degrading to the
+            # hardcoded floor is the right posture) — but log it, so a DB
+            # blip silently narrowing protection is at least observable.
+            self.log.warning(
+                "protected_branches lookup failed; degrading to hardcoded floor only",
+                project_slug=project_slug,
+                error=str(e),
+            )
+            return frozenset()
+        if project is None or not project.protected_branches:
+            return frozenset()
+        return frozenset(b.strip() for b in project.protected_branches if b.strip())
+
     async def _checkout_base_with_fallback(
         self,
         workspace: Path,
@@ -1893,13 +1921,17 @@ class GitService(BaseService):
         return await self.get_status(workspace)
 
     async def rebase(
-        self, workspace: Path, target_branch: str
+        self, workspace: Path, target_branch: str, project_slug: str | None = None
     ) -> tuple[bool, list[str]]:
         """Rebase the current branch onto target_branch.
 
         Safety gate: raises :class:`ValidationError` if the HEAD branch or
-        ``target_branch`` is ``master`` or ``main`` — rebasing a protected
-        integration branch is never safe in automation.
+        ``target_branch`` is ``master``/``main``, OR one of the project's own
+        declared ``protected_branches`` (when ``project_slug`` is given) —
+        rebasing a protected integration branch is never safe in automation.
+        ``master``/``main`` are refused unconditionally regardless of the
+        project's list (see :meth:`_protected_branches_for`): the union can
+        only tighten what's refused, never loosen it.
 
         On conflict (non-zero exit): captures unmerged files via
         ``git diff --name-only --diff-filter=U``, aborts the rebase to
@@ -1907,17 +1939,21 @@ class GitService(BaseService):
 
         On success: returns ``(False, [])``.
         """
-        _PROTECTED = frozenset({"master", "main"})
+        _PROTECTED = frozenset({"master", "main"}) | await self._protected_branches_for(
+            project_slug
+        )
         if target_branch in _PROTECTED:
             raise ValidationError(
                 f"REBASE_FORBIDDEN: Cannot rebase onto '{target_branch}'. "
-                "Rebasing onto 'master' or 'main' is not allowed in automation."
+                "Rebasing onto 'master', 'main', or a project-declared "
+                "protected branch is not allowed in automation."
             )
         head_branch = await self.get_current_branch(workspace)
         if head_branch in _PROTECTED:
             raise ValidationError(
                 f"REBASE_FORBIDDEN: Cannot rebase '{head_branch}'. "
-                "Rebasing 'master' or 'main' is not allowed in automation."
+                "Rebasing 'master', 'main', or a project-declared protected "
+                "branch is not allowed in automation."
             )
         result = await self._run_git(workspace, ["rebase", target_branch], check=False)
         if result.returncode != 0:
@@ -3607,19 +3643,30 @@ class GitService(BaseService):
             return True
 
     async def _delete_remote_branch_best_effort(
-        self, repo_ref: RepoRef, branch: str, git_token: str
+        self,
+        repo_ref: RepoRef,
+        branch: str,
+        git_token: str,
+        project_slug: str | None = None,
     ) -> bool:
         """Best-effort: delete a remote branch by name.
 
         Silently swallows errors — cleanup is not critical. Skips branches that
-        look like project defaults (main / master / develop) and any branch that
-        still has open dependent PRs (an active integration target — deleting it
-        would strand in-flight child work). Returns True if the delete request
-        was issued with no transport error, False on any skip/failure — callers
-        that only fire-and-forget can ignore it; the branch-cleanup sweep uses
-        it to report counts.
+        look like project defaults (main / master / develop), any branch in
+        the project's own declared ``protected_branches`` (when
+        ``project_slug`` is given — a UNION with the hardcoded set, so a
+        missing/emptied field only ever loses the extra protection, never the
+        main/master/develop floor), and any branch that still has open
+        dependent PRs (an active integration target — deleting it would
+        strand in-flight child work). Returns True if the delete request was
+        issued with no transport error, False on any skip/failure — callers
+        that only fire-and-forget can ignore it; the branch-cleanup sweep
+        uses it to report counts.
         """
-        if branch in ("main", "master", "develop", ""):
+        protected = frozenset(
+            ("main", "master", "develop", "")
+        ) | await self._protected_branches_for(project_slug)
+        if branch in protected:
             return False
         if await self._branch_has_open_dependents(repo_ref, branch, git_token):
             self.log.info(
@@ -3638,11 +3685,18 @@ class GitService(BaseService):
             return False
 
     async def _delete_pr_branch_best_effort(
-        self, repo_ref: RepoRef, pr_number: int, git_token: str
+        self,
+        repo_ref: RepoRef,
+        pr_number: int,
+        git_token: str,
+        project_slug: str | None = None,
     ) -> None:
         """Best-effort: delete the PR's source branch on the remote after merge.
 
         Silently swallows errors — branch cleanup is not critical.
+        ``project_slug``, when given, is forwarded to
+        :meth:`_delete_remote_branch_best_effort` so its own protected-branch
+        union covers this path too.
         """
         try:
             pr_resp = await self._forge.get_pr(
@@ -3653,7 +3707,9 @@ class GitService(BaseService):
             branch = (pr_resp.json().get("head") or {}).get("ref")
             if not branch:
                 return
-            await self._delete_remote_branch_best_effort(repo_ref, branch, git_token)
+            await self._delete_remote_branch_best_effort(
+                repo_ref, branch, git_token, project_slug
+            )
         except httpx.HTTPError:
             return
 
@@ -3690,7 +3746,7 @@ class GitService(BaseService):
         except Exception:
             return False
         return await self._delete_remote_branch_best_effort(
-            repo_ref, branch_name, git_token
+            repo_ref, branch_name, git_token, project_slug
         )
 
     async def close_task_pr_best_effort(
@@ -3998,7 +4054,9 @@ class GitService(BaseService):
                 status_code=resp.status_code,
             )
 
-        await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
+        await self._delete_pr_branch_best_effort(
+            repo_ref, pr_number, git_token, project_slug
+        )
 
         target_branch = await self._project_default_branch(project_slug)
         # Default branch always exists on origin, so the plain sync is correct
@@ -4978,7 +5036,9 @@ class GitService(BaseService):
                 target=target,
             )
         )
-        await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
+        await self._delete_pr_branch_best_effort(
+            repo_ref, pr_number, git_token, project.slug
+        )
         merge_commit = await self._sync_target_branch_best_effort(
             workspace, target, git_token
         )
@@ -5207,15 +5267,30 @@ class GitService(BaseService):
         worktree instead of refusing DIRTY_WORKSPACE.
 
         A master/main base is legitimate when it is the task's true merge
-        target (standalone task, branchless-parent child); the choreographer
-        refuses only a mis-resolved one. The push only ever targets the task
-        branch.
+        target (standalone task, branchless-parent child); the choreographer's
+        ``_sync_base_refused`` guards THAT (untouched by this refusal). This
+        method separately guards what it actually force-pushes: the HEAD/task
+        branch. If ``task.branch_name`` itself is master/main or one of the
+        project's declared ``protected_branches``, ``branch_name`` was
+        mis-set and force-pushing (with lease) over it is exactly what the
+        field exists to prevent — refuse before touching any workspace.
         """
         if not task.branch_name:
             raise ValueError("sync_task_branch requires a task with a branch_name")
         project = await self._project_for_task(task)
         if project is None:
             raise NotFoundError("Project for task", str(task.id))
+        protected_heads = frozenset(
+            {"master", "main"}
+        ) | await self._protected_branches_for(project.slug)
+        if str(task.branch_name) in protected_heads:
+            raise ValidationError(
+                f"REBASE_FORBIDDEN: task branch_name '{task.branch_name}' is a "
+                "protected branch (master/main or a project-declared "
+                "protected_branches entry) — branch_name was mis-set; "
+                "force-pushing over it is exactly what protected_branches "
+                "exists to prevent. Escalate via i_am_blocked(reason='...')."
+            )
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
@@ -5447,7 +5522,9 @@ class GitService(BaseService):
                     {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
                 )
         if delete_branch:
-            await self._delete_pr_branch_best_effort(repo_ref, pr_number, git_token)
+            await self._delete_pr_branch_best_effort(
+                repo_ref, pr_number, git_token, project.slug
+            )
 
     async def pr_target(
         self,

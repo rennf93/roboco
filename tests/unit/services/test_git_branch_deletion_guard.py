@@ -80,6 +80,194 @@ async def test_delete_skips_default_branch_before_checking_dependents() -> None:
     dep.assert_not_awaited()
 
 
+# --- projects.protected_branches UNION (2026-07-22 follow-up) -------------
+# `_delete_remote_branch_best_effort` unions its hardcoded skip tuple with
+# the project's own declared `protected_branches` when a project_slug is
+# given. The union can only ADD protection: a missing project_slug, an
+# unresolvable project, or an emptied field must reproduce the exact
+# hardcoded-only behavior above.
+
+
+def _project_service_returning(project: MagicMock) -> MagicMock:
+    svc = MagicMock()
+    svc.get_by_slug = AsyncMock(return_value=project)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_delete_skips_project_declared_protected_branch() -> None:
+    """A custom protected branch (not in the hardcoded set) is refused when
+    the project declares it — the open-dependents probe is never reached,
+    mirroring the hardcoded-name short-circuit above."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    project = MagicMock(protected_branches=["release"])
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "release", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_allows_branch_not_in_projects_protected_list() -> None:
+    """A branch that isn't hardcoded AND isn't in the project's declared
+    list is deleted normally — the union only blocks what's actually
+    listed, it doesn't become deny-by-default."""
+    svc = _service()
+    _bind(svc, "_branch_has_open_dependents", AsyncMock(return_value=False))
+    client = _fake_client()
+    project = MagicMock(protected_branches=["release"])
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"),
+            "feature/backend/abc--cell--leaf",
+            "tok",
+            "acme-repo",
+        )
+    client.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_empty_protected_branches_matches_hardcoded_only_behavior() -> (
+    None
+):
+    """An empty (or null) protected_branches field degrades to exactly the
+    prior hardcoded-only behavior — clearing the list never loosens
+    anything, but it also never invents new protection."""
+    svc = _service()
+    _bind(svc, "_branch_has_open_dependents", AsyncMock(return_value=False))
+    client = _fake_client()
+    project = MagicMock(protected_branches=[])
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"),
+            "feature/backend/abc--cell--leaf",
+            "tok",
+            "acme-repo",
+        )
+    client.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_no_project_slug_matches_hardcoded_only_behavior() -> None:
+    """Omitting project_slug entirely (legacy call shape) never touches the
+    project service and behaves byte-for-byte like before this change."""
+    svc = _service()
+    _bind(svc, "_branch_has_open_dependents", AsyncMock(return_value=False))
+    client = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch("roboco.services.git.get_project_service") as get_project_service,
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "feature/backend/abc--cell--leaf", "tok"
+        )
+    client.delete.assert_awaited_once()
+    get_project_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_matches_stripped_branch_case_sensitively() -> None:
+    """Stored entries are stripped of whitespace defensively, but matching
+    stays case-sensitive (git branch names are case-sensitive): a
+    differently-cased request is NOT protected by a stored ' Release '."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    project = MagicMock(protected_branches=[" Release "])
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        # Exact match after stripping -> refused.
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "Release", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+    client2 = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client2),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        # Different case -> not the same git ref -> allowed.
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "release", "tok", "acme-repo"
+        )
+    client2.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_union_never_collapses_hardcoded_floor_to_project_list_only() -> (
+    None
+):
+    """A project declaring its OWN protected_branches (e.g. ["release"]) must
+    NOT replace the hardcoded main/master/develop skip — the union is
+    additive, never a substitution. master and main stay refused regardless
+    of what the project's list contains."""
+    project = MagicMock(protected_branches=["release"])
+
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "master", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+    client2 = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client2),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "main", "tok", "acme-repo"
+        )
+    client2.delete.assert_not_awaited()
+
+
 # --- the open-dependents probe --------------------------------------------
 
 
