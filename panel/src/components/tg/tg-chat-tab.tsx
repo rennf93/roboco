@@ -254,7 +254,7 @@ function SecretaryView({ onBack }: { onBack: () => void }) {
               haptics.tap();
               void stop().then(onBack);
             }}
-            className="rounded-full bg-muted/60 px-3 py-1.5 text-xs font-medium text-muted-foreground"
+            className="rounded-full bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground"
           >
             End
           </button>
@@ -399,7 +399,7 @@ function MineList({
           <TgAvatar name={c.other_agent} />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="truncate text-[15px] font-medium">
+              <span className="min-w-0 truncate text-[15px] font-medium">
                 {getAgentDisplayName(c.other_agent)}
               </span>
               {c.last_message_at && (
@@ -411,7 +411,7 @@ function MineList({
             <div className="mt-0.5 flex items-center justify-between gap-2">
               <p
                 className={cn(
-                  "truncate text-[13px] leading-snug",
+                  "min-w-0 truncate text-[13px] leading-snug",
                   c.unread_count > 0
                     ? "font-medium text-foreground/80"
                     : "text-muted-foreground",
@@ -478,7 +478,7 @@ function FleetList({
             <PairAvatars a={c.agent_a} b={c.agent_b} />
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline justify-between gap-2">
-                <span className="truncate text-[15px] font-medium">
+                <span className="min-w-0 truncate text-[15px] font-medium">
                   {getAgentDisplayName(c.agent_a)}
                   <span className="mx-1 text-muted-foreground/50">↔</span>
                   {getAgentDisplayName(c.agent_b)}
@@ -838,7 +838,7 @@ function ThreadView({
               setShowJump(false);
             }}
             className={cn(
-              "absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center rounded-full bg-card text-primary shadow-lg ring-1 ring-white/[0.08]",
+              "absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-card text-primary shadow-lg ring-1 ring-white/[0.08]",
               TG_PRESS,
             )}
           >
@@ -863,7 +863,7 @@ function ThreadView({
                   fleetTarget === threadRef.a ? threadRef.b : threadRef.a,
                 )
               }
-              className="mt-2 inline-flex items-center gap-1 rounded-full bg-muted/60 px-3 py-1 text-xs font-medium text-muted-foreground"
+              className="mt-2 inline-flex items-center gap-1 rounded-full bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground"
             >
               To: {getAgentDisplayName(fleetTarget)}
               <span className="text-muted-foreground/50">· tap to switch</span>

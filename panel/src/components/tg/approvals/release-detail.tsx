@@ -110,7 +110,7 @@ export function ReleaseDetail({
       )}
 
       <TgSection title="Changelog draft">
-        <pre className="whitespace-pre-wrap rounded-xl bg-muted p-2 text-xs leading-relaxed">
+        <pre className="whitespace-pre-wrap break-words rounded-xl bg-muted p-2 text-xs leading-relaxed">
           {report.drafted_changelog}
         </pre>
       </TgSection>

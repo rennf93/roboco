@@ -81,7 +81,7 @@ export function XPostDetail({
       </div>
 
       {post.mention && (
-        <blockquote className="border-l-2 pl-2 text-xs text-muted-foreground">
+        <blockquote className="break-words border-l-2 pl-2 text-xs text-muted-foreground">
           {post.mention.text}
         </blockquote>
       )}

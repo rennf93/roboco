@@ -198,7 +198,7 @@ function NeedsYouBanner({
               key={key}
               type="button"
               onClick={onApprovals}
-              className="rounded-full bg-violet-500/15 px-2.5 py-1 text-xs font-medium tabular-nums text-violet-300 transition-colors active:bg-violet-500/25"
+              className="rounded-full bg-violet-500/15 px-2.5 py-2 text-xs font-medium tabular-nums text-violet-300 transition-colors active:bg-violet-500/25"
             >
               {DRAFT_LABELS[key] ?? key} · {count}
             </button>
@@ -474,9 +474,14 @@ export function TgTodayTab({
             className="w-full space-y-2 text-left"
           >
             <div className="flex gap-2 overflow-hidden">
-              {fleet.working.map((a) => (
+              {fleet.working.slice(0, 3).map((a) => (
                 <TgAvatar key={a.name} name={a.name} active />
               ))}
+              {fleet.working.length > 3 && (
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-muted/70 text-[10px] font-semibold text-muted-foreground">
+                  +{fleet.working.length - 3}
+                </span>
+              )}
             </div>
             <ul className="space-y-1">
               {fleet.working.slice(0, 3).map((agent) => (
@@ -488,7 +493,7 @@ export function TgTodayTab({
                     {agent.name}
                   </span>
                   {agent.task_title && (
-                    <span className="truncate text-muted-foreground">
+                    <span className="min-w-0 truncate text-muted-foreground">
                       {agent.task_title}
                     </span>
                   )}

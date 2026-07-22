@@ -344,7 +344,7 @@ export function TgSegmented<T extends string>({
             onChange(o.value);
           }}
           className={cn(
-            "relative z-10 rounded-full py-1.5 text-center text-[13px] font-medium transition-colors duration-200",
+            "relative z-10 rounded-full py-2 text-center text-[13px] font-medium transition-colors duration-200",
             o.value === value ? "text-foreground" : "text-muted-foreground",
           )}
         >
@@ -385,7 +385,7 @@ export function TgSubPage({
             aria-label="Back"
             onClick={onBack}
             className={cn(
-              "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground",
+              "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground",
               TG_PRESS,
             )}
           >

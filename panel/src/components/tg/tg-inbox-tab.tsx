@@ -145,7 +145,7 @@ function NotificationRow({
           type="button"
           disabled={ackPending}
           onClick={onAck}
-          className="flex h-7 shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 text-xs font-semibold text-primary-foreground disabled:opacity-60"
+          className="flex h-9 shrink-0 items-center gap-1 rounded-full bg-primary px-2.5 text-xs font-semibold text-primary-foreground disabled:opacity-60"
         >
           <Check className="h-3.5 w-3.5" />
           Ack
