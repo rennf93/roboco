@@ -387,6 +387,18 @@ def _append_capped(existing: str | None, addition: str) -> str:
 _CEO_REJECT_ACTUAL_CAP = 300
 _CEO_REJECT_EVIDENCE_CAP = 2000
 
+# Roles whose claim WORKS the branch (and so should inherit an advanced
+# upstream base into it). QA / documenter / PR-gate claims review the branch
+# exactly as the dev pushed it and must never move it.
+_BASE_INHERIT_ROLES = frozenset({"developer", "cell_pm", "main_pm"})
+
+# Pre-claim statuses where inheriting is safe: work is (re)starting, nothing
+# downstream has reviewed the branch yet. A PM's i_will_plan re-claim of its
+# own AWAITING_PM_REVIEW task must NOT inherit — that branch already passed
+# QA + the PR gate, and a silent base merge would put unreviewed content
+# under the PM's merge decision.
+_BASE_INHERIT_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.NEEDS_REVISION})
+
 
 def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
     """Split a CEO rejection reason into a ledger Finding's (actual, evidence).
@@ -2595,6 +2607,88 @@ class TaskService(BaseService):
             files=result.get("files"),
         )
 
+    async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None:
+        """Merge the task's advanced upstream base into its existing branch.
+
+        Reuses the dependency-lineage merge: an already-ancestor base is a
+        cheap no-op, a conflict aborts (branch left at its cut point) and
+        leaves a transition note steering the agent to ``sync_branch``.
+        Best-effort — never fails the claim.
+        """
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        try:
+            project = await get_project_service(self.session).get(
+                UUID(str(task.project_id))
+            )
+            if not project:
+                return
+            base_branch = await self._resolve_parent_branch(task, project)
+            branch_name = str(task.branch_name)
+            if not base_branch or base_branch == branch_name:
+                return
+            git_service = get_git_service(self.session)
+            workspace = await git_service.get_workspace(project.slug, agent_id)
+            result = await git_service.merge_dependency_lineage(
+                workspace,
+                require_uuid(task.id),
+                branch_name,
+                base_branch,
+                project_slug=project.slug,
+            )
+            status = result.get("status")
+            if status == "merged":
+                # The one path that changes branch content — leave a trail.
+                self.log.info(
+                    "upstream base inherited into task branch",
+                    task_id=str(task.id),
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                )
+            elif status == "conflict":
+                self._note_base_inheritance_conflict(task, base_branch, result)
+                await self.session.flush()
+            elif status not in ("already_ancestor", "missing_ref"):
+                # missing_ref is quiet: a merged-and-deleted parent branch
+                # simply has nothing left to inherit.
+                self.log.warning(
+                    "upstream base inheritance incomplete",
+                    task_id=str(task.id),
+                    base_branch=base_branch,
+                    status=status,
+                )
+        except Exception:
+            self.log.warning(
+                "upstream base inheritance errored",
+                task_id=str(task.id),
+                exc_info=True,
+            )
+
+    def _note_base_inheritance_conflict(
+        self, task: TaskTable, base_branch: str, result: dict[str, Any]
+    ) -> None:
+        """Log + note a base-inheritance merge conflict for the assignee."""
+        files = ", ".join(result.get("files") or []) or "unknown files"
+        note = (
+            f"Upstream base {base_branch!r} has advanced with changes that "
+            f"conflict with this branch ({task.branch_name!r}) in: {files}. "
+            f"Merge {base_branch!r} in by hand (sync_branch) before submitting."
+        )
+        existing = markers.get_transition_note(task, "base_inheritance_conflict")
+        markers.set_transition_note(
+            task,
+            "base_inheritance_conflict",
+            f"{existing}\n{note}" if existing else note,
+        )
+        self.log.warning(
+            "upstream base inheritance conflict",
+            task_id=str(task.id),
+            branch_name=task.branch_name,
+            base_branch=base_branch,
+            files=result.get("files"),
+        )
+
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one
         ``feature/main_pm/{root}`` integration branch each.
@@ -3212,6 +3306,22 @@ class TaskService(BaseService):
                 )
             raise
         await self.session.refresh(task)
+
+        # Upstream base inheritance: a re-claim reuses a branch cut at an
+        # earlier claim, so upstream work merged since (e.g. UX/UI landing on
+        # the root after this cell branch was cut) never reaches it. Merge the
+        # advanced base back in before the agent spawns. Work-claims only —
+        # QA/doc/gate claims must review the branch as pushed, and a PM's
+        # i_will_plan re-claim of its own AWAITING_PM_REVIEW task must not
+        # move a branch that already passed QA + the PR gate. A fresh cut
+        # (original_branch_name unset) already branches from the live base.
+        if (
+            original_branch_name
+            and task.project_id
+            and agent_role in _BASE_INHERIT_ROLES
+            and original_status in _BASE_INHERIT_STATUSES
+        ):
+            await self._inherit_upstream_base(task, agent_id)
 
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
