@@ -16,6 +16,7 @@ Cloud-host-ready but env-driven: ``enforce_https`` follows
 from __future__ import annotations
 
 import re
+from ipaddress import ip_address, ip_network
 from typing import TYPE_CHECKING, Any
 
 from guard import SecurityConfig, SecurityDecorator, SecurityMiddleware
@@ -337,20 +338,121 @@ def _redis_url() -> str:
 # `subnet:` for roboco_default/roboco_data, so this has to cover whatever
 # docker allocates them.
 #
-# Known ceiling: this can't tell a real docker-bridge peer apart from
-# host-loopback/NAT'd traffic landing on the same address family. A request
-# proxied through the host (e.g. Tailscale Serve terminating on
-# 127.0.0.1:3000) still resolves, after nginx's one XFF hop, to loopback or
-# the bridge gateway IP — both inside this range — so it still rides the
-# exemption. A second XFF hop ahead of nginx (Tailscale Serve prepends the
-# tailnet peer's real IP before nginx appends its own) is silently lost:
-# trusted_proxy_depth=1 always peels the RIGHTMOST XFF entry, which is the
-# hop nginx itself recorded, not the original tailnet client.
+# The variable-depth proxy chain (guard sees a fixed depth) is handled by
+# ClientIpResolutionMiddleware below: it recursively skips known local hops
+# in X-Forwarded-For and stamps the guard's request.state.client_ip cache,
+# so Tailscale-Serve/host-proxied traffic resolves to the real tailnet/LAN
+# client instead of loopback and no longer rides this exemption.
 _INTERNAL_NETWORKS = [
     "127.0.0.1",
     "::1",
     "172.16.0.0/12",
 ]
+
+# XFF entries that can legitimately be a HOP nginx recorded in front of the
+# real client: loopback (a host-terminated proxy like Tailscale Serve) and
+# the docker bridge pool (docker DNAT presents host-originated connections
+# as the bridge gateway). Deliberately NOT the LAN/tailnet ranges — a
+# 192.168.x / 100.64.x XFF entry IS the client, never a hop.
+_TRUSTED_HOP_NETWORKS = ("127.0.0.1/32", "::1/128", "172.16.0.0/12")
+
+# Tailscale assigns every tailnet node an address in the CGNAT range. The
+# resolver stamps ONLY a candidate in this range: it makes the fix exactly as
+# wide as the broken case (host-proxied tailnet traffic resolving to a
+# whitelisted hop IP) and no wider — for every other chain shape the stamp
+# abstains and the guard's own depth-1 logic decides, so a same-bridge
+# container relaying a forged public-IP prefix through nginx still resolves
+# to its real bridge IP exactly as before this fix. Residual (accepted): such
+# a container can forge a 100.64/10 prefix — that only DE-privileges it
+# (loses its whitelist exemption; the fake tailnet IP eats the WAF/bans).
+_TAILNET_NETWORK = "100.64.0.0/10"
+
+# The fixable shape needs at least [client, hop] — one real entry behind one
+# recorded proxy hop.
+_MIN_CHAIN_ENTRIES = 2
+
+
+def _in_networks(ip: str, networks: tuple[str, ...]) -> bool:
+    try:
+        addr = ip_address(ip.strip())
+        return any(addr in ip_network(net) for net in networks)
+    except (ValueError, TypeError):
+        return False
+
+
+def _is_trusted_hop(ip: str) -> bool:
+    return _in_networks(ip, _TRUSTED_HOP_NETWORKS)
+
+
+def resolve_forwarded_client_ip(forwarded_for: str) -> str | None:
+    """Resolve the tailnet client behind host-proxy hops; None = abstain.
+
+    fastapi-guard peels a FIXED number of XFF hops (trusted_proxy_depth=1:
+    the rightmost entry, which nginx itself recorded). That is correct for
+    every chain except one: host-proxied tailnet traffic (Tailscale Serve →
+    nginx) arrives as ``[tailnet-client, <loopback-or-bridge-gateway>]``, so
+    depth-1 resolves it to a whitelisted hop IP and WAF/ban/rate-limit go
+    inert for the whole /tg surface (the documented ceiling).
+
+    This resolver fixes exactly that shape and nothing else: peel trusted
+    hops from the right; the remaining candidate is returned ONLY if at
+    least one hop was peeled and the candidate is in the tailnet CGNAT
+    range. Every other shape — direct LAN client, agent container via nginx
+    (even with a forged public-IP prefix), all-hops operator traffic,
+    malformed entries — returns None, leaving the guard's own depth-1
+    resolution in charge, byte-for-byte identical to before this fix.
+    """
+    entries = [e.strip() for e in forwarded_for.split(",") if e.strip()]
+    if len(entries) < _MIN_CHAIN_ENTRIES:
+        return None
+    idx = len(entries) - 1
+    while idx >= 0 and _is_trusted_hop(entries[idx]):
+        idx -= 1
+    if idx == len(entries) - 1 or idx < 0:
+        return None  # no hop peeled, or all hops: baseline handles both
+    candidate = entries[idx]
+    if not _in_networks(candidate, (_TAILNET_NETWORK,)):
+        return None
+    return candidate
+
+
+class ClientIpResolutionMiddleware:
+    """Stamp the guard's ``request.state.client_ip`` cache with the real
+    client resolved across the variable-depth local proxy chain.
+
+    Pure ASGI, mounted OUTSIDE SecurityMiddleware (added after it, so it runs
+    first): guard_core's ``extract_client_ip`` returns a pre-cached
+    ``state.client_ip`` verbatim, which is the supported seam for custom
+    resolution. Only honors XFF when the CONNECTING peer is itself a known
+    local hop (nginx's bridge IP / loopback) — a directly-connected client's
+    forged XFF is never consulted here (the guard's own depth-1 logic keeps
+    handling that class unchanged).
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            client = scope.get("client")
+            connecting_ip = client[0] if client else None
+            if connecting_ip and _is_trusted_hop(connecting_ip):
+                # First occurrence on a repeated header, matching Starlette's
+                # Headers.get — so this layer and the guard's own fallback
+                # read the SAME header value.
+                forwarded_for = next(
+                    (
+                        v.decode("latin-1")
+                        for k, v in scope.get("headers", [])
+                        if k.decode("latin-1").lower() == "x-forwarded-for"
+                    ),
+                    None,
+                )
+                if forwarded_for:
+                    resolved = resolve_forwarded_client_ip(forwarded_for)
+                    if resolved:
+                        scope.setdefault("state", {})["client_ip"] = resolved
+        await self.app(scope, receive, send)
 
 
 def _guard_whitelist() -> list[str]:
@@ -449,6 +551,9 @@ def apply_guard(app: FastAPI) -> None:
         return
     try:
         app.add_middleware(SecurityMiddleware, config=security_config)
+        # Added AFTER SecurityMiddleware so it wraps it (runs first) and can
+        # stamp state.client_ip before the guard's extraction reads it.
+        app.add_middleware(ClientIpResolutionMiddleware)
         app.state.guard_decorator = guard_deco
         logger.info(
             "fastapi-guard armed",
