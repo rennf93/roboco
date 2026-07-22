@@ -823,7 +823,7 @@ class QAMixin(_Base):
                 verb="pass_review",
             )
 
-        warning = await self._pass_review_documenter_handoff(qa_agent_id, task_id, t)
+        warning = await self._pass_review_documenter_handoff(task_id, t)
         await self._teardown_sandbox_best_effort(qa_agent_id)
         env = Envelope.ok(
             status=str(t.status),
@@ -836,7 +836,7 @@ class QAMixin(_Base):
         return env
 
     async def _pass_review_documenter_handoff(
-        self, qa_agent_id: UUID, task_id: UUID, t: Any
+        self, task_id: UUID, t: Any
     ) -> str | None:
         """Best-effort reassign the team's documenter.
 
@@ -999,9 +999,7 @@ class QAMixin(_Base):
             notes=notes,
             issues=issues_tuple,
         )
-        summary = await self._attach_fail_review_findings(
-            t, actor_slug, role_str, validated
-        )
+        await self._attach_fail_review_findings(t, actor_slug, role_str, validated)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("fail_review", t, agent, spec_ctx)

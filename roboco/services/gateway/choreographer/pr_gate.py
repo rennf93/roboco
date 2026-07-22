@@ -418,41 +418,11 @@ class PRGateMixin(_Base):
         reviewer_slug = getattr(agent, "slug", None) or role_str
         await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
 
-    async def _deliver_pr_fail_to_owner(
-        self, t: Any, reviewer_agent_id: UUID, task_id: UUID, notes: str
-    ) -> None:
-        """a2a the pr_fail change-requests to the owning PM (best-effort).
-
-        The verdict is posted on the PR but never reaches a PM-readable channel
-        (no a2a, and _briefing_for / build_task_handoff read neither
-        pr_reviewer_notes nor notes_structured.pr_review), so without this the
-        owning PM respawned into needs_revision re-submits the same PR blind —
-        an infinite pr_fail loop (live on 9980d0a0 / PR #138). Mirrors QA's
-        fail_review a2a. A Main-PM branch-bearing root is assembled cell work the
-        Main PM can't fix directly, so steer it to re-delegate + wait for
-        re-assembly rather than re-submit the unchanged root.
-        """
-        if t.assigned_to is None:
-            return
-        team = getattr(t, "team", None)
-        team_value = str(getattr(team, "value", team))
-        is_main_pm_root = team_value == spec_module.Team.MAIN_PM.value and bool(
-            getattr(t, "branch_name", None)
-        )
-        steer = (
-            " Assembled cell work failed — re-delegate the fixes to the"
-            " owning cell PM(s) and wait for re-assembly; do NOT re-submit"
-            " the root."
-            if is_main_pm_root
-            else ""
-        )
-
     async def _attach_pr_fail_findings(
         self, t: Any, agent: Any, role_str: str, findings: list[Any]
     ) -> str:
         """Insert pr_fail's findings into the ledger; return the id-prefixed
-        rendering used for the structured note, the PR comment, and the a2a
-        body to the owning PM (all three read ``notes`` after this call)."""
+        rendering used for the structured note and the PR comment."""
         # GatewayAgentView carries no slug field — falls back to the role
         # string (mirrors _post_gate_review's reviewer_slug fallback).
         author_slug = getattr(agent, "slug", None) or role_str
@@ -547,17 +517,13 @@ class PRGateMixin(_Base):
         note write — carrying ``findings`` forward too, since the re-stamp
         fully replaces the ``pr_review`` slot. Then post the gate verdict on
         the PR itself (a GitHub failure must not roll back the gate
-        decision), and — pr_fail only — a2a the change-requests to the
-        owning PM (see ``_deliver_pr_fail_to_owner`` for the rationale and
-        the Main-PM-root steer).
+        decision).
         """
         if verb == "pr_fail":
             await self._re_stamp_pr_fail_head_sha_if_advanced(
                 t, notes, issues=issues, pre_sha=pre_sha, findings=findings
             )
         await self._post_gate_review(t, agent, role_str, verb, notes)
-        if verb == "pr_fail":
-            await self._deliver_pr_fail_to_owner(t, reviewer_agent_id, task_id, notes)
 
     async def _gate_decision(
         self,
@@ -590,8 +556,8 @@ class PRGateMixin(_Base):
                 return rejection
         # Insert the ledger rows now that the task + role gates are settled,
         # THEN rebuild `notes` with the real ids — every downstream reader
-        # (the structured note, the PR comment, the a2a to the owning PM)
-        # sees the id-prefixed rendering from this point on.
+        # (the structured note, the PR comment) sees the id-prefixed rendering
+        # from this point on.
         if verb == "pr_fail" and findings:
             notes = await self._attach_pr_fail_findings(
                 t, agent, role_str, list(findings)

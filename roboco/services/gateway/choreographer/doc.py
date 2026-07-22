@@ -536,7 +536,7 @@ class DocMixin(_Base):
 
         warning: str | None = None
         try:
-            await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
+            await self._handoff_to_cell_pm(task_id, t)
         except Exception as exc:
             logger.warning(
                 "i_documented side-effect failed - transition committed, "
@@ -587,7 +587,7 @@ class DocMixin(_Base):
         return None
 
     async def _handoff_to_cell_pm(
-        self, doc_agent_id: UUID, task_id: UUID, task: Any
+        self, task_id: UUID, task: Any
     ) -> None:
         """Reassign the cell PM after docs_complete dispatch.
 

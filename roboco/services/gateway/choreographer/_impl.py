@@ -2783,7 +2783,7 @@ class Choreographer:
                     context_briefing=ctx.briefing,
                 ),
             )
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._notify_qa(ctx.task_id, t)
         await self._touch(ctx.task_id)
         # Server-side milestone progress so the panel always
         # records the QA handoff regardless of agent's progress() habits.
@@ -2818,7 +2818,7 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._notify_qa(ctx.task_id, t)
         await self._touch(ctx.task_id)
         return await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
 
@@ -2948,7 +2948,7 @@ class Choreographer:
                 ),
             )
         t = submitted if submitted is not None else ctx.task
-        await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+        await self._notify_qa(ctx.task_id, t)
         await self._touch(ctx.task_id)
         await self._record_milestone_progress(
             ctx.task_id, ctx.agent_id, "submitted for QA review", percentage=90
@@ -3571,7 +3571,7 @@ class Choreographer:
             context_briefing=await self._briefing_for(agent_id, task_id, task=task),
         )
 
-    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> None:
+    async def _notify_qa(self, task_id: UUID, t: Any) -> None:
         """Reassign the QA agent for this task's team.
 
         ``submit_qa`` clears ``assigned_to`` to None. We then explicitly
