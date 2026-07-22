@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.services.base import ValidationError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
@@ -333,6 +334,37 @@ async def test_sync_branch_git_failure_steers_to_i_am_blocked() -> None:
         env = await c.sync_branch(aid, tid)
 
     assert env.error == "invalid_state"
+    assert "i_am_blocked" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_protected_head_refusal_steers_to_i_am_blocked() -> None:
+    """GitService.sync_task_branch's protected-HEAD-branch guard (2026-07-22
+    follow-up — a mis-set branch_name matching master/main or a project's
+    declared protected_branches) surfaces through the same generic
+    invalid_state/i_am_blocked path as any other git failure — the
+    choreographer doesn't need to special-case it, only propagate it."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.side_effect = ValidationError(
+        f"REBASE_FORBIDDEN: task branch_name '{_BRANCH}' is a protected branch"
+    )
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error == "invalid_state"
+    assert "REBASE_FORBIDDEN" in (env.message or "")
     assert "i_am_blocked" in (env.remediate or "")
 
 

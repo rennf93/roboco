@@ -64,6 +64,9 @@ def _git_service() -> GitService:
     """Instantiate GitService without a real DB session."""
     svc = GitService.__new__(GitService)
     svc.log = MagicMock()  # silence warning/info calls
+    # A placeholder — only touched (as an opaque arg to a patched
+    # get_project_service) by the protected_branches union tests below.
+    svc.session = MagicMock()
     return svc
 
 
@@ -301,6 +304,249 @@ async def test_rebase_raises_validation_error_when_head_branch_is_main(
     svc = _git_service()
     with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
         await svc.rebase(_WORKSPACE, "feature/backend/some-task")
+
+
+# ---------------------------------------------------------------------------
+# rebase() — projects.protected_branches UNION (2026-07-22 follow-up)
+# ---------------------------------------------------------------------------
+# rebase()'s hardcoded {"master", "main"} refusal is unioned with the
+# project's own declared protected_branches when project_slug is given. The
+# union can only ADD refusals: no project_slug, an unresolvable project, or
+# an emptied field must reproduce the exact hardcoded-only behavior above.
+
+
+def _project_service_returning(project: MagicMock) -> MagicMock:
+    svc = MagicMock()
+    svc.get_by_slug = AsyncMock(return_value=project)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_rebase_raises_for_project_declared_protected_target_branch() -> None:
+    """A custom protected branch (not master/main) is refused as a rebase
+    target when the project declares it, before any git command runs."""
+    svc = _git_service()
+    project = MagicMock(protected_branches=["release"])
+    with (
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+        pytest.raises(ValidationError, match="REBASE_FORBIDDEN"),
+    ):
+        await svc.rebase(_WORKSPACE, "release", "acme-repo")
+
+
+@pytest.mark.asyncio
+async def test_rebase_allows_target_not_in_projects_protected_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A target that isn't master/main AND isn't in the project's declared
+    list rebases normally — the union doesn't become deny-by-default."""
+    run = AsyncMock(return_value=_result())
+    monkeypatch.setattr(GitService, "_run_git", run)
+    monkeypatch.setattr(
+        GitService, "get_current_branch", AsyncMock(return_value="feature/x")
+    )
+    svc = _git_service()
+    project = MagicMock(protected_branches=["release"])
+    with patch(
+        "roboco.services.git.get_project_service",
+        return_value=_project_service_returning(project),
+    ):
+        conflict, files = await svc.rebase(
+            _WORKSPACE, "feature/backend/some-task", "acme-repo"
+        )
+    assert (conflict, files) == (False, [])
+
+
+@pytest.mark.asyncio
+async def test_rebase_empty_protected_branches_matches_hardcoded_only_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty protected_branches field degrades to exactly the prior
+    master/main-only behavior — no extra refusal is invented."""
+    run = AsyncMock(return_value=_result())
+    monkeypatch.setattr(GitService, "_run_git", run)
+    monkeypatch.setattr(
+        GitService, "get_current_branch", AsyncMock(return_value="feature/x")
+    )
+    svc = _git_service()
+    project = MagicMock(protected_branches=[])
+    with patch(
+        "roboco.services.git.get_project_service",
+        return_value=_project_service_returning(project),
+    ):
+        conflict, files = await svc.rebase(
+            _WORKSPACE, "feature/backend/some-task", "acme-repo"
+        )
+    assert (conflict, files) == (False, [])
+
+
+@pytest.mark.asyncio
+async def test_rebase_no_project_slug_matches_hardcoded_only_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting project_slug entirely (legacy call shape) never touches the
+    project service and behaves byte-for-byte like before this change."""
+    run = AsyncMock(return_value=_result())
+    monkeypatch.setattr(GitService, "_run_git", run)
+    monkeypatch.setattr(
+        GitService, "get_current_branch", AsyncMock(return_value="feature/x")
+    )
+    svc = _git_service()
+    with patch("roboco.services.git.get_project_service") as get_project_service:
+        conflict, files = await svc.rebase(_WORKSPACE, "feature/backend/some-task")
+    assert (conflict, files) == (False, [])
+    get_project_service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rebase_matches_stripped_target_case_sensitively() -> None:
+    """Stored entries are stripped defensively, but matching stays
+    case-sensitive: a differently-cased target is NOT refused by a stored
+    ' Release '."""
+    project = MagicMock(protected_branches=[" Release "])
+
+    svc = _git_service()
+    with (
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+        pytest.raises(ValidationError, match="REBASE_FORBIDDEN"),
+    ):
+        await svc.rebase(_WORKSPACE, "Release", "acme-repo")
+
+
+@pytest.mark.asyncio
+async def test_rebase_union_never_collapses_hardcoded_floor_to_project_list_only() -> (
+    None
+):
+    """A project declaring its OWN protected_branches (e.g. ["release"]) must
+    NOT replace the hardcoded master/main refusal — the union is additive,
+    never a substitution. Both master and main stay refused regardless of
+    what the project's list contains."""
+    project = MagicMock(protected_branches=["release"])
+
+    svc = _git_service()
+    with (
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+        pytest.raises(ValidationError, match="REBASE_FORBIDDEN"),
+    ):
+        await svc.rebase(_WORKSPACE, "master", "acme-repo")
+
+    svc2 = _git_service()
+    with (
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+        pytest.raises(ValidationError, match="REBASE_FORBIDDEN"),
+    ):
+        await svc2.rebase(_WORKSPACE, "main", "acme-repo")
+
+
+# ---------------------------------------------------------------------------
+# sync_task_branch() — protected HEAD branch guard (2026-07-22 follow-up)
+# ---------------------------------------------------------------------------
+# sync_branch force-pushes (with lease) the task's OWN branch_name, not the
+# base — so the guard that matters here is on the HEAD, not the base (the
+# choreographer's _sync_base_refused already guards the base and is
+# untouched). A branch_name that IS master/main or one of the project's
+# declared protected_branches means branch_name was mis-set; refuse before
+# any workspace/rebase work.
+
+
+def _sync_task(branch_name: str) -> MagicMock:
+    # assigned_to=None so _resolve_workspace_agent_id (no actor_agent_id
+    # passed) falls through to its None default instead of trying to parse
+    # an auto-generated MagicMock attribute as a UUID.
+    return MagicMock(id=uuid4(), branch_name=branch_name, assigned_to=None)
+
+
+def _patch_sync_plumbing(
+    monkeypatch: pytest.MonkeyPatch, project: MagicMock
+) -> AsyncMock:
+    """Stub every collaborator sync_task_branch calls AFTER the HEAD guard,
+    so a test that reaches them proves the guard let a normal branch through
+    without actually touching a filesystem or running git. Returns the
+    rebase_onto_base mock so callers can assert on it."""
+    monkeypatch.setattr(
+        GitService, "_project_for_task", AsyncMock(return_value=project)
+    )
+    # _protected_branches_for (called from the new HEAD guard) resolves the
+    # project independently via get_project_service, not _project_for_task.
+    monkeypatch.setattr(
+        "roboco.services.git.get_project_service",
+        lambda _session: _project_service_returning(project),
+    )
+    monkeypatch.setattr(
+        GitService, "get_workspace", AsyncMock(return_value=Path("/tmp/clone"))
+    )
+    monkeypatch.setattr(
+        GitService, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(GitService, "_ensure_worktree_for_commit", AsyncMock())
+    rebase_onto_base = AsyncMock(
+        return_value={"status": "rebased", "unique_commits": 1}
+    )
+    monkeypatch.setattr(GitService, "rebase_onto_base", rebase_onto_base)
+    return rebase_onto_base
+
+
+@pytest.mark.asyncio
+async def test_sync_task_branch_refuses_project_declared_protected_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task whose branch_name IS a project-declared protected branch is
+    refused before any workspace/rebase work runs."""
+    project = MagicMock(slug="acme-repo", protected_branches=["release"])
+    rebase_onto_base = _patch_sync_plumbing(monkeypatch, project)
+    svc = _git_service()
+    task = _sync_task("release")
+
+    with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
+        await svc.sync_task_branch(task, base_branch="feature/backend/parent")
+
+    rebase_onto_base.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_task_branch_allows_normal_head_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normal task branch_name (not in the project's protected list) syncs
+    through exactly as before — the guard doesn't become deny-by-default."""
+    project = MagicMock(slug="acme-repo", protected_branches=["release"])
+    rebase_onto_base = _patch_sync_plumbing(monkeypatch, project)
+    svc = _git_service()
+    task = _sync_task("feature/backend/abc12345")
+
+    result = await svc.sync_task_branch(task, base_branch="feature/backend/parent")
+
+    assert result == {"status": "rebased", "unique_commits": 1}
+    rebase_onto_base.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_task_branch_empty_protected_branches_matches_current_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty (or null) protected_branches field degrades to exactly the
+    prior master/main-only behavior — a normal branch still syncs fine."""
+    project = MagicMock(slug="acme-repo", protected_branches=[])
+    rebase_onto_base = _patch_sync_plumbing(monkeypatch, project)
+    svc = _git_service()
+    task = _sync_task("feature/backend/abc12345")
+
+    result = await svc.sync_task_branch(task, base_branch="feature/backend/parent")
+
+    assert result == {"status": "rebased", "unique_commits": 1}
+    rebase_onto_base.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

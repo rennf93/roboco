@@ -267,3 +267,121 @@ describe("EditProjectDialog — GitHub App binding", () => {
     expect(call.updates.github_installation_id).toBeNull();
   });
 });
+
+describe("EditProjectDialog — Protected Branches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getCredentialsStatus.mockResolvedValue({ has_credentials: true });
+    mutateAsync.mockResolvedValue(makeProject());
+    useUpdateProject.mockReturnValue({ mutateAsync, isPending: false });
+  });
+
+  it("renders the project's existing protected branches as chips", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+
+    await screen.findByText("master");
+    expect(screen.getByText("slave")).toBeInTheDocument();
+  });
+
+  it("adds a branch via Enter and removes another via its chip, saving both changes", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    // Remove "slave".
+    fireEvent.click(screen.getByLabelText("Remove slave"));
+    expect(screen.queryByText("slave")).not.toBeInTheDocument();
+
+    // Add "release" by typing + Enter.
+    const input = screen.getByPlaceholderText(
+      "Type a branch name, press Enter",
+    );
+    fireEvent.change(input, { target: { value: "release" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("release")).toBeInTheDocument();
+    // The input clears after a successful add.
+    expect(input).toHaveValue("");
+
+    fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { protected_branches?: string[] };
+    };
+    expect(call.updates.protected_branches).toEqual(["master", "release"]);
+  });
+
+  it("adding via a trailing comma also commits the chip", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    const input = screen.getByPlaceholderText(
+      "Type a branch name, press Enter",
+    );
+    fireEvent.change(input, { target: { value: "hotfix" } });
+    fireEvent.keyDown(input, { key: "," });
+    expect(screen.getByText("hotfix")).toBeInTheDocument();
+  });
+
+  it("pasting a comma-separated list splits it into individual chips instead of one malformed chip", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    const input = screen.getByPlaceholderText(
+      "Type a branch name, press Enter",
+    );
+    fireEvent.paste(input, {
+      clipboardData: { getData: () => "release,hotfix,staging" },
+    });
+
+    expect(screen.getByText("release")).toBeInTheDocument();
+    expect(screen.getByText("hotfix")).toBeInTheDocument();
+    expect(screen.getByText("staging")).toBeInTheDocument();
+    expect(
+      screen.queryByText("release,hotfix,staging"),
+    ).not.toBeInTheDocument();
+    expect(input).toHaveValue("");
+  });
+
+  it("does not add a duplicate chip for a branch already in the list", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    const input = screen.getByPlaceholderText(
+      "Type a branch name, press Enter",
+    );
+    fireEvent.change(input, { target: { value: "master" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getAllByText("master")).toHaveLength(1);
+  });
+
+  it("clearing every branch sends an explicit empty array, not an omitted field", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    fireEvent.click(screen.getByLabelText("Remove master"));
+    fireEvent.click(screen.getByLabelText("Remove slave"));
+    expect(screen.queryByText("master")).not.toBeInTheDocument();
+    expect(screen.queryByText("slave")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { protected_branches?: string[] };
+    };
+    expect(call.updates.protected_branches).toEqual([]);
+  });
+
+  it("leaving the list untouched still round-trips the same branches on save", async () => {
+    renderDialog(makeProject({ protected_branches: ["master", "slave"] }));
+    await screen.findByText("master");
+
+    fireEvent.click(screen.getByRole("button", { name: /Save Changes/i }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { protected_branches?: string[] };
+    };
+    expect(call.updates.protected_branches).toEqual(["master", "slave"]);
+  });
+});

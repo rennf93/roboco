@@ -775,7 +775,7 @@ async def rebase_branch(
     try:
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         conflict, conflicted_files = await git_service.rebase(
-            workspace, data.target_branch
+            workspace, data.target_branch, project_slug
         )
     except _TranslatableError as e:
         raise _translate_error(e) from e

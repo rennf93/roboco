@@ -23,9 +23,10 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConventionsTab } from "@/components/conventions/conventions-tab";
-import { Key, KeyRound, AlertTriangle } from "lucide-react";
+import { Key, KeyRound, AlertTriangle, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
 import { githubAppApi } from "@/lib/api";
@@ -165,6 +166,43 @@ function EditProjectForm({
   >(project.github_installation_id);
   const [assignedCell, setAssignedCell] = useState(project.assigned_cell);
   const [defaultBranch, setDefaultBranch] = useState(project.default_branch);
+  const [protectedBranches, setProtectedBranches] = useState<string[]>(
+    project.protected_branches ?? [],
+  );
+  const [protectedBranchInput, setProtectedBranchInput] = useState("");
+  // Shared by the single Enter/comma-key add and the multi-value paste
+  // handler below — trims, drops empties, and dedups against both the
+  // existing list and duplicates within the same batch.
+  const addProtectedBranches = (names: string[]) => {
+    const cleaned = names.map((n) => n.trim()).filter(Boolean);
+    if (cleaned.length === 0) return;
+    setProtectedBranches((prev) => {
+      const next = [...prev];
+      for (const name of cleaned) {
+        if (!next.includes(name)) next.push(name);
+      }
+      return next;
+    });
+  };
+  const addProtectedBranch = () => {
+    addProtectedBranches([protectedBranchInput]);
+    setProtectedBranchInput("");
+  };
+  const handleProtectedBranchPaste = (
+    e: React.ClipboardEvent<HTMLInputElement>,
+  ) => {
+    const pasted = e.clipboardData.getData("text");
+    // A single name (no comma) falls through to normal paste-into-input
+    // behavior; only a multi-value paste is split into chips directly —
+    // otherwise "release,hotfix,staging" lands as one malformed chip.
+    if (!pasted.includes(",")) return;
+    e.preventDefault();
+    addProtectedBranches(pasted.split(","));
+    setProtectedBranchInput("");
+  };
+  const removeProtectedBranch = (branch: string) => {
+    setProtectedBranches((prev) => prev.filter((b) => b !== branch));
+  };
   const [environments, setEnvironments] = useState(
     project.environments ?? null,
   );
@@ -284,6 +322,7 @@ function EditProjectForm({
       github_installation_id: githubInstallationId,
       assigned_cell: assignedCell,
       default_branch: defaultBranch || "main",
+      protected_branches: protectedBranches,
       environments,
       is_active: isActive,
       test_command: testCommand || undefined,
@@ -568,6 +607,56 @@ function EditProjectForm({
           <p className="text-xs text-muted-foreground">
             Where PRs land and releases are cut when no environment ladder is
             set below.
+          </p>
+        </div>
+
+        {/* Protected Branches */}
+        <div className="grid gap-2">
+          <HelpTip label="Branches the fleet refuses to rebase onto, sync (force-push) as a task's own branch, or delete on the remote, in addition to the always-protected master/main defaults — matched exactly, case-sensitive. Environment-ladder rungs get separate protection, but only for task-branch cleanup, not a PR's source-branch cleanup after merge.">
+            <Label htmlFor="protected_branch_input">Protected Branches</Label>
+          </HelpTip>
+          {protectedBranches.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {protectedBranches.map((branch) => (
+                <Badge key={branch} variant="secondary" className="gap-1 pr-1">
+                  {branch}
+                  <button
+                    type="button"
+                    onClick={() => removeProtectedBranch(branch)}
+                    aria-label={`Remove ${branch}`}
+                    className="rounded-full hover:bg-muted-foreground/20"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Input
+              id="protected_branch_input"
+              value={protectedBranchInput}
+              onChange={(e) => setProtectedBranchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addProtectedBranch();
+                }
+              }}
+              onPaste={handleProtectedBranchPaste}
+              placeholder="Type a branch name, press Enter"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={addProtectedBranch}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Enter or comma adds a branch; click the × on a chip to remove it.
           </p>
         </div>
 
