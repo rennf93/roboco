@@ -88,7 +88,7 @@ async def test_delete_skips_default_branch_before_checking_dependents() -> None:
 # hardcoded-only behavior above.
 
 
-def _project_service_returning(project: MagicMock) -> MagicMock:
+def _project_service_returning(project: MagicMock | None) -> MagicMock:
     svc = MagicMock()
     svc.get_by_slug = AsyncMock(return_value=project)
     return svc
@@ -228,6 +228,134 @@ async def test_delete_matches_stripped_branch_case_sensitively() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_refuses_env_ladder_rung_not_in_declared_list() -> None:
+    """The environment-ladder rung union (2026-07-22 follow-up, #649 gap
+    closure): a branch that ISN'T in the project's declared
+    ``protected_branches`` but IS one of its ladder rungs is still refused —
+    ``_protected_branches_for_deletion`` unions rungs in on top of the
+    declared field, and this shared chokepoint is where every remote-delete
+    caller (task-branch cleanup, the stale-branch sweep, and the merged-PR
+    source-branch cleanup) ends up."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    project = MagicMock(
+        protected_branches=["release"],
+        environments=[
+            {"name": "head", "branch": "develop"},
+            {"name": "prod", "branch": "master"},
+        ],
+    )
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "develop", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_null_ladder_default_branch() -> None:
+    """A project with a renamed trunk and no declared ladder (``environments``
+    null) synthesizes a single-rung ladder from ``default_branch`` — so
+    'trunk' is protected here even though it matches neither the hardcoded
+    main/master/develop floor nor anything in ``protected_branches``."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    project = MagicMock(
+        protected_branches=[], environments=None, default_branch="trunk"
+    )
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "trunk", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_allows_branch_that_is_neither_field_rung_nor_floor() -> None:
+    """A project declaring BOTH protected_branches and a real ladder still
+    deletes a branch that is in none of the three protected sets — the
+    rung union doesn't become deny-by-default any more than the field
+    union does."""
+    svc = _service()
+    _bind(svc, "_branch_has_open_dependents", AsyncMock(return_value=False))
+    client = _fake_client()
+    project = MagicMock(
+        protected_branches=["release"],
+        environments=[
+            {"name": "head", "branch": "develop"},
+            {"name": "prod", "branch": "master"},
+        ],
+    )
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"),
+            "feature/backend/abc--cell--leaf",
+            "tok",
+            "acme-repo",
+        )
+    client.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_pr_branch_refuses_rung_source_via_merge_cleanup_path() -> None:
+    """The post-merge PR-source-branch cleanup (``_delete_pr_branch_best_effort``
+    ← ``merge_pull_request``/``pr_merge``/``close_pull_request``) is the gap
+    #649 left open: it reaches the same shared ``_delete_remote_branch_best_effort``
+    chokepoint, so a PR whose OWN source branch is a ladder rung (e.g. an
+    env-sync cascade PR) is refused too, not just a task-branch delete."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    pr_resp = MagicMock(is_success=True)
+    pr_resp.json.return_value = {"head": {"ref": "release/env-sync"}}
+    client.get = AsyncMock(return_value=pr_resp)
+    project = MagicMock(
+        protected_branches=[],
+        environments=[
+            {"name": "head", "branch": "develop"},
+            {"name": "prod", "branch": "release/env-sync"},
+        ],
+    )
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(project),
+        ),
+    ):
+        await svc._delete_pr_branch_best_effort(
+            RepoRef("acme", "repo"), 7, "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_delete_union_never_collapses_hardcoded_floor_to_project_list_only() -> (
     None
 ):
@@ -266,6 +394,71 @@ async def test_delete_union_never_collapses_hardcoded_floor_to_project_list_only
             RepoRef("acme", "repo"), "main", "tok", "acme-repo"
         )
     client2.delete.assert_not_awaited()
+
+
+# --- fail-CLOSED on a lookup failure (2026-07-22 adversarial-review follow-up)
+# `_protected_branches_for_deletion` distinguishes "lookup raised" (skip the
+# delete entirely — None) from "project genuinely gone" (proceed with the
+# hardcoded floor — empty frozenset). Every sibling failure mode in this
+# chokepoint already fails closed (missing token, HTTPError), and a skipped
+# delete is free — it just retries at the next sweep — so silently degrading
+# to floor-only on an unresolvable project (which could delete a
+# custom-named rung like "staging") is the wrong tradeoff here, unlike
+# _protected_branches_for's fail-open rebase/sync posture.
+
+
+def _project_service_raising(exc: Exception) -> MagicMock:
+    svc = MagicMock()
+    svc.get_by_slug = AsyncMock(side_effect=exc)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_delete_skips_entirely_when_project_lookup_raises() -> None:
+    """A transient DB blip during the lookup skips the WHOLE delete (fail
+    CLOSED) rather than degrading to floor-only protection — a custom rung
+    name like "staging" would otherwise slip through undetected."""
+    svc = _service()
+    dep = AsyncMock(return_value=False)
+    _bind(svc, "_branch_has_open_dependents", dep)
+    client = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_raising(RuntimeError("db blip")),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"), "staging", "tok", "acme-repo"
+        )
+    client.delete.assert_not_awaited()
+    dep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_proceeds_with_floor_when_project_genuinely_gone() -> None:
+    """A resolved-to-``None`` project (the row itself no longer exists) is
+    NOT a lookup failure — its ladder is meaningless once the project is
+    gone, so cleaning up its now-orphaned branches proceeds with the
+    hardcoded floor only, rather than being refused forever."""
+    svc = _service()
+    _bind(svc, "_branch_has_open_dependents", AsyncMock(return_value=False))
+    client = _fake_client()
+    with (
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch(
+            "roboco.services.git.get_project_service",
+            return_value=_project_service_returning(None),
+        ),
+    ):
+        await svc._delete_remote_branch_best_effort(
+            RepoRef("acme", "repo"),
+            "feature/backend/abc--cell--leaf",
+            "tok",
+            "acme-repo",
+        )
+    client.delete.assert_awaited_once()
 
 
 # --- the open-dependents probe --------------------------------------------

@@ -612,7 +612,7 @@ function EditProjectForm({
 
         {/* Protected Branches */}
         <div className="grid gap-2">
-          <HelpTip label="Branches the fleet refuses to rebase onto, sync (force-push) as a task's own branch, or delete on the remote, in addition to the always-protected master/main defaults — matched exactly, case-sensitive. Environment-ladder rungs get separate protection, but only for task-branch cleanup, not a PR's source-branch cleanup after merge.">
+          <HelpTip label="Branches the fleet refuses to rebase onto or sync (force-push) as a task's own branch, in addition to the always-protected master/main defaults — matched exactly, case-sensitive. Every remote branch delete (task-branch cleanup, the stale-branch sweep, and a merged PR's source-branch cleanup) additionally refuses any environment-ladder rung, even one not listed here.">
             <Label htmlFor="protected_branch_input">Protected Branches</Label>
           </HelpTip>
           {protectedBranches.length > 0 && (

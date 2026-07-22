@@ -1183,21 +1183,29 @@ class GitService(BaseService):
     async def _protected_branches_for(self, project_slug: str | None) -> frozenset[str]:
         """The project's own ``protected_branches``, normalized.
 
-        Consulted by every hardcoded rebase/delete safety gate as a UNION
+        Consulted by every hardcoded rebase/sync safety gate as a UNION
         with its own literal set — this can only ADD branches to what's
         refused, never remove one, so a missing/unresolvable project or an
         emptied field degrades to exactly the prior hardcoded-only behavior.
         Branch names are matched case-sensitively (git refs are); entries are
         stripped of surrounding whitespace defensively.
+
+        Fail-OPEN on a lookup error (logged): a rebase/sync refusal wrongly
+        blocking real work over a transient DB blip is the worse tradeoff
+        here — unlike deletion (see :meth:`_protected_branches_for_deletion`),
+        a skipped rebase doesn't get a free retry at the next sweep.
+
+        Deliberately does NOT include environment-ladder rungs — rebase
+        (``rebase``) and force-push sync (``sync_task_branch``) stay scoped to
+        the declared field + the master/main floor; see
+        :meth:`_protected_branches_for_deletion` for the deletion-only
+        superset that adds rungs.
         """
         if not project_slug:
             return frozenset()
         try:
             project = await get_project_service(self.session).get_by_slug(project_slug)
         except Exception as e:
-            # Fail-open by design (additive-only protection degrading to the
-            # hardcoded floor is the right posture) — but log it, so a DB
-            # blip silently narrowing protection is at least observable.
             self.log.warning(
                 "protected_branches lookup failed; degrading to hardcoded floor only",
                 project_slug=project_slug,
@@ -1207,6 +1215,64 @@ class GitService(BaseService):
         if project is None or not project.protected_branches:
             return frozenset()
         return frozenset(b.strip() for b in project.protected_branches if b.strip())
+
+    async def _protected_branches_for_deletion(
+        self, project_slug: str | None
+    ) -> frozenset[str] | None:
+        """Deletion-only superset of :meth:`_protected_branches_for`: also
+        unions in the project's environment-ladder rung branches (see
+        :mod:`roboco.models.env_branches`).
+
+        Consulted ONLY by ``_delete_remote_branch_best_effort`` — the shared
+        remote-branch-deletion chokepoint every delete path (task-branch
+        cleanup on cancel, the stale-branch sweep, and the merged-PR
+        source-branch cleanup after ``merge_pull_request``/``pr_merge``/
+        ``close_pull_request``) routes through — so a ladder rung (e.g. an
+        env-sync PR's own source branch) can never be deleted regardless of
+        which caller triggered it. A null ``environments`` degenerates to a
+        single-rung ladder synthesized from ``default_branch`` (see
+        ``effective_environments``), so a renamed trunk is protected here too,
+        not just the hardcoded ``main``/``master`` floor.
+
+        Returns ``None`` — distinct from an empty ``frozenset`` — when the
+        project LOOKUP ITSELF RAISED (a transient DB blip etc.): the caller
+        treats that as "skip this delete entirely" rather than degrading to
+        the hardcoded floor. Deletion fails CLOSED here, unlike
+        ``_protected_branches_for``'s fail-OPEN rebase/sync posture, because
+        every sibling failure mode in this chokepoint already fails closed
+        (a missing token or an HTTPError from the forge both skip the
+        delete) and the delete is best-effort anyway — a skipped one just
+        retries at the next sweep, whereas silently proceeding on an
+        unresolvable project could delete a custom-named rung (e.g.
+        "staging") this project actually declares, losing a
+        deployment-lineage branch for good.
+
+        A project that resolves to ``None`` (the row is genuinely gone, not
+        a lookup failure) is NOT the fail-closed case: its ladder is
+        meaningless once the project itself no longer exists, so this
+        returns the empty set — proceed with the hardcoded floor only —
+        rather than refusing forever to clean up an orphaned project's
+        leftover branches.
+        """
+        if not project_slug:
+            return frozenset()
+        try:
+            project = await get_project_service(self.session).get_by_slug(project_slug)
+        except Exception as e:
+            self.log.warning(
+                "branch-delete protection lookup failed; skipping delete "
+                "rather than risk silently deleting an unresolvable rung",
+                project_slug=project_slug,
+                error=str(e),
+            )
+            return None
+        if project is None:
+            return frozenset()
+        fields = frozenset(
+            b.strip() for b in (project.protected_branches or []) if b.strip()
+        )
+        rungs = frozenset(rung.branch for rung in effective_environments(project))
+        return fields | rungs
 
     async def _checkout_base_with_fallback(
         self,
@@ -3653,19 +3719,37 @@ class GitService(BaseService):
 
         Silently swallows errors — cleanup is not critical. Skips branches that
         look like project defaults (main / master / develop), any branch in
-        the project's own declared ``protected_branches`` (when
-        ``project_slug`` is given — a UNION with the hardcoded set, so a
-        missing/emptied field only ever loses the extra protection, never the
-        main/master/develop floor), and any branch that still has open
-        dependent PRs (an active integration target — deleting it would
-        strand in-flight child work). Returns True if the delete request was
-        issued with no transport error, False on any skip/failure — callers
-        that only fire-and-forget can ignore it; the branch-cleanup sweep
-        uses it to report counts.
+        the project's own declared ``protected_branches`` OR one of its
+        environment-ladder rungs (when ``project_slug`` is given — see
+        :meth:`_protected_branches_for_deletion`; a UNION with the hardcoded
+        set, so a missing/emptied field or a null ladder only ever loses the
+        extra protection, never the main/master/develop floor), and any
+        branch that still has open dependent PRs (an active integration
+        target — deleting it would strand in-flight child work). This is the
+        SHARED chokepoint every remote-delete caller routes through
+        (``delete_task_branch``, the stale-branch sweep, and
+        ``_delete_pr_branch_best_effort``'s post-merge PR-source cleanup), so
+        rung protection here covers all of them, not just task-branch
+        cleanup. A project-lookup failure (as opposed to a resolved project
+        or a genuinely-gone one) fails CLOSED — the whole delete is skipped,
+        not just floor-only-protected — since a silent floor-only fallback
+        could delete a custom-named rung the lookup couldn't see. Returns
+        True if the delete request was issued with no transport error, False
+        on any skip/failure — callers that only fire-and-forget can ignore
+        it; the branch-cleanup sweep uses it to report counts.
         """
-        protected = frozenset(
-            ("main", "master", "develop", "")
-        ) | await self._protected_branches_for(project_slug)
+        project_protected = await self._protected_branches_for_deletion(project_slug)
+        if project_protected is None:
+            self.log.warning(
+                "branch delete skipped: protected-branch lookup failed; "
+                "refusing rather than risk deleting an unresolvable rung",
+                branch=branch,
+                owner=repo_ref.owner,
+                repo=repo_ref.repo,
+                project_slug=project_slug,
+            )
+            return False
+        protected = frozenset(("main", "master", "develop", "")) | project_protected
         if branch in protected:
             return False
         if await self._branch_has_open_dependents(repo_ref, branch, git_token):
@@ -3696,7 +3780,9 @@ class GitService(BaseService):
         Silently swallows errors — branch cleanup is not critical.
         ``project_slug``, when given, is forwarded to
         :meth:`_delete_remote_branch_best_effort` so its own protected-branch
-        union covers this path too.
+        + environment-ladder-rung union covers this path too — a PR's own
+        source branch can be a ladder rung (e.g. an env-sync cascade PR), and
+        it is refused just like a task branch would be.
         """
         try:
             pr_resp = await self._forge.get_pr(
@@ -3720,14 +3806,13 @@ class GitService(BaseService):
         branches don't accumulate on the remote. Returns whether the delete
         was actually issued (see ``_delete_remote_branch_best_effort``).
 
-        This is the chokepoint every task-scoped remote-delete call routes
-        through, so the environment-ladder guard lives here rather than only
-        at each caller: ``_delete_remote_branch_best_effort``'s own
-        main/master/develop skip predates the env-ladder model and doesn't
-        know about it (it's a generic branch-delete primitive also used by
-        the merged-PR source-branch cleanup, which never targets a ladder
-        branch by construction) — a task's ``branch_name`` could otherwise
-        coincide with a ladder rung and get deleted out from under it.
+        The environment-ladder guard is NOT re-checked here: it lives in the
+        shared ``_delete_remote_branch_best_effort`` chokepoint (via
+        ``_protected_branches_for_deletion``), which every remote-delete
+        caller — this one, the stale-branch sweep, and the merged-PR
+        source-branch cleanup — routes through, so a task's ``branch_name``
+        that coincides with a ladder rung is refused there regardless of
+        which caller asked.
         """
         git_token = await self._token_for_project(project_slug)
         if not git_token:
@@ -3739,8 +3824,6 @@ class GitService(BaseService):
             project_service = get_project_service(self.session)
             project = await project_service.get_by_slug(project_slug)
             if not project or not project.git_url:
-                return False
-            if branch_name in {r.branch for r in effective_environments(project)}:
                 return False
             repo_ref = self._parse_git_url(project.git_url)
         except Exception:
