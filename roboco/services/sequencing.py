@@ -282,6 +282,47 @@ def _same_assignee_lane_edges(siblings: list) -> list[tuple[object, object]]:
     return fallback
 
 
+def _reaches(precedes: dict, src: object, dst: object) -> bool:
+    """True if ``src`` can reach ``dst`` following precedence edges, where
+    ``precedes[a]`` is the set of nodes that must run after ``a``. Used to drop
+    a lane-fallback edge that would close a cycle against the analyzer edges."""
+    seen: set = set()
+    stack = [src]
+    while stack:
+        node = stack.pop()
+        if node == dst:
+            return True
+        for nxt in precedes.get(node, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return False
+
+
+def _extend_acyclic(
+    edges: list[tuple[object, object]],
+    candidates: list[tuple[object, object]],
+) -> list[tuple[object, object]]:
+    """Append ``(depends_on, task)`` candidate edges to ``edges``, skipping any
+    that duplicate an already-ordered pair (either direction) or would close a
+    cycle. ``edges`` are treated as authoritative and internally acyclic, so
+    the returned list is always acyclic — safe for ``TaskService.add_dependency``.
+    """
+    result = list(edges)
+    covered = {frozenset((a, b)) for a, b in edges}
+    precedes: dict[object, set] = defaultdict(set)
+    for dep_on, task in edges:
+        precedes[dep_on].add(task)
+    for dep_on, task in candidates:
+        pair = frozenset((dep_on, task))
+        if pair in covered or _reaches(precedes, task, dep_on):
+            continue
+        result.append((dep_on, task))
+        precedes[dep_on].add(task)
+        covered.add(pair)
+    return result
+
+
 def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     """Wire the dev-task collision DAG for a parent's surfaced siblings.
 
@@ -312,9 +353,12 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     none: a collision between ONE pair of surfaced siblings must not silently
     drop the lane-ordering of every OTHER same-assignee pair the analyzer never
     saw (an unsurfaced sibling contributes no analyzer edge at all — it isn't
-    even in ``surfaced``). Any pair the analyzer already ordered is left alone
-    here (its fallback edge is skipped) so the two mechanisms can never assert
-    opposite directions for the same pair.
+    even in ``surfaced``). The analyzer edges are authoritative: a fallback edge
+    is kept only when it can't close a cycle against the edges already accepted
+    — both the direct same-pair conflict and the transitive one (an analyzer
+    edge that inverts priority order, plus a fallback chain through an
+    unsurfaced middle sibling that contradicts it), so the returned DAG is
+    always acyclic and never poisons ``add_dependency``.
     """
     # Collision edges from DECLARED surfaces. Fewer than two surfaced siblings
     # -> no collision path (edges stays empty); the undeclared-surface fallback
@@ -349,16 +393,11 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
 
     # Same-assignee-lane fallback: runs over EVERY sibling (surfaced or not),
     # regardless of whether the collision analyzer above produced edges
-    # elsewhere in the batch. A pair already ordered by the analyzer keeps
-    # that edge only — its fallback duplicate is dropped so the two sources
-    # can never disagree on direction for the same pair.
-    covered_pairs = {frozenset((a, b)) for a, b in edges}
-    fallback = [
-        pair
-        for pair in _same_assignee_lane_edges(siblings)
-        if frozenset(pair) not in covered_pairs
-    ]
-    return edges + fallback
+    # elsewhere in the batch. Analyzer edges are authoritative (and internally
+    # acyclic); extend them with the fallback, dropping any fallback edge that
+    # duplicates an already-ordered pair or would close a cycle (see
+    # _extend_acyclic — the transitive-contradiction guard).
+    return _extend_acyclic(edges, _same_assignee_lane_edges(siblings))
 
 
 # ---------------------------------------------------------------------------

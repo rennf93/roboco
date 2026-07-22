@@ -253,7 +253,7 @@ Do not render the `body_excerpt` as the message — it is metadata only.
 
 ### Reconnect Fallback
 
-The A2A hook already has a working reconnect fallback at the consumer level: `a2a/page.tsx` (lines 105–126) invalidates the entire a2a query family both per-frame and on reconnection, ensuring no message is lost. No change was needed for this hook.
+The A2A hook already has a working reconnect fallback at the consumer level: `panel/src/components/a2a/a2a-view.tsx` invalidates the entire a2a query family both per-frame (lines 185–194, on every `a2a.message` frame) and on the disconnected→connected edge (lines 212–218, gated on a `prevConnected` ref so it never fires on initial mount), ensuring no message is lost. No change was needed for this hook.
 
 ### Example
 
@@ -346,10 +346,18 @@ Three hooks were audited for reconnect message-loss risk:
 | Hook | Connection Type | Fallback | Status |
 |------|-----------------|----------|--------|
 | `useNotificationStream` | CEO notification stream | REST catch-up (`GET /notifications?unread_only=true`) | ✅ Hardened |
-| `useA2ALiveStream` | A2A + system stream | REST query invalidation (a2a/page.tsx) | ✅ Verified |
+| `useA2ALiveStream` | A2A + system stream | REST query invalidation (`a2a-view.tsx`) | ✅ Verified |
 | Rate-limit consumers | System stream (`/ws/system`) | REST resync (rate-limit-banner.tsx, usage-overview-panel.tsx) | ✅ Verified |
 
 No defects were found in `useA2ALiveStream` or rate-limit consumption; the REST polling fallbacks were already in place and tested.
+
+### Adding a New Reconnect Fallback
+
+Picking a fallback strategy for a new WS-consuming hook comes down to what kind of data it carries:
+
+1. **Event data** (can only happen once, e.g. a notification) — implement REST catch-up: fetch unread/pending items over REST the moment the socket recovers, fold them into local state, and dedup against live frames (see `useNotificationStream` above).
+2. **State data** (always available via REST) — implement query invalidation: invalidate the relevant React Query cache keys on the disconnected→connected edge and let components refetch (see `useA2ALiveStream` above).
+3. **Always** add a regression test that simulates a disconnect/reconnect cycle with fake timers.
 
 ---
 

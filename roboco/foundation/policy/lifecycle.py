@@ -456,13 +456,11 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Status.AWAITING_PR_REVIEW,
                 # A PM re-claims a review/queue task it already owns (e.g. after
                 # a respawn) via i_will_plan — CLAIM_RULES[CELL_PM/MAIN_PM]
-                # grants AWAITING_PM_REVIEW (see test_claim_rules_match_
-                # pre_gateway_table). Without it here, can_invoke_intent
+                # grants AWAITING_PM_REVIEW. Without it here, can_invoke_intent
                 # rejected i_will_plan on an awaiting_pm_review task with
-                # invalid_state even though CLAIM_RULES said it was allowed —
-                # the "validator checks consistency between them" below was
-                # promised but never written; see
-                # _check_claim_rules_subset_of_claim_action.
+                # invalid_state even though CLAIM_RULES said it was allowed.
+                # test_claim_rules_match_pre_gateway_table keeps this source set
+                # and CLAIM_RULES in sync.
                 Status.AWAITING_PM_REVIEW,
             }
         ),
@@ -758,8 +756,8 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     # CLAIM_RULES never actually did, so can_invoke_intent silently rejected
     # every i_will_plan attempt on an awaiting_pm_review task with
     # invalid_state regardless of what the service layer allowed. Added here
-    # to make that comment true; _check_claim_rules_subset_of_claim_action
-    # guards the two tables from diverging again.
+    # to match; test_claim_rules_match_pre_gateway_table asserts CLAIM_RULES
+    # and the service table stay in sync so they can't diverge again.
     Role.CELL_PM: frozenset(
         {Status.PENDING, Status.NEEDS_REVISION, Status.AWAITING_PM_REVIEW}
     ),

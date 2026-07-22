@@ -15,36 +15,24 @@ When retries are exhausted, the same toast appears, but the operation completes 
 
 ## Manual retries (stateful methods)
 
-**POST**, **PATCH**, and **DELETE** requests do NOT auto-retry on a 429 without an idempotency key header, because:
+**POST**, **PATCH**, and **DELETE** requests do NOT auto-retry on a 429, because:
 
 - **POST** can create a duplicate resource if replayed.
 - **PATCH** can double-apply a partial update.
 - **DELETE** can be replayed, causing confusion about the resource's state.
 
-To safely retry these methods, the caller must provide an **idempotency key** that the backend can use to deduplicate:
+A stateful request that hits a 429 fails immediately with a toast: `"Rate limited by <provider>. This action was not automatically retried to avoid duplicating it — please try again in ~Ns."`
 
-```typescript
-// Example: safe POST with idempotency key
-const response = await api.post("/api/tasks", taskData, {
-  headers: {
-    "X-Idempotency-Key": "unique-idempotency-key-value",
-  },
-});
-```
+## Idempotency-key override (client-side gate only, not a working feature yet)
 
-When an idempotency key is present, the request will auto-retry on a 429 (up to 3 times).
+`isRetrySafe` also accepts an `X-Idempotency-Key` header as an override: a POST/PATCH/DELETE request carrying that header is treated as retry-safe and auto-retries on a 429 the same as GET/PUT.
 
-When a stateful request hits a 429 WITHOUT an idempotency key, it fails immediately with a toast: `"Rate limited by <provider>. This action was not automatically retried to avoid duplicating it — please try again in ~Ns."`
+This is client-side scaffolding, not a live contract today:
 
-## Idempotency key format
+- No call site in the panel sets `X-Idempotency-Key` — every POST/PATCH/DELETE in the app currently takes the no-retry path above.
+- There is no backend support for the header at all. The API does not store or check idempotency keys, so nothing would deduplicate a replayed request even if one were retried this way.
 
-The idempotency key should be a **unique, deterministic identifier** for the operation:
-
-- A UUID (`crypto.randomUUID()`)
-- A hash of the operation's intent (e.g., task ID + action name)
-- A timestamp + action combination
-
-The backend is responsible for storing and checking idempotency keys; if a request arrives twice with the same key, it should return the cached result instead of re-executing.
+Idempotency-key retry — the client attaching a key and the backend storing it to return a cached result on a repeat — is a **possible future enhancement**, not something implemented server-side. Don't set this header expecting deduplication; until the backend catches up, it would only unlock a client-side retry with no safety net behind it.
 
 ## Implementation notes
 

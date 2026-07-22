@@ -239,6 +239,27 @@ def _edge_set(pairs: list[tuple[object, object]]) -> set[tuple[object, object]]:
     return set(pairs)
 
 
+def _has_cycle(pairs: list[tuple[object, object]]) -> bool:
+    """True if the (depends_on, task) edge list contains a directed cycle."""
+    graph: dict[object, set[object]] = {}
+    for dep_on, task in pairs:
+        graph.setdefault(dep_on, set()).add(task)
+    visiting: set[object] = set()
+    done: set[object] = set()
+
+    def _visit(node: object) -> bool:
+        visiting.add(node)
+        for nxt in graph.get(node, ()):
+            if nxt in visiting or (nxt not in done and _visit(nxt)):
+                return True
+        visiting.discard(node)
+        done.add(node)
+        return False
+
+    nodes = {n for pair in pairs for n in pair}
+    return any(n not in done and _visit(n) for n in nodes)
+
+
 def test_dev_collision_disjoint_surfaces_are_parallel() -> None:
     # Same project, disjoint files → no edge (the two dev tasks run together).
     a, b = (
@@ -411,6 +432,36 @@ def test_dev_collision_fallback_covers_unsurfaced_sibling_in_surfaced_lane() -> 
     other = _Sib(uuid4(), sequence=2, assigned_to="be-dev-1", intends_to_touch=["b.py"])
     edges = dev_task_collision_edges([first, bare, other])
     assert edges == [(first.id, bare.id), (bare.id, other.id)]
+
+
+def test_dev_collision_fallback_never_closes_cycle_against_analyzer() -> None:
+    # Regression: the analyzer's shared-last migration order inverts priority
+    # order (s3 before s1), while the same-assignee lane fallback chains by
+    # priority through the unsurfaced middle sibling (s1 -> s2 -> s3). Naively
+    # unioning the two closed a 3-cycle s1 -> s3 -> s2 -> s1 that made
+    # add_dependency raise ConflictError and wedged every later delegate. The
+    # analyzer edge wins; the fallback edge that would cycle is dropped.
+    s1 = _Sib(
+        uuid4(),
+        priority=1,
+        sequence=0,
+        assigned_to="be-dev-1",
+        adds_migration=True,
+        touches_shared=True,
+    )
+    s2 = _Sib(uuid4(), priority=2, sequence=1, assigned_to="be-dev-1")  # unsurfaced
+    s3 = _Sib(
+        uuid4(),
+        priority=3,
+        sequence=2,
+        assigned_to="be-dev-1",
+        adds_migration=True,
+        touches_shared=False,
+    )
+    edges = dev_task_collision_edges([s1, s2, s3])
+    assert not _has_cycle(edges)
+    assert (s3.id, s1.id) in edges  # authoritative analyzer edge preserved
+    assert (s2.id, s3.id) not in edges  # the cycling fallback edge is dropped
 
 
 # ---------------------------------------------------------------------------
