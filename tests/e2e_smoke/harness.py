@@ -45,7 +45,19 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
     from types import ModuleType
+    from typing import Protocol
     from uuid import UUID
+
+    class TmpPathFactory(Protocol):
+        """Structural stand-in for the one ``pytest.TempPathFactory`` method
+        ``build_e2e_stack`` uses. pytest's real fixture value already
+        satisfies this shape, so it needs no adapter — but it lets
+        ``roboco/eval/runner.py`` (an offline CLI, not a pytest session) drive
+        this same stack-building machinery with a plain temp-dir factory
+        instead of constructing a real ``pytest.Config``."""
+
+        def mktemp(self, basename: str, numbered: bool = True) -> Path: ...
+
 
 _OWNER = "e2e-smoke"
 _REPO = "proj"
@@ -360,9 +372,15 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
 
 
 def build_e2e_stack(
-    _test_database_url: str, tmp_path_factory: pytest.TempPathFactory
+    _test_database_url: str, tmp_path_factory: TmpPathFactory
 ) -> Iterator[E2EStack]:
-    """Generator behind the ``e2e_stack`` fixture (defined in conftest)."""
+    """Generator behind the ``e2e_stack`` fixture (defined in conftest).
+
+    ``tmp_path_factory`` only needs ``.mktemp()`` (see ``TmpPathFactory``
+    above) — pytest's real fixture satisfies it structurally, and
+    ``roboco/eval/runner.py`` drives this same function with a plain
+    non-pytest factory to reuse this stack outside a test session.
+    """
     from roboco.config import settings
     from roboco.db import base as db_base
 
