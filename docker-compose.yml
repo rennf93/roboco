@@ -392,6 +392,20 @@ services:
       - agent-grok-image
 
   # ==========================================================================
+  # Agent Codex Image Builder (OpenAI via the official codex CLI). One-shot
+  # delivery roles only in V1 — no interactive prompter/secretary variant.
+  # ==========================================================================
+  agent-codex-image:
+    build:
+      context: .
+      dockerfile: docker/agent-codex.Dockerfile
+    image: roboco-agent-codex
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Codex image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
   # Only pulled by the provisioner when a venture requests pg extensions; bare
   # sandboxes stay on the light upstream postgres image. See
@@ -474,6 +488,9 @@ services:
       # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
       # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
       ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}
+      # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
+      # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
+      ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so
@@ -669,6 +686,10 @@ services:
       # (grok_auth.refresh_if_stale) so agents never mount a dead credential;
       # each agent's own auth.json mount stays read-only.
       - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}
+      # Codex CLI auth — same shape as the SuperGrok mount above. Read-WRITE:
+      # the orchestrator auto-refreshes the access token in place
+      # (codex_auth.refresh_if_stale); each agent's own mount stays read-only.
+      - ${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}:${ROBOCO_HOST_CODEX_DIR:-/home/renzof/.codex}
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
@@ -681,6 +702,8 @@ services:
       # Per-agent GROK usage capture: each Grok agent writes usage.json under
       # <agent_id>/; the finalizer reads the captured tokens/cost back here.
       - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
+      # Per-agent CODEX usage capture — same shape as grok-usage above.
+      - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
       # Persistent logs — survive `docker compose down/up`. Orchestrator and
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.

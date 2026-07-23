@@ -26,9 +26,15 @@ export interface ModelAssignment {
   model_name: string;
 }
 
+// "codex" is READ-only (derive_mode can report it for a pure-OPENAI global
+// assignment) — there is no apply_mode="codex" write path, so no UI ever
+// constructs an ApplyModePayload with this value. One shared type (not a
+// split read/write pair) keeps this file small; nothing calls applyMode with
+// mode: "codex" since no button exists for it.
 export type RoutingMode =
   | "anthropic"
   | "grok"
+  | "codex"
   | "ollama"
   | "self_hosted"
   | "mix"

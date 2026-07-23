@@ -11,6 +11,7 @@ import os
 import posixpath
 from collections.abc import Callable
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -1836,6 +1837,28 @@ class Settings(BaseSettings):
         description=(
             "Per-agent GROK cost ceiling (USD) before the container is killed; "
             "0 disables. Override via ROBOCO_GROK_MAX_COST_USD"
+        ),
+    )
+    # Host directory holding the Codex CLI's ChatGPT-subscription auth.json
+    # (from `codex login`), mounted read-only into each Codex agent — the
+    # parity analogue of ROBOCO_HOST_GROK_DIR. Unlike the grok path (a raw
+    # os.environ read in grok.py), this is a real Settings field per the
+    # Codex build directive, so it shows up in the settings schema.
+    host_codex_dir: str = Field(
+        default_factory=lambda: str(Path.home() / ".codex"),
+        description=(
+            "Host directory holding the Codex CLI subscription auth.json "
+            "(from `codex login`); mounted read-only into each Codex agent. "
+            "Override via ROBOCO_HOST_CODEX_DIR"
+        ),
+    )
+    # The codex CLI model id pinned at spawn (`codex exec -m <id>`). Codex has
+    # no reliable default model, so this must always be set explicitly.
+    codex_cli_model: str = Field(
+        default="gpt-5.3-codex",
+        description=(
+            "Codex CLI model id passed to `codex exec -m`; override via "
+            "ROBOCO_CODEX_CLI_MODEL"
         ),
     )
     # An interactive intake/secretary chat the human abandoned (closed the tab

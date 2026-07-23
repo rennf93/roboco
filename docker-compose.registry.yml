@@ -278,6 +278,13 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-secretary image present'"]
     restart: "no"
 
+  # Codex (OpenAI, official CLI) — one-shot delivery roles only, no
+  # interactive prompter/secretary variant in V1.
+  agent-codex-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-codex:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-codex image present'"]
+    restart: "no"
+
   # Sandbox PG (kitchen-sink) — pulled by the provisioner when a venture opts
   # into pg extensions. Bare sandboxes use the upstream postgres image, so this
   # is only needed by extension-using projects.
@@ -349,6 +356,9 @@ services:
       # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
       # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
       ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
+      # ChatGPT-subscription auth (host ~/.codex) for Codex-CLI agents — same
+      # shape as ROBOCO_HOST_GROK_DIR. Run `codex login` on the host.
+      ROBOCO_HOST_CODEX_DIR: ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
       # Reachable base URL for commit-trailer links — set to your host's LAN
       # address or domain so the links in commit bodies resolve.
@@ -450,6 +460,8 @@ services:
       # auto-refreshes the ~6h token in place (grok_auth.refresh_if_stale) so
       # agents never mount a dead credential; the agent's own mount stays RO.
       - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
+      # Codex CLI auth — same shape as the SuperGrok mount above.
+      - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
@@ -457,6 +469,8 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
       # Per-agent GROK usage capture (usage.json -> finalizer).
       - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
+      # Per-agent CODEX usage capture — same shape as grok-usage above.
+      - ${ROBOCO_DATA_DIR:-./data}/codex-usage:/data/codex-usage
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
       # video engine: NAS-only bind mount, off by default in public registry.
       # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.

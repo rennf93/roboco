@@ -45,6 +45,11 @@ const {
       provider_type: "grok",
       display_name: "Grok Build 0.1",
     },
+    {
+      model_name: "gpt-5.3-codex",
+      provider_type: "openai",
+      display_name: "GPT-5.3 Codex",
+    },
   ]),
   getOllamaKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setOllamaKey: vi.fn(async () => ({ has_key: true, enabled: true })),

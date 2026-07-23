@@ -61,6 +61,13 @@ _GROK_OUTPUT = 2.00
 _GROK_CACHE_READ = 0.20
 _GROK_CACHE_WRITE = 1.00
 
+# OpenAI Codex — priced non-Anthropic (ChatGPT-subscription CLI, priced here
+# for cost attribution)
+_CODEX_INPUT = 1.75
+_CODEX_OUTPUT = 14.00
+_CODEX_CACHE_READ = 0.175
+_CODEX_CACHE_WRITE = 1.75
+
 # Tolerance for floating-point comparisons
 _TOL = 1e-4
 
@@ -331,6 +338,55 @@ class TestGrokTier:
 
 
 # ---------------------------------------------------------------------------
+# Codex tier (OpenAI — priced non-Anthropic)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexTier:
+    """gpt-5.3-codex pricing — a real input/output split, unlike grok's fold."""
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("gpt-5.3-codex", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _CODEX_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("gpt-5.3-codex", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _CODEX_OUTPUT) < _TOL
+
+    def test_cached_input(self) -> None:
+        cost = calculate_cost(
+            "gpt-5.3-codex", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _CODEX_CACHE_READ) < _TOL
+
+    def test_cache_write(self) -> None:
+        cost = calculate_cost(
+            "gpt-5.3-codex", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+        )
+        assert abs(cost - _CODEX_CACHE_WRITE) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "gpt-5.3-codex",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = _CODEX_INPUT + _CODEX_OUTPUT + _CODEX_CACHE_READ + _CODEX_CACHE_WRITE
+        assert abs(cost - expected) < _TOL
+
+    def test_codex_is_not_treated_as_anthropic(self) -> None:
+        assert _is_anthropic_model("gpt-5.3-codex") is False
+        assert calculate_cost("gpt-5.3-codex", tokens_input=_M, tokens_output=0) > 0.0
+
+    def test_output_is_pricier_than_input(self) -> None:
+        # Codex's real split makes output 8x input — the property grok's
+        # single-total fold structurally cannot express.
+        assert _CODEX_OUTPUT > _CODEX_INPUT
+
+
+# ---------------------------------------------------------------------------
 # Unknown / edge cases — must return 0.0 without raising
 # ---------------------------------------------------------------------------
 
@@ -484,6 +540,14 @@ class TestCostResult:
     def test_priced_non_anthropic_grok_is_not_unpriced(self) -> None:
         result = calculate_cost_result(
             "grok-build-0.1", tokens_input=_M, tokens_output=0
+        )
+        assert result.cost_usd > 0.0
+        assert result.unpriced is False
+        assert result.is_anthropic is False
+
+    def test_priced_non_anthropic_codex_is_not_unpriced(self) -> None:
+        result = calculate_cost_result(
+            "gpt-5.3-codex", tokens_input=_M, tokens_output=0
         )
         assert result.cost_usd > 0.0
         assert result.unpriced is False
