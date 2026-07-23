@@ -194,7 +194,9 @@ class ApplyModeRequest(BaseModel):
     - mode="mix": clear existing per-agent pins; upsert the `per_agent`
       map verbatim. Role + GLOBAL rows are left untouched so the user can
       layer with an existing partial setup. Self-hosted model names in
-      `per_agent` are routed to the LOCAL provider automatically.
+      `per_agent` are routed to the LOCAL provider automatically. An empty
+      map is the explicit clear-all (every pin deleted, nothing re-added);
+      omitting the field is still a 400.
     - mode="self_hosted": clear every assignment; enable LOCAL provider;
       set GLOBAL default to `default_model` (a self-hosted model name).
     - mode="cost_tiered": seed the day-1 cost-tiered compound ROLE(":"complexity)
