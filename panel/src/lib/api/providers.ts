@@ -31,7 +31,8 @@ export type RoutingMode =
   | "grok"
   | "ollama"
   | "self_hosted"
-  | "mix";
+  | "mix"
+  | "cost_tiered";
 
 export interface ModeSnapshot {
   mode: RoutingMode;
@@ -73,6 +74,47 @@ export interface SelfHostedModel {
 export interface SelfHostedConfigPayload {
   base_url: string;
   auth_token?: string; // omit to leave token unchanged; "" to clear
+}
+
+// ---------------------------------------------------------------------------
+// Complexity overrides (cost-tiered routing: compound ROLE(":"complexity) rows)
+// ---------------------------------------------------------------------------
+
+export type ComplexityLevel = "low" | "high";
+
+/** One active ROLE(":"complexity) cost-tiered override row. */
+export interface ComplexityOverride {
+  role: string;
+  complexity: ComplexityLevel;
+  model_name: string;
+  /** Set only on the PUT response, when the model crosses provider families
+   * relative to the role's Anthropic baseline — allowed, never silent. */
+  warning?: string | null;
+}
+
+/** Roles the complexity-override endpoint accepts a row for — mirrors the
+ * server allowlist in api/routes/provider.py. Coordinator (cell_pm, main_pm),
+ * pr_reviewer, and board/CEO-facing roles are never offered a row here; tier
+ * pinning for those is deliberate — cell_pm especially, since the org's
+ * documented weak-model incidents were precisely a cheap model on a PM role. */
+export const COMPLEXITY_OVERRIDE_ROLES = ["developer", "qa", "documenter"] as const;
+
+// ---------------------------------------------------------------------------
+// Routing presets (named, full snapshots of the routing state)
+// ---------------------------------------------------------------------------
+
+/** One saved preset — list view (no payload). */
+export interface RoutingPreset {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+/** Result of applying a preset. */
+export interface RoutingPresetApplyResult {
+  mode: RoutingMode;
+  assignments: ModelAssignment[];
+  skipped: string[];
 }
 
 export const providersApi = {
@@ -146,5 +188,62 @@ export const providersApi = {
       "/providers/self-hosted/models",
     );
     return data;
+  },
+
+  // -------------------------------------------------------------------------
+  // Complexity overrides
+  // -------------------------------------------------------------------------
+
+  getComplexityOverrides: async (): Promise<ComplexityOverride[]> => {
+    const { data } = await api.get<ComplexityOverride[]>(
+      "/providers/complexity-overrides",
+    );
+    return data;
+  },
+
+  setComplexityOverride: async (
+    payload: ComplexityOverride,
+  ): Promise<ComplexityOverride> => {
+    const { data } = await api.put<ComplexityOverride>(
+      "/providers/complexity-overrides",
+      payload,
+    );
+    return data;
+  },
+
+  deleteComplexityOverride: async (
+    role: string,
+    complexity: ComplexityLevel,
+  ): Promise<void> => {
+    await api.delete(
+      `/providers/complexity-overrides/${encodeURIComponent(role)}/${complexity}`,
+    );
+  },
+
+  // -------------------------------------------------------------------------
+  // Routing presets
+  // -------------------------------------------------------------------------
+
+  listPresets: async (): Promise<RoutingPreset[]> => {
+    const { data } = await api.get<RoutingPreset[]>("/providers/presets");
+    return data;
+  },
+
+  savePreset: async (name: string): Promise<RoutingPreset> => {
+    const { data } = await api.post<RoutingPreset>("/providers/presets", {
+      name,
+    });
+    return data;
+  },
+
+  applyPreset: async (id: string): Promise<RoutingPresetApplyResult> => {
+    const { data } = await api.post<RoutingPresetApplyResult>(
+      `/providers/presets/${id}/apply`,
+    );
+    return data;
+  },
+
+  deletePreset: async (id: string): Promise<void> => {
+    await api.delete(`/providers/presets/${id}`);
   },
 };

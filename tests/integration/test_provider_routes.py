@@ -13,9 +13,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.provider import router as provider_router
-from roboco.db.tables import ModelAssignmentTable, ProviderConfigTable
+from roboco.db.tables import (
+    ModelAssignmentTable,
+    ProviderConfigTable,
+    RoutingPresetTable,
+)
 from roboco.models import AgentRole, Team
-from roboco.models.base import ModelProvider
+from roboco.models.base import AssignmentScope, ModelProvider
+from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.models.permissions import AgentContext
 from sqlalchemy import delete, select
 
@@ -23,6 +28,13 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def _first_model_for_type(provider_type: ModelProvider) -> str:
+    for entry in MODEL_CATALOG:
+        if entry.provider_type == provider_type:
+            return entry.model_name
+    raise RuntimeError(f"no catalog entry for {provider_type}")
 
 
 def _make_app(
@@ -89,9 +101,13 @@ async def app_client_with_ollama(
     """App client pre-seeded with Anthropic and Ollama Cloud providers.
 
     Begins with a DELETE-before-seed isolation step: deletes all rows from
-    ModelAssignmentTable (FK-safe) then ProviderConfigTable before adding
-    fresh ANTHROPIC + OLLAMA_CLOUD rows. This ensures tests are
-    order-independent regardless of what prior tests committed.
+    ModelAssignmentTable (FK-safe), ProviderConfigTable, and RoutingPresetTable
+    before adding fresh ANTHROPIC + OLLAMA_CLOUD rows. This ensures tests are
+    order-independent regardless of what prior tests committed — the fixture's
+    `db.commit()` calls are real commits against the session-scoped scratch
+    DB (`db_session`'s teardown only rolls back uncommitted state), so without
+    this every table a test writes through a route's `db.commit()` needs its
+    own cleanup here, RoutingPresetTable included.
     """
     app = _make_app(db_session)
     suffix = uuid4().hex[:8]
@@ -99,6 +115,7 @@ async def app_client_with_ollama(
     # provider_configs.id, so assignments must be deleted first.
     await db_session.execute(delete(ModelAssignmentTable))
     await db_session.execute(delete(ProviderConfigTable))
+    await db_session.execute(delete(RoutingPresetTable))
     await db_session.flush()
     db_session.add(
         ProviderConfigTable(
@@ -625,3 +642,390 @@ async def test_get_self_hosted_models_unreachable_returns_503(
             headers=_HDR_PM,
         )
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+
+
+# =============================================================================
+# Complexity overrides (cost-tiered routing: compound ROLE(":"complexity) rows)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_complexity_overrides_empty(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    response = await app_client_with_ollama.get(
+        "/api/providers/complexity-overrides", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_round_trips_through_get(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """PUT developer:low -> haiku (no costlier than the sonnet baseline)."""
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "developer", "complexity": "low", "model_name": "haiku"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body == {
+        "role": "developer",
+        "complexity": "low",
+        "model_name": "haiku",
+        "warning": None,
+    }
+
+    listing = await app_client_with_ollama.get(
+        "/api/providers/complexity-overrides", headers=_HDR_PM
+    )
+    # GET's listing rows are never constructed WITH a warning (only PUT
+    # computes one), but the shared response schema still serializes the
+    # field at its None default.
+    assert listing.json() == [body]
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_rejects_disallowed_role(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """main_pm is a coordinator role — never offered a complexity override."""
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "main_pm", "complexity": "low", "model_name": "haiku"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "deliberate" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_rejects_costlier_tier(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """developer's baseline is sonnet — opus is a costlier tier, rejected."""
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "developer", "complexity": "high", "model_name": "opus"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "downgrade-only" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_allows_same_tier_as_baseline(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """A same-tier pin (sonnet for developer, whose baseline IS sonnet) is not
+    a downgrade but isn't costlier either — allowed."""
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "developer", "complexity": "high", "model_name": "sonnet"},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["warning"] is None
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_rejects_disabled_provider(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """qa's baseline (haiku) prices no cheaper than Ollama Cloud (unpriced,
+    treated as free-tier) so the downgrade-only check passes — but the
+    OLLAMA_CLOUD provider is disabled (no key set) in this fixture's seeded
+    state, so the write-time readiness guard rejects it before it can
+    silently no-op to the legacy Anthropic path at spawn."""
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "qa", "complexity": "low", "model_name": ollama_model},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    detail = response.json()["detail"]
+    assert "isn't configured yet" in detail
+    assert "Ollama" in detail
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_warns_on_cross_family_once_provider_ready(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """Once Ollama Cloud is enabled (key set), the same cross-family override
+    succeeds — allowed, but the response carries a non-null warning since
+    it's a different provider family than qa's Anthropic baseline."""
+    await app_client_with_ollama.put(
+        "/api/providers/ollama-key",
+        json={"api_key": "test-key"},
+        headers=_HDR_PM,
+    )
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    response = await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "qa", "complexity": "low", "model_name": ollama_model},
+        headers=_HDR_PM,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["warning"] is not None
+    assert "ollama_cloud" in body["warning"]
+    assert "qa" in body["warning"]
+
+
+@pytest.mark.asyncio
+async def test_put_complexity_override_developer_forbidden(
+    db_session: AsyncSession,
+) -> None:
+    app = _make_app(db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/providers/complexity-overrides",
+            json={"role": "developer", "complexity": "low", "model_name": "haiku"},
+            headers={"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"},
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_delete_complexity_override(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    await app_client_with_ollama.put(
+        "/api/providers/complexity-overrides",
+        json={"role": "qa", "complexity": "high", "model_name": "haiku"},
+        headers=_HDR_PM,
+    )
+    response = await app_client_with_ollama.delete(
+        "/api/providers/complexity-overrides/qa/high", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.NO_CONTENT
+
+    listing = await app_client_with_ollama.get(
+        "/api/providers/complexity-overrides", headers=_HDR_PM
+    )
+    assert listing.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_complexity_override_not_found(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    response = await app_client_with_ollama.delete(
+        "/api/providers/complexity-overrides/qa/low", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_cost_tiered_seeds_day1_rows(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    response = await app_client_with_ollama.post(
+        "/api/providers", json={"mode": "cost_tiered"}, headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+
+    listing = await app_client_with_ollama.get(
+        "/api/providers/complexity-overrides", headers=_HDR_PM
+    )
+    rows = {(r["role"], r["complexity"]): r["model_name"] for r in listing.json()}
+    # cell_pm is deliberately excluded (a coordinator role) — only developer.
+    assert rows == {("developer", "low"): "haiku"}
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_cost_tiered_is_additive_preserves_global(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """Unlike every other mode, cost_tiered never wipes existing rows."""
+    await app_client_with_ollama.post(
+        "/api/providers", json={"mode": "ollama"}, headers=_HDR_PM
+    )
+    mode_before = (
+        await app_client_with_ollama.get("/api/providers", headers=_HDR_PM)
+    ).json()
+    assert mode_before["mode"] == "ollama"
+
+    response = await app_client_with_ollama.post(
+        "/api/providers", json={"mode": "cost_tiered"}, headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    assignments = response.json()["assignments"]
+    scopes = {(a["scope"], a["scope_value"]) for a in assignments}
+    # The pre-existing GLOBAL row from 'ollama' mode survives untouched.
+    assert ("global", None) in scopes
+    assert ("role", "developer:low") in scopes
+    # cell_pm is deliberately excluded from cost_tiered — a coordinator role.
+    assert ("role", "cell_pm:low") not in scopes
+
+
+# =============================================================================
+# Routing presets (named, full snapshots of the routing state)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_save_list_and_apply_preset_round_trip(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    """Save captures the current state; mutating + re-applying restores it."""
+    # Arrange a distinctive state: a GLOBAL Ollama default.
+    await app_client_with_ollama.post(
+        "/api/providers", json={"mode": "ollama"}, headers=_HDR_PM
+    )
+    snapshot_before = (
+        await app_client_with_ollama.get("/api/providers", headers=_HDR_PM)
+    ).json()
+
+    save_resp = await app_client_with_ollama.post(
+        "/api/providers/presets", json={"name": "my-preset"}, headers=_HDR_PM
+    )
+    assert save_resp.status_code == HTTPStatus.OK
+    preset_id = save_resp.json()["id"]
+    assert save_resp.json()["name"] == "my-preset"
+
+    listing = await app_client_with_ollama.get(
+        "/api/providers/presets", headers=_HDR_PM
+    )
+    assert listing.status_code == HTTPStatus.OK
+    assert [p["name"] for p in listing.json()] == ["my-preset"]
+
+    # Mutate away from the saved state.
+    await app_client_with_ollama.post(
+        "/api/providers", json={"mode": "anthropic"}, headers=_HDR_PM
+    )
+    mutated = (
+        await app_client_with_ollama.get("/api/providers", headers=_HDR_PM)
+    ).json()
+    assert mutated["assignments"] == []
+
+    # Apply the preset back — restores the snapshot. Applying always
+    # deletes-then-reinserts (a real full swap), so row `id`s are fresh;
+    # compare on the business fields only.
+    apply_resp = await app_client_with_ollama.post(
+        f"/api/providers/presets/{preset_id}/apply", headers=_HDR_PM
+    )
+    assert apply_resp.status_code == HTTPStatus.OK
+    applied = apply_resp.json()
+    assert applied["skipped"] == []
+
+    def _sans_id(assignments: list[dict]) -> list[dict]:
+        return [{k: v for k, v in a.items() if k != "id"} for a in assignments]
+
+    assert _sans_id(applied["assignments"]) == _sans_id(snapshot_before["assignments"])
+
+
+@pytest.mark.asyncio
+async def test_save_preset_duplicate_name_returns_409(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    first = await app_client_with_ollama.post(
+        "/api/providers/presets", json={"name": "dup"}, headers=_HDR_PM
+    )
+    assert first.status_code == HTTPStatus.OK
+    second = await app_client_with_ollama.post(
+        "/api/providers/presets", json={"name": "dup"}, headers=_HDR_PM
+    )
+    assert second.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_apply_preset_not_found_returns_404(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    response = await app_client_with_ollama.post(
+        f"/api/providers/presets/{uuid4()}/apply", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_delete_preset_not_found_returns_404(
+    app_client_with_ollama: AsyncClient,
+) -> None:
+    response = await app_client_with_ollama.delete(
+        f"/api/providers/presets/{uuid4()}", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_delete_preset(app_client_with_ollama: AsyncClient) -> None:
+    save_resp = await app_client_with_ollama.post(
+        "/api/providers/presets", json={"name": "to-delete"}, headers=_HDR_PM
+    )
+    preset_id = save_resp.json()["id"]
+
+    response = await app_client_with_ollama.delete(
+        f"/api/providers/presets/{preset_id}", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.NO_CONTENT
+
+    listing = await app_client_with_ollama.get(
+        "/api/providers/presets", headers=_HDR_PM
+    )
+    assert listing.json() == []
+
+
+@pytest.mark.asyncio
+async def test_apply_preset_skips_entry_with_since_removed_model(
+    app_client_with_ollama: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Payload hygiene: an entry referencing a model no longer in the catalog
+    (and not routable to LOCAL, since no LOCAL provider is seeded here) is
+    skipped with a note — never fails the whole apply."""
+    row = RoutingPresetTable(
+        name="stale-preset",
+        payload={
+            "mode": "mix",
+            "assignments": [
+                {
+                    "scope": AssignmentScope.GLOBAL.value,
+                    "scope_value": None,
+                    "provider_type": "anthropic",
+                    "model_name": "sonnet",
+                },
+                {
+                    "scope": AssignmentScope.ROLE.value,
+                    "scope_value": "developer",
+                    "provider_type": "anthropic",
+                    "model_name": "ghost-model-that-no-longer-exists",
+                },
+            ],
+        },
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+    response = await app_client_with_ollama.post(
+        f"/api/providers/presets/{row.id}/apply", headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert len(body["skipped"]) == 1
+    assert "ghost-model-that-no-longer-exists" in body["skipped"][0]
+    # The valid GLOBAL entry still applied despite the sibling failure.
+    scopes = {(a["scope"], a["scope_value"]) for a in body["assignments"]}
+    assert ("global", None) in scopes
+    assert ("role", "developer") not in scopes
+
+
+@pytest.mark.asyncio
+async def test_presets_developer_forbidden(
+    db_session: AsyncSession,
+) -> None:
+    app = _make_app(db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND)
+    transport = ASGITransport(app=app)
+    hdr = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/providers/presets", headers=hdr)
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN

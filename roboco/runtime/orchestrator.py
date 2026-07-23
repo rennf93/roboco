@@ -2272,11 +2272,11 @@ class AgentOrchestrator:
 
         # Resolve the provider route for this agent. Caller-supplied `model`
         # wins (dispatcher overrides, tests). Otherwise the routing service
-        # resolves (agent_slug | role | global) assignments, falling back
-        # internally to `ROLE_MODEL_MAP` when no rows exist — so a fresh
-        # deployment with an empty `model_assignments` table behaves exactly
-        # as before.
-        route = await self._resolve_agent_route(agent_id)
+        # resolves (agent_slug | role+complexity | role | global) assignments,
+        # falling back internally to `ROLE_MODEL_MAP` when no rows exist — so
+        # a fresh deployment with an empty `model_assignments` table behaves
+        # exactly as before.
+        route = await self._resolve_agent_route(agent_id, task_id)
         if not model:
             model = route.model_name
 
@@ -2758,7 +2758,7 @@ class AgentOrchestrator:
         # so the next tick re-checks cheaply until the provider recovers. The
         # existing-running check above stays first, so a live agent is never
         # replaced by this bail. Fail-open: a tracker read error never blocks.
-        route = await self._resolve_agent_route(agent_id)
+        route = await self._resolve_agent_route(agent_id, task_id)
         if await self._provider_spawn_parked(route.provider_type.value):
             self._mark_task_handled(task_id)
             logger.info(
@@ -4195,13 +4195,26 @@ class AgentOrchestrator:
         await self._auto_block_task(client, task_id, f"readiness: {reason}")
         return reason
 
-    async def _resolve_agent_route(self, agent_id: str) -> "AgentRoute":
+    async def _resolve_agent_route(
+        self, agent_id: str, task_id: str | None = None
+    ) -> "AgentRoute":
         """Resolve (provider, model) for `agent_id` via `ModelRoutingService`.
+
+        When `task_id` is given, its `estimated_complexity` (LOW/MEDIUM/HIGH)
+        threads into the resolver as a lowercase string so a cost-tiered
+        `ROLE(":"complexity)` override (see `ModelRoutingService`) can apply.
+        The task lookup is isolated in its own try/except: a missing task or
+        lookup failure degrades to the plain-role path silently (debug log —
+        this is the common case for non-task spawns like idle PM bootstrap),
+        never escalating to the full legacy-Anthropic downgrade below.
 
         Errors are contained: any DB/session failure degrades to a legacy
         Anthropic-default AgentRoute so spawn never stalls on routing.
         """
+        from sqlalchemy import select
+
         from roboco.db.base import get_session_factory
+        from roboco.db.tables import TaskTable
         from roboco.models.base import ModelProvider
         from roboco.models.runtime import MODEL_MAP
         from roboco.services.llm import (
@@ -4212,8 +4225,26 @@ class AgentOrchestrator:
         try:
             factory = get_session_factory()
             async with factory() as db:
+                complexity: str | None = None
+                if task_id:
+                    try:
+                        result = await db.execute(
+                            select(TaskTable.estimated_complexity).where(
+                                TaskTable.id == task_id
+                            )
+                        )
+                        row = result.scalar_one_or_none()
+                        if row is not None:
+                            complexity = row.value.lower()
+                    except Exception as e:
+                        logger.debug(
+                            "Task complexity lookup failed; using plain-role routing",
+                            agent_id=agent_id,
+                            task_id=task_id,
+                            error=str(e),
+                        )
                 router = get_model_routing_service(db)
-                return await router.resolve_for_agent(agent_id)
+                return await router.resolve_for_agent(agent_id, complexity=complexity)
         except Exception as e:  # pragma: no cover
             role = get_agent_role(agent_id) or ""
             short = ROLE_MODEL_MAP.get(role, "sonnet")

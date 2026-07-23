@@ -3,10 +3,17 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   useApplyMode,
+  useApplyPreset,
   useCatalog,
+  useComplexityOverrides,
+  useDeleteComplexityOverride,
+  useDeletePreset,
   useGrokKey,
   useOllamaKey,
   useRoutingMode,
+  useRoutingPresets,
+  useSavePreset,
+  useSetComplexityOverride,
   useSetGrokKey,
   useSetOllamaKey,
   useSelfHostedModels,
@@ -34,6 +41,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   AlertTriangle,
   Cpu,
+  Gauge,
   Key,
   KeyRound,
   Server,
@@ -43,7 +51,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AssignmentScope, AgentRole, ModelProvider } from "@/types";
-import type { SelfHostedModel } from "@/lib/api/providers";
+import {
+  COMPLEXITY_OVERRIDE_ROLES,
+  type ComplexityLevel,
+  type SelfHostedModel,
+} from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import { Badge } from "@/components/ui/badge";
@@ -126,11 +138,29 @@ function byOrgOrder(a: AgentDefinition, b: AgentDefinition): number {
   return ra !== rb ? ra - rb : a.id.localeCompare(b.id);
 }
 
+// Display labels for the complexity-override allowlist — mirrors the
+// backend's fixed `_COMPLEXITY_OVERRIDE_ROLES` (developer/qa/documenter).
+// cell_pm is deliberately excluded (a coordinator role — see
+// COMPLEXITY_OVERRIDE_ROLES), along with every other coordinator/board/
+// CEO-facing role.
+const COMPLEXITY_ROLE_LABELS: Record<string, string> = {
+  developer: "Developer",
+  qa: "QA",
+  documenter: "Documenter",
+};
+
 export function AIRoutingCard() {
   const { data: catalog = [] } = useCatalog();
   const { data: keyStatus } = useOllamaKey();
   const { data: snapshot } = useRoutingMode();
   const { data: selfHostedModels = [] } = useSelfHostedModels();
+  const { data: complexityOverrides = [] } = useComplexityOverrides();
+  const setComplexityOverride = useSetComplexityOverride();
+  const deleteComplexityOverride = useDeleteComplexityOverride();
+  const { data: presets = [] } = useRoutingPresets();
+  const savePreset = useSavePreset();
+  const applyPreset = useApplyPreset();
+  const deletePreset = useDeletePreset();
   const {
     data: agentDefs,
     isLoading: agentsLoading,
@@ -255,14 +285,15 @@ export function AIRoutingCard() {
   const flipToAnthropic = async () => {
     if (
       !confirm(
-        "Switch every agent to Anthropic? Per-agent pins are kept; role/global assignments are replaced.",
+        "Switch every agent to Anthropic? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
       toast.success(
-        "Role/global routing now on Anthropic — per-agent pins kept",
+        "Role/global routing now on Anthropic — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -276,13 +307,16 @@ export function AIRoutingCard() {
     }
     if (
       !confirm(
-        "Switch every agent to Grok? Per-agent pins are kept; role/global assignments are replaced.",
+        "Switch every agent to Grok? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "grok" });
-      toast.success("Role/global routing now on Grok — per-agent pins kept");
+      toast.success(
+        "Role/global routing now on Grok — per-agent pins and complexity overrides kept",
+      );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -295,13 +329,16 @@ export function AIRoutingCard() {
     }
     if (
       !confirm(
-        "Switch every agent to Ollama? Per-agent pins are kept; role/global assignments are replaced.",
+        "Switch every agent to Ollama? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "ollama" });
-      toast.success("Role/global routing now on Ollama — per-agent pins kept");
+      toast.success(
+        "Role/global routing now on Ollama — per-agent pins and complexity overrides kept",
+      );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -314,7 +351,9 @@ export function AIRoutingCard() {
     }
     if (
       !confirm(
-        "Switch every agent to the self-hosted LLM? Per-agent pins are kept; role/global assignments are replaced.",
+        "Switch every agent to the self-hosted LLM? Per-agent pins and " +
+          "complexity overrides are kept; other role/global assignments " +
+          "are replaced.",
       )
     )
       return;
@@ -324,7 +363,7 @@ export function AIRoutingCard() {
         ...(selfHostedModel ? { default_model: selfHostedModel } : {}),
       });
       toast.success(
-        "Role/global routing now on Self-Hosted LLM — per-agent pins kept",
+        "Role/global routing now on Self-Hosted LLM — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -379,6 +418,132 @@ export function AIRoutingCard() {
       toast.success("Per-agent routing saved");
     } catch (e) {
       toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
+  // --- Cost-tiered defaults (additive seed — never wipes existing routing) ---
+  const flipToCostTiered = async () => {
+    if (
+      !confirm(
+        "Seed the day-1 cost-tiered default (developer:low → Haiku)? " +
+          "Unlike the other buttons this is additive — it does not clear " +
+          "any existing routing.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "cost_tiered" });
+      toast.success(
+        "Cost-tiered default seeded (developer:low → Haiku)",
+      );
+    } catch (e) {
+      toast.error("Apply failed: " + errMsg(e));
+    }
+  };
+
+  // --- Complexity overrides (compound ROLE(":"complexity) rows) ---
+  const complexityMap = useMemo(() => {
+    const map: Record<string, Partial<Record<ComplexityLevel, string>>> = {};
+    for (const o of complexityOverrides) {
+      map[o.role] = { ...map[o.role], [o.complexity]: o.model_name };
+    }
+    return map;
+  }, [complexityOverrides]);
+
+  const handleComplexityChange = async (
+    role: string,
+    complexity: ComplexityLevel,
+    modelName: string,
+  ) => {
+    try {
+      if (!modelName) {
+        if (complexityMap[role]?.[complexity]) {
+          await deleteComplexityOverride.mutateAsync({ role, complexity });
+          toast.success(`Cleared ${role}:${complexity} override`);
+        }
+        return;
+      }
+      const result = await setComplexityOverride.mutateAsync({
+        role,
+        complexity,
+        model_name: modelName,
+      });
+      toast.success(`${role}:${complexity} → ${modelName}`);
+      // Allowed but never silent: a cross-provider-family override (e.g. an
+      // Anthropic role pinned to a Grok/Ollama/self-hosted model) also gets
+      // its own warning toast.
+      if (result.warning) {
+        toast.warning(result.warning);
+      }
+    } catch (e) {
+      toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
+  // --- Routing presets (named, full snapshots) ---
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [showPresetNameInput, setShowPresetNameInput] = useState(false);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
+  const selectedPreset = presets.find((p) => p.id === selectedPresetId);
+
+  const handleSavePreset = async () => {
+    const name = presetNameDraft.trim();
+    if (!name) {
+      toast.error("Enter a preset name first");
+      return;
+    }
+    try {
+      const saved = await savePreset.mutateAsync(name);
+      toast.success(`Saved preset "${saved.name}"`);
+      setPresetNameDraft("");
+      setShowPresetNameInput(false);
+      setSelectedPresetId(saved.id);
+    } catch (e) {
+      toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
+  const handleApplyPreset = async () => {
+    if (!selectedPresetId) {
+      toast.error("Pick a preset first");
+      return;
+    }
+    if (
+      !confirm(
+        `Apply preset "${selectedPreset?.name ?? selectedPresetId}"? This ` +
+          "replaces the ENTIRE current routing state (every per-agent pin, " +
+          "role row, and global default) with the saved snapshot.",
+      )
+    )
+      return;
+    try {
+      const result = await applyPreset.mutateAsync(selectedPresetId);
+      if (result.skipped.length > 0) {
+        toast.error(
+          `Applied with ${result.skipped.length} row(s) skipped: ` +
+            result.skipped.join("; "),
+        );
+      } else {
+        toast.success("Preset applied");
+      }
+    } catch (e) {
+      toast.error("Apply failed: " + errMsg(e));
+    }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!selectedPresetId) {
+      toast.error("Pick a preset first");
+      return;
+    }
+    if (!confirm(`Delete preset "${selectedPreset?.name ?? selectedPresetId}"?`))
+      return;
+    try {
+      await deletePreset.mutateAsync(selectedPresetId);
+      toast.success("Preset deleted");
+      setSelectedPresetId("");
+    } catch (e) {
+      toast.error("Delete failed: " + errMsg(e));
     }
   };
 
@@ -534,7 +699,7 @@ export function AIRoutingCard() {
           <HelpTip label="Anthropic / Grok / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -590,6 +755,15 @@ export function AIRoutingCard() {
               onClick={() => undefined}
               disabled={false}
               highlight={currentMode === "mix"}
+            />
+            <ModeButton
+              icon={<Gauge className="h-4 w-4" />}
+              label="Cost-Tiered"
+              description="Seed developer:low → Haiku (see below)."
+              active={false}
+              onClick={flipToCostTiered}
+              disabled={applyMode.isPending}
+              labelHint="Unlike every button to the left this never wipes existing routing — it's a one-time additive seed you can re-run anytime. Edit or remove individual rows in the Complexity overrides section below."
             />
           </div>
           {currentMode === "mix" && !hasOllamaKey ? (
@@ -648,6 +822,95 @@ export function AIRoutingCard() {
             </section>
           </>
         )}
+
+        {/* -------- Preset bar (compact, sits right above the per-agent table) -------- */}
+        <Separator />
+        <section className="space-y-2">
+          <HelpTip label="A preset snapshots the ENTIRE current routing state — mode, every per-agent pin, every role row, and every complexity override — so you can switch between whole setups in one click instead of re-picking every Select.">
+            <Label className="text-sm font-medium">Routing presets</Label>
+          </HelpTip>
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
+            <Select value={selectedPresetId} onValueChange={setSelectedPresetId}>
+              <SelectTrigger size="sm" className="w-48 text-xs">
+                <SelectValue
+                  placeholder={
+                    presets.length ? "Choose a preset…" : "No presets saved"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {presets.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <HelpTip label="Replaces the ENTIRE current routing state with this preset's snapshot — every per-agent pin, role row, and global default, not merged with what's here now.">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleApplyPreset}
+                disabled={!selectedPresetId || applyPreset.isPending}
+              >
+                {applyPreset.isPending ? "Applying…" : "Apply"}
+              </Button>
+            </HelpTip>
+            <HelpTip label="Deletes the saved snapshot only — has no effect on the routing currently applied.">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleDeletePreset}
+                disabled={!selectedPresetId || deletePreset.isPending}
+              >
+                Delete
+              </Button>
+            </HelpTip>
+            <Separator orientation="vertical" className="h-6" />
+            {showPresetNameInput ? (
+              <>
+                <Input
+                  value={presetNameDraft}
+                  onChange={(e) => setPresetNameDraft(e.target.value)}
+                  placeholder="Preset name"
+                  className="h-8 w-40 text-xs"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleSavePreset}
+                  disabled={savePreset.isPending}
+                >
+                  {savePreset.isPending ? "Saving…" : "Confirm"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setShowPresetNameInput(false);
+                    setPresetNameDraft("");
+                  }}
+                >
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <HelpTip label="Snapshots exactly what this card currently shows — the applied mode, every per-agent pin, and every complexity override.">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowPresetNameInput(true)}
+                >
+                  Save as preset…
+                </Button>
+              </HelpTip>
+            )}
+          </div>
+        </section>
 
         {/* -------- Mix-mode per-agent picker -------- */}
         <Separator />
@@ -842,6 +1105,78 @@ export function AIRoutingCard() {
               Ollama catalog empty — check /api/providers/catalog.
             </p>
           ) : null}
+        </section>
+
+        {/* -------- Complexity overrides (cost-tiered routing) -------- */}
+        <Separator />
+        <section className="space-y-3">
+          <HelpTip label="Downgrade-only by policy: a role+complexity override can never point to a costlier tier than that role's baseline model — this lever only saves cost, it never spends more. Coordinator roles (cell_pm, main_pm), pr_reviewer, and board/CEO-facing roles aren't offered a row here at all; tier pinning for those is deliberate — cell_pm especially, since a coordinator is the last place to gamble a downgrade.">
+            <Label className="text-sm font-medium">
+              Complexity overrides
+            </Label>
+          </HelpTip>
+          <p className="text-xs text-muted-foreground">
+            Pin a role to a cheaper model for LOW- or HIGH-complexity tasks
+            specifically — wins over that role&apos;s plain default and the
+            global mode, still loses to a per-agent pin above. Leave a Select
+            blank to remove the override. Coordinator roles (cell_pm, main_pm)
+            aren&apos;t offered a row.
+          </p>
+          <div className="divide-y rounded-md border">
+            {COMPLEXITY_OVERRIDE_ROLES.map((role) => (
+              <div
+                key={role}
+                className="grid grid-cols-[1fr_140px_140px] items-center gap-4 p-3"
+              >
+                <HelpTip
+                  label={`Applies only to ${COMPLEXITY_ROLE_LABELS[role]} agents; a per-agent pin above still wins over this.`}
+                >
+                  <div className="text-xs font-medium">
+                    {COMPLEXITY_ROLE_LABELS[role]}
+                  </div>
+                </HelpTip>
+                {(["low", "high"] as const).map((complexity) => (
+                  <div
+                    key={complexity}
+                    className="space-y-1"
+                    data-testid={`complexity-select-${role}-${complexity}`}
+                  >
+                    <HelpTip
+                      label={`Model used for ${COMPLEXITY_ROLE_LABELS[role]} tasks a PM estimates as ${complexity.toUpperCase()} complexity. Must be no costlier than ${COMPLEXITY_ROLE_LABELS[role]}'s baseline model — the server rejects an upgrade attempt here.`}
+                    >
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {complexity}
+                      </div>
+                    </HelpTip>
+                    <Select
+                      value={complexityMap[role]?.[complexity] ?? "__clear__"}
+                      onValueChange={(v: string) =>
+                        handleComplexityChange(
+                          role,
+                          complexity,
+                          v === "__clear__" ? "" : v,
+                        )
+                      }
+                    >
+                      <SelectTrigger size="sm" className="w-full text-xs">
+                        <SelectValue placeholder="(none)" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__clear__">(none)</SelectItem>
+                        {catalogForMix.map(
+                          (c: { model_name: string; display_name: string }) => (
+                            <SelectItem key={c.model_name} value={c.model_name}>
+                              {c.display_name}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </section>
       </CardContent>
     </Card>

@@ -1772,8 +1772,11 @@ class ModelAssignmentTable(Base):
     """SQLAlchemy table for (scope, provider, model) routing rows.
 
     Precedence at spawn time (implemented in `ModelRoutingService`):
-        AGENT_SLUG > ROLE > GLOBAL
-    with a legacy fallback to `ROLE_MODEL_MAP` when no row applies.
+        AGENT_SLUG > ROLE(":"complexity) > ROLE > GLOBAL
+    with a legacy fallback to `ROLE_MODEL_MAP` when no row applies. The
+    compound ROLE(":"complexity) rung (e.g. scope_value="developer:low") is
+    cost-tiered routing — same ROLE scope, no schema change, just a
+    differently-formatted scope_value.
     """
 
     __tablename__ = "model_assignments"
@@ -1819,6 +1822,33 @@ class ModelAssignmentTable(Base):
         ),
         Index("ix_model_assignments_provider", "provider_config_id"),
     )
+
+
+class RoutingPresetTable(Base):
+    """A named, full snapshot of the routing state (Settings AI-routing card).
+
+    ``payload`` is ``{"mode": <derived-mode-str>, "assignments": [{"scope",
+    "scope_value", "provider_type", "model_name"}, ...]}`` — every current
+    `model_assignments` row (GLOBAL / plain ROLE / compound ROLE(":"complexity)
+    / AGENT_SLUG all together), i.e. exactly what `GET /providers` +
+    `GET /providers/complexity-overrides` already show. Applying a preset
+    (`ModelRoutingService.apply_routing_preset`) replaces every current
+    `model_assignments` row with the snapshot — a full swap, not the
+    pin-preserving behavior of `apply_mode()`'s built-in modes.
+    """
+
+    __tablename__ = "routing_presets"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("name", name="uq_routing_presets_name"),)
 
 
 # =============================================================================

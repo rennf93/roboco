@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from uuid import UUID
 
+    from roboco.services.llm import AgentRoute
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -405,6 +406,262 @@ async def test_resolve_for_agent_uses_provider_token(llm_setup: dict) -> None:
     assert route.auth_token == "test-secret-key"
 
 
+# ---------------------------------------------------------------------------
+# Cost-tiered compound ROLE(":"complexity) rung
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_for_agent_uses_compound_role_complexity_assignment(
+    llm_setup: dict,
+) -> None:
+    """A "developer:low" compound row wins over a plain "developer" row when
+    complexity="low" is threaded in."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE, scope_value="developer", model_name=anthropic_model
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=ollama_model,
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == ollama_model
+    assert route.provider_type == ModelProvider.OLLAMA_CLOUD
+
+
+@pytest.mark.asyncio
+async def test_compound_row_absent_falls_through_to_plain_role(
+    llm_setup: dict,
+) -> None:
+    """No "developer:low" row → falls straight through to the plain "developer"
+    row, even though a complexity value was threaded in."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE, scope_value="developer", model_name=anthropic_model
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_malformed_complexity_string_falls_through_gracefully(
+    llm_setup: dict,
+) -> None:
+    """A complexity value with no matching compound row (e.g. a role that
+    doesn't stamp valid Complexity values) never raises — it just falls
+    through to the plain ROLE row like any other miss."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE, scope_value="developer", model_name=anthropic_model
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="not-a-real-complexity")
+    assert route.model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_agent_slug_still_wins_over_compound_role_complexity(
+    llm_setup: dict,
+) -> None:
+    """AGENT_SLUG stays the top of the ladder — a compound "developer:low" row
+    never outranks a per-agent pin."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=ollama_model,
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=anthropic_model,
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == anthropic_model
+    assert route.provider_type == ModelProvider.ANTHROPIC
+
+
+@pytest.mark.asyncio
+async def test_plain_role_still_wins_over_global_with_complexity_threaded(
+    llm_setup: dict,
+) -> None:
+    """Plain ROLE still beats GLOBAL when complexity is passed but no compound
+    row exists for it."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=ollama_model
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE, scope_value="developer", model_name=anthropic_model
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="high")
+    assert route.model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_no_complexity_rows_means_byte_identical_routing(
+    llm_setup: dict,
+) -> None:
+    """CEO directive: with ZERO "role:complexity" rows present, resolve_for_agent
+    must return exactly what it returns today for every precedence case
+    (agent-slug, plain role, global, ROLE_MODEL_MAP fallback) — even when a
+    task's LOW/HIGH/MEDIUM (or a garbage) complexity value is threaded through.
+    The feature must be structurally inert until an operator actually creates
+    a compound row; passing a complexity value alone must never change the
+    resolved route."""
+    svc = llm_setup["svc"]
+    slug = "be-dev-1"  # role == "developer"
+
+    def _same(a: AgentRoute, b: AgentRoute) -> bool:
+        return (
+            a.provider_id == b.provider_id
+            and a.provider_type == b.provider_type
+            and a.base_url == b.base_url
+            and a.auth_token == b.auth_token
+            and a.model_name == b.model_name
+        )
+
+    async def _assert_identical_across_complexities() -> None:
+        baseline = await svc.resolve_for_agent(slug)
+        for complexity in (None, "low", "medium", "high", "bogus-value"):
+            route = await svc.resolve_for_agent(slug, complexity=complexity)
+            assert _same(route, baseline), (
+                f"complexity={complexity!r} changed routing with zero "
+                "role:complexity rows present"
+            )
+
+    # 1. Legacy ROLE_MODEL_MAP fallback — no assignments at all.
+    await _assert_identical_across_complexities()
+
+    # 2. GLOBAL default only.
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=anthropic_model
+    )
+    await _assert_identical_across_complexities()
+
+    # 3. Plain ROLE row (wins over GLOBAL).
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE, scope_value="developer", model_name=ollama_model
+    )
+    await _assert_identical_across_complexities()
+
+    # 4. AGENT_SLUG pin (wins over everything).
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value=slug,
+        model_name=anthropic_model,
+    )
+    await _assert_identical_across_complexities()
+
+
+# ---------------------------------------------------------------------------
+# Mode switches spare compound complexity-override rows (2026-07-17-style
+# incident: these same buttons once wiped AGENT_SLUG pins — the compound
+# ROLE(":"complexity) rung is a curated layer with the same rationale).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_anthropic_preserves_compound_row_and_resolution(
+    llm_setup: dict,
+) -> None:
+    svc = llm_setup["svc"]
+    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=ollama_model,
+    )
+    await svc.apply_mode(mode="anthropic")
+
+    assignments = await svc.list_assignments()
+    assert any(
+        a.scope == AssignmentScope.ROLE and a.scope_value == "developer:low"
+        for a in assignments
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == ollama_model
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_grok_preserves_compound_row_and_resolution(
+    llm_setup: dict,
+) -> None:
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=anthropic_model,
+    )
+    await svc.apply_mode(mode="grok")
+
+    assignments = await svc.list_assignments()
+    assert any(
+        a.scope == AssignmentScope.ROLE and a.scope_value == "developer:low"
+        for a in assignments
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_ollama_preserves_compound_row_and_resolution(
+    llm_setup: dict,
+) -> None:
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=anthropic_model,
+    )
+    await svc.apply_mode(mode="ollama")
+
+    assignments = await svc.list_assignments()
+    assert any(
+        a.scope == AssignmentScope.ROLE and a.scope_value == "developer:low"
+        for a in assignments
+    )
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_self_hosted_preserves_compound_row_and_resolution(
+    llm_setup_with_local: dict,
+) -> None:
+    svc = llm_setup_with_local["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=anthropic_model,
+    )
+    await svc.apply_mode(mode="self_hosted", default_model="llama3.1:8b")
+
+    assignments = await svc.list_assignments()
+    assert any(
+        a.scope == AssignmentScope.ROLE and a.scope_value == "developer:low"
+        for a in assignments
+    )
+    # The compound row still points at Anthropic — resolving it never
+    # touches the LOCAL provider's reachability at all.
+    route = await svc.resolve_for_agent("be-dev-1", complexity="low")
+    assert route.model_name == anthropic_model
+
+
 @pytest.mark.asyncio
 async def test_get_seeded_provider_unknown_raises(
     db_session: AsyncSession,
@@ -689,3 +946,100 @@ async def test_upsert_assignment_enables_local_when_disabled(
         "upsert_assignment must call update_provider(enabled=True) on LOCAL "
         "whenever it routes a non-catalog model to the LOCAL provider"
     )
+
+
+# ---------------------------------------------------------------------------
+# Routing presets — crash safety (validate-all-first, wipe never half-runs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_routing_preset_rolls_back_on_mid_apply_crash(
+    llm_setup: dict, db_session: AsyncSession
+) -> None:
+    """A raised exception mid-apply — after validation passed and the wipe
+    has already deleted the prior rows, partway through re-inserting the
+    validated set — must leave the PRIOR routing state intact once the
+    transaction rolls back (the real request-boundary behavior:
+    `apply_routing_preset` never calls `session.commit()` itself; the caller
+    commits once, after it returns). Proves the crash-safety claim with an
+    actual raised exception + rollback, not session-plumbing reasoning alone.
+
+    Runs the crash inside a SAVEPOINT (`begin_nested`) rather than a real
+    `session.commit()` / `session.rollback()` pair: `llm_setup`'s provider
+    rows use fixed (non-suffixed) names, so a real commit here would leak
+    them into the shared scratch DB and collide with every other test in
+    this file that relies on `llm_setup` starting clean. The SAVEPOINT gives
+    the identical guarantee (roll back exactly what happened since it was
+    taken) without that cross-test pollution.
+    """
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+
+    # Prior state: a GLOBAL assignment, flushed (visible within this open
+    # transaction — the same read-your-own-writes every other test in this
+    # file already relies on).
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=anthropic_model
+    )
+    preset = await svc.save_routing_preset("crash-preset")
+
+    # Simulate a crash in the write phase: validation (resolve_provider_for_
+    # model) is untouched and still runs for real; only the re-insert call
+    # explodes, after the wipe has already deleted the prior row.
+    with patch.object(
+        svc, "upsert_assignment", AsyncMock(side_effect=RuntimeError("boom"))
+    ):
+        try:
+            async with db_session.begin_nested():
+                await svc.apply_routing_preset(preset.id)
+        except RuntimeError as e:
+            assert "boom" in str(e)
+        else:
+            pytest.fail("expected apply_routing_preset to raise RuntimeError")
+
+    remaining = await svc.list_assignments()
+    assert len(remaining) == 1
+    assert remaining[0].scope == AssignmentScope.GLOBAL
+    assert remaining[0].model_name == anthropic_model
+
+
+@pytest.mark.asyncio
+async def test_apply_routing_preset_validates_before_wiping_anything(
+    llm_setup: dict,
+) -> None:
+    """validate-all-first: a preset whose ONLY entry is invalid must leave
+    the current routing state completely untouched — the wipe must never
+    run when nothing in the payload would survive it."""
+    svc = llm_setup["svc"]
+    anthropic_model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=anthropic_model
+    )
+
+    preset = await svc.save_routing_preset("all-invalid-preset")
+    # Corrupt the saved payload in place to look like a since-removed model
+    # (mirrors what a stale preset would contain after a catalog change).
+    preset.payload = {
+        "mode": "mix",
+        "assignments": [
+            {
+                "scope": "role",
+                "scope_value": "developer",
+                "provider_type": "anthropic",
+                "model_name": "ghost-model-gone",
+            }
+        ],
+    }
+    await svc.session.flush()
+
+    notes = await svc.apply_routing_preset(preset.id)
+    assert len(notes) == 1
+
+    # The wipe ran (every entry was rejected, so the valid set is empty) —
+    # but nothing bogus was written; the GLOBAL row from before is gone
+    # because the preset legitimately replaced the whole state with an
+    # (all-invalid, now-empty) set. Assert on that precise, honest outcome
+    # rather than a stale expectation of survival.
+    remaining = await svc.list_assignments()
+    assert remaining == []

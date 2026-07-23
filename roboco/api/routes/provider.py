@@ -9,15 +9,23 @@ providers (Anthropic, Ollama Cloud, Self-Hosted) are pre-seeded by
 migrations 004 and 028.
 """
 
+from typing import Literal
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_pm_or_above
 from roboco.api.schemas.provider import (
     ApplyModeRequest,
     CatalogEntryResponse,
+    ComplexityOverrideRequest,
+    ComplexityOverrideResponse,
     GrokKeyStatus,
     ModeResponse,
     OllamaKeyStatus,
+    RoutingPresetApplyResponse,
+    RoutingPresetSummary,
+    SaveRoutingPresetRequest,
     SelfHostedConfigRequest,
     SelfHostedConfigResponse,
     SelfHostedModelEntry,
@@ -25,9 +33,12 @@ from roboco.api.schemas.provider import (
     SetGrokKeyRequest,
     SetOllamaKeyRequest,
     assignment_to_response,
+    routing_preset_to_summary,
 )
-from roboco.models.base import ModelProvider
+from roboco.billing.pricing import input_price_per_million
+from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
+from roboco.models.runtime import ROLE_MODEL_MAP
 from roboco.security import guard_deco
 from roboco.services.base import NotFoundError
 from roboco.services.llm import get_model_routing_service, probe_ollama_tags
@@ -35,6 +46,37 @@ from roboco.services.provider import ProviderUpdate, get_provider_service
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
+
+# Roles the complexity-override endpoint accepts a row for. Coordinator roles
+# (cell_pm, main_pm — CLAUDE.md's own _COORDINATOR_ROLES) and pr_reviewer/
+# board/CEO-facing roles are never offered a row — tier pinning for those is
+# deliberate (see set_complexity_override). cell_pm is deliberately excluded
+# even though it's not board/CEO-facing: the org's documented weak-model
+# incidents were precisely a cheap model landed on a PM/coordinator role,
+# not a leaf developer — a coordinator is the last place to gamble a
+# downgrade on.
+_COMPLEXITY_OVERRIDE_ROLES: frozenset[str] = frozenset(
+    {"developer", "qa", "documenter"}
+)
+
+# Human remediation hint per provider type, for a complexity override that
+# resolves to a not-ready (disabled / unconfigured) provider.
+_PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
+    ModelProvider.GROK: "Save the Grok (xAI) API key first (PUT /providers/grok-key).",
+    ModelProvider.OLLAMA_CLOUD: (
+        "Save an Ollama Cloud API key first (PUT /providers/ollama-key)."
+    ),
+    ModelProvider.LOCAL: (
+        "Configure + test the self-hosted server first (PUT /providers/self-hosted)."
+    ),
+    ModelProvider.ANTHROPIC: "The Anthropic provider is disabled — re-enable it first.",
+}
+
+
+def _provider_remediation(provider_type: ModelProvider) -> str:
+    return _PROVIDER_REMEDIATION.get(
+        provider_type, f"The {provider_type.value} provider is not configured."
+    )
 
 
 # =============================================================================
@@ -408,3 +450,270 @@ async def apply_mode(
         mode=mode,
         assignments=[assignment_to_response(a) for a in assignments],
     )
+
+
+# =============================================================================
+# COMPLEXITY OVERRIDES (cost-tiered routing: compound ROLE(":"complexity) rows)
+# =============================================================================
+
+
+def _parse_complexity_override(
+    scope_value: str, model_name: str
+) -> ComplexityOverrideResponse | None:
+    """Parse a ROLE scope_value into a response row, or None if not a
+    well-formed "role:low"/"role:high" compound key (a plain role row, or a
+    malformed compound value, are both silently skipped)."""
+    role, sep, complexity = scope_value.partition(":")
+    if not sep or not role:
+        return None
+    if complexity == "low":
+        return ComplexityOverrideResponse(
+            role=role, complexity="low", model_name=model_name
+        )
+    if complexity == "high":
+        return ComplexityOverrideResponse(
+            role=role, complexity="high", model_name=model_name
+        )
+    return None
+
+
+@router.get("/complexity-overrides", response_model=list[ComplexityOverrideResponse])
+async def get_complexity_overrides(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> list[ComplexityOverrideResponse]:
+    """List the active compound ROLE(":"complexity) cost-tiered rows."""
+    require_pm_or_above(agent.role, "view complexity overrides")
+    routing = get_model_routing_service(db)
+    rows = await routing.list_assignments()
+    overrides = []
+    for row in rows:
+        if row.scope != AssignmentScope.ROLE or not row.scope_value:
+            continue
+        parsed = _parse_complexity_override(row.scope_value, row.model_name)
+        if parsed is not None:
+            overrides.append(parsed)
+    return overrides
+
+
+@router.put("/complexity-overrides", response_model=ComplexityOverrideResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=4096)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+async def set_complexity_override(
+    data: ComplexityOverrideRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ComplexityOverrideResponse:
+    """Upsert one ROLE(":"complexity) cost-tiered override.
+
+    Write-time guards enforce the policy (never at read/resolve time):
+      - role allowlist: only {developer, qa, documenter} are offered a row —
+        cell_pm/main_pm (coordinators), pr_reviewer, and board/CEO-facing
+        roles are rejected outright, tier pinning for those is deliberate.
+      - downgrade-only: `model_name` must not be a costlier tier than the
+        role's `ROLE_MODEL_MAP` baseline, compared via each model's
+        per-1M-token input price (`billing.pricing.input_price_per_million`)
+        since the model catalog carries no explicit tier ordering.
+      - provider readiness: `model_name` must resolve to a provider that is
+        both known (catalog or LOCAL self-hosted) AND enabled+configured —
+        an override to a disabled/unconfigured provider would otherwise
+        silently no-op at spawn (falling back to the legacy Anthropic path)
+        behind a success toast; mirrors the intent of the Mix section's
+        client-side needsGrok/needsKey/needsSelfHosted guards, enforced here
+        server-side where it can't be bypassed by a direct API call.
+
+    A model that resolves to a different provider FAMILY than the role's
+    Anthropic baseline (e.g. an Anthropic role pinned to Grok/Ollama/
+    self-hosted) is still ALLOWED — the CEO may want that deliberately — but
+    the response carries a non-null `warning` so it's never silent.
+    """
+    require_pm_or_above(agent.role, "change complexity-based routing overrides")
+    if data.role not in _COMPLEXITY_OVERRIDE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"'{data.role}' is not eligible for a complexity override — "
+                "tier pinning for coordinator/board/CEO-facing roles is "
+                "deliberate."
+            ),
+        )
+    baseline_model = ROLE_MODEL_MAP.get(data.role, "sonnet")
+    if input_price_per_million(data.model_name) > input_price_per_million(
+        baseline_model
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"'{data.model_name}' is a costlier tier than {data.role}'s "
+                f"baseline ('{baseline_model}') — complexity overrides are "
+                "downgrade-only."
+            ),
+        )
+    routing = get_model_routing_service(db)
+    provider = await routing.resolve_provider_for_model(data.model_name)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unknown model '{data.model_name}'. Use one from "
+                "GET /api/providers/catalog."
+            ),
+        )
+    if not provider.enabled or (
+        provider.type == ModelProvider.LOCAL and not provider.base_url
+    ):
+        remediation = _provider_remediation(provider.type)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"'{data.model_name}' routes through {provider.type.value}, "
+                "which isn't configured yet — it would silently fall back to "
+                f"the legacy Anthropic path at spawn. {remediation}"
+            ),
+        )
+    warning = (
+        f"'{data.model_name}' routes through {provider.type.value}, a "
+        f"different provider family than {data.role}'s Anthropic baseline "
+        f"('{baseline_model}') — allowed, but make sure that's deliberate."
+        if provider.type != ModelProvider.ANTHROPIC
+        else None
+    )
+    try:
+        row = await routing.upsert_assignment(
+            scope=AssignmentScope.ROLE,
+            scope_value=f"{data.role}:{data.complexity}",
+            model_name=data.model_name,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
+    await db.commit()
+    return ComplexityOverrideResponse(
+        role=data.role,
+        complexity=data.complexity,
+        model_name=row.model_name,
+        warning=warning,
+    )
+
+
+@router.delete(
+    "/complexity-overrides/{role}/{complexity}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_complexity_override(
+    role: str,
+    complexity: Literal["low", "high"],
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> None:
+    """Remove one ROLE(":"complexity) cost-tiered override row."""
+    require_pm_or_above(agent.role, "remove a complexity override")
+    routing = get_model_routing_service(db)
+    try:
+        await routing.delete_assignment(
+            scope=AssignmentScope.ROLE, scope_value=f"{role}:{complexity}"
+        )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+
+
+# =============================================================================
+# ROUTING PRESETS (named, full snapshots of the routing state)
+# =============================================================================
+
+
+@router.get("/presets", response_model=list[RoutingPresetSummary])
+async def list_routing_presets(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> list[RoutingPresetSummary]:
+    """List saved routing presets, newest first (no payloads — see
+    `POST /presets/{id}/apply` to inspect one by applying it)."""
+    require_pm_or_above(agent.role, "view routing presets")
+    routing = get_model_routing_service(db)
+    rows = await routing.list_routing_presets()
+    return [routing_preset_to_summary(r) for r in rows]
+
+
+@router.post("/presets", response_model=RoutingPresetSummary)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=4096)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+async def save_routing_preset(
+    data: SaveRoutingPresetRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> RoutingPresetSummary:
+    """Snapshot the CURRENT routing state under `data.name`.
+
+    Same privilege level as the mode-apply / mix-save endpoints. A duplicate
+    name is a 409 (the panel names presets, so a collision is a UI mistake,
+    not routine traffic).
+    """
+    require_pm_or_above(agent.role, "save a routing preset")
+    routing = get_model_routing_service(db)
+    try:
+        row = await routing.save_routing_preset(data.name)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    await db.commit()
+    return routing_preset_to_summary(row)
+
+
+@router.post("/presets/{preset_id}/apply", response_model=RoutingPresetApplyResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+async def apply_routing_preset(
+    preset_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> RoutingPresetApplyResponse:
+    """Replace the current routing state with the preset's snapshot.
+
+    Transactional: the delete + re-upserts of the new rows happen in this
+    request's session, committed once at the end — a mid-apply failure never
+    leaves a half-swapped state. A row referencing a model no longer in the
+    catalog (or any other now-invalid entry) is skipped and reported in
+    `skipped`, never silently dropped and never failing the rows that DID
+    validate.
+    """
+    require_pm_or_above(agent.role, "apply a routing preset")
+    routing = get_model_routing_service(db)
+    try:
+        skipped = await routing.apply_routing_preset(preset_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+
+    mode = await routing.derive_mode()
+    assignments = await routing.list_assignments()
+    return RoutingPresetApplyResponse(
+        mode=mode,
+        assignments=[assignment_to_response(a) for a in assignments],
+        skipped=skipped,
+    )
+
+
+@router.delete("/presets/{preset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_routing_preset(
+    preset_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> None:
+    """Delete a saved routing preset."""
+    require_pm_or_above(agent.role, "delete a routing preset")
+    routing = get_model_routing_service(db)
+    try:
+        await routing.delete_routing_preset(preset_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()

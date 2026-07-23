@@ -21,6 +21,7 @@ from roboco.billing.pricing import (
     _is_anthropic_model,
     calculate_cost,
     calculate_cost_result,
+    input_price_per_million,
 )
 
 # ---------------------------------------------------------------------------
@@ -539,3 +540,45 @@ def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
         _SONNET_CACHE_READ,
         _SONNET_CACHE_WRITE,
     )
+
+
+# ---------------------------------------------------------------------------
+# input_price_per_million — the cost-tiered complexity-override comparator
+# ---------------------------------------------------------------------------
+
+
+class TestInputPricePerMillion:
+    """The downgrade-only comparator for complexity overrides (no explicit
+    tier ordering exists in the model catalog, so the input rate stands in
+    for "which tier is costlier")."""
+
+    def test_orders_haiku_below_sonnet_below_opus(self) -> None:
+        assert (
+            input_price_per_million("haiku")
+            < input_price_per_million("sonnet")
+            < input_price_per_million("opus")
+        )
+
+    def test_matches_pricing_table_value(self) -> None:
+        assert input_price_per_million("haiku") == _HAIKU_INPUT
+        assert input_price_per_million("sonnet") == _SONNET_INPUT
+        assert input_price_per_million("opus") == _OPUS_INPUT
+
+    def test_grok_priced_below_sonnet(self) -> None:
+        """Grok legitimately downgrades-from sonnet under this comparator."""
+        assert input_price_per_million("grok-build-0.1") < input_price_per_million(
+            "sonnet"
+        )
+
+    def test_unpriced_non_anthropic_model_is_free_tier(self) -> None:
+        """A self-hosted / Ollama Cloud model has no per-token rate — treated
+        as the cheapest possible tier, so it can never be rejected as
+        "costlier" by the downgrade-only policy."""
+        assert input_price_per_million("glm-5.2:cloud") == 0.0
+        assert input_price_per_million("my-custom-self-hosted-model:7b") == 0.0
+
+    def test_empty_model_returns_zero(self) -> None:
+        assert input_price_per_million("") == 0.0
+
+    def test_case_insensitive(self) -> None:
+        assert input_price_per_million("HAIKU") == input_price_per_million("haiku")
