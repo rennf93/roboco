@@ -692,6 +692,15 @@ services:
       # setting it in .env silently does nothing — only vars listed in this
       # stanza reach the container.
       ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
+      # Trusted local-proxy hop IPs (docker bridge gateway) for the XFF
+      # real-client resolver — set to the bridge gateway when Tailscale Serve
+      # is gateway-fronted, else the guard sees a whitelisted hop and the WAF
+      # goes inert for /tg. Same "must be listed here to reach the container"
+      # rule as the emergency whitelist above.
+      ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      # Per-task/project cost budgets (default-off subsystem; also on the
+      # panel feature-flags card).
+      ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-true}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock

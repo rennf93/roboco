@@ -47,6 +47,7 @@ def _claim_task(
         last_heartbeat_at=None,
         active_claimant_id=None,
         orchestration_markers={},
+        dev_notes=None,
     )
 
 
@@ -229,6 +230,30 @@ async def test_inherit_conflict_notes_the_task() -> None:
     assert note is not None
     assert "a.py, b.py" in note
     assert "sync_branch" in note
+    # The dev must actually SEE it — dev_notes rides evidence(), the marker
+    # does not.
+    assert task.dev_notes is not None
+    assert "a.py, b.py" in task.dev_notes
+    assert "[BASE INHERITANCE]" in task.dev_notes
+
+
+@pytest.mark.asyncio
+async def test_inherit_merged_push_failed_notes_the_dev() -> None:
+    svc = _service()
+    task = _claim_task("feature/backend/AAA--BBB")
+    proj_svc, git_svc, _ = _patched_deps(svc, {"status": "merged_push_failed"})
+
+    with (
+        patch(
+            "roboco.services.project.get_project_service",
+            MagicMock(return_value=proj_svc),
+        ),
+        patch("roboco.services.git.get_git_service", MagicMock(return_value=git_svc)),
+    ):
+        await svc._inherit_upstream_base(task, uuid4())
+
+    assert task.dev_notes is not None
+    assert "push to origin failed" in task.dev_notes
 
 
 @pytest.mark.asyncio
