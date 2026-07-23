@@ -122,7 +122,21 @@ async def get_project(
             detail=f"Project not found: {project_id}",
         )
 
-    return project_to_response(project)
+    response = project_to_response(project)
+
+    # Gated the same as the budgets feature: an extra DB read, so only pay
+    # for it when the panel can actually make use of it (ROBOCO_TASK_BUDGETS_ENABLED).
+    from roboco.config import settings as _settings
+
+    if _settings.task_budgets_enabled:
+        from roboco.services.task import get_task_service
+
+        task_service = get_task_service(db)
+        response.monthly_spend_usd = await task_service.project_month_spend_usd(
+            cast("UUID", project.id)
+        )
+
+    return response
 
 
 # =============================================================================

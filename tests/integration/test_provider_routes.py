@@ -330,6 +330,117 @@ async def test_apply_mode_ollama_without_provider_returns_404(
     assert response.status_code == HTTPStatus.NOT_FOUND
 
 
+@pytest_asyncio.fixture
+async def app_client_with_codex_and_gemini(
+    db_session: AsyncSession,
+) -> AsyncIterator[AsyncClient]:
+    """App client pre-seeded with Anthropic + disabled OPENAI/GEMINI providers
+    (mirrors the real seeded state before an operator ever applies either
+    mode: OPENAI seeds enabled=true per migration 083, GEMINI seeds
+    enabled=false per migration 085 — deliberately seeded disabled here so the
+    apply-mode round trip below proves the force-enable, not a pre-enabled
+    no-op)."""
+    app = _make_app(db_session)
+    suffix = uuid4().hex[:8]
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(delete(ProviderConfigTable))
+    await db_session.flush()
+    db_session.add(
+        ProviderConfigTable(
+            name=f"anthropic-cg-{suffix}", type=ModelProvider.ANTHROPIC, enabled=True
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"codex-cg-{suffix}",
+            type=ModelProvider.OPENAI,
+            enabled=False,
+            base_url="https://api.openai.com/v1",
+        )
+    )
+    db_session.add(
+        ProviderConfigTable(
+            name=f"gemini-cg-{suffix}", type=ModelProvider.GEMINI, enabled=False
+        )
+    )
+    await db_session.flush()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_codex_returns_200_reflects_mode_and_enables_provider(
+    app_client_with_codex_and_gemini: AsyncClient,
+) -> None:
+    """The full HTTP round trip: POST mode="codex" -> 200, GET reflects
+    mode="codex", and the assignment resolves through the now-enabled OPENAI
+    provider — proving the pydantic Literal + dispatch + enable chain end to
+    end, not just the service-layer call this mirrors."""
+    response = await app_client_with_codex_and_gemini.post(
+        "/api/providers", json={"mode": "codex"}, headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["mode"] == "codex"
+    assert body["assignments"][0]["provider_type"] == "openai"
+    assert body["assignments"][0]["model_name"] == "gpt-5.3-codex"
+
+    followup = await app_client_with_codex_and_gemini.get(
+        "/api/providers", headers=_HDR_PM
+    )
+    assert followup.json()["mode"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_gemini_returns_200_reflects_mode_and_enables_provider(
+    app_client_with_codex_and_gemini: AsyncClient,
+) -> None:
+    """Same round trip as Codex's, for Gemini — the exact reachability gap
+    this fix closes (the row seeds disabled and nothing else ever flipped it)."""
+    response = await app_client_with_codex_and_gemini.post(
+        "/api/providers", json={"mode": "gemini"}, headers=_HDR_PM
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["mode"] == "gemini"
+    assert body["assignments"][0]["provider_type"] == "gemini"
+    assert body["assignments"][0]["model_name"] == "gemini-2.5-pro"
+
+    followup = await app_client_with_codex_and_gemini.get(
+        "/api/providers", headers=_HDR_PM
+    )
+    assert followup.json()["mode"] == "gemini"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_gemini_without_provider_returns_404(
+    db_session: AsyncSession,
+) -> None:
+    """Apply 'gemini' mode without the GEMINI provider seeded raises
+    NotFoundError -> 404 (mirrors the ollama/grok equivalents)."""
+    # FK-safe: a prior test may have committed a real GEMINI assignment
+    # (model_assignments.provider_config_id references provider_configs.id),
+    # so assignments must be cleared before the provider row can be deleted.
+    await db_session.execute(delete(ModelAssignmentTable))
+    await db_session.execute(
+        delete(ProviderConfigTable).where(
+            ProviderConfigTable.type == ModelProvider.GEMINI
+        )
+    )
+    await db_session.flush()
+
+    app = _make_app(db_session)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/providers", json={"mode": "gemini"}, headers=_HDR_PM
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
 # =============================================================================
 # Self-hosted endpoints
 # =============================================================================
@@ -876,6 +987,14 @@ async def test_save_list_and_apply_preset_round_trip(
     app_client_with_ollama: AsyncClient,
 ) -> None:
     """Save captures the current state; mutating + re-applying restores it."""
+    # Set the Ollama key first — the fixture seeds OLLAMA_CLOUD `enabled=False`
+    # (no key yet), and `_validate_preset_entry` now rejects (skip-with-note)
+    # any preset entry whose provider is disabled, so a meaningful round trip
+    # needs the provider actually live, same as the real UI's key-gated mode
+    # button.
+    await app_client_with_ollama.put(
+        "/api/providers/ollama-key", json={"api_key": "test-key"}, headers=_HDR_PM
+    )
     # Arrange a distinctive state: a GLOBAL Ollama default.
     await app_client_with_ollama.post(
         "/api/providers", json={"mode": "ollama"}, headers=_HDR_PM

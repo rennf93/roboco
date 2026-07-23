@@ -50,6 +50,7 @@ If your task has `dependency_ids` in the same repo, the fresh branch cut also ba
 - **Self-documentation prevention**: Documenter cannot claim tasks they developed
 - **Branch requirement**: Branch auto-created on `i_will_work_on`
 - **Sequence order (strict, assignee-blind)**: if a task has a parent and a `sequence` number, it cannot be claimed while any sibling with a strictly lower sequence is still non-terminal — regardless of who owns which task. Siblings on the SAME sequence run in parallel (independent work ties at 0, or at the wave a delegating PM stamped from the collision graph). This is independent of, and stricter than, `dependency_ids`: a claim attempt on a sequence-held task fails even with no unmet dependency. The error names the blocking sibling by title — `unclaim`/wait is the only remedy, there is no override verb. The dispatcher pre-filters sequence-held (and dependency-held) tasks before attempting a claim, so you should rarely see this in practice — but a claim you make directly (rather than via `give_me_work`) can still hit it.
+- **Project budget cap** (when task budgets are armed): `i_will_work_on` / `i_will_plan` are refused once the project's `monthly_budget_usd` has been reached this calendar month — a WORK-STARTING claim only, so a QA/doc/PR-review/PM-merge claim on already-in-flight work is never blocked by this. There is no override; wait for the next month or ask the CEO to raise the cap.
 
 ## Releasing a Claimed Task
 

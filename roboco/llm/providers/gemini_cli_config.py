@@ -75,6 +75,10 @@ SYSTEM_PROMPT_PATH = Path(
 GEMINI_POLICIES_DIR = Path.home() / ".gemini" / "policies"
 _POLICY_FILE_NAME = "roboco.toml"
 
+# Hard ceiling on agentic turns (loop guard) — parity with grok's
+# _DEFAULT_MAX_TURNS. Operator-tunable via ROBOCO_GEMINI_MAX_TURNS (main()).
+_DEFAULT_MAX_TURNS = 200
+
 # The auth mode a headless run must declare in settings.json, else the CLI
 # refuses with exit 41 instead of silently using the mounted OAuth credential
 # (verified fact). ``oauth-personal`` is the CLI's "Login with Google"
@@ -218,15 +222,17 @@ def render_settings_json(mcp_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def gemini_cli_args() -> list[str]:
+def gemini_cli_args(*, max_turns: int = _DEFAULT_MAX_TURNS) -> list[str]:
     """The ``gemini -p`` flag tokens (excludes ``-p``/``-m``/``--cwd``).
 
     Universal across every role — ``--approval-mode yolo`` (headless
-    auto-approval); tool scoping lives entirely in the rendered Policy Engine
-    / settings.json (see :func:`policy_rules_for_role`), not in a CLI flag,
-    unlike grok's per-role ``grok_cli_args_for_role``.
+    auto-approval) plus ``--max-turns`` (the CLI's own agentic-turn loop
+    guard, dedicated exit code 53 — parity with grok's ``--max-turns``); tool
+    scoping lives entirely in the rendered Policy Engine / settings.json (see
+    :func:`policy_rules_for_role`), not in a CLI flag, unlike grok's per-role
+    ``grok_cli_args_for_role``.
     """
-    return ["--approval-mode", "yolo"]
+    return ["--approval-mode", "yolo", "--max-turns", str(max_turns)]
 
 
 def _load_mcp_config(path: str) -> dict[str, Any]:
@@ -272,6 +278,12 @@ def main() -> int:
     agent_id = os.environ.get("ROBOCO_AGENT_ID", "")
     mcp_path = os.environ.get("ROBOCO_MCP_CONFIG", "/app/mcp-config.json")
     role = get_agent_role(agent_id) or ""
+    try:
+        max_turns = int(
+            os.environ.get("ROBOCO_GEMINI_MAX_TURNS", str(_DEFAULT_MAX_TURNS))
+        )
+    except ValueError:
+        max_turns = _DEFAULT_MAX_TURNS
 
     GEMINI_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     GEMINI_SETTINGS_PATH.write_text(
@@ -285,7 +297,9 @@ def main() -> int:
     write_gemini_memory(source=SYSTEM_PROMPT_PATH, dest=GEMINI_MEMORY_PATH)
     write_policy_toml(role, policies_dir=GEMINI_POLICIES_DIR)
     GEMINI_ARGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GEMINI_ARGS_PATH.write_text("\n".join(gemini_cli_args()) + "\n", encoding="utf-8")
+    GEMINI_ARGS_PATH.write_text(
+        "\n".join(gemini_cli_args(max_turns=max_turns)) + "\n", encoding="utf-8"
+    )
     return 0
 
 

@@ -447,6 +447,14 @@ services:
       # omitted — inert while guard stays off by default, but reaches the
       # container the moment an operator arms guard by hand-editing this file.
       ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
+      # Trusted local-proxy hop IPs (docker bridge gateway) for the XFF
+      # real-client resolver — carried here (inert until guard is armed) so a
+      # gateway-fronted Tailscale Serve deploy can set it via .env rather than
+      # hand-editing this file. Same reach-the-container rule as above.
+      ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      # Per-task/project cost budgets (default-off; conservative registry
+      # posture, unlike the build compose which arms it).
+      ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-false}
       # Cloud auth (FastAPI Users): login-gates the panel/API when exposed
       # beyond localhost. OFF by default (matches config default, unlike the
       # build compose which arms it for the personal deploy). Set

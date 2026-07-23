@@ -277,6 +277,27 @@ def test_task_update_sequence_rejects_negative() -> None:
         TaskUpdate(sequence=-1)
 
 
+def test_task_update_budget_usd_accepts_null() -> None:
+    """null clears the cap back to the TaskType default — always valid."""
+    assert TaskUpdate(budget_usd=None).budget_usd is None
+
+
+def test_task_update_budget_usd_accepts_positive() -> None:
+    budget = 5.0
+    assert TaskUpdate(budget_usd=budget).budget_usd == budget
+
+
+def test_task_update_budget_usd_rejects_zero() -> None:
+    """gt=0 — a 0 budget would block every claim immediately (#654)."""
+    with pytest.raises(ValueError, match="budget_usd"):
+        TaskUpdate(budget_usd=0)
+
+
+def test_task_update_budget_usd_rejects_negative() -> None:
+    with pytest.raises(ValueError, match="budget_usd"):
+        TaskUpdate(budget_usd=-5)
+
+
 # ---------------------------------------------------------------------------
 # task_to_response / task_list_to_response
 # ---------------------------------------------------------------------------

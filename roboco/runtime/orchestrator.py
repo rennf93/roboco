@@ -289,6 +289,42 @@ _INTAKE_WORKSPACE_AMBIENT = (
 # time. Seeded in identity.AGENTS; see roboco/agent_sdk/secretary_main.py.
 SECRETARY_AGENT_ID = "secretary-1"
 
+# Codex (OPENAI) and Gemini (GEMINI) are V1 delivery-roles-only (see
+# roboco.llm.providers.codex / .gemini module docstrings) — neither supports
+# the persistent interactive Intake/Secretary session (no CLI-flag equivalent
+# to grok's --disallowed-tools/deny, no interactive-session driver image).
+# Unlike GROK (which has its own GROK_PROMPTER_IMAGE / GROK_SECRETARY_IMAGE),
+# routing either of these to Intake/Secretary would fall through to the plain
+# Claude SDK-driver image with a mismatched provider env instead of refusing —
+# so both spawn paths reject it explicitly instead of silently misbehaving.
+# Mirrors roboco.services.llm.INTERACTIVE_UNSUPPORTED_PROVIDERS (kept as a
+# literal here to avoid a runtime import cycle; parity is pinned by a test).
+# The resolver exempts interactive agents from GLOBAL/ROLE rows on these
+# providers (a fleet-wide mode switch keeps the chats on Anthropic); this
+# guard is the backstop for an EXPLICIT AGENT_SLUG pin, which is refused
+# loudly rather than silently overridden.
+_INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
+    ModelProvider.OPENAI,
+    ModelProvider.GEMINI,
+)
+
+
+def _reject_interactive_unsupported_provider(
+    agent_id: str, provider_type: ModelProvider
+) -> None:
+    """Refuse spawning the interactive Intake/Secretary agent on a delivery-
+    roles-only provider. Raise BEFORE any image resolution/container mutation
+    so the guarded wrapper's generic ``except Exception`` surfaces this
+    cleanly on the live relay instead of the spawn silently misrouting."""
+    if provider_type in _INTERACTIVE_UNSUPPORTED_PROVIDERS:
+        raise RuntimeError(
+            f"{provider_type.value} is a delivery-roles-only provider (V1) — "
+            f"it cannot power the interactive {agent_id} session. Route "
+            f"{agent_id} to Anthropic, Grok, Ollama, or Self-Hosted instead "
+            "(Mix mode's per-agent picker)."
+        )
+
+
 # Role -> Image mapping
 # Specialized images extend the base with role-specific tools
 AGENT_IMAGES: dict[str, str] = {
@@ -5058,6 +5094,9 @@ class AgentOrchestrator:
                 INTAKE_AGENT_ID, ambient=ambient
             )
             route = await self._resolve_agent_route(INTAKE_AGENT_ID)
+            _reject_interactive_unsupported_provider(
+                INTAKE_AGENT_ID, route.provider_type
+            )
             cli_model = _resolve_agent_cli_model(
                 route.provider_type.value, route.model_name
             )
@@ -5257,6 +5296,9 @@ class AgentOrchestrator:
 
             prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
             route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
+            _reject_interactive_unsupported_provider(
+                SECRETARY_AGENT_ID, route.provider_type
+            )
             cli_model = _resolve_agent_cli_model(
                 route.provider_type.value, route.model_name
             )

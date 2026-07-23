@@ -125,8 +125,13 @@ def test_write_policy_toml_writes_file(tmp_path: Path) -> None:
     assert "run_shell_command" in written
 
 
-def test_gemini_cli_args_is_yolo_only() -> None:
-    assert gc.gemini_cli_args() == ["--approval-mode", "yolo"]
+def test_gemini_cli_args_is_yolo_plus_default_max_turns() -> None:
+    assert gc.gemini_cli_args() == ["--approval-mode", "yolo", "--max-turns", "200"]
+
+
+def test_gemini_cli_args_max_turns_is_overridable() -> None:
+    args = gc.gemini_cli_args(max_turns=7)
+    assert args[args.index("--max-turns") + 1] == "7"
 
 
 def test_main_writes_settings_and_args(
@@ -161,4 +166,50 @@ def test_main_writes_settings_and_args(
     assert args_path.read_text(encoding="utf-8").splitlines() == [
         "--approval-mode",
         "yolo",
+        "--max-turns",
+        "200",
+    ]
+
+
+def test_main_honors_max_turns_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp_path = tmp_path / "mcp-config.json"
+    mcp_path.write_text(json.dumps(_SAMPLE_MCP), encoding="utf-8")
+    args_path = tmp_path / "gemini-args"
+
+    monkeypatch.setattr(gc, "GEMINI_SETTINGS_PATH", tmp_path / ".gemini" / "s.json")
+    monkeypatch.setattr(gc, "GEMINI_MEMORY_PATH", tmp_path / ".gemini" / "GEMINI.md")
+    monkeypatch.setattr(gc, "GEMINI_POLICIES_DIR", tmp_path / ".gemini" / "policies")
+    monkeypatch.setattr(gc, "GEMINI_ARGS_PATH", args_path)
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
+    monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
+    monkeypatch.setenv("ROBOCO_GEMINI_MAX_TURNS", "42")
+
+    assert gc.main() == 0
+    assert args_path.read_text(encoding="utf-8").splitlines()[-2:] == [
+        "--max-turns",
+        "42",
+    ]
+
+
+def test_main_falls_back_to_default_max_turns_on_bad_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mcp_path = tmp_path / "mcp-config.json"
+    mcp_path.write_text(json.dumps(_SAMPLE_MCP), encoding="utf-8")
+    args_path = tmp_path / "gemini-args"
+
+    monkeypatch.setattr(gc, "GEMINI_SETTINGS_PATH", tmp_path / ".gemini" / "s.json")
+    monkeypatch.setattr(gc, "GEMINI_MEMORY_PATH", tmp_path / ".gemini" / "GEMINI.md")
+    monkeypatch.setattr(gc, "GEMINI_POLICIES_DIR", tmp_path / ".gemini" / "policies")
+    monkeypatch.setattr(gc, "GEMINI_ARGS_PATH", args_path)
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
+    monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
+    monkeypatch.setenv("ROBOCO_GEMINI_MAX_TURNS", "not-a-number")
+
+    assert gc.main() == 0
+    assert args_path.read_text(encoding="utf-8").splitlines()[-2:] == [
+        "--max-turns",
+        "200",
     ]

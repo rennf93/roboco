@@ -10,6 +10,8 @@ RoboCo's HTTP request layer is protected by `fastapi-guard` (v7.2.1), implemente
 |----------|---------|--------|
 | `ROBOCO_GUARD_ENABLED` | `false` | Master switch. Off = completely inert — no middleware is mounted, the request path is entirely unchanged, and nothing is logged or blocked. |
 | `ROBOCO_GUARD_PASSIVE_MODE` | see below | When the guard is enabled, controls whether it blocks matching requests or only logs them. |
+| `ROBOCO_GUARD_EMERGENCY_WHITELIST` | `` (empty) | Comma-separated IPs/CIDRs always allowed through in an active `ROBOCO_GUARD_EMERGENCY` lockdown, in addition to loopback. Empty = loopback only. |
+| `ROBOCO_GUARD_TRUSTED_CHAIN_PEERS` | `` (empty) | Comma-separated exact IP address(es) — never a CIDR range — trusted to appear as a recorded proxy hop inside `X-Forwarded-For` beyond loopback, e.g. the docker bridge gateway a host-proxied Tailscale Serve chain terminates behind, so the resolved client is the real tailnet/LAN peer instead of that hop's own address. Empty = only a loopback rightmost hop ever peels. |
 
 As of 2026-07-19 the guard is gated off by default in config, but the NAS build compose arms it ON in ACTIVE enforcement (`ROBOCO_GUARD_PASSIVE_MODE=false`) — passive/log-only calibration came back clean, and the CEO approved the flip now that cloud auth + Tailscale are armed. A matching request on that deploy is actually blocked, not just logged. The registry compose still ships it fully off (see Enforcement Posture below).
 

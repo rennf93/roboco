@@ -2679,6 +2679,16 @@ class TaskService(BaseService):
             elif status == "conflict":
                 self._note_base_inheritance_conflict(task, base_branch, result)
                 await self.session.flush()
+            elif status == "merged_push_failed":
+                # Local merge succeeded, push to origin failed. Self-heals on
+                # the dev's next real push, but tell the dev so a failed
+                # submit isn't a mystery.
+                self._append_base_inheritance_dev_note(
+                    task,
+                    f"Upstream base {base_branch!r} was merged locally but the "
+                    f"push to origin failed; your next push carries it forward.",
+                )
+                await self.session.flush()
             elif status not in ("already_ancestor", "missing_ref"):
                 # missing_ref is quiet: a merged-and-deleted parent branch
                 # simply has nothing left to inherit.
@@ -2711,6 +2721,10 @@ class TaskService(BaseService):
             "base_inheritance_conflict",
             f"{existing}\n{note}" if existing else note,
         )
+        # The transition-note marker isn't surfaced to the agent; dev_notes IS
+        # (it rides evidence()/build_task_handoff), so the dev actually sees the
+        # conflict on its next turn instead of only in orchestrator logs.
+        self._append_base_inheritance_dev_note(task, note)
         self.log.warning(
             "upstream base inheritance conflict",
             task_id=str(task.id),
@@ -2718,6 +2732,10 @@ class TaskService(BaseService):
             base_branch=base_branch,
             files=result.get("files"),
         )
+
+    def _append_base_inheritance_dev_note(self, task: TaskTable, note: str) -> None:
+        """Surface a base-inheritance note to the assignee via dev_notes."""
+        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
 
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one

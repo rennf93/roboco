@@ -15,8 +15,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from roboco.config import settings
 from roboco.llm.providers import GeminiCliProvider, ProviderError, SpawnResult
+from roboco.llm.providers import gemini as gemini_module
 from roboco.models.runtime import OrchestratorAgentConfig
+
+
+def test_gemini_cli_model_is_a_real_settings_field() -> None:
+    # Parity with codex_cli_model (roboco.config.Settings.codex_cli_model) —
+    # gemini.py reads settings.gemini_cli_model, not a raw os.environ.get.
+    assert settings.gemini_cli_model == gemini_module._GEMINI_CLI_MODEL
+    assert settings.gemini_cli_model == "gemini-2.5-pro"
 
 
 @pytest.fixture(autouse=True)

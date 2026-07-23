@@ -489,4 +489,34 @@ describe("EditProjectDialog — Monthly Budget (USD)", () => {
     };
     expect(call.updates.monthly_budget_usd).toBe(100);
   });
+
+  it("shows this month's spend against the cap when monthly_spend_usd is present", async () => {
+    renderDialog(
+      makeProject({ monthly_budget_usd: 100, monthly_spend_usd: 42.5 }),
+    );
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    expect(screen.getByTestId("project-spend").textContent).toBe(
+      "Spent: $42.50 this month / $100.00",
+    );
+  });
+
+  it("hides the ratio (but still shows spend) when there is no monthly cap", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: null, monthly_spend_usd: 10 }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    expect(screen.getByTestId("project-spend").textContent).toBe(
+      "Spent: $10.00 this month",
+    );
+  });
+
+  it("hides the spend line entirely when monthly_spend_usd is absent (flag off)", async () => {
+    renderDialog(makeProject({ monthly_budget_usd: 100, monthly_spend_usd: null }));
+    await screen.findByRole("button", { name: /Save Changes/i });
+    openAutonomySection();
+
+    expect(screen.queryByTestId("project-spend")).toBeNull();
+  });
 });

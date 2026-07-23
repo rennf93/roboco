@@ -41,9 +41,30 @@ def test_render_config_toml_marks_gateway_pair_required() -> None:
     assert "required" not in parsed["mcp_servers"]["roboco-optimal"]
 
 
-def test_render_config_toml_empty_when_no_servers() -> None:
-    assert cc.render_config_toml({}) == ""
-    assert cc.render_config_toml({"mcpServers": {}}) == ""
+def test_render_config_toml_widens_startup_timeout_on_required_servers() -> None:
+    # The CLI's default 10s MCP startup timeout fail-fast-aborts the session on
+    # a cold uv wheel cache; the gateway pair gets a wider budget.
+    parsed = tomllib.loads(cc.render_config_toml(_SAMPLE_MCP))
+    timeout = cc._REQUIRED_MCP_STARTUP_TIMEOUT_SEC
+    assert parsed["mcp_servers"]["roboco-flow"]["startup_timeout_sec"] == timeout
+    assert parsed["mcp_servers"]["roboco-do"]["startup_timeout_sec"] == timeout
+    assert "startup_timeout_sec" not in parsed["mcp_servers"]["roboco-optimal"]
+
+
+def test_render_config_toml_disables_subagents_unconditionally() -> None:
+    # Fleet-wide subagent ban (CEO, 2026-07-09) — a global switch, not
+    # per-role, so it renders even with no MCP servers configured at all.
+    no_servers = tomllib.loads(cc.render_config_toml({}))
+    empty_servers = tomllib.loads(cc.render_config_toml({"mcpServers": {}}))
+    with_servers = tomllib.loads(cc.render_config_toml(_SAMPLE_MCP))
+    assert no_servers["agents"]["enabled"] is False
+    assert empty_servers["agents"]["enabled"] is False
+    assert with_servers["agents"]["enabled"] is False
+
+
+def test_render_config_toml_no_mcp_servers_key_when_no_servers() -> None:
+    assert "mcp_servers" not in tomllib.loads(cc.render_config_toml({}))
+    assert "mcp_servers" not in tomllib.loads(cc.render_config_toml({"mcpServers": {}}))
 
 
 def test_sandbox_level_developer_is_workspace_write() -> None:

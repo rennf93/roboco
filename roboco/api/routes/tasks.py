@@ -1119,6 +1119,13 @@ async def get_task(
     # Enrich with work session and project context
     response = await enrich_task_with_context(response, db)
 
+    # Gated the same as the budgets feature: an extra DB read, so only pay
+    # for it when the panel can actually make use of it (ROBOCO_TASK_BUDGETS_ENABLED).
+    from roboco.config import settings as _settings
+
+    if _settings.task_budgets_enabled:
+        response.spend_usd = await service.task_spend_usd(task_id)
+
     return response
 
 

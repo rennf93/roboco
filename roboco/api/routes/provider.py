@@ -70,6 +70,17 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
         "Configure + test the self-hosted server first (PUT /providers/self-hosted)."
     ),
     ModelProvider.ANTHROPIC: "The Anthropic provider is disabled — re-enable it first.",
+    ModelProvider.OPENAI: (
+        "Codex authenticates via a mounted ChatGPT-subscription ~/.codex "
+        "directory, not a key — enable it via the Codex mode button, or "
+        "assign a Codex model to an agent in Mix mode (both force-enable "
+        "the row)."
+    ),
+    ModelProvider.GEMINI: (
+        "Gemini authenticates via a mounted OAuth ~/.gemini credential, not "
+        "a key — enable it via the Gemini mode button, or assign a Gemini "
+        "model to an agent in Mix mode (both force-enable the row)."
+    ),
 }
 
 

@@ -50,6 +50,11 @@ const {
       provider_type: "openai",
       display_name: "GPT-5.3 Codex",
     },
+    {
+      model_name: "gemini-2.5-pro",
+      provider_type: "gemini",
+      display_name: "Gemini 2.5 Pro",
+    },
   ]),
   getOllamaKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setOllamaKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -385,6 +390,13 @@ function withQueryClient(ui: ReactNode) {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
+}
+
+// Finds a per-agent Mix row's container div by its agent-id text. `.closest`
+// on a non-tag-name CSS selector types as `Element | null`, not `HTMLElement`
+// — cast once here rather than at every call site.
+function mixRowFor(agentId: string): HTMLElement {
+  return screen.getByText(agentId).closest("div.grid") as HTMLElement;
 }
 
 describe("AIRoutingCard", () => {
@@ -758,6 +770,102 @@ describe("AIRoutingCard", () => {
       await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
       expect(applyMode).not.toHaveBeenCalled();
       confirmSpy.mockRestore();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Codex and Gemini mode buttons + Mix picker visibility (the headline gap:
+  // both were built but unreachable from the panel — no apply-mode card, no
+  // Mix group).
+  // -------------------------------------------------------------------------
+
+  describe("Codex and Gemini mode buttons", () => {
+    it("renders the Codex button and applies mode='codex' on confirm", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Codex"));
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "codex" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("renders the Gemini button and applies mode='gemini' on confirm", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Gemini"));
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "gemini" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("neither button is gated on a key (no key card exists for either provider)", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(screen.getByText("Codex").closest("button")).not.toBeDisabled();
+      expect(screen.getByText("Gemini").closest("button")).not.toBeDisabled();
+    });
+  });
+
+  describe("Mix picker Codex/Gemini group visibility", () => {
+    it("shows Codex and Gemini provider groups for a delivery role's per-agent select", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+
+      const beDevRow = mixRowFor("be-dev-1");
+      // The catalog query resolves asynchronously — the per-agent groups are
+      // absent on the first render pass, so wait for them (findByText) rather
+      // than asserting synchronously.
+      expect(
+        await within(beDevRow).findByText("Codex (OpenAI)"),
+      ).toBeInTheDocument();
+      expect(
+        within(beDevRow).getByText("Gemini (Google)"),
+      ).toBeInTheDocument();
+    });
+
+    it("excludes Codex and Gemini from the Intake/Secretary/PR Review group, with an inline note", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+
+      expect(
+        screen.getByText(/Codex and Gemini are delivery-roles-only/i),
+      ).toBeInTheDocument();
+
+      // Wait for the catalog query to resolve (an unrelated row's groups)
+      // before asserting absence on this group's rows below.
+      await within(mixRowFor("be-dev-1")).findByText("Codex (OpenAI)");
+
+      const secretaryRow = mixRowFor("secretary-1");
+      expect(
+        within(secretaryRow).queryByText("Codex (OpenAI)"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(secretaryRow).queryByText("Gemini (Google)"),
+      ).not.toBeInTheDocument();
+
+      const intakeRow = mixRowFor("intake-1");
+      expect(
+        within(intakeRow).queryByText("Codex (OpenAI)"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(intakeRow).queryByText("Gemini (Google)"),
+      ).not.toBeInTheDocument();
+
+      // The root PR reviewer shares the same group/note, even though it is
+      // technically one-shot-capable — the panel restricts the whole group.
+      const prReviewerRow = mixRowFor("pr-reviewer-1");
+      expect(
+        within(prReviewerRow).queryByText("Codex (OpenAI)"),
+      ).not.toBeInTheDocument();
     });
   });
 

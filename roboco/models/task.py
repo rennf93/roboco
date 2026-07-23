@@ -171,9 +171,11 @@ class Task(TimestampMixin):
     # TASK_TYPE_DEFAULT_BUDGET_USD) when the flag is on; a pure no-op off.
     budget_usd: float | None = Field(
         default=None,
+        gt=0,
         description=(
             "Cap on this task's own accumulated agent-spawn spend "
-            "(estimated_cost_usd). Null = use the TaskType default."
+            "(estimated_cost_usd). Null = use the TaskType default. Must be "
+            "> 0 — a 0/negative cap would block every claim immediately."
         ),
     )
 
@@ -443,7 +445,7 @@ class TaskUpdate(RobocoBase):
     description: str | None = None
     acceptance_criteria: list[str] | None = None
     priority: int | None = Field(default=None, ge=0, le=3)
-    budget_usd: float | None = Field(default=None, ge=0)
+    budget_usd: float | None = Field(default=None, gt=0)
     status: TaskStatus | None = None
     assigned_to: UUID | None = None
     target_date: datetime | None = None

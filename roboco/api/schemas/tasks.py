@@ -213,7 +213,8 @@ class TaskUpdate(BaseModel):
     # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). An explicit null clears it back
     # to "use the TaskType default" — handled at the route layer like the
     # other _NULLABLE_TASK_FIELDS (TaskService.update() itself skips None).
-    budget_usd: float | None = Field(default=None, ge=0)
+    # gt=0 — a 0/negative cap would block every claim immediately (#654).
+    budget_usd: float | None = Field(default=None, gt=0)
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
 
@@ -312,6 +313,11 @@ class TaskResponse(BaseModel):
     sequence: int  # Order number within siblings
     # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). Null = use the TaskType default.
     budget_usd: float | None = None
+    # This task's own accumulated agent-spawn spend (TaskService.task_spend_usd).
+    # Only populated by GET /tasks/{id} (an extra DB read) when
+    # ROBOCO_TASK_BUDGETS_ENABLED is on; null everywhere else (list views,
+    # flag-off) rather than a stale/misleading $0.
+    spend_usd: float | None = None
     nature: TaskNature  # Technical or non-technical work
 
     # Task Type & Git Configuration (all tasks follow git workflow)
