@@ -6375,17 +6375,10 @@ class AgentOrchestrator:
         Written to the per-agent data dir by the gemini-cli entrypoint
         (one-shot, post-run); read back from the same branched dir the writer
         mounts (``_gemini_usage_dir``). Returns ``None`` when absent/unreadable
-        — see ``_grok_usage_json`` for the ``os.path.basename`` traversal note,
-        applied identically here.
+        — shares ``_read_usage_json_contained``'s resolve-and-contain barrier
+        with the grok/codex reads.
         """
-        try:
-            usage_json = (
-                self._gemini_usage_dir(os.path.basename(agent_id)) / "usage.json"
-            )
-            data = json.loads(usage_json.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
-        return data if isinstance(data, dict) else None
+        return self._read_usage_json_contained(self._gemini_usage_root(), agent_id)
 
     def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.
