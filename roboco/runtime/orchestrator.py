@@ -6189,12 +6189,25 @@ class AgentOrchestrator:
         branched dir the writers mount (``_grok_usage_dir``). Returns ``None`` when
         absent / unreadable.
         """
-        # os.path.basename keeps only the final path component of the agent id
-        # before the path is built — the path-injection sanitizer CodeQL models,
-        # applied here in the read's own scope. _grok_usage_dir's guard rejects
-        # '.' / '..' / separators / NUL upstream (a bad id raises -> None here).
+        return self._read_usage_json_contained(self._grok_usage_root(), agent_id)
+
+    @staticmethod
+    def _read_usage_json_contained(base: Path, agent_id: str) -> dict[str, Any] | None:
+        """Read ``<base>/<agent_id>/usage.json`` behind a containment barrier.
+
+        Agent ids are orchestrator-assigned slugs/uuids and the dir builders
+        already validate them (``_safe_agent_path_segment``), but the read
+        applies the resolve-and-contain check anyway: the id is reduced to its
+        final path component, the full path resolved, and any result outside
+        the resolved usage root refused — a hostile id can never escape the
+        root regardless of upstream drift. Returns ``None`` when refused,
+        absent, or unreadable.
+        """
         try:
-            usage_json = self._grok_usage_dir(os.path.basename(agent_id)) / "usage.json"
+            root = base.resolve()
+            usage_json = (base / os.path.basename(agent_id) / "usage.json").resolve()
+            if not usage_json.is_relative_to(root):
+                return None
             data = json.loads(usage_json.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
@@ -6241,14 +6254,7 @@ class AgentOrchestrator:
         per-agent dir under ``_codex_usage_dir``. Returns ``None`` when
         absent / unreadable.
         """
-        try:
-            usage_json = self._codex_usage_dir(os.path.basename(agent_id)) / (
-                "usage.json"
-            )
-            data = json.loads(usage_json.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
-        return data if isinstance(data, dict) else None
+        return self._read_usage_json_contained(self._codex_usage_root(), agent_id)
 
     def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.

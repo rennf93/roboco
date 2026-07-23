@@ -49,8 +49,28 @@ def test_codex_usage_returns_real_split(
         orch, "_codex_usage_json", lambda _aid: json.loads(usage.read_text())
     )
 
+    expected_turns = 2
     assert orch._codex_usage_tokens("be-dev-1") == (700, 250, 300, 0)
-    assert orch._codex_usage_turns("be-dev-1") == 2  # noqa: PLR2004
+    assert orch._codex_usage_turns("be-dev-1") == expected_turns
+
+
+def test_read_usage_json_contained_refuses_escape(tmp_path: Path) -> None:
+    """A '..' id resolves outside the usage root and must be refused —
+    basename alone does not neutralize '..', the containment check does."""
+    (tmp_path / "usage.json").write_text('{"leak": 1}', encoding="utf-8")
+    base = tmp_path / "root"
+    base.mkdir()
+
+    assert AgentOrchestrator._read_usage_json_contained(base, "..") is None
+
+
+def test_read_usage_json_contained_reads_inside_root(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "be-dev-1"
+    agent_dir.mkdir()
+    (agent_dir / "usage.json").write_text('{"total_tokens": 5}', encoding="utf-8")
+
+    data = AgentOrchestrator._read_usage_json_contained(tmp_path, "be-dev-1")
+    assert data == {"total_tokens": 5}
 
 
 def test_codex_usage_zero_when_store_missing(monkeypatch: pytest.MonkeyPatch) -> None:
