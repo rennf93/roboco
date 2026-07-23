@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useTask, useUpdateTask } from "@/hooks/use-tasks";
+import { useProducts } from "@/hooks/use-products";
 import { Task, Team, Complexity, TaskNature, TaskType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -112,6 +113,8 @@ function EditTaskDialogInner({
     task.task_type ?? TaskType.CODE,
   );
   const [projectId, setProjectId] = useState<string>(task.project_id ?? "");
+  const [productId, setProductId] = useState<string>(task.product_id ?? "");
+  const [sequence, setSequence] = useState<string>(String(task.sequence ?? 0));
   const [assignedTo, setAssignedTo] = useState<string | null>(
     task.assigned_to ?? null,
   );
@@ -126,6 +129,7 @@ function EditTaskDialogInner({
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const updateTask = useUpdateTask();
+  const { data: products = [] } = useProducts();
   // Read-only spend, refetched fresh whenever this dialog is mounted (it only
   // mounts while open — see EditTaskDialog below). null while loading, when
   // the task-budgets flag is off, or on fetch error — all rendered the same
@@ -180,6 +184,8 @@ function EditTaskDialogInner({
           nature,
           task_type: taskType,
           project_id: projectId,
+          product_id: productId || null,
+          sequence: Number(sequence) || 0,
           assigned_to: assignedTo,
           target_date: targetDate ? new Date(targetDate).toISOString() : null,
           budget_usd: parsedBudget,
@@ -343,6 +349,51 @@ function EditTaskDialogInner({
                   placeholder="Unassigned"
                   filterByTeam={team}
                 />
+              </div>
+
+              {/* Sequence */}
+              <div className="space-y-2">
+                <HelpTip label="Order within siblings under the same parent — lower runs first. Ties run in parallel.">
+                  <Label>Sequence</Label>
+                </HelpTip>
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={sequence}
+                  onChange={(e) => setSequence(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Order within siblings (lower = first). Only matters when
+                  this task has a parent.
+                </p>
+              </div>
+
+              {/* Product (fan-out routing) */}
+              <div className="space-y-2">
+                <HelpTip label="Fan-out: each delegated subtask routes to that cell's own mapped project instead of one repo.">
+                  <Label>Product</Label>
+                </HelpTip>
+                <Select
+                  value={productId || "none"}
+                  onValueChange={(v) => setProductId(v === "none" ? "" : v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None (single project)</SelectItem>
+                    {products.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Optional. When set, delegated subtasks route to each
+                  cell&apos;s mapped project (manage these in Products).
+                </p>
               </div>
 
               {/* Target Date */}

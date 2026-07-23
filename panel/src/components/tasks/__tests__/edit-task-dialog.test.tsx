@@ -14,6 +14,14 @@ vi.mock("@/hooks/use-tasks", () => ({
   useTask: () => spendState,
 }));
 
+// useProducts: one product so the Product <Select> has a pickable option,
+// mirroring create-task-dialog's test mock.
+vi.mock("@/hooks/use-products", () => ({
+  useProducts: () => ({
+    data: [{ id: "prod-1", name: "Fan-out Prod" }],
+  }),
+}));
+
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/components/agents/agent-selector", () => ({
