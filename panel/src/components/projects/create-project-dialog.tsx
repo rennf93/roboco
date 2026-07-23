@@ -119,6 +119,7 @@ export function CreateProjectDialog() {
         typecheck_command: formData.typecheck_command || undefined,
         build_command: formData.build_command || undefined,
         quality_command: formData.quality_command || undefined,
+        codegen_command: formData.codegen_command || undefined,
       });
       toast.success("Project created successfully");
       setOpen(false);
@@ -428,6 +429,27 @@ export function CreateProjectDialog() {
                   <p className="text-xs text-muted-foreground">
                     Fast pre-submit gate (lint + types + complexity, no tests)
                     run in the dev&apos;s workspace at hand-off to QA.
+                  </p>
+                </div>
+
+                <div className="grid gap-2">
+                  <HelpTip label="Command that regenerates checked-in generated files, e.g. `make codegen`; run and committed before push so codegen drift never fails CI. Leave blank if the project has no generated artifacts.">
+                    <Label htmlFor="codegen_command">Codegen Command</Label>
+                  </HelpTip>
+                  <Input
+                    id="codegen_command"
+                    value={formData.codegen_command || ""}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        codegen_command: e.target.value,
+                      })
+                    }
+                    placeholder="make codegen"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Regenerates checked-in generated artifacts; any drift is
+                    committed in the task&apos;s workspace before each push.
                   </p>
                 </div>
 
