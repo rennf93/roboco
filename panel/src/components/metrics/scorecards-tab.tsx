@@ -14,6 +14,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
+import {
   useAllMemberScorecards,
   useCeoScorecard,
   useOrgScorecard,
@@ -73,6 +79,63 @@ function MemberRow({
       <TableCell>{data.blocked_others}</TableCell>
       <TableCell>{pctOrNa(data.utilization)}</TableCell>
     </TableRow>
+  );
+}
+
+/** Mobile-card equivalent of MemberRow — same fields, stacked key/value rows
+ * instead of a 9-column table (see ResponsiveTable). */
+function MemberCard({
+  agent,
+  data,
+}: {
+  agent: Agent;
+  data: MemberScorecard | undefined;
+}) {
+  if (!data) {
+    return (
+      <ResponsiveTableCard>
+        <span className="text-sm font-medium">{agent.name || agent.slug}</span>
+        <Skeleton className="mt-2 h-4 w-full" />
+      </ResponsiveTableCard>
+    );
+  }
+  return (
+    <ResponsiveTableCard>
+      <span className="text-sm font-medium">
+        {agent.name || agent.slug}
+        {data.includes_live_inflight && (
+          <Badge variant="outline" className="ml-2 text-xs">
+            live
+          </Badge>
+        )}
+      </span>
+      <div className="mt-2 divide-y">
+        <ResponsiveTableCardRow label="Done">
+          {data.tasks_completed}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="FPY">
+          {pctOrNa(data.first_pass_yield)}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Effort">
+          {data.active_runtime_hours.toFixed(1)}h
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Turns/task">
+          {numOrNa(data.turns_per_task)}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="QA pass">
+          {pctOrNa(data.qa_pass_rate)}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Escal.">
+          {data.escalations}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Blocked others">
+          {data.blocked_others}
+        </ResponsiveTableCardRow>
+        <ResponsiveTableCardRow label="Util.">
+          {pctOrNa(data.utilization)}
+        </ResponsiveTableCardRow>
+      </div>
+    </ResponsiveTableCard>
   );
 }
 
@@ -207,58 +270,77 @@ export function ScorecardsTabContent() {
               Failed to load member scorecards.
             </p>
           )}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Member</TableHead>
-                <TableHead>
-                  <HelpTip label="Tasks completed">
-                    <span>Done</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="First-pass yield — share of completed tasks shipped without a QA/PR-gate/PM/CEO bounce">
-                    <span>FPY</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Total hours actively working — idle/waiting time excluded">
-                    <span>Effort</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Average number of agent turns spent per completed task">
-                    <span>Turns/task</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Share of this agent's QA reviews that passed on the first attempt">
-                    <span>QA pass</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Escalations — times this agent's work was escalated up the chain">
-                    <span>Escal.</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Times this agent's work blocked another agent's progress">
-                    <span>Blocked others</span>
-                  </HelpTip>
-                </TableHead>
-                <TableHead>
-                  <HelpTip label="Utilization — share of this agent's spawned time spent actively working, not idle">
-                    <span>Util.</span>
-                  </HelpTip>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {members.map((a) => (
-                <MemberRow key={a.id} agent={a} data={scorecardById.get(a.id)} />
-              ))}
-            </TableBody>
-          </Table>
+          <ResponsiveTable
+            table={
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Member</TableHead>
+                    <TableHead>
+                      <HelpTip label="Tasks completed">
+                        <span>Done</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="First-pass yield — share of completed tasks shipped without a QA/PR-gate/PM/CEO bounce">
+                        <span>FPY</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Total hours actively working — idle/waiting time excluded">
+                        <span>Effort</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Average number of agent turns spent per completed task">
+                        <span>Turns/task</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Share of this agent's QA reviews that passed on the first attempt">
+                        <span>QA pass</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Escalations — times this agent's work was escalated up the chain">
+                        <span>Escal.</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Times this agent's work blocked another agent's progress">
+                        <span>Blocked others</span>
+                      </HelpTip>
+                    </TableHead>
+                    <TableHead>
+                      <HelpTip label="Utilization — share of this agent's spawned time spent actively working, not idle">
+                        <span>Util.</span>
+                      </HelpTip>
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {members.map((a) => (
+                    <MemberRow
+                      key={a.id}
+                      agent={a}
+                      data={scorecardById.get(a.id)}
+                    />
+                  ))}
+                </TableBody>
+              </Table>
+            }
+            cards={
+              <ResponsiveTableCardList>
+                {members.map((a) => (
+                  <MemberCard
+                    key={a.id}
+                    agent={a}
+                    data={scorecardById.get(a.id)}
+                  />
+                ))}
+              </ResponsiveTableCardList>
+            }
+          />
         </CardContent>
       </Card>
     </div>
