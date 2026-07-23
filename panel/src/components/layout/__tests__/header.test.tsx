@@ -181,6 +181,30 @@ describe("Header — navbar refresh button", () => {
   });
 });
 
+describe("Header — command palette trigger", () => {
+  beforeEach(() => {
+    useUIStore.setState({ commandPaletteOpen: false });
+  });
+
+  it("has no disabled search input or 'Coming Soon' remnant", () => {
+    const { container } = render(withPageRefresh(<Header />));
+
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(screen.queryByText("Coming Soon")).not.toBeInTheDocument();
+  });
+
+  it("opens the command palette when the search trigger is clicked", () => {
+    render(withPageRefresh(<Header />));
+
+    const trigger = screen.getByRole("button", {
+      name: /search tasks, agents/i,
+    });
+    trigger.click();
+
+    expect(useUIStore.getState().commandPaletteOpen).toBe(true);
+  });
+});
+
 describe("Header — CEO name chip (ceo_name setting)", () => {
   beforeEach(() => {
     getAll.mockClear();
