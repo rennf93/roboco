@@ -112,6 +112,7 @@ export function CreateTaskDialog() {
   const [taskType, setTaskType] = useState<TaskType>(TaskType.CODE);
   const [projectId, setProjectId] = useState<string>("");
   const [productId, setProductId] = useState<string>("");
+  const [sequence, setSequence] = useState<string>("0");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
 
@@ -176,6 +177,7 @@ export function CreateTaskDialog() {
         estimated_complexity: complexity,
         nature,
         task_type: taskType,
+        sequence: Number(sequence) || 0,
         ...(projectId && { project_id: projectId }),
         ...(productId && { product_id: productId }),
         ...(dependencyIds.length > 0 && { dependency_ids: dependencyIds }),
@@ -205,6 +207,7 @@ export function CreateTaskDialog() {
     setTaskType(TaskType.CODE);
     setProjectId("");
     setProductId("");
+    setSequence("0");
     setAdvancedOpen(false);
     setErrors({});
   };
@@ -409,6 +412,25 @@ export function CreateTaskDialog() {
                 />
                 <p className="text-xs text-muted-foreground">
                   Make this task a subtask of an existing task
+                </p>
+              </div>
+
+              {/* Sequence */}
+              <div className="space-y-2">
+                <HelpTip label="Order within siblings under the same parent — lower runs first. Ties run in parallel.">
+                  <Label htmlFor="sequence">Sequence</Label>
+                </HelpTip>
+                <Input
+                  id="sequence"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={sequence}
+                  onChange={(e) => setSequence(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Order within siblings (lower = first). Only matters when a
+                  Parent Task is set above.
                 </p>
               </div>
 
