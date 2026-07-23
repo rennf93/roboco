@@ -414,8 +414,8 @@ class Settings(BaseSettings):
             "Per-task and per-project cost budgets. When on: a claim is "
             "refused once a project's monthly_budget_usd is reached (summed "
             "agent-spawn spend across its tasks this calendar month), and the "
-            "budget sweep blocks an active task whose own budget_usd (or the "
-            "TaskType default) is breached, notifying the CEO. Off => neither "
+            "budget sweep blocks an active task whose own explicitly-set "
+            "budget_usd is breached, notifying the CEO. Off => neither "
             "cap is ever consulted, regardless of project/task field values."
         ),
     )

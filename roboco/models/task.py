@@ -166,15 +166,15 @@ class Task(TimestampMixin):
         default=2, ge=0, le=3, description="0=P0(highest), 3=P3(lowest)"
     )
 
-    # Cost budget (feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED). Null = fall
-    # back to the TaskType default (see foundation/policy/agent_loop.py
-    # TASK_TYPE_DEFAULT_BUDGET_USD) when the flag is on; a pure no-op off.
+    # Cost budget (feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED). Null = no
+    # cap — budgets enforce only when explicitly set (see
+    # foundation/policy/agent_loop.py effective_task_budget_usd); a no-op off.
     budget_usd: float | None = Field(
         default=None,
         gt=0,
         description=(
             "Cap on this task's own accumulated agent-spawn spend "
-            "(estimated_cost_usd). Null = use the TaskType default. Must be "
+            "(estimated_cost_usd). Null = no cap (explicit-input only). Must be "
             "> 0 — a 0/negative cap would block every claim immediately."
         ),
     )

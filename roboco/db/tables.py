@@ -214,7 +214,7 @@ class TaskTable(Base):
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     # Cost budget (migration 079, feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED).
-    # Null falls back to the TaskType default when the flag is on; a pure
+    # Null = no cap: budgets enforce only when explicitly set; a pure
     # no-op off. Enforced periodically by the orchestrator's budget sweep.
     budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 

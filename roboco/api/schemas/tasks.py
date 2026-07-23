@@ -211,7 +211,7 @@ class TaskUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=3)
     sequence: int | None = Field(default=None, ge=0)  # Order within siblings
     # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). An explicit null clears it back
-    # to "use the TaskType default" — handled at the route layer like the
+    # to uncapped (budgets enforce only when set) — handled at the route layer like the
     # other _NULLABLE_TASK_FIELDS (TaskService.update() itself skips None).
     # gt=0 — a 0/negative cap would block every claim immediately (#654).
     budget_usd: float | None = Field(default=None, gt=0)
@@ -311,7 +311,7 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     priority: int
     sequence: int  # Order number within siblings
-    # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). Null = use the TaskType default.
+    # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). Null = no cap (explicit-input only).
     budget_usd: float | None = None
     # This task's own accumulated agent-spawn spend (TaskService.task_spend_usd).
     # Only populated by GET /tasks/{id} (an extra DB read) when

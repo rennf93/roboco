@@ -81,7 +81,7 @@ function submit() {
 }
 
 function budgetInput(): HTMLInputElement {
-  return screen.getByPlaceholderText("Task-type default") as HTMLInputElement;
+  return screen.getByPlaceholderText("No cap") as HTMLInputElement;
 }
 
 describe("EditTaskDialog — Budget (USD) input", () => {
@@ -153,7 +153,7 @@ describe("EditTaskDialog — Budget (USD) input", () => {
     expect(mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("submits null when left empty (use the task-type default)", async () => {
+  it("submits null when left empty (no cap)", async () => {
     render(
       <EditTaskDialog
         task={{ ...task, budget_usd: 3.5 }}
