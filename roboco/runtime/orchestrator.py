@@ -17,6 +17,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -6203,16 +6204,18 @@ class AgentOrchestrator:
         root regardless of upstream drift. Returns ``None`` when refused,
         absent, or unreadable.
         """
+        # Barrier (CWE-022): the id must be a single allowlisted token — the
+        # orchestrator only ever assigns slug/uuid ids ([A-Za-z0-9._-]), none
+        # of which can contain a path separator or ``..`` traversal. The
+        # regexp fullmatch is the primary sanitizer; the realpath+startswith
+        # containment below is defense-in-depth (a strictly-matched token
+        # cannot escape the root anyway).
+        segment = os.path.basename(agent_id)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", segment) or ".." in segment:
+            return None
         try:
-            # Containment barrier (CWE-022): reduce the id to its final path
-            # component, realpath the full candidate, and refuse anything that
-            # does not resolve under the realpath'd usage root. The
-            # realpath + startswith form is the canonical path-traversal guard
-            # (is_relative_to is not recognized as a sanitizer).
             root = os.path.realpath(base)
-            candidate = os.path.realpath(
-                base / os.path.basename(agent_id) / "usage.json"
-            )
+            candidate = os.path.realpath(base / segment / "usage.json")
             if candidate != root and not candidate.startswith(root + os.sep):
                 return None
             with Path(candidate).open(encoding="utf-8") as handle:
