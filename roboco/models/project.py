@@ -249,11 +249,12 @@ class Project(TimestampMixin):
     # cap, regardless of the flag — this is purely additive.
     monthly_budget_usd: float | None = Field(
         default=None,
-        ge=0,
+        gt=0,
         description=(
             "Calendar-month cap on this project's summed agent-spawn spend "
             "(estimated_cost_usd). Null = no cap. Only enforced at claim time "
-            "when ROBOCO_TASK_BUDGETS_ENABLED is on."
+            "when ROBOCO_TASK_BUDGETS_ENABLED is on. Must be > 0 — a 0/negative "
+            "cap would block every claim immediately."
         ),
     )
 
@@ -331,7 +332,7 @@ class ProjectCreate(RobocoBase):
     build_command: str | None = None
     quality_command: str | None = None
     codegen_command: str | None = None
-    monthly_budget_usd: float | None = None
+    monthly_budget_usd: float | None = Field(default=None, gt=0)
 
 
 class ProjectUpdate(RobocoBase):
@@ -371,7 +372,7 @@ class ProjectUpdate(RobocoBase):
     video_engine_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
-    monthly_budget_usd: float | None = None
+    monthly_budget_usd: float | None = Field(default=None, gt=0)
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
     github_installation_id: int | None = Field(

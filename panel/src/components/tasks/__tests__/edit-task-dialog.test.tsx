@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-const { mutateAsync } = vi.hoisted(() => ({
+const { mutateAsync, spendState } = vi.hoisted(() => ({
   mutateAsync: vi.fn().mockResolvedValue(undefined),
+  // Mutable per-test stand-in for useTask's query result — mirrors the
+  // real hook's shape ({ data }) so the dialog's spend read-out can be
+  // exercised without a real fetch.
+  spendState: { data: undefined as { spend_usd?: number | null } | undefined },
 }));
 
 vi.mock("@/hooks/use-tasks", () => ({
   useUpdateTask: () => ({ mutateAsync, isPending: false }),
+  useTask: () => spendState,
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -82,6 +87,7 @@ function budgetInput(): HTMLInputElement {
 describe("EditTaskDialog — Budget (USD) input", () => {
   beforeEach(() => {
     mutateAsync.mockClear();
+    spendState.data = undefined;
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -181,5 +187,65 @@ describe("EditTaskDialog — Budget (USD) input", () => {
       updates: Record<string, unknown>;
     };
     expect(updates.budget_usd).toBe(2.5);
+  });
+});
+
+describe("EditTaskDialog — spend read-out", () => {
+  beforeEach(() => {
+    mutateAsync.mockClear();
+    spendState.data = undefined;
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders spend against the cap once useTask resolves", () => {
+    spendState.data = { spend_usd: 12.34 };
+    render(
+      <EditTaskDialog
+        task={{ ...task, budget_usd: 20 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("task-spend").textContent).toBe(
+      "Spent: $12.34 / $20.00",
+    );
+  });
+
+  it("hides the ratio (but still shows spend) when there is no budget cap", () => {
+    spendState.data = { spend_usd: 5 };
+    render(
+      <EditTaskDialog
+        task={{ ...task, budget_usd: null }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("task-spend").textContent).toBe("Spent: $5.00");
+  });
+
+  it("renders nothing while the spend fetch hasn't resolved yet", () => {
+    spendState.data = undefined;
+    render(
+      <EditTaskDialog
+        task={{ ...task, budget_usd: 20 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("task-spend")).toBeNull();
+  });
+
+  it("renders nothing when the task-budgets flag is off (spend_usd null)", () => {
+    spendState.data = { spend_usd: null };
+    render(
+      <EditTaskDialog
+        task={{ ...task, budget_usd: 20 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("task-spend")).toBeNull();
   });
 });

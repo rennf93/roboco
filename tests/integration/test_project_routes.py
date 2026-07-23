@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.project import router as project_router
+from roboco.config import settings
 from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.permissions import AgentContext
@@ -164,6 +165,79 @@ async def test_update_project_explicit_null_clears_field(
     )
     assert cleared.status_code == HTTPStatus.OK
     assert cleared.json()["test_command"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_zero_monthly_budget_usd(
+    project_client: AsyncClient,
+) -> None:
+    """#654: a 0 cap would block every claim immediately — rejected at the
+    request boundary, never stored."""
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    response = await project_client.patch(
+        f"/api/projects/{pid}",
+        json={"monthly_budget_usd": 0},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_negative_monthly_budget_usd(
+    project_client: AsyncClient,
+) -> None:
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    response = await project_client.patch(
+        f"/api/projects/{pid}",
+        json={"monthly_budget_usd": -5},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_update_project_accepts_positive_monthly_budget_usd(
+    project_client: AsyncClient,
+) -> None:
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    cap = 100
+    response = await project_client.patch(
+        f"/api/projects/{pid}",
+        json={"monthly_budget_usd": cap},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["monthly_budget_usd"] == cap
+
+
+@pytest.mark.asyncio
+async def test_get_project_by_id_includes_spend_when_budgets_enabled(
+    project_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """monthly_spend_usd is populated (0.0 with no spawn sessions yet) once
+    ROBOCO_TASK_BUDGETS_ENABLED is on — the extra DB read only runs then."""
+    monkeypatch.setattr(settings, "task_budgets_enabled", True)
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    response = await project_client.get(f"/api/projects/{pid}", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["monthly_spend_usd"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_get_project_by_id_omits_spend_when_budgets_disabled(
+    project_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag off => monthly_spend_usd stays null, same as before this field existed."""
+    monkeypatch.setattr(settings, "task_budgets_enabled", False)
+    create = await project_client.post("/api/projects", json=_payload(), headers=_HDR)
+    pid = create.json()["id"]
+    response = await project_client.get(f"/api/projects/{pid}", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["monthly_spend_usd"] is None
 
 
 @pytest.mark.asyncio

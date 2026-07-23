@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useUpdateTask } from "@/hooks/use-tasks";
+import { useTask, useUpdateTask } from "@/hooks/use-tasks";
 import { Task, Team, Complexity, TaskNature, TaskType } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -126,6 +126,12 @@ function EditTaskDialogInner({
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const updateTask = useUpdateTask();
+  // Read-only spend, refetched fresh whenever this dialog is mounted (it only
+  // mounts while open — see EditTaskDialog below). null while loading, when
+  // the task-budgets flag is off, or on fetch error — all rendered the same
+  // way: the spend line is simply omitted (never a broken "$undefined").
+  const { data: freshTask } = useTask(task.id);
+  const spendUsd = freshTask?.spend_usd;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -369,6 +375,14 @@ function EditTaskDialogInner({
                   before it spends a cent. Leave blank for the task-type
                   default.
                 </p>
+                {spendUsd != null && (
+                  <p className="text-xs text-muted-foreground" data-testid="task-spend">
+                    Spent: ${spendUsd.toFixed(2)}
+                    {budgetUsd.trim() && !Number.isNaN(Number(budgetUsd))
+                      ? ` / $${Number(budgetUsd).toFixed(2)}`
+                      : ""}
+                  </p>
+                )}
               </div>
 
               {/* Git Configuration Section */}

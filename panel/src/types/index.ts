@@ -226,6 +226,10 @@ export interface Task {
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
   // Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). null = use the task-type default.
   budget_usd?: number | null;
+  // This task's own accumulated agent-spawn spend. Only populated by the
+  // single-task detail fetch (GET /tasks/{id}) when the budgets flag is on;
+  // null on list rows and when the flag is off.
+  spend_usd?: number | null;
   sequence: number; // Order number within siblings
   team: Team;
   created_by: string;
@@ -1064,6 +1068,10 @@ export interface Project {
   // Calendar-month cap on summed agent-spawn spend across this project's
   // tasks; null = no cap. Only enforced when ROBOCO_TASK_BUDGETS_ENABLED is on.
   monthly_budget_usd: number | null;
+  // This calendar month's summed agent-spawn spend across this project's
+  // tasks (ProjectService.project_month_spend_usd). Only populated when
+  // ROBOCO_TASK_BUDGETS_ENABLED is on; null otherwise.
+  monthly_spend_usd?: number | null;
   sandbox_services: string[] | null;
   sandbox_extensions: Record<string, string[]> | null;
   // Runtime state

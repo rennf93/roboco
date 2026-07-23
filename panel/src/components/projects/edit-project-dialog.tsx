@@ -833,6 +833,15 @@ function EditProjectForm({
                 Must be greater than 0 — a 0 budget would block every claim
                 immediately. Leave blank for no cap.
               </p>
+              {project.monthly_spend_usd != null && (
+                <p className="text-xs text-muted-foreground" data-testid="project-spend">
+                  Spent: ${project.monthly_spend_usd.toFixed(2)} this month
+                  {monthlyBudgetUsd.trim() &&
+                  !Number.isNaN(Number(monthlyBudgetUsd))
+                    ? ` / $${Number(monthlyBudgetUsd).toFixed(2)}`
+                    : ""}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center justify-between">

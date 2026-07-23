@@ -58,6 +58,11 @@ class ProjectResponse(BaseModel):
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     monthly_budget_usd: float | None = None
+    # This calendar month's summed agent-spawn spend across this project's
+    # tasks (TaskService.project_month_spend_usd). Only populated by
+    # GET /projects/{id} (an extra DB read) when ROBOCO_TASK_BUDGETS_ENABLED
+    # is on; null everywhere else (list views, flag-off).
+    monthly_spend_usd: float | None = None
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
 
@@ -212,7 +217,8 @@ class ProjectUpdateRequest(BaseModel):
     video_engine_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
-    monthly_budget_usd: float | None = None
+    # gt=0 — a 0/negative cap would block every claim immediately (#654).
+    monthly_budget_usd: float | None = Field(default=None, gt=0)
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
 
