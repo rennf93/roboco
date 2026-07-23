@@ -68,10 +68,10 @@ export function KBSearchBar({
           <HelpTip label="Clear search">
             <Button
               variant="ghost"
-              size="icon-sm"
+              size="icon"
               onClick={handleClear}
               aria-label="Clear search"
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              className="absolute right-0 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             >
               <X className="h-4 w-4" />
             </Button>
