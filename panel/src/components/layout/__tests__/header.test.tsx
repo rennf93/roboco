@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Header } from "../header";
 import { PageRefreshProvider } from "@/components/providers";
 import { usePageRefresh } from "@/hooks";
+import { useUIStore } from "@/store";
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
