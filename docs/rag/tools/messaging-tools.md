@@ -25,3 +25,7 @@ notify_ack(notification_id)               # acknowledge after handling
 ```
 
 When `i_am_idle()` reports unread A2A or @mentions, clear A2A with `read_a2a()` (see `a2a-tools.md`) and clear notifications with list -> get -> ack, then idle again. (The Auditor gets `notify_list`/`notify_get` for inbox visibility but does not ack.)
+
+## Unacked notifications re-escalate
+
+An ack-required `notify` left unacked past its `expires_at` is re-escalated to the recipient's up-role (your PM's PM, or the CEO) — but not on every sweep tick. The first re-escalation fires at expiry, each one after that doubles the wait (1h, 2h, 4h, ... capped at 24h), and after a fixed number of attempts it stops and is logged as permanently unacked. Acking promptly is the only way to stop the clock — there is no way to snooze or dismiss a notification other than `notify_ack`.
