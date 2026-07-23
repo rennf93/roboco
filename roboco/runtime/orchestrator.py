@@ -6206,12 +6206,12 @@ class AgentOrchestrator:
         """
         # Barrier (CWE-022): the id must be a single allowlisted token — the
         # orchestrator only ever assigns slug/uuid ids ([A-Za-z0-9._-]), none
-        # of which can contain a path separator or ``..`` traversal. The
-        # regexp fullmatch is the primary sanitizer; the realpath+startswith
-        # containment below is defense-in-depth (a strictly-matched token
-        # cannot escape the root anyway).
+        # of which can contain a path separator or ``..`` traversal (the
+        # required alphanumeric first char already rejects ``.``/``..``). This
+        # standalone regexp fullmatch is the primary sanitizer; the
+        # realpath+startswith containment below is defense-in-depth.
         segment = os.path.basename(agent_id)
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", segment) or ".." in segment:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", segment):
             return None
         try:
             root = os.path.realpath(base)
