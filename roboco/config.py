@@ -1861,6 +1861,17 @@ class Settings(BaseSettings):
             "ROBOCO_CODEX_CLI_MODEL"
         ),
     )
+    # The gemini CLI model id passed via ROBOCO_AGENT_MODEL at spawn. Unlike
+    # the grok path (a raw os.environ read in gemini.py, now fixed to mirror
+    # codex_cli_model above), this is a real Settings field so it shows up in
+    # the settings schema.
+    gemini_cli_model: str = Field(
+        default="gemini-2.5-pro",
+        description=(
+            "Gemini CLI model id passed to the agent at spawn; override via "
+            "ROBOCO_GEMINI_CLI_MODEL"
+        ),
+    )
     # Base retry_after when parking the GEMINI provider on a quota/rate-limit
     # exit (see roboco.runtime.orchestrator._park_gemini_rate_limited, which
     # backs this off exponentially on repeated re-parks within one episode —

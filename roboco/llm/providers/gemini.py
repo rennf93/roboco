@@ -55,6 +55,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from roboco.config import settings
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
@@ -70,8 +71,9 @@ _DEFAULT_GEMINI_IMAGE = os.environ.get(
 )
 
 # The gemini CLI model id. GA ids: gemini-2.5-pro / gemini-2.5-flash /
-# gemini-2.5-flash-lite (spike-verified).
-_GEMINI_CLI_MODEL = os.environ.get("ROBOCO_GEMINI_CLI_MODEL", "gemini-2.5-pro")
+# gemini-2.5-flash-lite (spike-verified). A real Settings field (parity with
+# codex_cli_model), not a raw os.environ read.
+_GEMINI_CLI_MODEL = settings.gemini_cli_model
 
 # Host directory holding the OAuth credential (``oauth_creds.json``, from a
 # one-time interactive ``gemini`` login). Mounted into the agent's staging path

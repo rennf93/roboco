@@ -10,6 +10,12 @@ unit-testable, mirroring :mod:`roboco.llm.providers.grok_cli_config`.
 
 Parity notes (where Codex's runtime model differs from grok's / Claude's):
 
+  * **subagents** — fleet-wide ban (CEO, 2026-07-09): ``config.toml``'s
+    ``[agents]`` table (default ``enabled = true``) is rendered with
+    ``enabled = false`` unconditionally, the parity analogue of grok's
+    per-role ``--disallowed-tools Agent`` and gemini's
+    ``experimental.enableAgents=false`` — a single global switch here too,
+    not a per-role rule, since Codex has no per-role tool-removal flag either.
   * **tool removal** — the Codex CLI exposes no per-built-in-tool
     allow/disallow flags (unlike grok's ``--disallowed-tools``). Tool scoping
     is coarser: a ``--sandbox`` level per role (see :func:`sandbox_level_for_role`)
@@ -75,6 +81,14 @@ CODEX_ARGS_PATH = Path(
 # optimal, docs, playwright) is best-effort.
 _REQUIRED_MCP_SERVERS = frozenset({"roboco-flow", "roboco-do"})
 
+# The CLI's default MCP startup timeout (10s) is too tight for a cold uv wheel
+# cache (first spawn after an image rebuild — see the identical rationale in
+# roboco.runtime.orchestrator._generate_mcp_config's UV_PROJECT_ENVIRONMENT
+# comment): a required server not yet ready at 10s fail-fast-aborts the whole
+# session. Widened per required server so a slow-but-working cold start
+# doesn't get treated as a dead gateway.
+_REQUIRED_MCP_STARTUP_TIMEOUT_SEC = 30
+
 # Only `developer` gets a writable sandbox in Codex V1 — narrower than grok's
 # per-role `allows_write` (role_config says documenter also writes). Documenter
 # writes ride the roboco-docs MCP server (a network call, not a local sandboxed
@@ -132,13 +146,18 @@ _RAW_PM_PREFIXES: tuple[tuple[str, ...], ...] = (
 
 
 def render_config_toml(mcp_config: dict[str, Any]) -> str:
-    """Translate Claude Code ``mcpServers`` into codex's ``[mcp_servers]`` TOML.
+    """Translate Claude Code ``mcpServers`` into codex's config.toml.
 
     ``{"command": "uv", "args": [...], "env": {...}}`` becomes a
     ``[mcp_servers.<name>]`` table with the same fields, plus ``required =
-    true`` for the gateway pair (``roboco-flow`` / ``roboco-do``) so a
-    gateway-init failure fails the codex session fast. Returns an empty string
-    when there are no servers.
+    true`` + ``startup_timeout_sec = 30`` for the gateway pair (``roboco-flow``
+    / ``roboco-do``) so a gateway-init failure fails the codex session fast
+    without tripping on a cold uv wheel cache (see
+    ``_REQUIRED_MCP_STARTUP_TIMEOUT_SEC``). Always carries a top-level
+    ``[agents]`` table disabling Codex's native subagents (fleet-wide ban,
+    CEO 2026-07-09 — parity with grok's ``--disallowed-tools Agent`` and
+    gemini's ``experimental.enableAgents=false``): a global switch, not
+    per-role, so it renders unconditionally even with no MCP servers at all.
     """
     servers: dict[str, dict[str, Any]] = {}
     for name, spec in (mcp_config.get("mcpServers") or {}).items():
@@ -151,8 +170,12 @@ def render_config_toml(mcp_config: dict[str, Any]) -> str:
             block["env"] = {str(k): str(v) for k, v in env.items()}
         if str(name) in _REQUIRED_MCP_SERVERS:
             block["required"] = True
+            block["startup_timeout_sec"] = _REQUIRED_MCP_STARTUP_TIMEOUT_SEC
         servers[str(name)] = block
-    return tomli_w.dumps({"mcp_servers": servers}) if servers else ""
+    config: dict[str, Any] = {"agents": {"enabled": False}}
+    if servers:
+        config["mcp_servers"] = servers
+    return tomli_w.dumps(config)
 
 
 def sandbox_level_for_role(role: str) -> str:
