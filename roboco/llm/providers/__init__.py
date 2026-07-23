@@ -13,11 +13,15 @@ Backends:
 - :class:`CodexCliProvider` — OpenAI via the official ``codex`` CLI on a ChatGPT
   subscription (mounted ``~/.codex`` auth, same shape). One-shot delivery roles
   only in V1 — no interactive intake/secretary support.
+- :class:`GeminiCliProvider` — Google Gemini via the official ``gemini`` CLI on
+  an OAuth login (mounted ``~/.gemini`` auth, one-shot delivery roles only —
+  see :mod:`roboco.llm.providers.gemini` for the V1 scope).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.llm.providers.codex import CodexCliProvider
+from roboco.llm.providers.gemini import GeminiCliProvider
 from roboco.llm.providers.grok import GrokCliProvider
 from roboco.llm.providers.registry import ProviderNotRegisteredError, ProviderRegistry
 
@@ -25,6 +29,7 @@ __all__ = [
     "AgentProvider",
     "ClaudeCodeProvider",
     "CodexCliProvider",
+    "GeminiCliProvider",
     "GrokCliProvider",
     "ProviderError",
     "ProviderNotRegisteredError",

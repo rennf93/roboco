@@ -117,6 +117,11 @@ jobs:
             [roboco-agent-grok-prompter]=docker/agent-grok-prompter.Dockerfile
             [roboco-agent-grok-secretary]=docker/agent-grok-secretary.Dockerfile
             [roboco-agent-codex]=docker/agent-codex.Dockerfile
+            # Gemini (Google, official CLI) — one-shot delivery roles only (V1),
+            # no interactive prompter/secretary variant depends FROM it, so
+            # (unlike roboco-agent-grok above) it needs no special build-order
+            # carve-out and is just another entry here.
+            [roboco-agent-gemini]=docker/agent-gemini.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
