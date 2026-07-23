@@ -19,18 +19,17 @@ FROM roboco-agent-base
 
 USER root
 
-# Install the official codex CLI for the agent user. Pinned — untrusted model
-# output runs under it, so bump the version deliberately, never float. Download
-# the installer to a file first (a `curl | bash` pipe hides a curl failure as a
-# silent no-op) and verify the binary installed AND runs, so a broken install
-# fails the build here, not at spawn. (curl/bash from the base.)
+# Install the official codex CLI globally via npm. Pinned — untrusted model
+# output runs under it, so bump the version deliberately, never float. The
+# npm route (not chatgpt.com/codex/install.sh, which the CDN denies to
+# non-browser clients) has no postinstall network fetch: the native binary
+# rides an optionalDependency (@openai/codex-linux-x64) served from the
+# public npm registry. Global install symlinks `codex` onto PATH for the
+# agent user; verify it runs so a broken install fails the build, not spawn.
 ARG CODEX_CLI_VERSION=0.145.0
-RUN su agent -s /bin/bash -c "set -euo pipefail; export HOME=/home/agent; \
-      curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh; \
-      bash /tmp/codex-install.sh ${CODEX_CLI_VERSION}; \
-      test -x /home/agent/.codex/bin/codex || command -v codex; \
-      codex --version" \
-    && rm -rf /tmp/*
+RUN npm install -g @openai/codex@${CODEX_CLI_VERSION} \
+    && command -v codex \
+    && codex --version
 
 # Entrypoint: render ~/.codex/config.toml + execpolicy rules + the per-role
 # sandbox flag, then run codex headless (overrides the base image's `claude`
