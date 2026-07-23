@@ -2316,7 +2316,11 @@ class GitService(BaseService):
             "title": pr.get("title") or "",
             "head_ref": head.get("ref"),
             "head_sha": head.get("sha"),
-            "is_fork": bool(head_full and head_full != base_full),
+            # A null head repo (GitHub sends head.repo=null when the fork was
+            # deleted) is NOT ours — fail closed to fork/external so the
+            # branch-ownership skip can never silently swallow a genuine fork
+            # whose head_ref collides with an org branch name.
+            "is_fork": (head_full != base_full) if head_full else True,
             "user_login": login,
             # The reviewer reviews PRs the org did NOT author. A PR opened by the
             # repo-owner account is a self-review (GitHub 422s REQUEST_CHANGES on

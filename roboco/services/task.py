@@ -1407,27 +1407,7 @@ class TaskService(BaseService):
         - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
         - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
         """
-        # Resolve every project sharing this project's repo (git_url) so the
-        # dedupe spans the whole monorepo, not just the one project. An unknown
-        # project_id falls back to itself (can't widen).
-        git_url = (
-            await self.session.execute(
-                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
-            )
-        ).scalar_one_or_none()
-        if git_url:
-            sibling_ids = (
-                (
-                    await self.session.execute(
-                        select(ProjectTable.id).where(ProjectTable.git_url == git_url)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            scope_ids = list(sibling_ids) or [project_id]
-        else:
-            scope_ids = [project_id]
+        scope_ids = await self._repo_sibling_project_ids(project_id)
         result = await self.session.execute(
             select(TaskTable.orchestration_markers).where(
                 TaskTable.project_id.in_(scope_ids),
@@ -1514,26 +1494,55 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
-    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
-        """True if a non-terminal task on ``project_id`` already owns this branch.
+    async def _repo_sibling_project_ids(self, project_id: UUID) -> list[UUID]:
+        """Every project id sharing ``project_id``'s repo (``git_url``).
 
-        Lets the internal-PR reviewer skip the org's own in-flight integration
+        The inbound-PR poll collapses a monorepo's cell-projects to one
+        canonical project per repo, so any repo-level lookup keyed by the
+        canonical id must widen back out to the siblings — a branch/review
+        owned by a sibling cell-project is still "this repo's". Falls back to
+        ``[project_id]`` when the project is unknown or has no git_url.
+        """
+        git_url = (
+            await self.session.execute(
+                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
+            )
+        ).scalar_one_or_none()
+        if not git_url:
+            return [project_id]
+        sibling_ids = (
+            (
+                await self.session.execute(
+                    select(ProjectTable.id).where(ProjectTable.git_url == git_url)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(sibling_ids) or [project_id]
+
+    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
+        """True if a non-terminal task on this REPO already owns this branch.
+
+        Lets the inbound-PR reviewer skip the org's own in-flight integration
         PRs — those whose head branch a live task created via the agent
         task-flow (and which therefore already pass QA + PM review) — and review
         only org-repo PRs opened outside that flow.
 
-        Scoped to the polled project: a branch in project A's repo can only be
-        owned by a task whose ``project_id == A`` (each task branches in its
-        own project's repo, including each root-subtask of a multi-repo
-        MegaTask). An unscoped lookup would match the wrong project's task on a
-        cross-project branch_name collision and false-skip project A's PR.
+        Scoped to the REPO (every project sharing ``project_id``'s git_url),
+        not the single polled project: the poll collapses a monorepo's
+        cell-projects to one canonical project, so a fleet PR whose owning
+        task lives on a sibling cell-project must still count as ours.
+        Cross-REPO branch-name collisions stay excluded — a different repo's
+        task can never own this repo's branch.
         """
         if not branch_name:
             return False
+        scope_ids = await self._repo_sibling_project_ids(project_id)
         result = await self.session.execute(
             select(TaskTable.id).where(
                 TaskTable.branch_name == branch_name,
-                TaskTable.project_id == project_id,
+                TaskTable.project_id.in_(scope_ids),
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )
