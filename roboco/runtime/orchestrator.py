@@ -6204,11 +6204,19 @@ class AgentOrchestrator:
         absent, or unreadable.
         """
         try:
-            root = base.resolve()
-            usage_json = (base / os.path.basename(agent_id) / "usage.json").resolve()
-            if not usage_json.is_relative_to(root):
+            # Containment barrier (CWE-022): reduce the id to its final path
+            # component, realpath the full candidate, and refuse anything that
+            # does not resolve under the realpath'd usage root. The
+            # realpath + startswith form is the canonical path-traversal guard
+            # (is_relative_to is not recognized as a sanitizer).
+            root = os.path.realpath(base)
+            candidate = os.path.realpath(
+                base / os.path.basename(agent_id) / "usage.json"
+            )
+            if candidate != root and not candidate.startswith(root + os.sep):
                 return None
-            data = json.loads(usage_json.read_text(encoding="utf-8"))
+            with Path(candidate).open(encoding="utf-8") as handle:
+                data = json.loads(handle.read())
         except (OSError, ValueError, json.JSONDecodeError):
             return None
         return data if isinstance(data, dict) else None
