@@ -3,6 +3,7 @@ Database base configuration and session management.
 """
 
 import asyncio
+import weakref
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,14 +44,63 @@ class Base(DeclarativeBase):
 
 
 class _DbHolder:
-    """Holder for database engine and session factory singletons."""
+    """Holder for database engine and session factory singletons.
+
+    ``loop`` weakly tracks the event loop the cached engine belongs to.
+    Pooled asyncpg connections are bound to the loop that created them, so
+    handing the cached engine to a DIFFERENT running loop (a second uvicorn
+    thread, a test's ``asyncio.run``, the eval bench's disposable stack)
+    eventually checks out a loop-foreign pooled connection and dies with
+    ``RuntimeError: ... Future attached to a different loop``. ``get_engine``
+    therefore discards and rebuilds the cache on a cross-loop access — the
+    automatic form of the manual ``_DbHolder`` resets the e2e harness used
+    to do between tests, now enforced at the single chokepoint every caller
+    routes through. In production exactly one loop exists, so the check
+    never fires and behavior is unchanged.
+    """
 
     engine: AsyncEngine | None = None
     session_factory: async_sessionmaker[AsyncSession] | None = None
+    loop: "weakref.ref[asyncio.AbstractEventLoop] | None" = None
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _rebind_holder_to_current_loop() -> None:
+    """Discard the cached engine/factory when accessed from a foreign loop.
+
+    Rules: no cached engine or no running loop — nothing to do; cached with
+    no loop stamp — claim it for the current loop (covers engines injected
+    directly by tests and sync-created engines); stamp matches the current
+    loop — keep; stamp names another loop, alive or dead — drop both caches
+    so this loop builds its own. The old engine is dropped un-disposed by
+    design: its pool cannot be awaited away from a foreign/dead loop, and
+    any in-flight session still holds its own reference to it.
+    """
+    if _DbHolder.engine is None:
+        return
+    current = _running_loop()
+    if current is None:
+        return
+    if _DbHolder.loop is None:
+        _DbHolder.loop = weakref.ref(current)
+        return
+    if _DbHolder.loop() is current:
+        return
+    logger.debug("Discarding DB engine bound to a different event loop")
+    _DbHolder.engine = None
+    _DbHolder.session_factory = None
+    _DbHolder.loop = None
 
 
 def get_engine() -> AsyncEngine:
-    """Get or create the async engine."""
+    """Get or create the async engine (rebound per event loop — see holder)."""
+    _rebind_holder_to_current_loop()
     if _DbHolder.engine is None:
         _DbHolder.engine = create_async_engine(
             settings.database_url,
@@ -61,11 +111,14 @@ def get_engine() -> AsyncEngine:
             pool_recycle=settings.database_pool_recycle,
             pool_pre_ping=True,
         )
+        current = _running_loop()
+        _DbHolder.loop = weakref.ref(current) if current is not None else None
     return _DbHolder.engine
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Get or create the async session factory."""
+    """Get or create the async session factory (rebound with the engine)."""
+    _rebind_holder_to_current_loop()
     if _DbHolder.session_factory is None:
         _DbHolder.session_factory = async_sessionmaker(
             bind=get_engine(),

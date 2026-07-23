@@ -275,6 +275,10 @@ export function AIRoutingCard() {
     setMixMap(initialMix);
   }, [initialMix]);
 
+  // Server-persisted pins (not local edits) — these outrank every mode
+  // button, so the Routing-mode section warns when any exist.
+  const pinnedCount = Object.keys(initialMix).length;
+
   const catalogForMix = catalog;
   const catalogOllamaOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
@@ -426,6 +430,26 @@ export function AIRoutingCard() {
     }
   };
 
+  const clearAllOverrides = async () => {
+    if (
+      !confirm(
+        "Clear every per-agent override? All agents go back to " +
+          "inherit-global (the active routing mode).",
+      )
+    )
+      return;
+    setMixMap({});
+    if (pinnedCount === 0) return; // nothing persisted server-side
+    try {
+      await applyMode.mutateAsync({ mode: "mix", per_agent: {} });
+      toast.success(
+        "Per-agent overrides cleared — all agents follow the global mode",
+      );
+    } catch (e) {
+      toast.error("Clear failed: " + errMsg(e));
+    }
+  };
+
   const saveMix = async () => {
     // Filter out empty picks (nothing selected = inherit global).
     const per_agent: Record<string, string> = {};
@@ -433,7 +457,24 @@ export function AIRoutingCard() {
       if (model) per_agent[slug] = model;
     }
     if (Object.keys(per_agent).length === 0) {
-      toast.error("Pick a model for at least one agent");
+      // Empty save = the explicit clear-all. Without it a fully-pinned
+      // fleet has no way back to the global mode (pins survive every mode
+      // switch by design).
+      if (
+        !confirm(
+          "No models are picked — saving clears every per-agent override " +
+            "so all agents follow the global routing mode. Continue?",
+        )
+      )
+        return;
+      try {
+        await applyMode.mutateAsync({ mode: "mix", per_agent: {} });
+        toast.success(
+          "Per-agent overrides cleared — all agents follow the global mode",
+        );
+      } catch (e) {
+        toast.error("Clear failed: " + errMsg(e));
+      }
       return;
     }
     const needsGrok = Object.values(per_agent).some((m) =>
@@ -962,6 +1003,15 @@ export function AIRoutingCard() {
               labelHint="Unlike every button to the left this never wipes existing routing — it's a one-time additive seed you can re-run anytime. Edit or remove individual rows in the Complexity overrides section below."
             />
           </div>
+          {pinnedCount > 0 ? (
+            <p className="text-xs text-amber-600 flex items-center gap-1">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              {pinnedCount} per-agent override{pinnedCount === 1 ? "" : "s"}{" "}
+              outrank the global mode — switching modes won&apos;t change those
+              agents. Clear rows in the mix table below (an empty save clears
+              them all).
+            </p>
+          ) : null}
           {currentMode === "mix" && !hasOllamaKey ? (
             <p className="text-xs text-amber-600 flex items-center gap-1">
               <AlertTriangle className="h-3 w-3" />
@@ -1133,13 +1183,27 @@ export function AIRoutingCard() {
                 Per-agent override (mix mode)
               </Label>
             </HelpTip>
-            <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
-              {applyMode.isPending ? "Saving…" : "Save mix"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={clearAllOverrides}
+                disabled={
+                  applyMode.isPending ||
+                  (pinnedCount === 0 && Object.values(mixMap).every((m) => !m))
+                }
+              >
+                Clear all
+              </Button>
+              <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
+                {applyMode.isPending ? "Saving…" : "Save mix"}
+              </Button>
+            </div>
           </div>
           <p className="text-xs text-muted-foreground">
             Leave a row blank to inherit from the global mode. Saving overwrites
-            all per-agent overrides with what&apos;s picked here.
+            all per-agent overrides with what&apos;s picked here; Clear all
+            resets every agent back to inherit-global in one click.
           </p>
           {agentsError ? (
             <p className="flex items-center gap-1 rounded-md border p-4 text-xs text-amber-600">

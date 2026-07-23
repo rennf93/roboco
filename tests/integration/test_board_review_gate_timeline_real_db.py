@@ -110,11 +110,15 @@ async def board_gate_setup(
     # the SAME test database, so the gate's real writes land where we read them.
     saved_engine = db_base._DbHolder.engine
     saved_factory = db_base._DbHolder.session_factory
+    saved_loop = db_base._DbHolder.loop
     handoff_engine = create_async_engine(_test_database_url, future=True)
     db_base._DbHolder.engine = handoff_engine
     db_base._DbHolder.session_factory = async_sessionmaker(
         bind=handoff_engine, class_=AsyncSession, expire_on_commit=False
     )
+    # Clear the loop stamp so the per-loop rebind guard claims the injected
+    # engine for this test's loop instead of discarding it as foreign.
+    db_base._DbHolder.loop = None
 
     # The dispatcher receives tasks from the HTTP API, which serializes
     # assigned_to as the agent UUID; _resolve_agent_slug maps it back to a slug.
@@ -134,6 +138,7 @@ async def board_gate_setup(
         await handoff_engine.dispose()
         db_base._DbHolder.engine = saved_engine
         db_base._DbHolder.session_factory = saved_factory
+        db_base._DbHolder.loop = saved_loop
 
 
 def _make_orch() -> AgentOrchestrator:

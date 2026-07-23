@@ -597,18 +597,100 @@ describe("AIRoutingCard", () => {
     }
   });
 
-  it("saving the mix with no picks shows an error and never calls applyMode", async () => {
+  it("saving the mix with no picks confirms, then clears every override via an empty per_agent map", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Per-agent override (mix mode)");
 
     fireEvent.click(screen.getByRole("button", { name: "Save mix" }));
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "Pick a model for at least one agent",
-      ),
+      expect(applyMode).toHaveBeenCalledWith({ mode: "mix", per_agent: {} }),
     );
+    confirmSpy.mockRestore();
+  });
+
+  it("declining the empty-save confirm never calls applyMode", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(withQueryClient(<AIRoutingCard />));
+    await screen.findByText("Per-agent override (mix mode)");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save mix" }));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     expect(applyMode).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  describe("Clear all overrides", () => {
+    const PINNED_SNAPSHOT = {
+      mode: "mix",
+      assignments: [
+        {
+          scope: "agent_slug",
+          scope_value: "be-dev-1",
+          model_name: "glm-5.2:cloud",
+        },
+        {
+          scope: "agent_slug",
+          scope_value: "auditor",
+          model_name: "glm-5.2:cloud",
+        },
+      ],
+    } as Awaited<ReturnType<typeof getMode>>;
+
+    it("is disabled when nothing is picked and nothing is pinned", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+
+      expect(
+        screen.getByRole("button", { name: "Clear all" }),
+      ).toBeDisabled();
+    });
+
+    it("clears persisted pins via an empty per_agent map on confirm", async () => {
+      getMode.mockResolvedValueOnce(PINNED_SNAPSHOT);
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Clear all" }),
+        ).toBeEnabled(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "mix", per_agent: {} }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("declining the confirm never calls applyMode", async () => {
+      getMode.mockResolvedValueOnce(PINNED_SNAPSHOT);
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Clear all" }),
+        ).toBeEnabled(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+
+      await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+      expect(applyMode).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it("pinned overrides surface the outrank warning in the Routing-mode section", async () => {
+      getMode.mockResolvedValueOnce(PINNED_SNAPSHOT);
+      render(withQueryClient(<AIRoutingCard />));
+
+      await screen.findByText(/2 per-agent overrides outrank the global mode/);
+    });
   });
 
   // -------------------------------------------------------------------------

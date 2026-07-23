@@ -8,6 +8,7 @@ and drop/close.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -41,10 +42,12 @@ def _reset_holder() -> Generator[None]:
     """Snapshot/restore the singleton so tests don't poison the live engine."""
     saved_engine = _DbHolder.engine
     saved_factory = _DbHolder.session_factory
+    saved_loop = _DbHolder.loop
     _InitState.completed_url = None
     yield
     _DbHolder.engine = saved_engine
     _DbHolder.session_factory = saved_factory
+    _DbHolder.loop = saved_loop
     _InitState.completed_url = None
 
 
@@ -62,6 +65,44 @@ def test_get_engine_creates_and_caches() -> None:
     assert eng1 is fake_engine
     assert eng2 is fake_engine
     # create_async_engine called only once.
+    assert ce.call_count == 1
+
+
+def test_get_engine_rebinds_on_a_different_event_loop() -> None:
+    """The cached engine is per-loop: an access from a second loop discards
+    the first loop's engine (whose pooled connections are loop-bound) and
+    builds a fresh one, instead of dying later with 'Future attached to a
+    different loop' — the e2e/eval-bench multi-loop failure mode."""
+    _DbHolder.engine = None
+    _DbHolder.session_factory = None
+    _DbHolder.loop = None
+    engines = [MagicMock(), MagicMock()]
+    with patch("roboco.db.base.create_async_engine", side_effect=engines) as ce:
+
+        async def _grab() -> object:
+            return get_engine()
+
+        loop_a_engine = asyncio.run(_grab())
+        loop_b_engine = asyncio.run(_grab())
+    assert loop_a_engine is engines[0]
+    # Loop B must NOT reuse loop A's engine.
+    assert loop_b_engine is engines[1]
+    assert ce.call_count == len(engines)
+
+
+def test_get_engine_same_loop_keeps_the_cache() -> None:
+    _DbHolder.engine = None
+    _DbHolder.session_factory = None
+    _DbHolder.loop = None
+    fake_engine = MagicMock()
+    with patch("roboco.db.base.create_async_engine", return_value=fake_engine) as ce:
+
+        async def _grab_twice() -> tuple[object, object]:
+            return get_engine(), get_engine()
+
+        e1, e2 = asyncio.run(_grab_twice())
+    assert e1 is fake_engine
+    assert e2 is fake_engine
     assert ce.call_count == 1
 
 

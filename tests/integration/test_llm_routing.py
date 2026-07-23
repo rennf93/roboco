@@ -427,6 +427,26 @@ async def test_apply_mode_mix_requires_per_agent(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_mix_empty_map_clears_all_pins(llm_setup: dict) -> None:
+    """An EMPTY per_agent map is the explicit clear-all — the only way out of
+    a fully-pinned fleet, since mode switches deliberately spare pins (the
+    2026-07-23 live incident: 25/25 pins made every mode button a no-op)."""
+    svc = llm_setup["svc"]
+    model = _first_model_for_type(ModelProvider.ANTHROPIC)
+    await svc.apply_mode(mode="mix", per_agent={"be-dev-1": model, "be-qa": model})
+    assert any(
+        r.scope == AssignmentScope.AGENT_SLUG for r in await svc.list_assignments()
+    )
+
+    await svc.apply_mode(mode="mix", per_agent={})
+
+    rows = await svc.list_assignments()
+    assert not any(r.scope == AssignmentScope.AGENT_SLUG for r in rows)
+    # Nothing left at all -> the mode label escapes "mix".
+    assert await svc.derive_mode() == "anthropic"
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_mix_writes_overrides(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     model = _first_model_for_type(ModelProvider.ANTHROPIC)

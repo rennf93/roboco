@@ -600,7 +600,9 @@ class ModelRoutingService(BaseService):
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
-            catalog) are automatically routed to the LOCAL provider.
+            catalog) are automatically routed to the LOCAL provider. An empty
+            map (not None) is the explicit clear-all — every pin deleted,
+            nothing re-added (see `_apply_mix`).
           - "cost_tiered": UNLIKE every mode above, this does NOT wipe
             anything — it seeds/re-upserts the day-1 `_COST_TIERED_SEED`
             compound ROLE(":"complexity) rows on top of whatever routing is
@@ -790,8 +792,17 @@ class ModelRoutingService(BaseService):
         self.log.info("Mode applied: self_hosted", default_model=default_model)
 
     async def _apply_mix(self, per_agent: dict[str, str] | None) -> None:
-        """Apply a per-agent override map; leave role + global rows untouched."""
-        if not per_agent:
+        """Apply a per-agent override map; leave role + global rows untouched.
+
+        An EMPTY map is the explicit clear-all: every AGENT_SLUG pin is
+        deleted and nothing is re-added, so all agents fall back to the
+        role/global layer. Without this there was no way out of mix mode at
+        all — mode switches deliberately spare pins, and a fully-pinned fleet
+        (the live 2026-07-23 incident: 25/25 agents pinned) made every mode
+        button an effective no-op forever. ``None`` (map not provided) is
+        still refused — only a deliberate empty map clears.
+        """
+        if per_agent is None:
             raise ValueError("mix mode requires a per_agent map")
         # Clear existing agent-slug overrides so the new map is authoritative.
         await self.session.execute(
