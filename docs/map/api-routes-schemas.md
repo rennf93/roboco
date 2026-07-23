@@ -32,7 +32,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/release.py | CEO-only release proposal approve/reject. |
 | roboco/api/routes/playbooks.py | Playbook approve/reject/archive (Auditor/CEO). |
 | roboco/api/routes/pitch.py | Pitch create/list/approve/reject. |
-| roboco/api/routes/provider.py | Provider catalog + ollama/grok/self-hosted key + mode. |
+| roboco/api/routes/provider.py | Provider catalog + ollama/grok/self-hosted key + mode + routing presets (`/presets` list/save/apply/delete). |
+| roboco/api/routes/github_app.py | GitHub App credentials CRUD (App id + private key) + installation/installation-repo listing (backs the create/edit-project repo picker). |
 | roboco/api/routes/usage.py | Token usage summary/time-series/by-agent/team/model/role/sessions, cache-efficiency, spawn-waste (per-role unproductive-spawn rate + respawn strikes). |
 | roboco/api/routes/system.py | System-wide info. |
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
@@ -75,6 +76,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/telegram/credentials | telegram.py | `require_ceo_role` (agent context) |
+| GET/POST/DELETE | /api/providers/presets, /presets/{id}/apply, /presets/{id} | provider.py | agent context — save/apply/delete a named full routing snapshot (`docs/map/support-services.md`) |
+| GET/PUT/DELETE | /api/github-app/credentials ; GET /installations, /installations/{id}/repos | github_app.py | agent context — App id + private key CRUD, installation/repo listing for the panel's repo picker |
 | POST | /api/telegram/webapp-auth | telegram.py | public, pre-auth — Telegram `initData` HMAC validation; mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` |
 | GET | /api/telegram/today | telegram.py | `require_ceo_role` (agent context) + 30/60s rate limit — Mini App V4's "Today" brief, backed by `TgCockpitService.today()` (one DB round trip, see `docs/map/notification.md`) |
 | GET/POST | /api/auth/status (always), /auth/login, /auth/logout (mounted only when `cloud_auth_enabled`) | auth/routes.py | none (status) / FastAPI Users cookie login |

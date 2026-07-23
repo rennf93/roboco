@@ -24,6 +24,8 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | NOTIFY_SENDER_ROLES | constant | roboco/foundation/policy/communications.py:51 | frozenset of roles permitted to call notify() (CELL_PM, MAIN_PM, PRODUCT_OWNER, HEAD_MARKETING, CEO) |
 | NO_COMMS_ROLES | constant | roboco/foundation/policy/communications.py:66 | frozenset of roles with NO agent-comms surface at all (PROMPTER, SECRETARY — human-only, own dedicated chat pages) — the canonical set both `content_actions.dm()`'s sender-side guard and `agents_config.can_a2a_direct`'s CEO-target-side check consume, so the two enforcement points can't drift apart. AUDITOR/PR_REVIEWER carry `dm`/`read_a2a` (CEO-reachable, reply-only) but are not in this set — the auditor's peer-silence is enforced separately in `can_a2a_direct`'s `from_role == "auditor"` branch |
 | ACK_REQUIRED_BY_TYPE | constant | roboco/foundation/policy/communications.py:80 | NotificationType→requires_ack mapping (action-required vs informational) |
+| ReescalationPolicy | dataclass | roboco/foundation/policy/communications.py:113 | Bundled `base_seconds`/`max_reescalations` — kept as one dataclass so `reescalation_decision` stays under the 5-arg lint ceiling |
+| reescalation_decision | function | roboco/foundation/policy/communications.py:123 | Pure due/wait/capped verdict for one notification's re-escalation attempt: first fire at expiry, then exponential doubling from `base_seconds` capped at 24h between attempts; past `max_reescalations` always "capped" regardless of elapsed time |
 | Scope | enum | roboco/foundation/policy/journaling.py:21 | Journal entry scope StrEnum (note/decision/reflect/learning/struggle) |
 | SCOPE_TO_TYPE | constant | roboco/foundation/policy/journaling.py:32 | Scope→JournalEntryType single-source mapping |
 | ReadTier | enum | roboco/foundation/policy/journaling.py:41 | Journal read-breadth StrEnum (own/cell/cell_and_pms/all_cells/all) |
@@ -60,6 +62,8 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:54 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
 | UNLIMITED_RETRY_VERBS | constant | roboco/foundation/policy/agent_loop.py:80 | frozenset of verbs exempt from the per-verb circuit breaker (discovery/claim verbs) |
 | retry_limit_for | function | roboco/foundation/policy/agent_loop.py:97 | Return per-verb retry cap or None for unlimited; falls back to default for unknown |
+| default_budget_usd_for | function | roboco/foundation/policy/agent_loop.py:99 | Per-`TaskType` default $ cap consulted only when a task's own `budget_usd` is null AND `ROBOCO_TASK_BUDGETS_ENABLED` is on |
+| effective_task_budget_usd | function | roboco/foundation/policy/agent_loop.py:111 | A task's effective $ cap: its own `budget_usd` if set, else the `TaskType` default; the single resolver the orchestrator's budget sweep and the panel's budget-input validation both consult |
 | Severity | enum | roboco/foundation/policy/content/enums.py:14 | PR-review finding severity ladder (blocker/major/minor/nit) |
 | Verdict | enum | roboco/foundation/policy/content/enums.py:23 | Review outcome StrEnum (approved/changes_requested/passed/failed) |
 | HasMarkers | protocol | roboco/foundation/policy/content/markers.py:19 | Protocol for anything carrying orchestration_markers column |
@@ -262,6 +266,10 @@ foundation/policy (misc slice)
 | 3a4a3fe5 | reduce xenon C-rank blocks to A (behavior-preserving) | Extracted _extract_strs_from_dict helper from inline logic in validators._extract_strs — pure move-and-call refactor, no control flow / return values / side effects changed |
 
 > Post-snapshot updates (since 2026-06-29): a squash-merge commit landed on this slice. `15effce0` (Chore: 141 Gaps fill-in, 2026-06-29) squash-merged the pre-snapshot baseline commits (53d60da3/e202ce39/e52fd05d/cf7603f3/3a4a3fe5) into a single PR — those hashes no longer exist in history but their effects are fully reflected in the Key Symbols above (coerce_str_list/PrReviewContent.issues+head_sha/sync_branch in VERBS_WITHOUT_TRACING). No other symbols in this slice changed.
+>
+> `1d5a8e84` (#652, "exponential backoff + CAS claim for expired-unacked re-escalation"): adds `ReescalationPolicy` + `reescalation_decision` (communications.py:113/123) — the pure due/wait/capped decision `NotificationDeliveryService._maybe_reescalate` (`docs/map/notification.md`) consults before ever attempting a re-escalation delivery.
+>
+> `7c8453e2` (#654, "per-task and per-project cost budgets"): adds `default_budget_usd_for`/`effective_task_budget_usd` (agent_loop.py:99/111) — the per-`TaskType` fallback + single resolver consumed by the orchestrator's budget sweep and `claim_guards.project_budget_exceeded_guard` (`docs/map/gateway-support.md`).
 >
 > `56b6693e` ("security-hygiene-sweep"): adds `NO_COMMS_ROLES` (communications.py:66) — the four no-agent-comms-surface roles (auditor/pr_reviewer/prompter/secretary), extracted as the single canonical set two previously-independent hand-maintained literals now both derive from: `content_actions.py`'s `_NO_COMMS_ROLES` (the `dm()` sender-side guard) and a new `agents_config.py` helper, `_check_ceo_a2a` (called from `can_a2a_direct`'s CEO branch — previously an unconditional `True` for any CEO-initiated target; the "one asymmetric rule" now itself refuses a no-comms target). A downstream consequence with no separate code edit: `agents_config.py`'s statically-derived `A2A_ALLOWED_PAIRS` shrank 93→88 (`ceo` group 23→18).
 

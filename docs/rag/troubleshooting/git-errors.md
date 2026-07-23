@@ -108,6 +108,12 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 Some low-level git error messages still say "GitHub API" in their text regardless of which forge the project actually uses (a known wording gap, not a routing bug) — the underlying failure is real even when the vendor name in the message is wrong. Diagnose from the actual symptom (missing token, PR-not-found, merge conflict, etc.), not from the vendor name in the message.
 
+## Rebase/sync_branch refused on a protected branch
+
+**Cause:** `sync_branch`/rebase refuses to force-push a branch whose name matches the project's operator-declared `protected_branches` list, its environment-ladder rungs, or the hardcoded `master`/`main` floor. You should never legitimately be working on one of these directly — your own feature branch is never a protected name.
+
+**Fix:** If you see this, your task's recorded branch is misconfigured. `unclaim(task_id)` and re-claim to rebuild a proper branch; don't try to force through it.
+
 ## FORCE_PUSH_FORBIDDEN
 
 **Cause:** Force-push is CEO-only. Anyone else attempting it (typically because their branch diverged) is denied.
