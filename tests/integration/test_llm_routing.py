@@ -53,15 +53,21 @@ async def llm_setup(
         base_url="https://ollama.example.com",
     )
     # Mirrors migration 083_seed_openai_provider's contract: enabled=True at
-    # seed time (no apply_mode="codex" write path exists to flip it later —
-    # see that migration's docstring).
+    # seed time.
     openai = ProviderConfigTable(
         name="openai-test",
         type=ModelProvider.OPENAI,
         enabled=True,
         base_url="https://api.openai.com/v1",
     )
-    db_session.add_all([anthropic, grok, ollama, openai])
+    # Mirrors the post-086 seeded state (085 seeds enabled=false, 086 flips it
+    # true to match Codex) — no base_url, subscription OAuth auth only.
+    gemini = ProviderConfigTable(
+        name="gemini-test",
+        type=ModelProvider.GEMINI,
+        enabled=True,
+    )
+    db_session.add_all([anthropic, grok, ollama, openai, gemini])
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -218,6 +224,18 @@ async def test_derive_mode_codex_when_only_openai_global(llm_setup: dict) -> Non
 
 
 @pytest.mark.asyncio
+async def test_derive_mode_gemini_when_only_gemini_global(llm_setup: dict) -> None:
+    """A pure-GEMINI global assignment reports "gemini", not the catch-all
+    "mix" — mirrors the codex branch derive_mode already carries."""
+    svc = llm_setup["svc"]
+    gemini_model = _first_model_for_type(ModelProvider.GEMINI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=gemini_model
+    )
+    assert await svc.derive_mode() == "gemini"
+
+
+@pytest.mark.asyncio
 async def test_derive_mode_mix_with_per_agent(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     model = _first_model_for_type(ModelProvider.ANTHROPIC)
@@ -333,6 +351,75 @@ async def test_apply_mode_grok_enables_grok_provider(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_mode_codex_sets_global(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="codex")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].provider.type == ModelProvider.OPENAI
+    assert assignments[0].model_name == "gpt-5.3-codex"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_codex_enables_openai_provider(llm_setup: dict) -> None:
+    """apply_mode('codex') force-enables the OPENAI row — belt-and-suspenders
+    alongside migration 083's own enabled=true seed."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    openai = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.OPENAI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", openai.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="codex")
+
+    refetched = await provider_svc.get_provider(cast("UUID", openai.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_gemini_sets_global(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="gemini")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].provider.type == ModelProvider.GEMINI
+    assert assignments[0].model_name == "gemini-2.5-pro"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_gemini_enables_gemini_provider(llm_setup: dict) -> None:
+    """apply_mode('gemini') force-enables the GEMINI row — the exact gap this
+    fix closes (migration 085 seeds it disabled and nothing else ever flipped
+    it before this write path + migration 086 existed)."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    gemini = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.GEMINI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", gemini.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="gemini")
+
+    refetched = await provider_svc.get_provider(cast("UUID", gemini.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_mix_requires_per_agent(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     with pytest.raises(ValueError, match="requires a per_agent"):
@@ -438,6 +525,90 @@ async def test_upsert_and_resolve_openai_assignment_roundtrip(
     # The seeded row carries no stored token — Codex authenticates via the
     # mounted ~/.codex subscription dir, not a decrypted provider token.
     assert route.auth_token is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_and_resolve_gemini_assignment_roundtrip(
+    llm_setup: dict,
+) -> None:
+    """gemini-2.5-pro through upsert_assignment -> resolve_for_agent, against
+    the seeded GEMINI row. Proves resolve_for_agent actually returns a GEMINI
+    spawn route — not a silent Anthropic fallback — the exact gap left open
+    by the row seeding disabled with no enable path (migration 085 alone)."""
+    svc = llm_setup["svc"]
+    gemini_model = _first_model_for_type(ModelProvider.GEMINI)
+    row = await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="ux-dev-1",
+        model_name=gemini_model,
+    )
+    assert row.model_name == gemini_model
+
+    route = await svc.resolve_for_agent("ux-dev-1")
+    assert route.provider_type == ModelProvider.GEMINI
+    assert route.model_name == gemini_model
+    # Subscription OAuth auth (~/.gemini), not a decrypted provider token.
+    assert route.auth_token is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_assignment_enables_disabled_gemini_provider(
+    llm_setup: dict,
+) -> None:
+    """Belt-and-suspenders: assigning a Gemini model via Mix (upsert_assignment)
+    force-enables the row even if it was disabled — not just apply_mode('gemini')."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    gemini = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.GEMINI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", gemini.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    gemini_model = _first_model_for_type(ModelProvider.GEMINI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="ux-dev-1",
+        model_name=gemini_model,
+    )
+
+    refetched = await provider_svc.get_provider(cast("UUID", gemini.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+    # And the route actually resolves to GEMINI now that it's enabled.
+    route = await svc.resolve_for_agent("ux-dev-1")
+    assert route.provider_type == ModelProvider.GEMINI
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_gemini_end_to_end_reachable(llm_setup: dict) -> None:
+    """The full reachability chain the original drill missed: apply_mode
+    -> derive_mode reflects it -> resolve_for_agent actually spawns Gemini."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="gemini")
+
+    assert await svc.derive_mode() == "gemini"
+
+    route = await svc.resolve_for_agent("ux-dev-1")
+    assert route.provider_type == ModelProvider.GEMINI
+    assert route.model_name == "gemini-2.5-pro"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
+    """Same reachability chain for Codex, mirroring the Gemini test above."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="codex")
+
+    assert await svc.derive_mode() == "codex"
+
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.provider_type == ModelProvider.OPENAI
+    assert route.model_name == "gpt-5.3-codex"
 
 
 @pytest.mark.asyncio
@@ -1107,3 +1278,42 @@ async def test_apply_routing_preset_validates_before_wiping_anything(
     # rather than a stale expectation of survival.
     remaining = await svc.list_assignments()
     assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_apply_routing_preset_skips_entry_whose_provider_went_disabled(
+    llm_setup: dict,
+) -> None:
+    """A preset entry that resolved fine at save time but whose provider has
+    SINCE been disabled (key cleared, self-hosted disconnected, Codex/Gemini
+    disabled) must be skipped-with-note, never silently restored — applying
+    a preset can't resurrect a dead route behind a success toast."""
+    svc = llm_setup["svc"]
+    gemini_model = _first_model_for_type(ModelProvider.GEMINI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=gemini_model
+    )
+    preset = await svc.save_routing_preset("gemini-then-disabled")
+
+    # Disable the GEMINI provider AFTER the preset was saved (mirrors an
+    # operator turning it off, or a fresh env where the row starts disabled).
+    provider_svc = ProviderService(svc.session)
+    gemini = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.GEMINI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", gemini.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    # Clear current routing so the preset apply has something to (not) restore.
+    await svc.apply_mode(mode="anthropic")
+
+    notes = await svc.apply_routing_preset(preset.id)
+    assert len(notes) == 1
+    assert "unavailable" in notes[0]
+
+    remaining = await svc.list_assignments()
+    assert remaining == []  # the disabled-provider entry was never written

@@ -106,6 +106,7 @@ export enum ModelProvider {
   OPENAI = "openai",
   LOCAL = "local",
   GROK = "grok",
+  GEMINI = "gemini",
 }
 
 export enum AssignmentScope {

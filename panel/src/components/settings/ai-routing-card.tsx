@@ -40,8 +40,10 @@ import {
 import { Separator } from "@/components/ui/separator";
 import {
   AlertTriangle,
+  Bot,
   Cpu,
   Gauge,
+  Gem,
   Key,
   KeyRound,
   Server,
@@ -114,6 +116,12 @@ const AGENT_GROUP_DEFS: {
     select: getSupportAgents,
   },
 ];
+
+// Codex/Gemini are V1 delivery-roles-only — no interactive Intake/Secretary
+// support (see roboco.llm.providers.codex / .gemini). This group's per-agent
+// picker excludes both providers below instead of offering a route that
+// would silently misroute the persistent Intake/Secretary session at spawn.
+const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
 // so the picker doesn't churn alphabetically as the live roster loads —
@@ -280,6 +288,10 @@ export function AIRoutingCard() {
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.OPENAI,
   );
+  const catalogGeminiOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.GEMINI,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.ANTHROPIC,
@@ -320,6 +332,42 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "grok" });
       toast.success(
         "Role/global routing now on Grok — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToCodex = async () => {
+    if (
+      !confirm(
+        "Switch every agent to Codex? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "codex" });
+      toast.success(
+        "Role/global routing now on Codex — per-agent pins and complexity overrides kept",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToGemini = async () => {
+    if (
+      !confirm(
+        "Switch every agent to Gemini? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced.",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "gemini" });
+      toast.success(
+        "Role/global routing now on Gemini — per-agent pins and complexity overrides kept",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -551,6 +599,126 @@ export function AIRoutingCard() {
     }
   };
 
+  // The full per-agent model-picker option list, shared by every group's
+  // Select — factored out so the Codex/Gemini exclusion for the interactive
+  // group (`restrictInteractiveOnly`) doesn't require duplicating the whole
+  // catalog-grouped SelectContent tree.
+  const renderMixSelectOptions = (restrictInteractiveOnly: boolean) => (
+    <>
+      <SelectItem value="__clear__">(inherit global)</SelectItem>
+
+      {/* Anthropic models */}
+      {catalogAnthropicOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="anthropic" />
+            Anthropic
+          </SelectLabel>
+          {catalogAnthropicOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Grok (xAI) models */}
+      {catalogGrokOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="grok" />
+            Grok (xAI)
+          </SelectLabel>
+          {catalogGrokOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Codex (OpenAI) models — excluded for the interactive-only group */}
+      {!restrictInteractiveOnly && catalogOpenaiOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="openai" />
+            Codex (OpenAI)
+          </SelectLabel>
+          {catalogOpenaiOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Gemini (Google) models — excluded for the interactive-only group */}
+      {!restrictInteractiveOnly && catalogGeminiOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="gemini" />
+            Gemini (Google)
+          </SelectLabel>
+          {catalogGeminiOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Ollama Cloud models */}
+      {catalogOllamaOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="ollama" />
+            Ollama Cloud
+          </SelectLabel>
+          {catalogOllamaOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
+      {/* Self-Hosted models */}
+      {selfHostedModels.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="self-hosted" />
+            Self-Hosted
+          </SelectLabel>
+          {selfHostedModels.map((m: SelfHostedModel) => (
+            <SelectItem key={m.model_name} value={m.model_name}>
+              {m.display_name}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      )}
+
+      {/* Fallback: un-grouped catalog when no grouping is possible */}
+      {catalogAnthropicOnly.length === 0 &&
+        catalogOllamaOnly.length === 0 &&
+        selfHostedModels.length === 0 &&
+        catalogForMix.map((c: { model_name: string; display_name: string }) => (
+          <SelectItem key={c.model_name} value={c.model_name}>
+            {c.display_name} — {c.model_name}
+          </SelectItem>
+        ))}
+    </>
+  );
+
   return (
     <Card>
       <CardHeader>
@@ -560,8 +728,10 @@ export function AIRoutingCard() {
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
-          Cloud use the API keys you save below; Self-Hosted connects to any
-          OpenAI-compatible endpoint you run locally.
+          Cloud use the API keys you save below; Codex and Gemini authenticate
+          via their own mounted CLI subscriptions (no key needed) — V1:
+          delivery roles only, not Intake/Secretary; Self-Hosted connects to
+          any OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -700,10 +870,10 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -723,6 +893,24 @@ export function AIRoutingCard() {
               active={currentMode === "grok"}
               onClick={flipToGrok}
               disabled={applyMode.isPending || !hasGrokKey}
+            />
+            <ModeButton
+              icon={<Bot className="h-4 w-4" />}
+              label="Codex"
+              description="Every agent uses Codex (gpt-5.3-codex)."
+              active={currentMode === "codex"}
+              onClick={flipToCodex}
+              disabled={applyMode.isPending}
+              labelHint="Codex authenticates via a mounted ~/.codex subscription (ChatGPT, no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Gem className="h-4 w-4" />}
+              label="Gemini"
+              description="Every agent uses Gemini (gemini-2.5-pro)."
+              active={currentMode === "gemini"}
+              onClick={flipToGemini}
+              disabled={applyMode.isPending}
+              labelHint="Gemini authenticates via a mounted ~/.gemini OAuth login (no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -782,6 +970,22 @@ export function AIRoutingCard() {
               Grok agents run on xAI&apos;s official grok CLI; the command /
               secret-exfiltration guard, the prompt-injection guard, and the
               per-agent cost cap all apply.
+            </p>
+          ) : null}
+          {currentMode === "codex" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Codex agents run on OpenAI&apos;s official Codex CLI (ChatGPT
+              subscription, mounted ~/.codex); the same command /
+              secret-exfiltration guard, prompt-injection guard, and per-agent
+              cost cap apply. V1: delivery roles only — not available for
+              Intake/Secretary.
+            </p>
+          ) : null}
+          {currentMode === "gemini" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Gemini agents run on Google&apos;s official gemini CLI (OAuth
+              login, mounted ~/.gemini); the same guards apply. V1: delivery
+              roles only — not available for Intake/Secretary.
             </p>
           ) : null}
         </section>
@@ -953,178 +1157,58 @@ export function AIRoutingCard() {
             </div>
           ) : (
             <div className="divide-y rounded-md border">
-              {agentGroups.map((group) => (
-                <div key={group.title} className="p-4">
-                  <HelpTip label={group.titleHint}>
-                    <h4 className="mb-2 w-fit text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                      {group.title}
-                    </h4>
-                  </HelpTip>
-                  <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-                    {group.agents.map((a) => (
-                      <div
-                        key={a.id}
-                        className="grid grid-cols-[1fr_170px] items-center gap-4 rounded-md border px-3 py-2.5"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate font-mono text-xs">
-                            {a.id}
-                          </div>
-                          <div className="truncate text-[11px] text-muted-foreground">
-                            {a.name}
-                          </div>
-                        </div>
-                        <Select
-                          value={mixMap[a.id] ?? ""}
-                          onValueChange={(v: string) =>
-                            setMixMap((prev) => ({
-                              ...prev,
-                              [a.id]: v === "__clear__" ? "" : v,
-                            }))
-                          }
+              {agentGroups.map((group) => {
+                const restrictInteractiveOnly =
+                  group.title === INTERACTIVE_ONLY_GROUP_TITLE;
+                return (
+                  <div key={group.title} className="p-4">
+                    <HelpTip label={group.titleHint}>
+                      <h4 className="mb-2 w-fit text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                        {group.title}
+                      </h4>
+                    </HelpTip>
+                    {restrictInteractiveOnly ? (
+                      <p className="mb-2 text-[11px] text-muted-foreground">
+                        Codex and Gemini are delivery-roles-only (V1) — not
+                        offered here (no interactive Intake/Secretary support).
+                      </p>
+                    ) : null}
+                    <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
+                      {group.agents.map((a) => (
+                        <div
+                          key={a.id}
+                          className="grid grid-cols-[1fr_170px] items-center gap-4 rounded-md border px-3 py-2.5"
                         >
-                          <SelectTrigger size="sm" className="w-full text-xs">
-                            <SelectValue placeholder="(inherit)" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__clear__">
-                              (inherit global)
-                            </SelectItem>
-
-                            {/* Anthropic models */}
-                            {catalogAnthropicOnly.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>
-                                  <ProviderBadge variant="anthropic" />
-                                  Anthropic
-                                </SelectLabel>
-                                {catalogAnthropicOnly.map(
-                                  (c: {
-                                    model_name: string;
-                                    display_name: string;
-                                  }) => (
-                                    <SelectItem
-                                      key={c.model_name}
-                                      value={c.model_name}
-                                    >
-                                      {c.display_name}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectGroup>
-                            )}
-
-                            {/* Grok (xAI) models */}
-                            {catalogGrokOnly.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>
-                                  <ProviderBadge variant="grok" />
-                                  Grok (xAI)
-                                </SelectLabel>
-                                {catalogGrokOnly.map(
-                                  (c: {
-                                    model_name: string;
-                                    display_name: string;
-                                  }) => (
-                                    <SelectItem
-                                      key={c.model_name}
-                                      value={c.model_name}
-                                    >
-                                      {c.display_name}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectGroup>
-                            )}
-
-                            {/* Codex (OpenAI) models */}
-                            {catalogOpenaiOnly.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>
-                                  <ProviderBadge variant="openai" />
-                                  Codex (OpenAI)
-                                </SelectLabel>
-                                {catalogOpenaiOnly.map(
-                                  (c: {
-                                    model_name: string;
-                                    display_name: string;
-                                  }) => (
-                                    <SelectItem
-                                      key={c.model_name}
-                                      value={c.model_name}
-                                    >
-                                      {c.display_name}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectGroup>
-                            )}
-
-                            {/* Ollama Cloud models */}
-                            {catalogOllamaOnly.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>
-                                  <ProviderBadge variant="ollama" />
-                                  Ollama Cloud
-                                </SelectLabel>
-                                {catalogOllamaOnly.map(
-                                  (c: {
-                                    model_name: string;
-                                    display_name: string;
-                                  }) => (
-                                    <SelectItem
-                                      key={c.model_name}
-                                      value={c.model_name}
-                                    >
-                                      {c.display_name}
-                                    </SelectItem>
-                                  ),
-                                )}
-                              </SelectGroup>
-                            )}
-
-                            {/* Self-Hosted models */}
-                            {selfHostedModels.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>
-                                  <ProviderBadge variant="self-hosted" />
-                                  Self-Hosted
-                                </SelectLabel>
-                                {selfHostedModels.map((m: SelfHostedModel) => (
-                                  <SelectItem
-                                    key={m.model_name}
-                                    value={m.model_name}
-                                  >
-                                    {m.display_name}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            )}
-
-                            {/* Fallback: un-grouped catalog when no grouping is possible */}
-                            {catalogAnthropicOnly.length === 0 &&
-                              catalogOllamaOnly.length === 0 &&
-                              selfHostedModels.length === 0 &&
-                              catalogForMix.map(
-                                (c: {
-                                  model_name: string;
-                                  display_name: string;
-                                }) => (
-                                  <SelectItem
-                                    key={c.model_name}
-                                    value={c.model_name}
-                                  >
-                                    {c.display_name} — {c.model_name}
-                                  </SelectItem>
-                                ),
-                              )}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    ))}
+                          <div className="min-w-0">
+                            <div className="truncate font-mono text-xs">
+                              {a.id}
+                            </div>
+                            <div className="truncate text-[11px] text-muted-foreground">
+                              {a.name}
+                            </div>
+                          </div>
+                          <Select
+                            value={mixMap[a.id] ?? ""}
+                            onValueChange={(v: string) =>
+                              setMixMap((prev) => ({
+                                ...prev,
+                                [a.id]: v === "__clear__" ? "" : v,
+                              }))
+                            }
+                          >
+                            <SelectTrigger size="sm" className="w-full text-xs">
+                              <SelectValue placeholder="(inherit)" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {renderMixSelectOptions(restrictInteractiveOnly)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
           {catalogOllamaOnly.length === 0 ? (
@@ -1274,7 +1358,13 @@ function errMsg(e: unknown): string {
 function ProviderBadge({
   variant,
 }: {
-  variant: "anthropic" | "grok" | "openai" | "ollama" | "self-hosted";
+  variant:
+    | "anthropic"
+    | "grok"
+    | "openai"
+    | "gemini"
+    | "ollama"
+    | "self-hosted";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
@@ -1282,6 +1372,7 @@ function ProviderBadge({
     "self-hosted": "bg-purple-500/20 text-purple-700 dark:text-purple-400",
     grok: "bg-teal-500/20 text-teal-700 dark:text-teal-400",
     openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
+    gemini: "bg-sky-500/20 text-sky-700 dark:text-sky-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1289,6 +1380,7 @@ function ProviderBadge({
     "self-hosted": "S",
     grok: "G",
     openai: "C",
+    gemini: "Ge",
   };
   return (
     <span

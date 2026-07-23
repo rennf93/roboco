@@ -84,6 +84,20 @@ _log = structlog.get_logger(__name__)
 # rows; nothing else needs editing.
 _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = (("developer", "low", "haiku"),)
 
+# derive_mode()'s single-GLOBAL-assignment lookup — a provider type maps to
+# its "mode" label 1:1 for every mode `apply_mode` can set via a sole GLOBAL
+# row. A dict keeps derive_mode's branch count low (a chain of `if` returns
+# hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
+_SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
+    ModelProvider, Literal["grok", "codex", "gemini", "ollama", "self_hosted"]
+] = {
+    ModelProvider.GROK: "grok",
+    ModelProvider.OPENAI: "codex",
+    ModelProvider.GEMINI: "gemini",
+    ModelProvider.OLLAMA_CLOUD: "ollama",
+    ModelProvider.LOCAL: "self_hosted",
+}
+
 
 async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
     """Fetch the model list from a running Ollama server.
@@ -346,9 +360,17 @@ class ModelRoutingService(BaseService):
                 provider = await self._get_seeded_provider(entry.provider_type)
                 provider_type_for_log = entry.provider_type
 
-        # Whenever an assignment resolves to LOCAL, ensure the LOCAL provider
-        # row is enabled so resolve_for_agent() will actually use it.
-        if provider_type_for_log == ModelProvider.LOCAL:
+        # Whenever an assignment resolves to LOCAL/GEMINI/OPENAI, ensure the
+        # provider row is enabled so resolve_for_agent() will actually use it
+        # instead of silently falling back to Anthropic. GROK is deliberately
+        # excluded — its enable state is gated on the xAI key
+        # (set_grok_api_key), unlike LOCAL/Codex/Gemini which have no key to
+        # gate on (self-hosted's own base_url + mounted-subscription auth).
+        if provider_type_for_log in (
+            ModelProvider.LOCAL,
+            ModelProvider.GEMINI,
+            ModelProvider.OPENAI,
+        ):
             provider_svc = ProviderService(self.session)
             await provider_svc.update_provider(
                 require_uuid(provider.id), ProviderUpdate(enabled=True)
@@ -379,20 +401,19 @@ class ModelRoutingService(BaseService):
 
     async def derive_mode(
         self,
-    ) -> Literal["anthropic", "grok", "codex", "ollama", "mix", "self_hosted"]:
+    ) -> Literal[
+        "anthropic", "grok", "codex", "gemini", "ollama", "mix", "self_hosted"
+    ]:
         """Return the current "mode" label for the Settings UI.
 
         Decision tree matches what `apply_mode` writes:
           - no assignments at all           → "anthropic"
           - only a global row, Ollama Cloud → "ollama"
           - only a global row, LOCAL        → "self_hosted"
+          - only a global row, GROK         → "grok"
+          - only a global row, OPENAI       → "codex"
+          - only a global row, GEMINI       → "gemini"
           - anything else                   → "mix"
-
-        "codex" (OPENAI) is READ-only here — there is no `apply_mode="codex"`
-        write path (mix mode's per-agent picker is the only way to route to
-        it), so this branch exists purely so a pure-OPENAI global assignment
-        (however it got there) reports its real provider instead of the
-        catch-all "mix".
         """
         assignments = await self.list_assignments()
         if not assignments:
@@ -401,14 +422,9 @@ class ModelRoutingService(BaseService):
             len(assignments) == 1 and assignments[0].scope == AssignmentScope.GLOBAL
         )
         if only_global:
-            if assignments[0].provider.type == ModelProvider.GROK:
-                return "grok"
-            if assignments[0].provider.type == ModelProvider.OPENAI:
-                return "codex"
-            if assignments[0].provider.type == ModelProvider.OLLAMA_CLOUD:
-                return "ollama"
-            if assignments[0].provider.type == ModelProvider.LOCAL:
-                return "self_hosted"
+            mode = _SINGLE_GLOBAL_MODE_BY_PROVIDER.get(assignments[0].provider.type)
+            if mode is not None:
+                return mode
         return "mix"
 
     async def set_ollama_api_key(self, api_key: str) -> ProviderConfigTable:
@@ -532,6 +548,14 @@ class ModelRoutingService(BaseService):
             self-hosted model name — not validated against the static catalog).
           - "grok":        wipe role/global assignments, set the GLOBAL default
             to a Grok (xAI) model (default grok-build-0.1). Requires the xAI key.
+          - "codex":       wipe role/global assignments, force-enable the OPENAI
+            provider, set the GLOBAL default to a Codex model (default
+            gpt-5.3-codex). No key check — subscription-CLI auth (~/.codex),
+            same shape as Grok/self_hosted.
+          - "gemini":      wipe role/global assignments, force-enable the GEMINI
+            provider, set the GLOBAL default to a Gemini model (default
+            gemini-2.5-pro). No key check — subscription-CLI auth (~/.gemini),
+            same shape as Grok/self_hosted.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -549,6 +573,10 @@ class ModelRoutingService(BaseService):
             await self._apply_anthropic()
         elif mode == "grok":
             await self._apply_grok(default_model)
+        elif mode == "codex":
+            await self._apply_codex(default_model)
+        elif mode == "gemini":
+            await self._apply_gemini(default_model)
         elif mode == "ollama":
             await self._apply_ollama(default_model)
         elif mode == "self_hosted":
@@ -560,8 +588,8 @@ class ModelRoutingService(BaseService):
         else:
             raise ValueError(
                 f"Unknown mode '{mode}'."
-                " Use 'anthropic', 'grok', 'ollama', 'self_hosted', 'mix',"
-                " or 'cost_tiered'."
+                " Use 'anthropic', 'grok', 'codex', 'gemini', 'ollama',"
+                " 'self_hosted', 'mix', or 'cost_tiered'."
             )
 
     async def _wipe_mode_switch_assignments(self) -> None:
@@ -624,6 +652,58 @@ class ModelRoutingService(BaseService):
             model_name=model_name,
         )
         self.log.info("Mode applied: grok", default_model=model_name)
+
+    async def _apply_codex(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Codex (OpenAI) model.
+
+        Migration 083 already seeds the OPENAI provider row `enabled=true`
+        (there's no key to withhold behind a disabled row — subscription
+        auth via a mounted `~/.codex`), but this mode's own force-enable is
+        belt-and-suspenders against a row disabled by some other path,
+        mirroring `_apply_grok`. AGENT_SLUG pins and complexity overrides are
+        preserved (see `_wipe_mode_switch_assignments`).
+        """
+        await self._wipe_mode_switch_assignments()
+        codex = await self._get_seeded_provider(ModelProvider.OPENAI)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(codex.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "gpt-5.3-codex"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: codex", default_model=model_name)
+
+    async def _apply_gemini(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Gemini (Google) model.
+
+        Migration 085 seeded the GEMINI provider row `enabled=false`
+        (migration 086 flips it to `enabled=true` at rest, matching Codex),
+        so this mode's force-enable is the same belt-and-suspenders step
+        `_apply_grok` runs for GROK — the mode switch must not depend on the
+        seed migration alone. GeminiCliProvider authenticates via a mounted
+        OAuth credential (`~/.gemini`), not a stored API key, so there is no
+        key-check precondition. AGENT_SLUG pins and complexity overrides are
+        preserved (see `_wipe_mode_switch_assignments`).
+        """
+        await self._wipe_mode_switch_assignments()
+        gemini = await self._get_seeded_provider(ModelProvider.GEMINI)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(gemini.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "gemini-2.5-pro"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: gemini", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.
@@ -778,10 +858,16 @@ class ModelRoutingService(BaseService):
         """Validate one preset payload entry WITHOUT writing anything.
 
         Replicates every check `upsert_assignment` would apply — scope shape
-        (`_validate_scope`) and a resolvable provider
-        (`resolve_provider_for_model`) — so `apply_routing_preset` can vet the
-        whole payload before touching the DB. Returns the parsed
-        `(scope, scope_value, model_name)` tuple when valid, else `None`.
+        (`_validate_scope`), a resolvable provider (`resolve_provider_for_model`),
+        AND that provider's current `.enabled` state — so `apply_routing_preset`
+        can vet the whole payload before touching the DB. The `.enabled` check
+        catches a preset saved while a provider was live (a key set, self-hosted
+        connected, Codex/Gemini enabled) that has since gone disabled: applying
+        it would otherwise silently restore a dead assignment that resolves
+        through to the legacy Anthropic fallback at spawn — the same class of
+        bug `resolve_for_agent`'s own disabled-provider branch guards against.
+        Returns the parsed `(scope, scope_value, model_name)` tuple when valid,
+        else `None`.
         """
         model_name = entry.get("model_name")
         scope_raw = entry.get("scope")
@@ -794,9 +880,10 @@ class ModelRoutingService(BaseService):
         except ValueError:
             return None
         try:
-            if await self.resolve_provider_for_model(model_name) is None:
-                return None
+            provider = await self.resolve_provider_for_model(model_name)
         except NotFoundError:
+            return None
+        if provider is None or not provider.enabled:
             return None
         return scope, scope_value, model_name
 
