@@ -1,17 +1,16 @@
-"""active_task_owns_branch must be scoped to the polled project.
+"""active_task_owns_branch must be scoped to the polled project's REPO.
 
-The internal-PR reviewer (orchestrator) calls this to skip the org's own
-in-flight integration PRs — a PR on project A's repo is "ours" only if a
-non-terminal task ON PROJECT A owns its head branch. The query was unscoped
-(``WHERE branch_name = ?``), so a cross-project branch_name collision (two
-tasks sharing an 8-char-UUID-prefix branch on different projects) made it
-match the WRONG project's task — project A's leftover PR was skipped because
-project B happened to have an active task with the same branch_name.
+The inbound-PR reviewer (orchestrator) calls this to skip the org's own
+in-flight integration PRs. Scope is the repo (every project sharing the
+polled project's ``git_url``), not one project: the poll collapses a
+monorepo's cell-projects to one canonical project, so a fleet PR whose
+owning task lives on a sibling cell-project must still count as ours
+(2026-07-23: a GitHub-App-authored dev-stream PR was ingested as external_pr
+because the canonical project's id didn't match the owning cell's).
 
-Scoping by ``project_id`` is correct for both single-project tasks and
-MegaTask multi-repo batches: each root-subtask carries its own ``project_id``
-matching its own repo, so a branch on project A's repo is owned only by a
-task whose ``project_id == A``.
+Cross-REPO branch_name collisions stay excluded — the original bug this file
+pinned: an unscoped query (``WHERE branch_name = ?``) matched the WRONG
+repo's task on an 8-char-UUID-prefix collision and false-skipped a real PR.
 """
 
 from __future__ import annotations
@@ -40,7 +39,9 @@ SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 _BRANCH = "feature/backend/collide001"
 
 
-async def _seed_project(db: AsyncSession, slug: str) -> ProjectTable:
+async def _seed_project(
+    db: AsyncSession, slug: str, git_url: str | None = None
+) -> ProjectTable:
     if await db.get(AgentTable, SYSTEM_UUID) is None:
         db.add(
             AgentTable(
@@ -62,7 +63,7 @@ async def _seed_project(db: AsyncSession, slug: str) -> ProjectTable:
         id=uuid4(),
         name=slug,
         slug=slug,
-        git_url=f"https://github.com/rennf93/{slug}",
+        git_url=git_url or f"https://github.com/rennf93/{slug}",
         assigned_cell=Team.BACKEND,
         created_by=SYSTEM_UUID,
     )
@@ -116,6 +117,27 @@ async def test_branch_owned_only_by_its_own_project(db_session: AsyncSession) ->
     # Project B's task is terminal AND the only active owner is on project A —
     # the unscoped query would wrongly return True here (matching A's task).
     assert await svc.active_task_owns_branch(_BRANCH, cast("UUID", proj_b.id)) is False
+
+
+@pytest.mark.asyncio
+async def test_monorepo_sibling_project_ownership_counts(
+    db_session: AsyncSession,
+) -> None:
+    """Two cell-projects share one git_url (monorepo). The active task lives
+    on the FRONTEND cell; the poll queries with the CANONICAL sibling's id.
+    Repo-scoping must still recognize the branch as ours — the 2026-07-23
+    incident shape."""
+    repo = "https://github.com/rennf93/gca-mono"
+    canonical = await _seed_project(db_session, "gca-mono-api", git_url=repo)
+    frontend = await _seed_project(db_session, "gca-mono-panel", git_url=repo)
+    branch = "feature/frontend/mono0001--child001"
+    db_session.add(
+        _task(cast("UUID", frontend.id), branch=branch, status=TaskStatus.IN_PROGRESS)
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+
+    assert await svc.active_task_owns_branch(branch, cast("UUID", canonical.id)) is True
 
 
 @pytest.mark.asyncio

@@ -104,6 +104,22 @@ async def test_list_open_prs_normalizes_and_flags_fork() -> None:
     assert internal["author_is_owner"] is False
 
 
+def test_normalize_deleted_fork_head_is_fork() -> None:
+    """GitHub sends head.repo=null when a fork was deleted — that head is NOT
+    ours, so it must classify as a fork (fail-closed to review) rather than
+    fall into the same-repo path where a branch-name collision could skip it."""
+    pr = {
+        "number": 11,
+        "html_url": "https://github.com/acme/repo/pull/11",
+        "title": "ghost fork",
+        "head": {"ref": "feature-x", "sha": "cafebabe", "repo": None},
+        "user": {"login": "ghost"},
+        "author_association": "NONE",
+    }
+    out = GitService._normalize_open_pr(pr, "acme/repo")
+    assert out["is_fork"] is True
+
+
 @pytest.mark.asyncio
 async def test_list_open_prs_flags_owner_authored_pr() -> None:
     """A PR opened by the repo-owner account is flagged author_is_owner."""

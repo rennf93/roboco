@@ -199,6 +199,78 @@ async def test_skip_internal_when_disabled(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_skip_app_bot_authored_fleet_pr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 2026-07-23 live incident: with a GitHub App bound, fleet PRs are
+    authored by <app-slug>[bot] whose author_association is NONE — the external
+    heuristic reads that as an outsider. Branch ownership must win: a same-repo
+    PR whose head an active task owns is the org's own, whoever authored it."""
+    monkeypatch.setattr(orch_mod.settings, "external_pr_enabled", True)
+    monkeypatch.setattr(orch_mod.settings, "internal_pr_enabled", True)
+    svc = _svc(owns_branch=True)
+    pr = {
+        "number": 667,
+        "is_fork": False,
+        "author_is_owner": False,
+        "user_login": "roboco-app[bot]",
+        "author_association": "NONE",
+        "head_ref": "feature/frontend/170c9578--f1957610",
+    }
+    ok = await _orch()._ingest_pr_if_reviewable(
+        svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
+    )
+    assert ok is False
+    svc.ingest_external_pr.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_app_bot_pr_without_owning_task_still_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented residual: a same-repo bot-authored PR with NO active
+    owning task falls through to the author heuristics and reviews as
+    external — orphaned/unknown bot branches (dependabot included) keep
+    getting the read-only adversarial review."""
+    monkeypatch.setattr(orch_mod.settings, "external_pr_enabled", True)
+    monkeypatch.setattr(orch_mod.settings, "internal_pr_enabled", True)
+    svc = _svc(owns_branch=False)
+    pr = {
+        "number": 42,
+        "is_fork": False,
+        "author_is_owner": False,
+        "user_login": "dependabot[bot]",
+        "author_association": "NONE",
+        "head_ref": "dependabot/npm_and_yarn/foo-1.2.3",
+    }
+    ok = await _orch()._ingest_pr_if_reviewable(
+        svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
+    )
+    assert ok is True
+    assert svc.ingest_external_pr.await_args.kwargs["source"] == "external_pr"
+
+
+@pytest.mark.asyncio
+async def test_fork_pr_never_consults_branch_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fork PR is external by definition — the ownership pre-check must not
+    run for it (a fork head ref can coincide with an org branch name)."""
+    monkeypatch.setattr(orch_mod.settings, "external_pr_enabled", True)
+    svc = _svc(owns_branch=True)
+    pr = {
+        "number": 7,
+        "is_fork": True,
+        "user_login": "outsider",
+        "head_ref": "feature/frontend/copycat",
+    }
+    ok = await _orch()._ingest_pr_if_reviewable(
+        svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
+    )
+    assert ok is True
+    svc.active_task_owns_branch.assert_not_awaited()
+    assert svc.ingest_external_pr.await_args.kwargs["source"] == "external_pr"
+
+
+@pytest.mark.asyncio
 async def test_skip_owner_authored_pr(monkeypatch: pytest.MonkeyPatch) -> None:
     # The org's own account opened the PR → self-review, never ingest (even with
     # both review modes on). The reviewer reviews PRs the org did NOT author.

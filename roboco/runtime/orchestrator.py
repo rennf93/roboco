@@ -9508,9 +9508,11 @@ Start by:
         Repo-aware: collapses active projects to one canonical project per
         distinct repo (so a monorepo product yields ONE review per PR, not one
         per cell-project), lists each repo's open PRs, and ingests a de-duped
-        review task for each reviewable one — external/fork PRs, and (when
-        internal review is on) org-repo PRs not tied to an active task. Commits
-        once at the end.
+        review task for each reviewable one. A same-repo PR whose head branch
+        an active task owns (repo-wide, sibling cell-projects included) is the
+        org's own and never ingested, regardless of author — the rest split
+        into external/fork PRs and (when internal review is on) org-repo PRs
+        opened outside the task flow. Commits once at the end.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -9554,6 +9556,20 @@ Start by:
         # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
         if pr.get("author_is_owner"):
             return False
+        # The org's own in-flight PRs are recognized by BRANCH OWNERSHIP, not
+        # author identity: with a GitHub App bound, fleet PRs are authored by
+        # <app-slug>[bot] whose author_association is NONE, which the external
+        # heuristic below reads as an outsider (2026-07-23 live incident: a
+        # same-repo dev-stream PR was ingested as external_pr and adversarially
+        # reviewed). A same-repo head branch owned by an active task is ours
+        # regardless of who authored the PR, so this check must run BEFORE the
+        # author-based classification. Residual: an org PR whose task went
+        # terminal with the PR left open falls through to the author heuristics.
+        if not pr.get("is_fork") and await task_service.active_task_owns_branch(
+            str(pr.get("head_ref") or ""),
+            cast("UUID", project.id),
+        ):
+            return False
         if self._is_external_pr(pr):
             if not settings.external_pr_enabled or not self._pr_author_allowed(
                 pr, allowlist
@@ -9562,11 +9578,6 @@ Start by:
             source = "external_pr"
         else:
             if not settings.internal_pr_enabled:
-                return False
-            if await task_service.active_task_owns_branch(
-                str(pr.get("head_ref") or ""),
-                cast("UUID", project.id),
-            ):
                 return False
             source = "internal_pr"
         created = await task_service.ingest_external_pr(
