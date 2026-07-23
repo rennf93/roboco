@@ -16,6 +16,7 @@ import pytest
 from roboco.agent_sdk.intake_driver import (
     _INTAKE_BASE_TOOLS,
     IntakeDriver,
+    SdkIntakeSession,
     StreamChunk,
     normalize,
 )
@@ -96,6 +97,63 @@ def test_normalize_assistant_message_blocks() -> None:
     assert chunks[0].text == "hmm"
     assert chunks[1].tool == "Read"
     assert chunks[1].data["input"] == {"file": "metrics.tsx"}
+
+
+def test_normalize_assistant_message_emits_text_when_no_deltas_streamed() -> None:
+    """The no-deltas fallback (2026-07-23 incident): when the CLI's remotely
+    gated partial-message emission is off, no StreamEvent ever carries the
+    reply — the AssistantMessage's complete text must then be emitted instead
+    of being swallowed by the double-render guard."""
+    msg = AssistantMessage([TextBlock("hello there"), ThinkingBlock("hmm")])
+    chunks = normalize(msg, text_already_streamed=False)
+    assert [c.kind for c in chunks] == ["text", "thinking"]
+    assert chunks[0].text == "hello there"
+
+
+def test_normalize_assistant_message_default_still_suppresses_text() -> None:
+    msg = AssistantMessage([TextBlock("hello there")])
+    assert normalize(msg) == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_session_send_falls_back_to_complete_text_without_deltas() -> None:
+    """End-to-end through SdkIntakeSession.send: a turn with zero StreamEvents
+    yields the reply text from the AssistantMessage; a turn WITH deltas keeps
+    the complete text suppressed (no double render)."""
+
+    class _FakeClient:
+        def __init__(self, messages: list) -> None:
+            self._messages = messages
+
+        async def query(self, _text: str) -> None: ...
+
+        async def receive_response(self) -> AsyncIterator[object]:
+            for m in self._messages:
+                yield m
+
+    # Gated mode: no StreamEvents at all.
+    session = SdkIntakeSession(options=None)
+    session._client = _FakeClient(
+        [
+            SystemMessage("init"),
+            AssistantMessage([TextBlock("the reply")]),
+            ResultMessage("s1"),
+        ]
+    )
+    kinds = [(c.kind, c.text) async for c in session.send("hi")]
+    assert ("text", "the reply") in kinds
+
+    # Streaming mode: deltas first — complete text stays suppressed.
+    session._client = _FakeClient(
+        [
+            StreamEvent({"delta": {"type": "text_delta", "text": "the "}}),
+            StreamEvent({"delta": {"type": "text_delta", "text": "reply"}}),
+            AssistantMessage([TextBlock("the reply")]),
+            ResultMessage("s2"),
+        ]
+    )
+    texts = [c.text async for c in session.send("hi") if c.kind == "text"]
+    assert texts == ["the ", "reply"]
 
 
 def test_normalize_assistant_message_extracts_draft_block() -> None:
