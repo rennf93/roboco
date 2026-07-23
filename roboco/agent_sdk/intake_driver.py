@@ -235,12 +235,20 @@ def _block_to_chunk(
     return None, None, None
 
 
-def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
+def _blocks_to_chunks(
+    content: list[Any], *, emit_text: bool = False
+) -> list[StreamChunk]:
     """Map an assistant message's content blocks to chunks (duck-typed).
 
-    Text is deliberately NOT re-emitted here: with ``include_partial_messages``
+    Text is normally NOT re-emitted here: with ``include_partial_messages``
     the live token deltas (``StreamEvent``) already streamed it, so re-emitting
     the complete ``TextBlock`` would render every reply twice on the panel.
+    ``emit_text=True`` is the no-deltas fallback — the CLI's partial-message
+    emission is remotely gated and can silently vanish (2026-07-23 live
+    incident: zero ``stream_event`` lines in the NAS containers while the
+    identical binary streams elsewhere), and without this fallback the
+    double-render guard becomes a total blackout: replies are generated but
+    never reach the panel.
 
     The canonical draft signal is the agent calling the **``propose_draft``**
     tool — that ToolUseBlock becomes a single ``draft`` chunk. As a fallback (if
@@ -257,6 +265,8 @@ def _blocks_to_chunks(content: list[Any]) -> list[StreamChunk]:
             chunks.append(chunk)
         if text_part is not None:
             text_parts.append(text_part)
+            if emit_text and text_part:
+                chunks.append(StreamChunk(kind="text", text=text_part))
         draft = draft or block_draft
     draft = draft or _extract_draft("".join(text_parts))
     if draft is not None:
@@ -275,17 +285,23 @@ def _stream_event_to_chunks(msg: Any) -> list[StreamChunk]:
     return []
 
 
-def normalize(msg: Any) -> list[StreamChunk]:
+def normalize(msg: Any, *, text_already_streamed: bool = True) -> list[StreamChunk]:
     """Map a single ``claude-agent-sdk`` message to panel-facing chunks.
 
     Duck-typed on type name + attributes so it works on real SDK messages and
-    on test fakes alike (no SDK import required).
+    on test fakes alike (no SDK import required). ``text_already_streamed``
+    is the caller's per-turn "any text delta seen yet?" tracker: when False,
+    an AssistantMessage emits its complete text as chunks (the no-deltas
+    fallback — see ``_blocks_to_chunks``); the default preserves the
+    suppress-always behavior for callers that don't track.
     """
     name = type(msg).__name__
     if name == "StreamEvent":
         return _stream_event_to_chunks(msg)
     if name == "AssistantMessage":
-        return _blocks_to_chunks(getattr(msg, "content", []))
+        return _blocks_to_chunks(
+            getattr(msg, "content", []), emit_text=not text_already_streamed
+        )
     if name == "ResultMessage":
         return [
             StreamChunk(
@@ -617,6 +633,16 @@ class SdkIntakeSession:  # pragma: no cover - requires the live claude binary
 
     async def send(self, text: str) -> AsyncIterator[StreamChunk]:
         await self._client.query(text)
+        # Per-turn delta tracker: once a live text delta arrives, complete
+        # AssistantMessage text stays suppressed (double-render guard); if
+        # none ever do (the remotely-gated no-partial-messages mode), the
+        # complete text is emitted instead so replies still reach the panel.
+        saw_text_delta = False
         async for msg in self._client.receive_response():
-            for chunk in normalize(msg):
+            chunks = normalize(msg, text_already_streamed=saw_text_delta)
+            if type(msg).__name__ == "StreamEvent" and any(
+                c.kind == "text" for c in chunks
+            ):
+                saw_text_delta = True
+            for chunk in chunks:
                 yield chunk
