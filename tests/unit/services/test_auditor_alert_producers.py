@@ -201,6 +201,9 @@ async def test_fail_qa_emits_auditor_alert(
     """``fail_qa`` calls the auditor rework producer with QA attribution."""
     session = MagicMock()
     session.flush = AsyncMock()
+    # fail_qa releases the QA agent's fleet marker via session.get — default
+    # to "no matching row" for a test that doesn't care about that side effect.
+    session.get = AsyncMock(return_value=None)
     task = _mock_task(status=TaskStatus.AWAITING_QA)
     task.orchestration_markers = {"original_developer": str(uuid4())}
 
@@ -235,6 +238,9 @@ async def test_pr_fail_emits_auditor_alert(
     """``pr_fail`` calls the auditor rework producer with reviewer attribution."""
     session = MagicMock()
     session.flush = AsyncMock()
+    # pr_fail releases the reviewer's fleet marker via session.get — default
+    # to "no matching row" for a test that doesn't care about that side effect.
+    session.get = AsyncMock(return_value=None)
     reviewer_id = uuid4()
     pm_id = uuid4()
     task = _mock_task(status=TaskStatus.AWAITING_PR_REVIEW)

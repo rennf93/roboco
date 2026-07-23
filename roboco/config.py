@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,6 +43,28 @@ class Settings(BaseSettings):
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
     )
+    display_timezone: str = Field(
+        default="UTC",
+        description=(
+            "IANA timezone name (e.g. 'Europe/Berlin') used ONLY for "
+            "display-side 'today'/day-bucket derivations — currently the "
+            "Telegram cockpit's Today brief and bot commands. Default 'UTC' "
+            "is a no-op for every deployment that doesn't set this. DB "
+            "storage stays UTC canonical regardless; this never touches how "
+            "timestamps are written or how daily_usage_rollups are keyed."
+        ),
+    )
+
+    @field_validator("display_timezone")
+    @classmethod
+    def _validate_display_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"display_timezone {v!r} is not a valid IANA timezone name"
+            ) from exc
+        return v
 
     # ==========================================================================
     # API Server

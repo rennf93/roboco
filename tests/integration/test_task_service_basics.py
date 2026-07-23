@@ -989,6 +989,12 @@ async def test_unblock_restores_to_in_progress(
     # Owner restored into both fields so the dev dispatcher respawns it.
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
+    # A real resume with no fresh claim() call — unblock must flip the
+    # owner's fleet marker itself (mirrors _finalize_claim/_qa_or_doc_claim).
+    owner_row = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert owner_row is not None
+    assert owner_row.status == AgentStatus.ACTIVE
+    assert owner_row.current_task_id == task.id
 
 
 @pytest.mark.asyncio
@@ -1019,6 +1025,67 @@ async def test_unblock_keeps_owner_for_give_me_work_claim(
     assert unblocked.status == TaskStatus.IN_PROGRESS
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_into_review_queue_releases_agent_marker(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A non-blocked admin override into a review/queue state clears the
+    stale claimant's active_claimant_id (M19) — it must release that
+    claimant's fleet marker too, or a dead escalation claim keeps reporting
+    an agent as active forever."""
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = dev_id
+    task.claimed_by = dev_id
+    task.active_claimant_id = dev_id
+    await db_session.flush()
+    dev_agent = await db_session.get(AgentTable, dev_id)
+    assert dev_agent is not None
+    dev_agent.status = AgentStatus.ACTIVE
+    dev_agent.current_task_id = task.id
+    await db_session.flush()
+
+    out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
+    assert out is not None
+    assert out.active_claimant_id is None
+
+    dev_agent = await db_session.get(AgentTable, dev_id)
+    assert dev_agent is not None
+    assert dev_agent.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_divert_owned_task_to_pool_idles_prior_owner(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """_divert_owned_task_to_pool clears ownership entirely — the refused
+    owner isn't engaged with this task at all anymore, so its fleet marker
+    must be released (mirrors _force_unclaim_to_pending's reaper release)."""
+    svc = task_setup["svc"]
+    owner_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = owner_id
+    task.claimed_by = owner_id
+    await db_session.flush()
+    owner_agent = await db_session.get(AgentTable, owner_id)
+    assert owner_agent is not None
+    owner_agent.status = AgentStatus.ACTIVE
+    owner_agent.current_task_id = task.id
+    await db_session.flush()
+
+    await svc._divert_owned_task_to_pool(task, note="test diversion")
+
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to is None
+    owner_agent = await db_session.get(AgentTable, owner_id)
+    assert owner_agent is not None
+    assert owner_agent.status == AgentStatus.IDLE
+    assert owner_agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1068,13 +1135,21 @@ async def test_pass_qa_clears_active_claimant_for_doc_claim(
     task.status = TaskStatus.AWAITING_QA
     task.pr_number = 42
     task.pr_url = "https://github.com/x/y/pull/42"
-    task.assigned_to = qa_id
-    task.claimed_by = qa_id
-    task.active_claimant_id = qa_id
     await db_session.flush()
+    # qa_claim (via _qa_or_doc_claim) flips the QA agent's fleet marker —
+    # verify it, then verify pass_qa releases it symmetrically.
+    qa_claimed = await svc.qa_claim(qa_id, task.id)
+    assert qa_claimed is not None
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.status == AgentStatus.ACTIVE
+    assert qa_agent.current_task_id == task.id
     passed = await svc.pass_qa(task.id, notes="LGTM", agent_role="qa")
     assert passed is not None
     assert passed.active_claimant_id is None
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.current_task_id is None
     doc = AgentTable(
         id=uuid4(),
         name="Doc",
@@ -1093,6 +1168,10 @@ async def test_pass_qa_clears_active_claimant_for_doc_claim(
     claimed = await svc.doc_claim(doc.id, task.id)
     assert claimed is not None
     assert to_uuid(claimed.active_claimant_id) == doc.id
+    doc_agent = await db_session.get(AgentTable, doc.id)
+    assert doc_agent is not None
+    assert doc_agent.status == AgentStatus.ACTIVE
+    assert doc_agent.current_task_id == task.id
 
 
 @pytest.mark.asyncio
@@ -1106,13 +1185,15 @@ async def test_fail_qa_clears_active_claimant(
     qa_id = task_setup["agent_id"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_QA
-    task.assigned_to = qa_id
-    task.claimed_by = qa_id
-    task.active_claimant_id = qa_id
     await db_session.flush()
+    assert await svc.qa_claim(qa_id, task.id) is not None
     failed = await svc.fail_qa(task.id, notes="please fix X")
     assert failed is not None
     assert failed.active_claimant_id is None
+    # fail_qa releases the QA agent's fleet marker too.
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1447,70 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
     claimed = await svc.claim(task.id, task_setup["agent_id"])
     assert claimed is not None
     assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_sets_agent_active_and_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """_finalize_claim is the one production chokepoint every claim verb
+    routes through — before this fix, nothing ever wrote agent.status=ACTIVE
+    or current_task_id, so the fleet/Today-brief breakdown could never show
+    a real "active" agent or populate "working[]"."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+
+    claimed = await svc.claim(task.id, task_setup["agent_id"])
+    assert claimed is not None
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.status == AgentStatus.ACTIVE
+    assert agent.current_task_id == task.id
+
+
+@pytest.mark.asyncio
+async def test_mark_agent_idle_clears_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Idling an agent must clear current_task_id — otherwise it keeps
+    reporting the last-claimed task as "currently working" forever, since
+    nothing else ever clears the column."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.claim(task.id, task_setup["agent_id"])
+
+    await svc.mark_agent_idle(task_setup["agent_id"])
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.status == AgentStatus.IDLE
+    assert agent.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_clears_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A voluntary unclaim releases the claim marker on the AGENT too, not
+    just the task — otherwise the fleet keeps showing the agent as working
+    on a task it just gave up."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.claim(task.id, task_setup["agent_id"])
+
+    result = await svc.unclaim_for_agent(task.id, task_setup["agent_id"])
+    assert result is not None
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1900,6 +2045,33 @@ async def test_unclaim_for_reaper_resets(
     assert refreshed.claimed_by == task_setup["agent_id"]
 
 
+@pytest.mark.asyncio
+async def test_unclaim_for_reaper_idles_the_provably_dead_holder(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The reaper's holder is provably dead (heartbeat past TTL) — it must
+    stop reporting ACTIVE with a stale current_task_id, or the fleet keeps
+    showing a dead agent as "working" until the eventual re-claim."""
+    svc = task_setup["svc"]
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
+    agent.status = AgentStatus.ACTIVE
+    agent.current_task_id = task.id
+    await db_session.flush()
+
+    await svc.unclaim_for_reaper(task.id)
+
+    refreshed_agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert refreshed_agent is not None
+    assert refreshed_agent.status == AgentStatus.IDLE
+    assert refreshed_agent.current_task_id is None
+
+
 # ---------------------------------------------------------------------------
 # resume_for_agent
 # ---------------------------------------------------------------------------
@@ -2100,6 +2272,11 @@ async def test_pr_gate_claim_allows_first_reviewer_when_pm_owns_root(
     assert task.active_claimant_id == reviewer.id
     assert task.claimed_by == reviewer.id
     assert task.assigned_to == reviewer.id
+    # pr_gate_claim (via _qa_or_doc_claim) flips the reviewer's fleet marker.
+    reviewer_row = await db_session.get(AgentTable, reviewer.id)
+    assert reviewer_row is not None
+    assert reviewer_row.status == AgentStatus.ACTIVE
+    assert reviewer_row.current_task_id == task.id
 
 
 @pytest.mark.asyncio

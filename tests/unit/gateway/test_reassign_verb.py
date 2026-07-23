@@ -8,11 +8,12 @@ agents_config data) and the reaper-safe service write
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
-from roboco.models.base import TaskStatus
+from roboco.models.base import AgentStatus, TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.gateway.choreographer._impl import Choreographer
 from roboco.services.task import TaskService
@@ -98,6 +99,12 @@ def _build_task(**over: object) -> MagicMock:
 def _service() -> TaskService:
     session = MagicMock()
     session.flush = AsyncMock()
+    # reassign_active_claim now retargets the agent-side claim marker
+    # (_retarget_agent_claim), which reads old/new agent rows via
+    # session.get — default to "no matching row" so tests that don't care
+    # about the agent side effect stay a no-op there, same as before this
+    # write existed.
+    session.get = AsyncMock(return_value=None)
     return TaskService(session)
 
 
@@ -123,3 +130,33 @@ async def test_reassign_active_claim_refuses_non_active_status() -> None:
     svc = _service()
     object.__setattr__(svc, "get", AsyncMock(return_value=task))
     assert await svc.reassign_active_claim(task.id, uuid4()) is None
+
+
+@pytest.mark.asyncio
+async def test_reassign_active_claim_retargets_agent_active_marker() -> None:
+    """The old claimant's ACTIVE/current_task_id marker must move to the new
+    claimant — otherwise the fleet keeps showing the SUPERSEDED agent as
+    working on this task, and never shows the real new claimant as active."""
+    old_id, new_id = uuid4(), uuid4()
+    task = _build_task(status=TaskStatus.IN_PROGRESS, claimed_by=old_id)
+    old_agent = MagicMock(status=AgentStatus.ACTIVE, current_task_id=task.id)
+    new_agent = MagicMock(status=AgentStatus.IDLE, current_task_id=None)
+    svc = _service()
+    object.__setattr__(svc, "get", AsyncMock(return_value=task))
+
+    async def _fake_get(_model: object, agent_id: object) -> object:
+        if agent_id == old_id:
+            return old_agent
+        if agent_id == new_id:
+            return new_agent
+        return None
+
+    cast("MagicMock", svc.session).get = AsyncMock(side_effect=_fake_get)
+
+    result = await svc.reassign_active_claim(task.id, new_id)
+
+    assert result is task
+    assert old_agent.status == AgentStatus.IDLE
+    assert old_agent.current_task_id is None
+    assert new_agent.status == AgentStatus.ACTIVE
+    assert new_agent.current_task_id == task.id

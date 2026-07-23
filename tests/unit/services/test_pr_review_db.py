@@ -253,6 +253,12 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     assert claimed.active_claimant_id is not None
     assert UUID(str(claimed.active_claimant_id)) == reviewer_id
     assert claimed.claimed_at is not None
+    # The external-PR-review claim chokepoint flips the reviewer's fleet
+    # marker too — otherwise pr_reviewer agents never show as active.
+    reviewer_row = await db_session.get(AgentTable, reviewer_id)
+    assert reviewer_row is not None
+    assert reviewer_row.status == AgentStatus.ACTIVE
+    assert reviewer_row.current_task_id == task_id
 
     # Re-claiming a non-pending task is a no-op.
     assert await svc.pr_review_claim(reviewer_id, task_id) is None
@@ -269,6 +275,10 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     assert done.claimed_by is None
     # Single-claimant lock cleared on completion (the review hand-off is done).
     assert done.active_claimant_id is None
+    # complete_review releases the reviewer's fleet marker too.
+    reviewer_row = await db_session.get(AgentTable, reviewer_id)
+    assert reviewer_row is not None
+    assert reviewer_row.current_task_id is None
 
     # Re-completing a completed task is a no-op.
     assert await svc.complete_review(reviewer_id, task_id) is None
