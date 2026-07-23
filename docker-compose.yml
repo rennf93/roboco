@@ -698,6 +698,8 @@ services:
       # goes inert for /tg. Same "must be listed here to reach the container"
       # rule as the emergency whitelist above.
       ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+      ROBOCO_AGENT_TOOL_CALL_HALT: ${ROBOCO_AGENT_TOOL_CALL_HALT:-600}
+      ROBOCO_AGENT_TOOL_CALL_WARN: ${ROBOCO_AGENT_TOOL_CALL_WARN:-200}
       # Per-task/project cost budgets (default-off subsystem; also on the
       # panel feature-flags card).
       ROBOCO_TASK_BUDGETS_ENABLED: ${ROBOCO_TASK_BUDGETS_ENABLED:-true}
