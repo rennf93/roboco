@@ -612,6 +612,45 @@ async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["codex", "gemini"])
+@pytest.mark.parametrize("interactive_slug", ["intake-1", "secretary-1"])
+async def test_interactive_agents_exempt_from_delivery_only_global_mode(
+    llm_setup: dict, mode: str, interactive_slug: str
+) -> None:
+    """A fleet-wide Codex/Gemini mode must not capture Intake/Secretary —
+    they have no V1 support on those providers, so the resolver keeps them
+    on the legacy Anthropic path (the completeness-drill gap: previously
+    they resolved to the unsupported provider and the spawn guard left both
+    chats refusing to start after a one-click mode switch)."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode=mode)
+
+    # The mode still derives cleanly (single GLOBAL row — no extra pins).
+    assert await svc.derive_mode() == mode
+
+    route = await svc.resolve_for_agent(interactive_slug)
+    assert route.provider_type == ModelProvider.ANTHROPIC
+
+
+@pytest.mark.asyncio
+async def test_interactive_agent_explicit_pin_is_not_exempted(
+    llm_setup: dict,
+) -> None:
+    """An EXPLICIT AGENT_SLUG pin to a delivery-only provider is honored by
+    the resolver (the orchestrator's spawn guard refuses it loudly) — a
+    deliberate operator choice must error, never be silently overridden."""
+    svc = llm_setup["svc"]
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="intake-1",
+        model_name="gpt-5.3-codex",
+    )
+
+    route = await svc.resolve_for_agent("intake-1")
+    assert route.provider_type == ModelProvider.OPENAI
+
+
+@pytest.mark.asyncio
 async def test_resolve_for_agent_uses_provider_token(llm_setup: dict) -> None:
     """When provider has auth_token_encrypted, it's decrypted (lines 345-346)."""
     svc = llm_setup["svc"]

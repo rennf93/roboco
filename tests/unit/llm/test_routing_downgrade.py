@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from roboco.models.base import ModelProvider
+from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.services.llm import ModelRoutingService, _ResolvedAssignment
 
 _AGENT_SLUG = "be-dev-1"
@@ -23,7 +23,9 @@ def _disabled_resolved() -> _ResolvedAssignment:
     provider = MagicMock(
         enabled=False, id="prov-disabled", type=ModelProvider.OLLAMA_CLOUD
     )
-    return _ResolvedAssignment(provider=provider, model_name="grok-build")
+    return _ResolvedAssignment(
+        provider=provider, model_name="grok-build", scope=AssignmentScope.GLOBAL
+    )
 
 
 def _svc() -> ModelRoutingService:

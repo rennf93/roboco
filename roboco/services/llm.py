@@ -155,6 +155,34 @@ class _ResolvedAssignment:
 
     provider: ProviderConfigTable
     model_name: str
+    scope: AssignmentScope
+
+
+# Interactive agents (Intake chat, Secretary chat) have no V1 support on the
+# Codex/Gemini providers. A GLOBAL/ROLE assignment pointing them there (e.g.
+# the one-click Codex/Gemini mode) is treated as not-applicable at resolution
+# time — they fall back to the legacy Anthropic path, so a fleet-wide mode
+# switch always yields working chats. An EXPLICIT AGENT_SLUG pin is honored
+# here and refused loudly by the orchestrator's spawn guard instead — a
+# deliberate operator choice deserves an error, not a silent override. The
+# orchestrator imports these as the single source of truth for that guard.
+INTERACTIVE_AGENT_SLUGS: tuple[str, ...] = ("intake-1", "secretary-1")
+INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
+    ModelProvider.OPENAI,
+    ModelProvider.GEMINI,
+)
+
+
+def _interactive_exempt(agent_slug: str, resolved: _ResolvedAssignment) -> bool:
+    """True iff a GLOBAL/ROLE row lands an interactive agent on a
+    delivery-only provider — the resolver then keeps it on the legacy path.
+    An explicit AGENT_SLUG pin never exempts (kept out of resolve_for_agent
+    for its complexity budget)."""
+    return (
+        agent_slug in INTERACTIVE_AGENT_SLUGS
+        and resolved.provider.type in INTERACTIVE_UNSUPPORTED_PROVIDERS
+        and resolved.scope is not AssignmentScope.AGENT_SLUG
+    )
 
 
 class ModelRoutingService(BaseService):
@@ -181,6 +209,19 @@ class ModelRoutingService(BaseService):
         """
         role = get_agent_role(agent_slug) or ""
         resolved = await self._resolve_assignment(agent_slug, role, complexity)
+        if resolved is not None and _interactive_exempt(agent_slug, resolved):
+            # A fleet-wide GLOBAL/ROLE row landed an interactive agent on a
+            # delivery-only provider (e.g. the one-click Codex/Gemini mode).
+            # Not applicable to Intake/Secretary — keep their chats working
+            # on the legacy Anthropic path. An explicit AGENT_SLUG pin is
+            # NOT exempted; the orchestrator's spawn guard refuses it loudly.
+            self.log.info(
+                "Interactive agent exempt from delivery-only provider",
+                agent_slug=agent_slug,
+                provider_type=resolved.provider.type.value,
+                scope=resolved.scope.value,
+            )
+            return self._legacy_route(role)
         if resolved is not None and resolved.provider.enabled:
             route = await self._route_from_resolved(resolved, agent_slug)
             if route is not None:
@@ -947,7 +988,9 @@ class ModelRoutingService(BaseService):
         if row is None:
             return None
         # Relationship is lazy="joined" in the ORM so `.provider` is loaded.
-        return _ResolvedAssignment(provider=row.provider, model_name=row.model_name)
+        return _ResolvedAssignment(
+            provider=row.provider, model_name=row.model_name, scope=row.scope
+        )
 
     async def _find_local_provider(self) -> ProviderConfigTable | None:
         """Return the LOCAL provider row, or None if not seeded."""

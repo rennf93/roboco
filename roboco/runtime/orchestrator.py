@@ -297,6 +297,12 @@ SECRETARY_AGENT_ID = "secretary-1"
 # routing either of these to Intake/Secretary would fall through to the plain
 # Claude SDK-driver image with a mismatched provider env instead of refusing —
 # so both spawn paths reject it explicitly instead of silently misbehaving.
+# Mirrors roboco.services.llm.INTERACTIVE_UNSUPPORTED_PROVIDERS (kept as a
+# literal here to avoid a runtime import cycle; parity is pinned by a test).
+# The resolver exempts interactive agents from GLOBAL/ROLE rows on these
+# providers (a fleet-wide mode switch keeps the chats on Anthropic); this
+# guard is the backstop for an EXPLICIT AGENT_SLUG pin, which is refused
+# loudly rather than silently overridden.
 _INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,

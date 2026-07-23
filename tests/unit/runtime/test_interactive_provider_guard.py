@@ -16,12 +16,17 @@ from unittest.mock import patch
 import pytest
 from roboco.models.base import ModelProvider
 from roboco.runtime.orchestrator import (
+    _INTERACTIVE_UNSUPPORTED_PROVIDERS,
     INTAKE_AGENT_ID,
     SECRETARY_AGENT_ID,
     AgentOrchestrator,
     _reject_interactive_unsupported_provider,
 )
 from roboco.services import prompter_live
+from roboco.services.llm import (
+    INTERACTIVE_AGENT_SLUGS,
+    INTERACTIVE_UNSUPPORTED_PROVIDERS,
+)
 
 
 def _make_minimal_orchestrator() -> AgentOrchestrator:
@@ -49,6 +54,19 @@ def _fresh_registry() -> Any:
 
 
 class TestRejectInteractiveUnsupportedProvider:
+    def test_guard_set_matches_the_resolver_exemption_set(self) -> None:
+        """The orchestrator's literal must track the resolver's canonical
+        tuple (kept separate to avoid a runtime import cycle)."""
+        assert tuple(_INTERACTIVE_UNSUPPORTED_PROVIDERS) == tuple(
+            INTERACTIVE_UNSUPPORTED_PROVIDERS
+        )
+
+    def test_resolver_slugs_match_the_orchestrator_agent_ids(self) -> None:
+        """The resolver's exemption must cover exactly the two interactive
+        agents the orchestrator spawns — a renamed id would silently
+        un-exempt a chat."""
+        assert set(INTERACTIVE_AGENT_SLUGS) == {INTAKE_AGENT_ID, SECRETARY_AGENT_ID}
+
     @pytest.mark.parametrize("provider", [ModelProvider.OPENAI, ModelProvider.GEMINI])
     def test_raises_for_delivery_only_providers(self, provider: ModelProvider) -> None:
         with pytest.raises(RuntimeError, match="delivery-roles-only"):

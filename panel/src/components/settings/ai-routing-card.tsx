@@ -342,14 +342,16 @@ export function AIRoutingCard() {
     if (
       !confirm(
         "Switch every agent to Codex? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced.",
+          "overrides are kept; other role/global assignments are replaced. " +
+          "Intake and Secretary stay on Anthropic (Codex has no interactive " +
+          "chat support).",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "codex" });
       toast.success(
-        "Role/global routing now on Codex — per-agent pins and complexity overrides kept",
+        "Role/global routing now on Codex — pins/overrides kept, Intake & Secretary stay on Anthropic",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -360,14 +362,16 @@ export function AIRoutingCard() {
     if (
       !confirm(
         "Switch every agent to Gemini? Per-agent pins and complexity " +
-          "overrides are kept; other role/global assignments are replaced.",
+          "overrides are kept; other role/global assignments are replaced. " +
+          "Intake and Secretary stay on Anthropic (Gemini has no interactive " +
+          "chat support).",
       )
     )
       return;
     try {
       await applyMode.mutateAsync({ mode: "gemini" });
       toast.success(
-        "Role/global routing now on Gemini — per-agent pins and complexity overrides kept",
+        "Role/global routing now on Gemini — pins/overrides kept, Intake & Secretary stay on Anthropic",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
