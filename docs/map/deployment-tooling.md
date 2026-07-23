@@ -35,7 +35,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/postgres-pgvector.Dockerfile | Example custom pgvector build (pg17) — currently unused; compose uses pgvector/pgvector:pg16 image directly | 15 |
 | docker/nginx.conf | nginx default.conf template: /health /ready /api/ /ws/ -> orchestrator (with X-Agent-Token header), everything else -> panel | 67 |
 | docker/postgres-init/01-create-extensions.sql | First-init SQL: CREATE EXTENSION IF NOT EXISTS vector + availability check (used by the pgvector image entrypoint) | 17 |
-| docker/scripts/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network | 46 |
+| docker/scripts/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network; env-gated off-disk mirror step (`ROBOCO_BACKUP_MIRROR_DIR`) after every successful dump | 80 |
 | docker/scripts/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 20 |
 | docker/scripts/sdk-startup-hook.sh | Claude SessionStart hook: start SDK server on :9000 with UV_PROJECT_ENVIRONMENT=/app/.venv + --no-sync, reset budget, print briefing/precompact | 58 |
 | docker/scripts/a2a-check-hook.sh | PostToolUse hook: poll SDK /inbox/count and remind the agent of pending A2A messages (always exits 0) | 30 |
@@ -54,6 +54,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | scripts/verify_postgres_enums.py | Foundation drift gate: compare postgres agentrole/team enum labels to foundation identity; exit 0 on match/skip(unreachable or unmigrated), 1 on drift | 127 |
 | scripts/reflow_md.py | Reflow hard-wrapped markdown prose to one line per paragraph (token-invariant safety check); --apply / --check modes for the CI gate | 214 |
 | scripts/reset_runtime_state.sh | Host/container smoke-test reset: stop agent containers, run reset_runtime_state.sql, FLUSH Redis, optional FULL_RESET data wipe, per-workspace git hard-reset + stray-branch prune | 263 |
+| scripts/bootstrap.sh | `make quickstart` entrypoint: idempotent one-command bring-up for the registry compose — copies `.env.example` to `.env` on first run (never touches a reused `.env`), injects the three required secrets via documented one-liners (the panel token via the exact `issue_panel_token` HMAC formula) with a standing-credential warning (louder if cloud auth is detected), pre-validates the three required vars with pointed remedies before `docker compose ... up -d` (compose's own `:?` guard on an empty token is an opaque interpolation error otherwise), then runs a doctor-style readiness sweep (root `/health`, `/api/auth/status` through nginx, the verbatim "Alembic upgrade finished" log line, `ollama list`), each stage failing loud with the exact next command | 258 |
 | scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/.../a2a_*) preserving agents/projects/alembic_version; resets agents.metrics | 159 |
 
 ## Key Symbols
@@ -219,6 +220,7 @@ deployment-tooling
 | scripts/reflow_md.py --check | scripts/reflow_md.py | make reflow-check / make quality |
 | scripts/regenerate_verb_tables.py | scripts/regenerate_verb_tables.py | manual after role_config / schema change (not wired into make quality) |
 | scripts/reset_runtime_state.sh | scripts/reset_runtime_state.sh | manual smoke-test reset (host or ssh into NAS) |
+| scripts/bootstrap.sh | scripts/bootstrap.sh | `make quickstart` (pull-and-run registry-compose deploy) |
 | docker compose up | docker-compose.yaml | operator deploy (build) or -f docker-compose.registry.yml up (pull) |
 
 ## Config Flags
@@ -261,6 +263,7 @@ deployment-tooling
 - ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED / _INTERVAL_SECONDS (default 259200/3d) — X-engine feature-spotlight sub-switch (requires ROBOCO_X_ENGINE_ENABLED also on), default off
 - ROBOCO_OBSIDIAN_VAULT_ENABLED / ROBOCO_VAULT_PATH (default `/data/vault`) — Obsidian vault V1 projection master switch, config-default off but both compose files set it `true`; ROBOCO_VAULT_INTAKE_ENABLED / _INTERVAL_SECONDS / _DIR / _MAX_PER_CYCLE / _MAX_OPEN_DRAFTS — the independently-gated `#roboco`-tag inbox watcher
 - ROBOCO_FABLE_MODE_ENABLED — opus-fable-playbook adoption (doctrine layer in the composed prompt + 5 Claude-path hook scripts + 1 grok-path hook), default off; off = byte-for-byte unchanged spawn path
+- `ROBOCO_BACKUP_MIRROR_DIR` (unset by default) — arms the `backup` sidecar's off-disk mirror step; the host path should live on a DIFFERENT disk (external/remote mount) — a same-disk mirror protects nothing. Compose only sets the container env when the `.env` variable is set.
 - ROBOCO_MINIO_ENDPOINT / _ACCESS_KEY / _SECRET_KEY / _BUCKET / _REGION — MinIO object storage (default-off; empty endpoint = disabled, media route falls back to `FileResponse`; when set, `video_renderer_client._save` PUTs each render to MinIO after the local write and `GET /api/video/posts/{id}/media` streams it via `StreamingResponse` over `minio_client.get_object_stream`, key = basename, `_require_ceo` kept so auth stays end-to-end — no presigned URLs; `S3Error` falls back to `FileResponse`); NAS compose runs `minio` + `minio-init` on the `data` network with a named `minio-data` volume, registry compose omits MinIO; see `docs/rag/architecture/minio-storage.md`
 - ROBOCO_TRANSCRIPT_RETENTION_DAYS / ROBOCO_TRANSCRIPT_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_IMAGE_PRUNE_ENABLED / _INTERVAL_SECONDS
@@ -320,6 +323,10 @@ deployment-tooling
 
 > **Local branch (not on master, NOT deployed):** `feature/fastapi-guard-hardening` landed `ROBOCO_GUARD_ENABLED` / `_PASSIVE_MODE` / `_FAIL_SECURE` / `_TELEMETRY_ENABLED` / `_AGENT_API_KEY` / `_PROJECT_ID` / `_EMERGENCY` / `_EMERGENCY_WHITELIST` in `config.py` (6 commits, `896532a3`..`99ee666e`) and set both NAS composes' `ROBOCO_GUARD_ENABLED=true` / `ROBOCO_GUARD_PASSIVE_MODE=true` / `ROBOCO_GUARD_FAIL_SECURE=false` (`c496b677`, Phase 5); `docker-compose.registry.yml` is untouched and stays off. See api-core-websocket for the `roboco/security.py` module + `create_app` wiring detail.
 
+> **Off-disk backup mirror (#645, `98a96bcd`).** The `backup` sidecar wrote its dumps to the same disk it protects — one disk failure lost both the live DB and the backups. `mirror_backup()` (backup-entrypoint.sh) copies the fresh dump to `BACKUP_MIRROR_DIR` (tmp+rename, same crash safety as the primary write) after every successful `pg_dump` and prunes the mirror to the same `BACKUP_KEEP`; an unmounted/unwritable mirror logs and skips without blocking the primary dump. Unset (the default) means the script never attempts a copy. `docs/backend/ops/database-backups.md` gained the mirror setup plus a quarterly restore-drill procedure (throwaway pgvector container, `pg_restore`, row-count sanity check).
+>
+> **`make quickstart` (#653, `31a489b4`).** New `scripts/bootstrap.sh` backs a one-command pull-and-run bring-up for `docker-compose.registry.yml`: idempotent `.env` bootstrap (copies `.env.example` on first run, never touches a reused file), the three required secrets pre-validated with pointed remedies instead of compose's opaque interpolation error, then pull + `up -d` + a doctor-style readiness sweep grounded in real surfaces (root `/health`, `/api/auth/status` through nginx, the verbatim "Alembic upgrade finished" log line, `ollama list`). `.github/workflows/release.yml` gained a `pull-smoke` job (fresh runner, own GHCR login, needs `publish-images`) that literally pulls the registry compose against the just-published tag on every release, guarding the missing-image regression class documented elsewhere in this file's own Gotchas.
+>
 > **v0.18.0** (2026-07-04): Fable mode — `agent-base.Dockerfile` now `COPY`s 5 vendored `docker/scripts/fable-*.sh` hook scripts (stop-gate, bash-discipline, honesty-nudge, prompt-nudge, precompact), installed at spawn time only when `ROBOCO_FABLE_MODE_ENABLED` is set (default off; `session-start.sh` from the upstream `opus-fable-playbook` was deliberately not ported — redundant with the doctrine layer). X feature-spotlight adds `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`/`_INTERVAL_SECONDS` to `config.py` as a sub-switch of the existing X-engine flag.
 
 ## Regression Risks

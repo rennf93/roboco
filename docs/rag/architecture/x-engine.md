@@ -22,7 +22,7 @@ Both are bounded by `ROBOCO_X_MAX_OPEN_POSTS` (rolling cap on concurrently-open 
 
 ## Drafting
 
-Draft bodies are written by a **local-model** chat call (`_chat`, hitting `ROBOCO_LOCAL_LLM_BASE_URL` — never a cloud LLM in the hot path), in a fixed Head-of-Marketing voice prompt, then hard-clamped to 280 characters (`_clamp_tweet`). A local-model failure falls back to a plain template body rather than failing the draft outright. Drafting is **not** an agent spawn — no agent (including Head of Marketing) is spawned to write these; see `docs/rag/roles/head-marketing.md` for why the HoM's tool surface doesn't change.
+Draft bodies are written by a **local-model** chat call (`_chat`, hitting `ROBOCO_LOCAL_LLM_BASE_URL` — never a cloud LLM in the hot path), in a full Head-of-Marketing voice prompt (the reasoning-backed VOICE GUIDE plus a banned-word/AI-slop list and style exemplars — no em dashes, no "game-changer"/"seamless"/etc., no exclamation pileups, aimed well under 240 characters so the 280 clamp never truncates mid-sentence), then hard-clamped to 280 characters (`_clamp_tweet`). A release-post local-model failure still falls back to a plain template body (a release announcement always has something real to say); a failed reply draft instead skips origination entirely rather than shipping a generic "Thanks for the mention!". Drafting is **not** an agent spawn — no agent (including Head of Marketing) is spawned to write these; see `docs/rag/roles/head-marketing.md` for why the HoM's tool surface doesn't change.
 
 ## Ownership and the CEO gate
 
@@ -34,7 +34,7 @@ The CEO acts through panel-only REST, CEO-role-gated (`require_ceo_role`), never
 |----------|--------|
 | `GET /api/x/posts` | List every held draft (both sources) awaiting decision. |
 | `POST /api/x/posts/{task_id}/approve` | Post to X (optionally with an edited body, still 280-char clamped). Idempotent — approving an already-posted draft returns `already_posted` without a second API call. |
-| `POST /api/x/posts/{task_id}/reject` | Cancel the draft with a reason. Terminal — a rejected draft is never posted: `approve` refuses a CANCELLED draft outright (returns `already_rejected` without calling the X API), so a stale approve can't resurrect it; a fresh one originates on the next cycle/release if still relevant. |
+| `POST /api/x/posts/{task_id}/reject` | Cancel the draft with a reason. The cancelled draft itself is never posted — `approve` refuses a CANCELLED draft outright (returns `already_rejected` without calling the X API), so a stale approve can't resurrect it. A non-blank reason also schedules a redraft: the same source (release/reply/spotlight) is revised by the local model with the CEO's feedback folded in as guidance, and one fresh held draft appears in the queue — the feedback loop closes immediately rather than waiting on the next cycle/release. A local-model failure or empty revision originates nothing (no degraded copy). |
 | `GET /api/x/credentials` | Whether all four OAuth secrets are stored (`has_credentials` boolean — never the secrets). |
 | `POST /api/x/credentials` | Set (or, passing all four empty, clear) the four secrets. All-or-nothing — a partial set raises a validation error. |
 

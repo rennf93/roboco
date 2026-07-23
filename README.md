@@ -303,7 +303,7 @@ uv run mypy roboco/
 | RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (Ollama) |
 | Local LLM | Ollama (glm-5.2:cloud) |
-| Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) |
+| Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) |
 | Package Manager | uv |
 
 ## Status
@@ -320,7 +320,7 @@ uv run mypy roboco/
 - [x] RAG/Knowledge base (in-house pgvector engine)
 - [x] Agent orchestrator
 - [x] CEO approval workflow
-- [x] Pluggable agent providers (Claude Code + xAI Grok on the official `grok` CLI)
+- [x] Pluggable agent providers (Claude Code + xAI Grok + OpenAI Codex + Google Gemini, each on its official CLI)
 - [x] Inbound PR review (read-only PR-reviewer + CEO supersede/dismiss queue)
 - [x] Self-healing CI loop for RoboCo's own repo (default-off, CEO-gated)
 - [x] Business Goals tab with a live Company Scorecard (delivery, spend-vs-budget, lead time)

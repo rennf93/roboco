@@ -1,7 +1,7 @@
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→061) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 38 tables).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→086) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 38+ tables — not recomputed for this delta, several 077-086 migrations add columns to existing tables rather than new ones).
 
 ## Files
 
@@ -13,7 +13,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 61 migration files 001..061 (two share number 026 — chained, not a collision). |
+| `alembic/versions/` | 86 migration files 001..086 (two share number 026 — chained, not a collision). |
 
 ## Key Symbols
 
@@ -115,6 +115,16 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 074 | 074_telegram_credentials.py | `telegram_credentials` (singleton Fernet-encrypted `bot_token_encrypted` + `chat_id_encrypted`, mirrors `x_credentials`) — the Telegram notifications bridge (`ROBOCO_TELEGRAM_ENABLED`, default off). |
 | 075 | 075_company_goals_company_name.py | `company_goals.company_name` (Text, `server_default=""`) — CEO-authored product/company name, mirroring `brand_voice`. Feeds `CompanyGoalsService.resolve_product_name` (project name → this field → the "RoboCo" literal fallback), which `XEngine`/`VideoEngine` both call so release posts/videos stop hardcoding "RoboCo". Additive and inert until the CEO sets it in the Business → Goals editor. |
 | 076 | 076_project_git_provider.py | `projects.git_provider` (nullable `String(16)`, not a pg enum — validated at the service layer by `roboco.foundation.policy.forge.validate_project_forge`) — Phase 0 of the forge-providers spec (GitHub + Gitea + GitLab). Null = auto-detect from the `git_url` host (github.com → github; anything else is a registration-time rejection unless the operator sets this column explicitly — the GitHub Enterprise / self-hosted escape hatch). Additive: every existing project keeps resolving to GitHub behavior until GitLab/Gitea providers are set. See `docs/map/worksession-git.md`. |
+| 077 | 077_github_app.py | `github_app_credentials` (singleton Fernet-encrypted App id + private key) + `projects.github_installation_id` (BigInteger, nullable) — a project can bind to a GitHub App installation instead of a bare PAT, with PAT fallback on any mint failure. See `docs/map/worksession-git.md`. |
+| 078 | 078_project_codegen_command.py | `projects.codegen_command` (String(500), nullable) — per-project command run in the task's worktree right before every push, auto-committing any codegen drift into the same push (RoboCo itself sets `make codegen`). See `docs/map/worksession-git.md`. |
+| 079 | 079_notification_backoff.py | `notifications.reescalation_count` / `.last_reescalated_at` / `.reescalation_delivered_count` — the per-notification exponential re-escalation backoff schedule, replacing the prior every-sweep-tick-forever re-escalation. See `docs/map/notification.md`. |
+| 080 | 080_task_project_budgets.py | `tasks.budget_usd` (Float, nullable) + `projects.monthly_budget_usd` (Float, nullable) — per-task and per-project cost budgets (`ROBOCO_TASK_BUDGETS_ENABLED`, default off). See `docs/map/orchestrator.md` / `docs/map/gateway-support.md`. |
+| 081 | 081_doctrine_version.py | `agent_spawn_sessions.doctrine_version` (String(32), nullable) — stamped at spawn-session finalize from the composed prompt layers, so a golden-task eval cohort's model+doctrine combination (e.g. Fable-mode on vs. off) is durably identifiable after the fact. See `docs/map/tests.md`. |
+| 082 | 082_routing_presets.py | `routing_presets` (id, name, `payload` JSONB, timestamps) — named, full-snapshot save/restore of the routing state (mode + every assignment row, AGENT_SLUG pins included). See `docs/map/support-services.md`. |
+| 083 | 083_seed_openai_provider.py | Seeds the OpenAI (Codex CLI) provider row — `ModelProvider.OPENAI`. See `docs/map/runtime-providers.md`. |
+| 084 | 084_modelprovider_gemini.py | Adds `gemini` to the `modelprovider` postgres enum. |
+| 085 | 085_seed_gemini_provider.py | Seeds the Gemini CLI provider row — `ModelProvider.GEMINI`. |
+| 086 | 086_enable_gemini_provider.py | `UPDATE provider_configs SET enabled = true` for the Gemini row 085 seeded `enabled=false` — Grok gets force-enabled via its `apply_mode="grok"` write path, but `apply_mode` grew no `"gemini"` case until this same change, so without this migration a Mix-mode assignment to a Gemini model would resolve against a permanently-disabled row and silently fall back to Anthropic (wired end-to-end everywhere except reachable). Codex (083) sidesteps this by seeding `enabled=true` directly. See `docs/map/runtime-providers.md`. |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.
@@ -277,6 +287,8 @@ Migration chain 001..059
 > Delta 2026-07-04 (v0.18.0): `060_drop_messaging` (the comms-teardown migration — drops `messages`/`session_tasks`/`sessions`/`groups`/`channels` + 4 enum types + `journal_entries.session_id`; A2A is now the sole directed-message channel; one-way, `downgrade()` raises `NotImplementedError`) had already landed on master but was never appended to this doc; `061_x_feature_spotlight` adds `x_seen_features` (`XSeenFeatureTable`) + `company_goals.brand_voice` (X feature-spotlight, `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, sub-switch of `x_engine_enabled`). Chain head is now 061. ORM table count is now 38 (verified via `grep -c '^class .*Table' roboco/db/tables.py`), up from this doc's previously-stated 37 (that figure predates 055-061 and was never recomputed).
 >
 > Delta 2026-07-18/19: `075_company_goals_company_name` adds `company_goals.company_name` (X/video product-branding fallback) and `076_project_git_provider` adds `projects.git_provider` (forge-providers Phase 0 — GitHub/Gitea/GitLab). Chain head is now 076 (062-072 remain the pre-existing table gap noted above — this delta only closes 073-076).
+>
+> Delta 2026-07-21/23 (10 migrations, 077-086): `077_github_app` (GitHub App credentials + `projects.github_installation_id`), `078_project_codegen_command` (`projects.codegen_command`, auto-regenerate-before-push), `079_notification_backoff` (re-escalation columns replacing the every-tick-forever sweep), `080_task_project_budgets` (`tasks.budget_usd` + `projects.monthly_budget_usd`), `081_doctrine_version` (`agent_spawn_sessions.doctrine_version`, the golden-task eval cohort stamp), `082_routing_presets` (named full-snapshot routing presets), `083_seed_openai_provider` + `084_modelprovider_gemini` + `085_seed_gemini_provider` + `086_enable_gemini_provider` (Codex + Gemini CLI provider rows — see `docs/map/runtime-providers.md`). Chain head is now 086.
 
 ## Regression Risks
 

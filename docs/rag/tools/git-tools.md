@@ -46,6 +46,8 @@ commit(message="Add rate limiting endpoint", files=["roboco/api/routes/rate.py"]
 
 There is no separate `push` step and no separate `create_pr` step. Both are side-effects of the lifecycle transitions the verbs already drive.
 
+On a project that checks in generated artifacts, the push step also regenerates them: right before your branch is pushed, the project's codegen command runs in your worktree, and any drift it produces is committed into the SAME push automatically — you don't need to run it yourself, and a broken/timing-out codegen command never blocks your push (it just logs and lets you proceed; a real drift then surfaces on CI's own drift gate instead).
+
 ### PMs → `complete` (roboco-flow)
 
 ```python

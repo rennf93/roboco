@@ -111,6 +111,14 @@ escalate_to_ceo(task_id=parent_id, reason="...")
 
 **Solution**: Verify with the repo-wide check (not a scoped one, since scoping is a no-op) and record the zero-diff finding in a `decision` journal entry. If the task's acceptance criteria are already met with nothing left to change in the named files, do not keep re-running the same check — escalate once with the concrete verification so a PM can either stamp the task as satisfied-by-upstream/cancel it, or direct a small verification commit outside the target file(s) to satisfy the commit gate.
 
+## Task Auto-Blocked for Budget
+
+**Symptom**: Your in-progress task flips to `blocked` with a budget marker, and you weren't the one who blocked it.
+
+**Cause** (only when task budgets are armed): a periodic sweep prices the task's own spend against its `budget_usd` (or the `TaskType` default when unset) and blocks it before you get a chance to finish gracefully, so the dispatcher won't respawn onto an already-over-budget task.
+
+**Fix**: This is a PM/CEO decision, not yours to route around — `unblock` re-checks live spend and refuses again while still over the cap. Escalate (`i_am_blocked`/`escalate_up`) naming the budget breach; the CEO either raises the task's/project's cap or the PM redirects the remaining work.
+
 ## Invalid Task Status for Operation
 
 **Error**: "Task is in [status], expected [expected_status]"
