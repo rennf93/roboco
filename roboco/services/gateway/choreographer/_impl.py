@@ -1278,7 +1278,9 @@ class Choreographer:
             return None
         spend_usd = await self.task.task_spend_usd(t.id)
         cap_usd = effective_task_budget_usd(t)
-        if spend_usd >= cap_usd:
+        # No explicit budget = no cap: the breach that stamped the marker was
+        # since resolved by clearing the budget field — unblock proceeds.
+        if cap_usd is not None and spend_usd >= cap_usd:
             return Envelope.invalid_state(
                 message=(
                     f"task {t.id} is still over its cost budget: "

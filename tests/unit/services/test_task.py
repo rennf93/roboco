@@ -567,12 +567,15 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 @pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
-    agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
+    agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE, current_task_id=uuid4())
     result = MagicMock()
     result.scalar_one_or_none.return_value = agent
     svc = _service_with(result)
     await svc.mark_agent_idle(agent.id)
     assert agent.status == AgentStatus.IDLE
+    # Otherwise the agent keeps reporting its last task as "currently
+    # working" forever — nothing else ever clears this column.
+    assert agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +590,10 @@ async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
     result.scalar_one_or_none.return_value = task
     session = MagicMock(flush=AsyncMock())
     session.execute = AsyncMock(return_value=result)
+    # _qa_or_doc_claim now looks up the claiming agent via session.get to
+    # flip its ACTIVE marker — default to "no matching row" for a test that
+    # doesn't care about that side effect.
+    session.get = AsyncMock(return_value=None)
     svc = TaskService(session)
     qa_id = uuid4()
     out = await svc.qa_claim(qa_id, task.id)
@@ -617,6 +624,7 @@ async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
     result.scalar_one_or_none.return_value = task
     session = MagicMock(flush=AsyncMock())
     session.execute = AsyncMock(return_value=result)
+    session.get = AsyncMock(return_value=None)
     svc = TaskService(session)
     doc_id = uuid4()
     out = await svc.doc_claim(doc_id, task.id)
@@ -677,7 +685,10 @@ async def test_unblock_with_restore_returns_to_pre_block_state() -> None:
         blocker_resolver_type=BlockerResolverType.AGENT,
         blocker_raised_by=pre_assignee,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner via session.get
+    # to flip its ACTIVE marker — default to "no matching row".
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.unblock_with_restore(uuid4(), task.id, restore=True)
     assert out is task
@@ -721,13 +732,17 @@ async def test_unblock_no_branch_returns_to_pending() -> None:
     task = _build_task(
         status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=raiser
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    session = MagicMock(flush=AsyncMock())
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_index_lifecycle_event_background", AsyncMock())
     out = await svc.unblock(task.id)
     assert out is task
     assert task.status == TaskStatus.PENDING
     assert task.assigned_to == raiser
+    # A PENDING restore is NOT a resume — the owner isn't marked active here;
+    # a fresh claim() is what actually resumes it, so no agent lookup runs.
+    session.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -747,7 +762,10 @@ async def test_admin_set_status_out_of_blocked_restores_pre_block_owner() -> Non
         pre_block_state="in_progress",
         pre_block_assignee=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner (dev) via
+    # session.get to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
     assert out is task
@@ -791,7 +809,10 @@ async def test_admin_set_status_into_review_queue_clears_active_claimant() -> No
         claimed_by=dev,
         active_claimant_id=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claimant now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
     assert out is task
@@ -943,7 +964,10 @@ async def test_admin_set_status_blocked_to_review_state_clears_claim() -> None:
         pre_block_state="awaiting_pm_review",
         pre_block_assignee=pm,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claim now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_PM_REVIEW)
     assert out is task
@@ -970,7 +994,10 @@ async def test_admin_set_status_blocked_to_needs_revision_clears_claim() -> None
         pre_block_state="awaiting_pm_review",
         pre_block_assignee=pm,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claim now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.NEEDS_REVISION)
     assert out is task
@@ -1085,7 +1112,10 @@ async def test_admin_set_status_pre_block_restore_syncs_active_claimant() -> Non
         pre_block_state="in_progress",
         pre_block_assignee=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner (dev) via
+    # session.get to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
     assert out is task
@@ -1566,7 +1596,10 @@ async def test_unblock_with_branch_resumes_in_progress() -> None:
         branch_name="feature/backend/abc12345",
         blocker_raised_by=uuid4(),
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Resuming IN_PROGRESS now looks up the restored owner via session.get
+    # to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_index_lifecycle_event_background", AsyncMock())
     out = await svc.unblock(task.id)
@@ -1807,6 +1840,56 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
     # ...AND the reversal row is emitted so the journey's last event matches
     # the rolled-back state (the F060 fix). Before the fix this was missing.
     assert {"from": "claimed", "to": "pending"} in audit_calls
+
+
+@pytest.mark.asyncio
+async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> None:
+    """_finalize_claim must flip agent.status/current_task_id to ACTIVE/this
+    task BEFORE the branch step runs (previously nothing ever wrote these
+    fields at all — the fleet-status bug), and roll them back to their
+    pre-claim values on a branch-creation failure, same as the task fields.
+    """
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+
+    task = _build_task(
+        status=TaskStatus.PENDING,
+        branch_name=None,
+        project_id=uuid4(),
+        product_id=None,
+        batch_id=None,
+        parent_task_id=None,
+        cell_projects=[],
+        pr_created=False,
+        pr_number=None,
+    )
+    agent = MagicMock(
+        id=uuid4(),
+        role=AgentRole.DEVELOPER,
+        status=AgentStatus.IDLE,
+        current_task_id=None,
+    )
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    captured: dict[str, object] = {}
+
+    async def _boom(_task: object, _agent_id: object) -> str:
+        captured["status"] = agent.status
+        captured["current_task_id"] = agent.current_task_id
+        raise RuntimeError("branch boom")
+
+    _bind(svc, "_ensure_branch_for_task", _boom)
+
+    with pytest.raises(RuntimeError, match="branch boom"):
+        await svc._finalize_claim(task, agent, agent.id)
+
+    # Set to ACTIVE/this-task before the branch step ran...
+    assert captured["status"] == AgentStatus.ACTIVE
+    assert captured["current_task_id"] == task.id
+    # ...and rolled back to the pre-claim values once branch creation failed.
+    assert agent.status == AgentStatus.IDLE
+    assert agent.current_task_id is None
 
 
 @pytest.mark.asyncio

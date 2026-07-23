@@ -156,7 +156,7 @@ function EditTaskDialogInner({
     const parsedBudget = trimmedBudget ? Number(trimmedBudget) : null;
     if (trimmedBudget && (Number.isNaN(parsedBudget) || parsedBudget! <= 0)) {
       toast.error(
-        "Budget must be greater than 0 — leave it empty for the task-type default",
+        "Budget must be greater than 0 — leave it empty for no cap",
       );
       return;
     }
@@ -359,21 +359,21 @@ function EditTaskDialogInner({
 
               {/* Budget (USD) */}
               <div className="space-y-2">
-                <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = use the task-type default.">
+                <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = no cap.">
                   <Label>Budget (USD)</Label>
                 </HelpTip>
                 <Input
                   type="number"
                   min="0.01"
                   step="0.01"
-                  placeholder="Task-type default"
+                  placeholder="No cap"
                   value={budgetUsd}
                   onChange={(e) => setBudgetUsd(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
                   Must be greater than 0 — a 0 budget would block the task
-                  before it spends a cent. Leave blank for the task-type
-                  default.
+                  before it spends a cent. Leave blank for no cap: budgets
+                  enforce only when explicitly set.
                 </p>
                 {spendUsd != null && (
                   <p className="text-xs text-muted-foreground" data-testid="task-spend">

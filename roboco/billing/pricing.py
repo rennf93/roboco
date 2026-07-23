@@ -4,7 +4,7 @@ Token pricing for Claude API models.
 Implements per-model USD cost calculation based on Anthropic's published
 pricing. All prices are in USD per 1 million tokens.
 
-Pricing is provider-aware. A model name resolves to one of four cases:
+Pricing is provider-aware. A model name resolves to one of five cases:
 
 * **Anthropic** — priced from the table below by substring match.
 * **Priced non-Anthropic** — xAI Grok (``grok-build-*``, billed per token via
@@ -13,10 +13,20 @@ Pricing is provider-aware. A model name resolves to one of four cases:
   metered), and Google Gemini (``gemini-2.5-*``, billed per token via the
   Gemini API) are priced from the table too. Match by substring like the rest.
 * **Free non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix
-  or bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
-  per-token cost**: local inference runs on owned hardware, and Ollama Cloud
-  is billed by flat subscription / GPU-time rather than per token. Both return
-  an intentional ``0.0`` — not an error condition, so they are not warned on.
+  or bare model tags with no ``:cloud`` tag). These have **no per-token
+  cost**: local inference runs on owned hardware. Returns an intentional
+  ``0.0`` — not an error condition, so it is not warned on.
+* **Subscription-billed Ollama Cloud** — an Ollama Cloud model (``:cloud``
+  tag) is, like Grok/Codex/Gemini, really billed via flat subscription /
+  GPU-time rather than per token — but that does not make it free the way
+  local inference is, so it is priced from the table at its API-equivalent
+  rate the same way grok-build is (see the GLM-5.2 entry below) whenever a
+  citable published rate exists. An Ollama Cloud model with NO table entry
+  (a rate we could not ground) still returns ``0.0``; ``is_ollama_cloud_model``
+  identifies this case for a caller that wants to render "subscription
+  (untracked)" instead of implying the run was free (see the TG cockpit's
+  own spend label, which calls it directly rather than through
+  :class:`CostResult`).
 * **Unpriced Anthropic** — a ``claude``-named model with no table entry (a new
   or renamed Claude model we have not priced yet). This is real spend we would
   otherwise undercount, so it logs a warning and returns ``0.0``.
@@ -82,6 +92,22 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("gemini-2.5-pro", 1.25, 10.00, 1.25, 1.25),
     ("gemini-2.5-flash-lite", 0.10, 0.40, 0.10, 0.10),
     ("gemini-2.5-flash", 0.30, 2.50, 0.30, 0.30),
+    # Z.ai GLM-5.2 — priced non-Anthropic. Ollama Cloud's `glm-5.2:cloud` tag
+    # (roboco's own ROBOCO_LOCAL_LLM_MODEL default) is billed via flat
+    # subscription/GPU-time, not per token, but the same "attribute at the
+    # underlying API-equivalent rate" convention as grok-build/gpt-5.3-codex
+    # applies once a real published rate exists — a real fleet running on
+    # this model was undercounting spend as literal $0 otherwise. Official
+    # first-party pricing: https://docs.z.ai/guides/overview/pricing (fetched
+    # 2026-07-23): $1.40/1M input, $4.40/1M output, $0.26/1M cached input. No
+    # cache-write discount is published, so cache_write falls back to the
+    # input rate (same convention as grok-build/gpt-5.3-codex above).
+    # Side effect: input_price_per_million("glm-5.2:cloud") is now $1.40 (was
+    # $0.0) — pricier than haiku's $1.00 — so the cost-tiered
+    # complexity-override's downgrade-only comparator now REJECTS a new
+    # qa/documenter pin to glm-5.2:cloud that was previously allowed when it
+    # priced as free-tier. Intended: it really is costlier per input token.
+    ("glm-5.2", 1.40, 4.40, 0.26, 1.40),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
     ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),
@@ -107,6 +133,16 @@ _MILLION = 1_000_000.0
 def _is_anthropic_model(lower: str) -> bool:
     """True if the lowercased model name looks like an Anthropic (Claude) model."""
     return any(fragment in lower for fragment in _ANTHROPIC_FRAGMENTS)
+
+
+def is_ollama_cloud_model(model: str) -> bool:
+    """True for an Ollama Cloud model (the ``:cloud`` tag convention, e.g.
+    ``glm-5.2:cloud``) — distinguishes a subscription-billed cloud model from
+    a genuinely-free self-hosted Ollama model (``ollama/`` prefix or a bare
+    local tag with no ``:cloud`` suffix). Consumed by the TG cockpit
+    (``tg_cockpit.py``) to label an ungrounded cloud model's ``$0`` spend as
+    "subscription (untracked)" rather than implying the run was free."""
+    return ":cloud" in model.lower()
 
 
 def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
@@ -135,8 +171,8 @@ def input_price_per_million(model: str) -> float:
     policy) to rank two models against each other without needing a separate
     explicit tier ordering: the input rate already orders the Claude tiers
     (haiku < sonnet < opus) and prices Grok below Sonnet, so "costlier" reduces
-    to "higher input price". A model with no pricing-table match (self-hosted,
-    Ollama Cloud — genuinely free per-token) returns ``0.0``, the cheapest
+    to "higher input price". A model with no pricing-table match (self-hosted
+    Ollama, or an ungrounded Ollama Cloud tag) returns ``0.0``, the cheapest
     possible rank, so it can never be rejected as "costlier".
     """
     if not model:
@@ -149,12 +185,14 @@ def input_price_per_million(model: str) -> float:
 class CostResult:
     """Estimated cost plus pricing attribution (#65).
 
-    ``cost_usd`` is ``0.0`` for both a genuinely-free non-Anthropic model (local
-    inference — no per-token cost) and an unpriced Anthropic model (a Claude
-    model we forgot to price — real spend we are failing to count). ``unpriced``
-    distinguishes them so a caller can surface the miss instead of silently
-    reporting ``$0``. ``is_anthropic`` records which family the model resolved
-    to. ``calculate_cost`` returns just the ``cost_usd`` float for existing
+    ``cost_usd`` is ``0.0`` for both a genuinely-free non-Anthropic model
+    (local inference, or an ungrounded Ollama Cloud tag — see
+    ``is_ollama_cloud_model`` for distinguishing the two) and an unpriced
+    Anthropic model (a Claude model we forgot to price — real spend we are
+    failing to count). ``unpriced`` flags only the latter case so a caller
+    can surface the miss instead of silently reporting ``$0``.
+    ``is_anthropic`` records which family the model resolved to.
+    ``calculate_cost`` returns just the ``cost_usd`` float for existing
     callers; ``calculate_cost_result`` returns the full attribution.
     """
 
@@ -195,11 +233,13 @@ def calculate_cost_result(
     """Calculate the estimated USD cost for a model invocation, with attribution.
 
     Matches the model name against the known pricing table using substring
-    search (longest match wins). Provider-aware (see module docstring):
-    non-Anthropic models (local Ollama, Ollama Cloud) have no per-token cost
-    and return ``cost_usd=0.0, unpriced=False``; an unpriced Anthropic model
-    returns ``cost_usd=0.0, unpriced=True`` and logs a warning since it
-    represents real spend we are failing to count.
+    search (longest match wins). Provider-aware (see module docstring): a
+    priced non-Anthropic model (Grok, Codex, Gemini, or a grounded Ollama
+    Cloud model like GLM-5.2) gets a real per-token cost; an ungrounded
+    non-Anthropic model (local Ollama, or an unpriced Ollama Cloud tag) has
+    no per-token cost and returns ``cost_usd=0.0, unpriced=False``; an
+    unpriced Anthropic model returns ``cost_usd=0.0, unpriced=True`` and logs
+    a warning since it represents real spend we are failing to count.
 
     Args:
         model: Model name or short alias (e.g. ``"claude-sonnet-5"``,
@@ -227,14 +267,18 @@ def calculate_cost_result(
     best_prices = _lookup_prices(lower)
     if best_prices is None:
         # No per-token rate. Warn only for Anthropic models (real spend we are
-        # undercounting); non-Anthropic models are local/subscription-billed
-        # and have no per-token cost, so an intentional 0.0 is correct.
+        # undercounting); a non-Anthropic model with no rate is either
+        # genuinely free (self-hosted) or subscription-billed-but-untracked
+        # (Ollama Cloud) — both log at debug (see ``is_ollama_cloud_model``
+        # for a caller that needs to distinguish the two).
         if is_anthropic:
             logger.warning("No pricing data found for Anthropic model", model=model)
         else:
             logger.debug("Non-Anthropic model has no per-token cost", model=model)
         # Unpriced only when it is an Anthropic model we forgot to price; a
-        # non-Anthropic model with no rate is intentionally free.
+        # non-Anthropic model with no rate is either genuinely free or
+        # subscription-billed-but-untracked (never "unpriced" — that label is
+        # reserved for real spend we are failing to count).
         return CostResult(
             cost_usd=0.0, unpriced=is_anthropic, is_anthropic=is_anthropic
         )

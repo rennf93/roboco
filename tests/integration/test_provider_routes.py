@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.provider import router as provider_router
+from roboco.billing.pricing import input_price_per_million
 from roboco.db.tables import (
     ModelAssignmentTable,
     ProviderConfigTable,
@@ -30,11 +31,19 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _first_model_for_type(provider_type: ModelProvider) -> str:
+def _unpriced_model_for_type(provider_type: ModelProvider) -> str:
+    """The first `provider_type` catalog entry pricing.py has NOT grounded a
+    real per-token rate for — tests below want "an unpriced, free-tier
+    downgrade-safe model" specifically to exercise provider-readiness gating,
+    not pricing itself, so grounding a real rate for one catalog entry (e.g.
+    GLM-5.2) must not silently break them by picking that one."""
     for entry in MODEL_CATALOG:
-        if entry.provider_type == provider_type:
+        if (
+            entry.provider_type == provider_type
+            and input_price_per_million(entry.model_name) == 0.0
+        ):
             return entry.model_name
-    raise RuntimeError(f"no catalog entry for {provider_type}")
+    raise RuntimeError(f"no unpriced catalog entry for {provider_type}")
 
 
 def _make_app(
@@ -846,12 +855,12 @@ async def test_put_complexity_override_allows_same_tier_as_baseline(
 async def test_put_complexity_override_rejects_disabled_provider(
     app_client_with_ollama: AsyncClient,
 ) -> None:
-    """qa's baseline (haiku) prices no cheaper than Ollama Cloud (unpriced,
-    treated as free-tier) so the downgrade-only check passes — but the
+    """qa's baseline (haiku) prices no cheaper than an unpriced Ollama Cloud
+    model (free-tier) so the downgrade-only check passes — but the
     OLLAMA_CLOUD provider is disabled (no key set) in this fixture's seeded
     state, so the write-time readiness guard rejects it before it can
     silently no-op to the legacy Anthropic path at spawn."""
-    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    ollama_model = _unpriced_model_for_type(ModelProvider.OLLAMA_CLOUD)
     response = await app_client_with_ollama.put(
         "/api/providers/complexity-overrides",
         json={"role": "qa", "complexity": "low", "model_name": ollama_model},
@@ -875,7 +884,7 @@ async def test_put_complexity_override_warns_on_cross_family_once_provider_ready
         json={"api_key": "test-key"},
         headers=_HDR_PM,
     )
-    ollama_model = _first_model_for_type(ModelProvider.OLLAMA_CLOUD)
+    ollama_model = _unpriced_model_for_type(ModelProvider.OLLAMA_CLOUD)
     response = await app_client_with_ollama.put(
         "/api/providers/complexity-overrides",
         json={"role": "qa", "complexity": "low", "model_name": ollama_model},

@@ -56,7 +56,7 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   possibilities_matrix_enabled:
     "When a task's work is already done (commits + open PR + all acceptance criteria addressed + no open findings), submit it for QA in one i_am_done call instead of 3-6 turns — skips the retroactive plan, journal tracing, and local quality (CI-green proxy) gates. Off by default: the standard path is unchanged until you arm this.",
   task_budgets_enabled:
-    "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own budget (or its task-type default) is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is unaffected either way.",
+    "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own explicitly-set budget is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is never capped.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:

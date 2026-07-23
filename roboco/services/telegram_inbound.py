@@ -43,14 +43,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, select
 
 from roboco.config import settings
 from roboco.db.base import get_session_factory
-from roboco.db.tables import AgentTable, AuditLogTable
+from roboco.db.tables import AuditLogTable
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
-from roboco.models.base import AgentStatus, TaskStatus
+from roboco.models.base import TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services import telegram_bridge as bridge
 from roboco.services.base import BaseService, ValidationError
@@ -68,7 +67,6 @@ from roboco.services.telegram_credentials import get_telegram_credentials_servic
 from roboco.services.tg_cockpit import get_tg_cockpit_service
 from roboco.services.tiktok_client import build_tiktok_poster
 from roboco.services.tiktok_credentials import get_tiktok_credentials_service
-from roboco.services.usage import get_usage_service
 from roboco.services.video_post_service import TaskAlreadyCompletedError as _VideoDone
 from roboco.services.video_post_service import (
     VideoCaptionTooLongError,
@@ -564,21 +562,25 @@ class TelegramInboundEngine(BaseService):
             )
 
     async def _render_status(self) -> str:
-        """Cheap snapshot: active-agent count + task counts by status — no
-        spend/strategy/pitch queries (that's the heavier cockpit summary).
-        Statuses render in lifecycle order (only the nonzero ones), not
-        alphabetically — a CEO scanning on a phone reads top-to-bottom as the
-        pipeline, not as an a-z dump."""
+        """Cheap snapshot: fleet status breakdown + task counts by status —
+        no spend/strategy/pitch queries (that's the heavier cockpit summary).
+        The fleet breakdown shares the SAME by_status derivation as
+        ``/agents`` and the Today brief (``TgCockpitService.fleet`` ->
+        ``DashboardService.get_all_agent_status``) so the three surfaces can
+        never disagree on what "active" means. Task statuses render in
+        lifecycle order (only the nonzero ones), not alphabetically — a CEO
+        scanning on a phone reads top-to-bottom as the pipeline, not as an
+        a-z dump."""
         counts = await get_task_service(self.session).count_by_status()
-        active_result = await self.session.execute(
-            select(func.count(AgentTable.id)).where(
-                AgentTable.status == AgentStatus.ACTIVE
-            )
+        fleet = await get_tg_cockpit_service(self.session).fleet()
+        by_status = fleet.get("by_status", {})
+        fleet_line = " · ".join(
+            f"<b>{by_status.get(status, 0)}</b> {status}"
+            for status in ("active", "idle", "offline")
         )
-        active = active_result.scalar_one()
         lines = [
             "<b>🤖 Fleet</b>",
-            f"Active agents: <b>{active}</b>",
+            fleet_line,
             "",
             "<b>📋 Tasks</b>",
         ]
@@ -751,9 +753,15 @@ class TelegramInboundEngine(BaseService):
         return _truncate("\n".join(lines))
 
     async def _render_usage(self) -> str:
-        """Today's spend from the day rollup — the Today brief's number."""
-        summary = await get_usage_service(self.session).get_today_summary()
+        """Today's spend — the Today brief's own number (display-timezone
+        bucketed), so the bot and the Mini App never disagree on "today"."""
+        summary = await get_tg_cockpit_service(self.session).today_spend()
         tokens = int(summary.get("tokens_today", 0))
+        if summary.get("subscription_billed"):
+            return (
+                f"<b>💸 Spend today</b>\n≈$0 — subscription (untracked) · "
+                f"{tokens:,} tokens"
+            )
         cost = float(summary.get("cost_today_usd", 0.0))
         return f"<b>💸 Spend today</b>\n${cost:,.2f} · {tokens:,} tokens"
 

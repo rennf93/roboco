@@ -22,6 +22,7 @@ from roboco.billing.pricing import (
     calculate_cost,
     calculate_cost_result,
     input_price_per_million,
+    is_ollama_cloud_model,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,6 +68,14 @@ _CODEX_INPUT = 1.75
 _CODEX_OUTPUT = 14.00
 _CODEX_CACHE_READ = 0.175
 _CODEX_CACHE_WRITE = 1.75
+
+# Z.ai GLM-5.2 — priced non-Anthropic (Ollama Cloud's `glm-5.2:cloud` tag,
+# subscription-billed but attributed at the API-equivalent rate). Source:
+# https://docs.z.ai/guides/overview/pricing (fetched 2026-07-23).
+_GLM_INPUT = 1.40
+_GLM_OUTPUT = 4.40
+_GLM_CACHE_READ = 0.26
+_GLM_CACHE_WRITE = 1.40
 
 # Tolerance for floating-point comparisons
 _TOL = 1e-4
@@ -387,6 +396,57 @@ class TestCodexTier:
 
 
 # ---------------------------------------------------------------------------
+# GLM-5.2 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
+# published rate; see the module's pricing-table comment for the source).
+# ---------------------------------------------------------------------------
+
+
+class TestGlmTier:
+    """glm-5.2:cloud pricing — Ollama Cloud, priced like grok-build/codex."""
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _GLM_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("glm-5.2:cloud", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _GLM_OUTPUT) < _TOL
+
+    def test_cached_input(self) -> None:
+        cost = calculate_cost(
+            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _GLM_CACHE_READ) < _TOL
+
+    def test_cache_write(self) -> None:
+        cost = calculate_cost(
+            "glm-5.2:cloud", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+        )
+        assert abs(cost - _GLM_CACHE_WRITE) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "glm-5.2:cloud",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = _GLM_INPUT + _GLM_OUTPUT + _GLM_CACHE_READ + _GLM_CACHE_WRITE
+        assert abs(cost - expected) < _TOL
+
+    def test_glm_is_not_treated_as_anthropic(self) -> None:
+        assert _is_anthropic_model("glm-5.2:cloud") is False
+        assert calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=0) > 0.0
+
+    def test_bare_glm_tag_without_cloud_suffix_still_prices(self) -> None:
+        """The fragment match is on 'glm-5.2', independent of the ':cloud'
+        tag suffix — a differently-tagged variant still resolves."""
+        cost = calculate_cost("glm-5.2", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _GLM_INPUT) < _TOL
+
+
+# ---------------------------------------------------------------------------
 # Unknown / edge cases — must return 0.0 without raising
 # ---------------------------------------------------------------------------
 
@@ -477,16 +537,23 @@ class TestSubstringMatchPriority:
 
 
 class TestProviderAwareness:
-    """Non-Anthropic models (local Ollama / Ollama Cloud) cost 0.0 per token."""
+    """Genuinely-free local Ollama costs 0.0 per token; an ungrounded Ollama
+    Cloud model also costs 0.0 (we have no rate for it — see
+    ``is_ollama_cloud_model`` for the caller-side distinction from "free"). A
+    GROUNDED Ollama Cloud model (glm-5.2) is priced for real — see
+    ``TestGlmTier``."""
 
     def test_ollama_prefixed_model_returns_zero(self) -> None:
         """Self-hosted Ollama models (``ollama/`` prefix) have no API cost."""
         cost = calculate_cost("ollama/llama3", tokens_input=_M, tokens_output=_M)
         assert cost == _ZERO_COST
 
-    def test_ollama_cloud_model_returns_zero(self) -> None:
-        """Ollama Cloud (``:cloud`` tag) is subscription-billed, not per token."""
-        cost = calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=_M)
+    def test_ungrounded_ollama_cloud_model_returns_zero(self) -> None:
+        """An Ollama Cloud (``:cloud`` tag) model with no table entry has no
+        rate to price from — still 0.0 (not "unpriced"; see TestCostResult)."""
+        cost = calculate_cost(
+            "some-future-model:cloud", tokens_input=_M, tokens_output=_M
+        )
         assert cost == _ZERO_COST
 
     def test_bare_local_model_returns_zero(self) -> None:
@@ -589,6 +656,25 @@ def test_sonnet5_promo_active_on_or_before_2026_08_31(
     )
 
 
+class TestIsOllamaCloudModel:
+    """The ':cloud' tag convention, shared by pricing.py's own attribution
+    logic and external callers (the TG cockpit's spend label)."""
+
+    def test_cloud_tagged_model_is_cloud(self) -> None:
+        assert is_ollama_cloud_model("glm-5.2:cloud") is True
+        assert is_ollama_cloud_model("SOME-MODEL:CLOUD") is True
+
+    def test_local_model_is_not_cloud(self) -> None:
+        assert is_ollama_cloud_model("ollama/llama3") is False
+        assert is_ollama_cloud_model("qwen3-embedding:0.6b") is False
+
+    def test_anthropic_model_is_not_cloud(self) -> None:
+        assert is_ollama_cloud_model("claude-sonnet-5") is False
+
+    def test_empty_string_is_not_cloud(self) -> None:
+        assert is_ollama_cloud_model("") is False
+
+
 def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -635,11 +721,16 @@ class TestInputPricePerMillion:
         )
 
     def test_unpriced_non_anthropic_model_is_free_tier(self) -> None:
-        """A self-hosted / Ollama Cloud model has no per-token rate — treated
-        as the cheapest possible tier, so it can never be rejected as
-        "costlier" by the downgrade-only policy."""
-        assert input_price_per_million("glm-5.2:cloud") == 0.0
+        """A self-hosted / ungrounded-Ollama-Cloud model has no per-token
+        rate — treated as the cheapest possible tier, so it can never be
+        rejected as "costlier" by the downgrade-only policy."""
+        assert input_price_per_million("some-future-model:cloud") == 0.0
         assert input_price_per_million("my-custom-self-hosted-model:7b") == 0.0
+
+    def test_grounded_ollama_cloud_model_has_real_rate(self) -> None:
+        """GLM-5.2 is now grounded in a real published rate, unlike an
+        unpriced Ollama Cloud model."""
+        assert input_price_per_million("glm-5.2:cloud") == _GLM_INPUT
 
     def test_empty_model_returns_zero(self) -> None:
         assert input_price_per_million("") == 0.0

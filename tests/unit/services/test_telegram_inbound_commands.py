@@ -97,6 +97,33 @@ async def test_run_cycle_syncs_commands_exactly_once(
 
 
 @pytest.mark.asyncio
+async def test_render_status_shares_fleet_derivation_with_render_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The /status fleet line must come from the SAME by_status breakdown
+    /agents and the Today brief use (TgCockpitService.fleet) — a second,
+    independent agent-status query previously could (and did) disagree."""
+    fleet: dict[str, Any] = {
+        "total": 27,
+        "by_status": {"active": 3, "idle": 20, "offline": 4},
+        "working": [],
+    }
+    cockpit = MagicMock(fleet=AsyncMock(return_value=fleet))
+    monkeypatch.setattr(ti, "get_tg_cockpit_service", lambda _s: cockpit)
+    tasks = MagicMock(
+        count_by_status=AsyncMock(return_value={"in_progress": 5, "pending": 2})
+    )
+    monkeypatch.setattr(ti, "get_task_service", lambda _s: tasks)
+
+    text = await _engine()._render_status()
+
+    assert "3</b> active" in text
+    assert "20</b> idle" in text
+    assert "4</b> offline" in text
+    assert "in_progress" in text
+
+
+@pytest.mark.asyncio
 async def test_render_agents_lists_working_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -124,17 +151,45 @@ async def test_render_agents_lists_working_agents(
 async def test_render_usage_formats_today_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    usage = MagicMock(
-        get_today_summary=AsyncMock(
-            return_value={"tokens_today": 2_400_000, "cost_today_usd": 18.7}
+    cockpit = MagicMock(
+        today_spend=AsyncMock(
+            return_value={
+                "tokens_today": 2_400_000,
+                "cost_today_usd": 18.7,
+                "subscription_billed": False,
+            }
         )
     )
-    monkeypatch.setattr(ti, "get_usage_service", lambda _s: usage)
+    monkeypatch.setattr(ti, "get_tg_cockpit_service", lambda _s: cockpit)
 
     text = await _engine()._render_usage()
 
     assert "$18.70" in text
     assert "2,400,000 tokens" in text
+
+
+@pytest.mark.asyncio
+async def test_render_usage_labels_subscription_billed_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An untracked-subscription spend day (Ollama Cloud, no grounded rate)
+    must never render as a bare, misleading '$0.00'."""
+    cockpit = MagicMock(
+        today_spend=AsyncMock(
+            return_value={
+                "tokens_today": 456_221,
+                "cost_today_usd": 0.0,
+                "subscription_billed": True,
+            }
+        )
+    )
+    monkeypatch.setattr(ti, "get_tg_cockpit_service", lambda _s: cockpit)
+
+    text = await _engine()._render_usage()
+
+    assert "subscription (untracked)" in text
+    assert "456,221 tokens" in text
+    assert "$0.00" not in text
 
 
 @pytest.mark.asyncio

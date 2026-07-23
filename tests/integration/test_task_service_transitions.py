@@ -2151,6 +2151,11 @@ async def test_docs_complete_advance_clears_stale_documenter_claim(
     task.pr_number = 1
     task.pr_url = "u"
     task.pr_created = True
+    # Simulate the documenter having genuinely claimed it (what
+    # _qa_or_doc_claim's own ACTIVE-marking would have set).
+    documenter_agent = await db_session.get(AgentTable, documenter_id)
+    assert documenter_agent is not None
+    documenter_agent.current_task_id = task.id
     await db_session.flush()
 
     out = await svc.docs_complete(task.id, doc_notes="documented all flows")
@@ -2162,6 +2167,15 @@ async def test_docs_complete_advance_clears_stale_documenter_claim(
     assert out.claimed_by == pm_agent.id
     assert out.active_claimant_id == pm_agent.id
     assert out.claimed_by != documenter_id
+    # The outgoing documenter's fleet marker is released...
+    documenter_agent = await db_session.get(AgentTable, documenter_id)
+    assert documenter_agent is not None
+    assert documenter_agent.current_task_id is None
+    # ...but the PM is NOT marked active by this pre-assignment — the PM
+    # hasn't actually claimed (spawned) yet, only claim() does that.
+    pm_row = await db_session.get(AgentTable, pm_agent.id)
+    assert pm_row is not None
+    assert pm_row.current_task_id is None
     assert out.active_claimant_id != documenter_id
 
 

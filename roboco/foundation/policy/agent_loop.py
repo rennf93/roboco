@@ -26,8 +26,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from roboco.models.base import TaskType
-
 
 @dataclass(frozen=True)
 class BudgetPolicy:
@@ -79,44 +77,19 @@ class BudgetPolicy:
 DEFAULT_BUDGET: BudgetPolicy = BudgetPolicy()
 
 
-# Per-TaskType default $ budget (USD), consulted ONLY when a task's own
-# `budget_usd` is null AND ROBOCO_TASK_BUDGETS_ENABLED is on (see
-# roboco/config.py). Relative sizing reflects typical turn/tool-call weight:
-# CODE is the most token-heavy (multi-file edits, gate runs, revisions);
-# RESEARCH/DESIGN sit mid (web research + note/asset writing); PLANNING is
-# lighter prose; DOCUMENTATION and ADMINISTRATIVE are the cheapest, mostly
-# read-and-write-notes work.
-TASK_TYPE_DEFAULT_BUDGET_USD: dict[TaskType, float] = {
-    TaskType.CODE: 5.0,
-    TaskType.RESEARCH: 2.0,
-    TaskType.DESIGN: 2.0,
-    TaskType.PLANNING: 1.5,
-    TaskType.DOCUMENTATION: 1.0,
-    TaskType.ADMINISTRATIVE: 0.5,
-}
+def effective_task_budget_usd(task: Any) -> float | None:
+    """A task's $ cap: its own ``budget_usd``, or ``None`` for no cap at all.
 
-
-def default_budget_usd_for(task_type: TaskType) -> float:
-    """The TASK_TYPE_DEFAULT_BUDGET_USD entry for ``task_type``.
-
-    Falls back to the CODE tier (the most generous) for any TaskType this
-    dict has not been kept in sync with, so a future TaskType addition fails
-    open (a spend cap that's too generous) rather than crashing the sweep.
+    Budgets are enforcement-by-explicit-input only — a task nobody set a
+    budget on is uncapped (the earlier per-TaskType default table blocked a
+    default-budget coordination root one opus planning turn in; 2026-07-23).
+    The project's ``monthly_budget_usd`` claim guard is the explicit-input
+    backstop for fleet-wide spend. The one place this resolution happens —
+    the orchestrator's budget sweep and the ``unblock`` re-check both call
+    this and skip enforcement on ``None``.
     """
-    return TASK_TYPE_DEFAULT_BUDGET_USD.get(
-        task_type, TASK_TYPE_DEFAULT_BUDGET_USD[TaskType.CODE]
-    )
-
-
-def effective_task_budget_usd(task: Any) -> float:
-    """A task's effective $ cap: its own ``budget_usd``, or the TaskType
-    default when null. The one place this resolution happens — the
-    orchestrator's budget sweep and the ``unblock`` re-check both call this
-    instead of re-deriving the null-fallback themselves."""
     budget_usd = getattr(task, "budget_usd", None)
-    if budget_usd is not None:
-        return float(budget_usd)
-    return default_budget_usd_for(task.task_type)
+    return float(budget_usd) if budget_usd is not None else None
 
 
 # Per-verb retry caps. Verbs that hit a tracing_gap or invalid_state and

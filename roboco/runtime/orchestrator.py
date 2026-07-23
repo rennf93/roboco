@@ -8053,11 +8053,12 @@ Start by:
     async def _task_budget_breach(self, task_id_str: str) -> tuple[float, float] | None:
         """``(cap_usd, spend_usd)`` if this task's own $ budget is breached.
 
-        ``None`` when unbreached OR the task has already left claimed/
+        ``None`` when unbreached, when the task carries no explicit
+        ``budget_usd`` (budgets are explicit-input only — an unset budget
+        means no cap; ``effective_task_budget_usd`` is the shared resolver
+        ``unblock``'s re-check uses), OR the task has already left claimed/
         in_progress (a stale re-check racing the task's own progress — not a
-        breach). The cap is ``task.budget_usd``, falling back to the
-        TaskType default (``effective_task_budget_usd`` — the same resolver
-        ``unblock``'s re-check uses) when null. Spend is
+        breach). Spend is
         ``TaskService.task_spend_usd`` (closed-session cost + open-session
         live-token pricing via ``calculate_cost`` — a DB-only read off
         ``_sweep_token_snapshots``'s periodically-refreshed token columns, no
@@ -8082,6 +8083,8 @@ Start by:
             ):
                 return None
             cap_usd = effective_task_budget_usd(task)
+            if cap_usd is None:
+                return None
             spend_usd = await svc.task_spend_usd(task_id)
         if spend_usd < cap_usd:
             return None
