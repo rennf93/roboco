@@ -74,10 +74,15 @@ _SUB_TASKS = [
 ]
 _PLAN = "Land the refresh button via the frontend cell."
 # set_plan sleeps this long inside the verb's own transaction. On the fix
-# (1s server timeout) the sleep is cancelled well before this; disarmed
+# (armed server timeout) the sleep is cancelled well before this; disarmed
 # (1000s server timeout, 3s client timeout) the client trips first.
+# The armed timeout only needs to sit far below _HANG_SECONDS for the
+# cancel-and-release semantics; it is also verb-2's ENTIRE execution budget
+# (claim + every claim guard + set_plan + start + tracing gate), which keeps
+# growing as guards land — 1s flaked on loaded CI runners while passing
+# locally, so keep real headroom here.
 _HANG_SECONDS = 8.0
-_SERVER_TIMEOUT_SECONDS = 1.0
+_SERVER_TIMEOUT_SECONDS = 3.0
 _DISARMED_SERVER_TIMEOUT_SECONDS = 1000.0
 # The MCP client's HTTP timeout for the disarmed reproduction — must be less
 # than _HANG_SECONDS so the client trips before the sleep ends. Applied
