@@ -149,6 +149,38 @@ async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop(
 
 
 @pytest.mark.asyncio
+async def test_diverged_rebase_outcome_escalates_rather_than_completing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A diverged rebase (local and origin each carry unique commits) must
+    escalate like any other non-rebased/non-superseded outcome — never
+    silently complete or re-merge a branch that could still be missing one
+    side's work."""
+    git = AsyncMock()
+    git.rebase_pr_for_task = AsyncMock(
+        return_value={"status": "diverged", "local_only": 1, "origin_only": 2}
+    )
+    git.close_pull_request = AsyncMock()
+    git.pr_merge = AsyncMock()
+    task = AsyncMock()
+    task.admin_set_status = AsyncMock()
+    task.get = AsyncMock(return_value=MagicMock(status="awaiting_ceo_approval"))
+    choreo = _choreo(task, git, monkeypatch)
+    t = MagicMock(
+        pr_number=161, project_id=uuid4(), parent_task_id=None, team="backend"
+    )
+
+    await choreo._resolve_merge_conflict_on_complete(
+        uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC
+    )
+
+    task.admin_set_status.assert_awaited_once()
+    task.cell_pm_complete.assert_not_awaited()
+    git.close_pull_request.assert_not_awaited()
+    git.pr_merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unknown_rebase_outcome_escalates_rather_than_completing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

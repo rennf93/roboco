@@ -86,6 +86,27 @@ async def test_freshen_conflicts_reject_with_files() -> None:
 
 
 @pytest.mark.asyncio
+async def test_freshen_diverged_rejects() -> None:
+    """A diverged branch is refused just like a conflict — never guessed at."""
+    git = AsyncMock()
+    git.is_behind_base.return_value = (2, 3)
+    git.sync_task_branch.return_value = {
+        "status": "diverged",
+        "local_only": 1,
+        "origin_only": 2,
+    }
+    c = Choreographer(_make_deps(git=git))
+    env = await c._freshen_assembled_branch(
+        _cell_task(), base_branch="feature/main_pm/root", verb="submit_up"
+    )
+    assert env is not None
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "DIVERGED" in body["message"]
+    assert "reconcile" in body["remediate"]
+
+
+@pytest.mark.asyncio
 async def test_freshen_fails_open_on_probe_error() -> None:
     git = AsyncMock()
     git.is_behind_base.side_effect = RuntimeError("network sad")

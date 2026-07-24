@@ -2704,8 +2704,10 @@ class Choreographer:
         branch onto its base is safe; ``sync_task_branch`` pushes only the
         HEAD branch (master/main are never written). Fail-open on probe/sync
         errors — the PR/merge layer keeps its own behind checks — but a rebase
-        CONFLICT is a hard reject naming the files, so the PM routes a
-        conflict-resolution revision instead of re-submitting blind.
+        CONFLICT is a hard reject naming the files, and a DIVERGED branch (the
+        PM's own clone and origin each carry unique commits) is likewise a
+        hard reject, so the PM routes a conflict-resolution revision instead
+        of re-submitting blind.
         """
         if not getattr(t, "branch_name", None) or not base_branch:
             return None
@@ -2723,7 +2725,34 @@ class Choreographer:
                 "assembled_freshen_sync_failed", task_id=str(t.id), error=str(exc)
             )
             return None
-        if result.get("status") == "conflicts":
+        reject = self._freshen_rejection_for(
+            result, behind=behind, base_branch=base_branch, verb=verb
+        )
+        if reject is not None:
+            return reject
+        logger.info(
+            "assembled_branch_freshened",
+            task_id=str(t.id),
+            verb=verb,
+            base_branch=base_branch,
+            behind=behind,
+            status=result.get("status"),
+        )
+        return None
+
+    @staticmethod
+    def _freshen_rejection_for(
+        result: dict[str, Any], *, behind: int, base_branch: str, verb: str
+    ) -> Envelope | None:
+        """Hard-reject shapes for ``_freshen_assembled_branch``'s sync result.
+
+        Conflicts and divergence both mean the auto-sync could not safely
+        reconcile the branch on its own — extracted so the caller's
+        return-statement count stays under the PLR0911 budget (mirrors
+        ``_sync_branch_preflight_rejection``).
+        """
+        status = result.get("status")
+        if status == "conflicts":
             files = ", ".join(result.get("files") or []) or "unknown files"
             return Envelope.invalid_state(
                 message=(
@@ -2740,14 +2769,23 @@ class Choreographer:
                 ),
                 context_briefing={},
             )
-        logger.info(
-            "assembled_branch_freshened",
-            task_id=str(t.id),
-            verb=verb,
-            base_branch=base_branch,
-            behind=behind,
-            status=result.get("status"),
-        )
+        if status == "diverged":
+            return Envelope.invalid_state(
+                message=(
+                    f"{verb} refused: the assembled branch has DIVERGED from "
+                    f"its origin copy ({result.get('local_only', '?')} "
+                    f"local-only commit(s), {result.get('origin_only', '?')} "
+                    "origin-only commit(s)) — this workspace and origin each "
+                    "carry work the other lacks"
+                ),
+                remediate=(
+                    "a human must reconcile the two histories by hand (fetch, "
+                    "inspect both tips, merge or rebase deliberately) before "
+                    "re-submitting — auto-sync refuses to guess which side to "
+                    "keep"
+                ),
+                context_briefing={},
+            )
         return None
 
     async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
@@ -4614,11 +4652,28 @@ class Choreographer:
     def _sync_branch_next_hint(t: Any, result: dict[str, Any]) -> str:
         """Compute the ``next`` hint for a completed ``sync_branch`` run.
 
-        Three shapes: a rebase conflict (files listed, stash noted if one was
-        taken), a clean rebase whose stash pop then conflicted (stash
+        Four shapes: a genuine divergence (neither side touched, a human
+        must reconcile), a rebase conflict (files listed, stash noted if one
+        was taken), a clean rebase whose stash pop then conflicted (stash
         preserved, never dropped), or the plain spec default.
         """
         status = str(result.get("status", "unknown"))
+        if status == "diverged":
+            hint = (
+                "sync_branch refused: your branch and its origin copy have "
+                f"DIVERGED ({result.get('local_only', '?')} commit(s) only "
+                f"in your workspace, {result.get('origin_only', '?')} only "
+                "on origin) — neither side was touched. escalate via "
+                "i_am_blocked(reason='...') so a human can reconcile the two "
+                "histories by hand"
+            )
+            if result.get("stash_pop_conflict"):
+                hint += (
+                    " — your stashed changes were also popped back into a "
+                    "conflict; the stash is preserved (not dropped), resolve "
+                    "it by hand once the divergence is reconciled"
+                )
+            return hint
         if status == "conflicts":
             hint = (
                 f"sync_branch hit conflicts on {result.get('files', [])};"
