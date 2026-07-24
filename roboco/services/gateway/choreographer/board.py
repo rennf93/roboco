@@ -76,7 +76,10 @@ class BoardMixin(_Base):
         )
 
     async def auditor_triage(self, auditor_agent_id: UUID) -> Envelope:
-        """Phase 4: Auditor triage — surfaces anomalies (long-running blocked, etc.)."""
+        """Phase 4: Auditor triage — surfaces anomalies (long-running blocked,
+        etc.) first (rarer and hotter), then pending playbook drafts awaiting
+        curation — otherwise nothing ever points the Auditor at the review
+        queue and drafts rot uncurated."""
         anomalies = await self.task.list_long_running_blocked()
         if anomalies:
             t = anomalies[0]
@@ -89,6 +92,23 @@ class BoardMixin(_Base):
                 ),
                 context_briefing=await self._briefing_for(
                     auditor_agent_id, t.id, full=True
+                ),
+            )
+        from roboco.services.playbook import get_playbook_service
+
+        drafts = await get_playbook_service(self.task.session).list_drafts()
+        if drafts:
+            p = drafts[0]
+            return Envelope.ok(
+                status="draft",
+                task_id=None,
+                next=(
+                    f"review playbook draft '{p.title}' ({str(p.id)[:8]}) via "
+                    f"approve_playbook(playbook_id='{p.id}') or "
+                    f"reject_playbook(playbook_id='{p.id}', reason='...')"
+                ),
+                context_briefing=await self._briefing_for(
+                    auditor_agent_id, None, full=True
                 ),
             )
         return Envelope.ok(

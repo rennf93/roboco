@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ import pytest
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
-def _actions(role: str) -> ContentActions:
+def _actions(role: str, *, notification_delivery: Any = None) -> ContentActions:
     task = MagicMock()
     agent = MagicMock()
     agent.role = role
@@ -22,6 +23,7 @@ def _actions(role: str) -> ContentActions:
         journal=MagicMock(),
         workspace=MagicMock(),
         notifications=MagicMock(),
+        notification_delivery=notification_delivery,
     )
     return ContentActions(deps)
 
@@ -75,3 +77,54 @@ async def test_pitch_rejects_non_cell_target() -> None:
         target_cells=["board"],
     )
     assert env.error == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_pitch_notifies_ceo_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful pitch nudges the CEO via the notification-delivery seam."""
+    created = MagicMock()
+    created.id = uuid4()
+    svc = MagicMock()
+    svc.create = AsyncMock(return_value=created)
+    monkeypatch.setattr("roboco.services.pitch.get_pitch_service", lambda _s: svc)
+    notification_delivery = AsyncMock()
+    env = await _actions(
+        "product_owner", notification_delivery=notification_delivery
+    ).pitch(
+        agent_id=uuid4(),
+        title="Widget",
+        slug="widget",
+        problem="people need widgets",
+        proposed_solution="build a widget service",
+        target_cells=["backend", "frontend"],
+    )
+    assert env.error is None
+    assert env.status == "proposed"
+    notification_delivery.notify_ceo_of_pitch.assert_awaited_once_with(pitch=created)
+
+
+@pytest.mark.asyncio
+async def test_pitch_survives_notification_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CEO-notification failure never fails pitch() — best-effort only."""
+    created = MagicMock()
+    created.id = uuid4()
+    svc = MagicMock()
+    svc.create = AsyncMock(return_value=created)
+    monkeypatch.setattr("roboco.services.pitch.get_pitch_service", lambda _s: svc)
+    notification_delivery = AsyncMock()
+    notification_delivery.notify_ceo_of_pitch.side_effect = RuntimeError("db down")
+    env = await _actions(
+        "product_owner", notification_delivery=notification_delivery
+    ).pitch(
+        agent_id=uuid4(),
+        title="Widget",
+        slug="widget",
+        problem="people need widgets",
+        proposed_solution="build a widget service",
+        target_cells=["backend", "frontend"],
+    )
+    assert env.error is None
+    assert env.status == "proposed"
+    notification_delivery.notify_ceo_of_pitch.assert_awaited_once()
