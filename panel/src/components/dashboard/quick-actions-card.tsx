@@ -163,7 +163,6 @@ function QuickActionsCustomizeDialog() {
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="h-6 w-6"
                             disabled={isFirst}
                             onClick={() => move(id, -1)}
                             aria-label={`Move ${action.label} earlier`}
@@ -181,7 +180,6 @@ function QuickActionsCustomizeDialog() {
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="h-6 w-6"
                             disabled={isLast}
                             onClick={() => move(id, 1)}
                             aria-label={`Move ${action.label} later`}

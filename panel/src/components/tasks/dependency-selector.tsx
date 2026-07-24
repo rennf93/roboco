@@ -99,7 +99,7 @@ export function DependencySelector({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 shrink-0"
+                    className="shrink-0"
                     onClick={() => removeTask(task.id)}
                   >
                     <X className="h-3 w-3" />

@@ -75,7 +75,7 @@ export function EnvironmentLadderEditor({
       </div>
 
       {items.length > 0 && (
-        <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
+        <div className="space-y-2 overflow-x-auto border rounded-lg p-3 bg-muted/30">
           {items.map((rung, index) => {
             const isFirst = index === 0;
             const isLast = index === items.length - 1;
@@ -94,7 +94,7 @@ export function EnvironmentLadderEditor({
                     promotes to
                   </div>
                 )}
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-max items-center gap-2">
                 <div className="flex flex-col">
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -106,7 +106,6 @@ export function EnvironmentLadderEditor({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
                           disabled={isFirst}
                           onClick={() => handleMove(index, -1)}
                           aria-label="Move earlier in the flow"
@@ -128,7 +127,6 @@ export function EnvironmentLadderEditor({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
                           disabled={isLast}
                           onClick={() => handleMove(index, 1)}
                           aria-label="Move later in the flow"
@@ -181,7 +179,7 @@ export function EnvironmentLadderEditor({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 shrink-0"
+                      className="shrink-0"
                       onClick={() => handleRemove(index)}
                       aria-label="Remove this rung"
                     >

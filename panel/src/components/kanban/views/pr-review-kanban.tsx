@@ -30,10 +30,22 @@ const PR_REVIEW_COLUMNS = [
 
 interface PrReviewKanbanProps {
   initialTeam?: Team;
+  // Controlled team filter (e.g. shared with the Tasks List tab via URL
+  // state). Passing onTeamChange switches this view from its own internal
+  // team state to the caller's — omit both to keep the uncontrolled
+  // initialTeam-only behavior the standalone /kanban page still relies on.
+  team?: Team;
+  onTeamChange?: (team: Team | undefined) => void;
 }
 
-export function PrReviewKanban({ initialTeam }: PrReviewKanbanProps) {
-  const [team, setTeam] = useState<Team | undefined>(initialTeam);
+export function PrReviewKanban({
+  initialTeam,
+  team: controlledTeam,
+  onTeamChange,
+}: PrReviewKanbanProps) {
+  const [localTeam, setLocalTeam] = useState<Team | undefined>(initialTeam);
+  const isControlled = onTeamChange !== undefined;
+  const team = isControlled ? controlledTeam : localTeam;
 
   return (
     <KanbanBoard
@@ -41,7 +53,11 @@ export function PrReviewKanban({ initialTeam }: PrReviewKanbanProps) {
       description="In-path PR-review gate for assembled PRs"
       columns={PR_REVIEW_COLUMNS}
       teamFilter={team}
-      onTeamChange={(t) => setTeam(t === "all" ? undefined : t)}
+      onTeamChange={(t) => {
+        const next = t === "all" ? undefined : t;
+        if (isControlled) onTeamChange(next);
+        else setLocalTeam(next);
+      }}
     />
   );
 }

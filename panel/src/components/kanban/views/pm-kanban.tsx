@@ -99,10 +99,22 @@ const PM_COLUMNS = [
 
 interface PmKanbanProps {
   initialTeam?: Team;
+  // Controlled team filter (e.g. shared with the Tasks List tab via URL
+  // state). Passing onTeamChange switches this view from its own internal
+  // team state to the caller's — omit both to keep the uncontrolled
+  // initialTeam-only behavior the standalone /kanban page still relies on.
+  team?: Team;
+  onTeamChange?: (team: Team | undefined) => void;
 }
 
-export function PmKanban({ initialTeam }: PmKanbanProps) {
-  const [team, setTeam] = useState<Team | undefined>(initialTeam);
+export function PmKanban({
+  initialTeam,
+  team: controlledTeam,
+  onTeamChange,
+}: PmKanbanProps) {
+  const [localTeam, setLocalTeam] = useState<Team | undefined>(initialTeam);
+  const isControlled = onTeamChange !== undefined;
+  const team = isControlled ? controlledTeam : localTeam;
 
   return (
     <KanbanBoard
@@ -110,7 +122,11 @@ export function PmKanban({ initialTeam }: PmKanbanProps) {
       description="Project management overview"
       columns={PM_COLUMNS}
       teamFilter={team}
-      onTeamChange={(t) => setTeam(t === "all" ? undefined : t)}
+      onTeamChange={(t) => {
+        const next = t === "all" ? undefined : t;
+        if (isControlled) onTeamChange(next);
+        else setLocalTeam(next);
+      }}
     />
   );
 }

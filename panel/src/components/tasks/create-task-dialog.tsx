@@ -94,6 +94,7 @@ interface FormErrors {
   description?: string;
   acceptance_criteria?: string;
   project_id?: string;
+  sequence?: string;
 }
 
 export function CreateTaskDialog() {
@@ -108,6 +109,7 @@ export function CreateTaskDialog() {
   const [acceptanceCriteria, setAcceptanceCriteria] = useState<string[]>([]);
   const [dependencyIds, setDependencyIds] = useState<string[]>([]);
   const [parentTaskId, setParentTaskId] = useState<string | null>(null);
+  const [sequence, setSequence] = useState<string>("");
   const [assignedTo, setAssignedTo] = useState<string | null>(null);
   const [taskType, setTaskType] = useState<TaskType>(TaskType.CODE);
   const [projectId, setProjectId] = useState<string>("");
@@ -152,6 +154,14 @@ export function CreateTaskDialog() {
         "Pick either a Project or a Product, not both — a task targets one repo or fans out via a Product";
     }
 
+    const trimmedSequence = sequence.trim();
+    if (
+      trimmedSequence &&
+      (!Number.isInteger(Number(trimmedSequence)) || Number(trimmedSequence) < 0)
+    ) {
+      newErrors.sequence = "Sequence must be a non-negative whole number";
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -181,6 +191,7 @@ export function CreateTaskDialog() {
         ...(dependencyIds.length > 0 && { dependency_ids: dependencyIds }),
         ...(parentTaskId && { parent_task_id: parentTaskId }),
         ...(assignedTo && { assigned_to: assignedTo }),
+        ...(sequence.trim() && { sequence: Number(sequence.trim()) }),
       });
       toast.success("Task created successfully");
       setOpen(false);
@@ -201,6 +212,7 @@ export function CreateTaskDialog() {
     setAcceptanceCriteria([]);
     setDependencyIds([]);
     setParentTaskId(null);
+    setSequence("");
     setAssignedTo(null);
     setTaskType(TaskType.CODE);
     setProjectId("");
@@ -410,6 +422,26 @@ export function CreateTaskDialog() {
                 <p className="text-xs text-muted-foreground">
                   Make this task a subtask of an existing task
                 </p>
+              </div>
+
+              {/* Sequence */}
+              <div className="space-y-2">
+                <HelpTip label="Order within siblings under the same parent — lower runs first, ties run in parallel. Leave blank to default to 0.">
+                  <Label htmlFor="sequence">Sequence</Label>
+                </HelpTip>
+                <Input
+                  id="sequence"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="0"
+                  value={sequence}
+                  onChange={(e) => setSequence(e.target.value)}
+                  className={errors.sequence ? "border-destructive" : ""}
+                />
+                {errors.sequence && (
+                  <p className="text-xs text-destructive">{errors.sequence}</p>
+                )}
               </div>
 
               {/* Assign To */}
