@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
+from roboco.db.tables import TaskTable
 from roboco.services.gateway.remediation import (
     hint_for_missing_ac_coverage,
     hint_for_missing_progress,
@@ -68,7 +67,7 @@ def test_missing_ac_coverage_hint_empty_ids_uses_quoted_text() -> None:
     for text in texts:
         assert text in h
 
-    parent = SimpleNamespace(acceptance_criteria_ids=[], acceptance_criteria=texts)
+    parent = TaskTable(acceptance_criteria_ids=[], acceptance_criteria=texts)
     for text in texts:
         assert TaskService.unknown_ac_refs(parent, [text]) == []
 
@@ -85,9 +84,7 @@ def test_missing_ac_coverage_hint_drifted_ids_shorter_than_criteria() -> None:
     for text in texts[1:]:
         assert text in h
 
-    parent = SimpleNamespace(
-        acceptance_criteria_ids=["id-a"], acceptance_criteria=texts
-    )
+    parent = TaskTable(acceptance_criteria_ids=["id-a"], acceptance_criteria=texts)
     assert TaskService.unknown_ac_refs(parent, ["id-a"]) == []
     for text in texts[1:]:
         assert TaskService.unknown_ac_refs(parent, [text]) == []
