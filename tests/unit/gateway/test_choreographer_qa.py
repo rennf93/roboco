@@ -489,6 +489,34 @@ async def test_fail_review_requires_at_least_one_issue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fail_review_rejects_prose_file_names_evidence_in_remediate() -> None:
+    qa_id = uuid4()
+    task_id = uuid4()
+    t = _qa_owned_task(task_id, qa_id)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _qa_agent_mock(qa_id)
+    journal_svc = AsyncMock()
+    journal_svc.has_learning_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    findings = [
+        {
+            "file": "PR #676 description",
+            "severity": "major",
+            "expected": "matches the acceptance criteria",
+            "actual": "diverges from the acceptance criteria",
+        }
+    ]
+    env = await c.fail_review(qa_id, task_id, findings=findings)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "evidence" in body["remediate"]
+    assert "file" in body["remediate"]
+
+
+@pytest.mark.asyncio
 async def test_fail_review_not_assigned_returns_not_authorized() -> None:
     qa_id = uuid4()
     other = uuid4()

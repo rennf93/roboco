@@ -47,7 +47,6 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import (
     ContentValidationError,
     markers,
-    validate_findings,
 )
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
@@ -893,16 +892,9 @@ class QAMixin(_Base):
             )
         if cap := findings_lib.findings_count_guard(raw):
             return [], cap
-        try:
-            validated = validate_findings(raw)
-        except ContentValidationError as exc:
-            return [], Envelope.invalid_state(
-                message=f"malformed finding: {exc.field} — {exc.reason}",
-                remediate=(
-                    "each finding needs expected + actual (file/line/severity/"
-                    "criterion/fix/evidence optional)"
-                ),
-            )
+        validated, bad = findings_lib.validate_or_reject(raw)
+        if bad is not None:
+            return [], bad
         if unknown := findings_lib.unknown_finding_criteria(t, validated):
             return [], findings_lib.criterion_mismatch_rejection(t, unknown)
         return validated, None
