@@ -3171,16 +3171,36 @@ class TaskService(BaseService):
         CEO directive: sequence is the bar, independent of ``dependency_ids``
         — a PM can delegate siblings with ``sequence`` 0..N and wire no
         dependency edges between them, and claim order must still hold (the
-        4-revision-subtask live failure this guards). STRICTER than
-        dependency edges where both exist: a wave-N sibling waits for EVERY
-        wave-(N-1) sibling, not just its edge targets — no edges-exist
-        exemption. Effective sequence is ``COALESCE(sequence, 0)`` on both
-        sides; ties run in parallel. Effective sequence 0 or no parent is
-        unaffected. Scoped to PENDING and NEEDS_REVISION claims — wider than
-        ``_claim_blocked_by_dependencies`` (PENDING only), deliberately: a
-        lower-sequence sibling delegated AFTER the first claim must still
-        hold a needs_revision reclaim; the dep guard's identical
-        needs_revision gap is pre-existing and left as-is.
+        4-revision-subtask live failure this guards). Effective sequence is
+        ``COALESCE(sequence, 0)`` on both sides; ties run in parallel.
+        Effective sequence 0 or no parent is unaffected. Scoped to PENDING
+        and NEEDS_REVISION claims — wider than ``_claim_blocked_by_dependencies``
+        (PENDING only), deliberately: a lower-sequence sibling delegated
+        AFTER the first claim must still hold a needs_revision reclaim; the
+        dep guard's identical needs_revision gap is pre-existing and left
+        as-is.
+
+        Two scopes, deliberately different (the live 2026-07-24 sequence-drift
+        incident): a MegaTask root-subtask's ``sequence`` is a one-shot,
+        globally-computed Kahn wave index (``PrompterService._build_confirm_batch``)
+        — a deliberate staged-release barrier, so it stays STRICTER than
+        dependency edges: a wave-N root-subtask waits for EVERY wave-(N-1)
+        root-subtask, not just its wired edge targets, no edges-exist
+        exemption. Every other same-parent context (dev-task collision-DAG
+        streams stamped incrementally by ``stamp_wave_sequence``, or a
+        hand-authored coordination subtask) instead routes through
+        ``sequence_blocker_id``: a candidate only blocks when it is a real
+        (transitive) predecessor via ``dependency_ids`` UNIONED with
+        ``completed_dependency_ids`` (a real edge to an already-terminal
+        predecessor is pruned from the live column by
+        ``_unblock_dependents`` — the union keeps that graph fact visible
+        so the fallback below never misfires on it) — because ``sequence``
+        is stamped from a partial, per-task view of the graph at delegate
+        time, an unrelated sibling from a different, never-connected stream
+        must not phantom-hold a claim purely for sharing a lower raw
+        number. A task with NO dependency edge (live or completed) onto ANY
+        same-parent sibling falls back to the raw bar unchanged (preserves
+        the #452 edge-less scenario exactly).
         """
         if (
             task.status not in (TaskStatus.PENDING, TaskStatus.NEEDS_REVISION)
@@ -3190,27 +3210,116 @@ class TaskService(BaseService):
         seq = task.sequence or 0
         if seq == 0:
             return None
-        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
-        result = await self.session.execute(
-            select(TaskTable.title, TaskTable.sequence)
-            .where(
-                TaskTable.parent_task_id == task.parent_task_id,
-                TaskTable.id != task.id,
-                func.coalesce(TaskTable.sequence, 0) < seq,
-                TaskTable.status.notin_(terminal),
-            )
-            .limit(1)
+        candidates, detail, sibling_deps = await self._sequence_sibling_candidates(
+            task, seq
         )
-        row = result.first()
-        if row is None:
+        if not candidates:
             return None
-        blocker = f"{row.title!r} (sequence {row.sequence or 0})"
+        blocker_id = self._resolve_sequence_blocker(task, candidates, sibling_deps)
+        if blocker_id is None:
+            return None
+        title, blk_seq = detail[blocker_id]
+        blocker = f"{title!r} (sequence {blk_seq})"
         self.log.warning(
             "Cannot claim task - sequence_held",
             task_id=str(task.id),
             blocked_by=blocker,
         )
         return blocker
+
+    async def _sequence_sibling_candidates(
+        self, task: TaskTable, seq: int
+    ) -> tuple[
+        list[UUID],
+        dict[UUID, tuple[str, int]],
+        dict[UUID, list[UUID]],
+    ]:
+        """Fetch same-parent siblings, split into (candidates, detail,
+        dependency-graph). ``candidates`` are strictly-lower-sequence,
+        non-terminal siblings; ``sibling_deps`` unions each sibling's live +
+        completed dependency ids (every sibling, not just candidates — a
+        BFS hop through an already-terminal intermediate must still reach a
+        further, still-open predecessor beyond it)."""
+        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        result = await self.session.execute(
+            select(
+                TaskTable.id,
+                TaskTable.title,
+                TaskTable.sequence,
+                TaskTable.status,
+                TaskTable.dependency_ids,
+                TaskTable.completed_dependency_ids,
+            )
+            .where(
+                TaskTable.parent_task_id == task.parent_task_id,
+                TaskTable.id != task.id,
+            )
+            .order_by(TaskTable.sequence, TaskTable.created_at)
+        )
+        candidates: list[UUID] = []
+        detail: dict[UUID, tuple[str, int]] = {}
+        sibling_deps: dict[UUID, list[UUID]] = {}
+        for row in result.all():
+            sibling_deps[row.id] = [
+                *(row.dependency_ids or []),
+                *(row.completed_dependency_ids or []),
+            ]
+            if (row.sequence or 0) < seq and row.status not in terminal:
+                candidates.append(row.id)
+                detail[row.id] = (row.title, row.sequence or 0)
+        return candidates, detail, sibling_deps
+
+    def _resolve_sequence_blocker(
+        self,
+        task: TaskTable,
+        candidates: list[UUID],
+        sibling_deps: dict[UUID, list[UUID]],
+    ) -> UUID | None:
+        """Which candidate (if any) really blocks — batch root-subtasks keep
+        the raw, edge-agnostic bar; everything else routes through the
+        dependency-graph-aware ``sequence_blocker_id`` (see
+        ``_claim_blocked_by_sequence``'s docstring for the full rationale)."""
+        if is_batch_root_subtask(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
+            return candidates[0]
+        from roboco.services.sequencing import sequence_blocker_id
+
+        # Union live + completed dependency ids: a real edge to an
+        # already-terminal predecessor is pruned from `dependency_ids` by
+        # `_unblock_dependents` (moved into `completed_dependency_ids`
+        # instead) the moment that predecessor completes — almost always
+        # BEFORE this dependent is ever claimed. Without the union, a task
+        # whose sole real edge already resolved would look edge-less and
+        # wrongly fall back to the raw bar, reviving the exact phantom-hold
+        # this fix removes.
+        own_dep_ids: list[object] = [
+            *(task.dependency_ids or []),
+            *(task.completed_dependency_ids or []),
+        ]
+        return cast(
+            "UUID | None",
+            sequence_blocker_id(
+                task_dependency_ids=own_dep_ids,
+                candidate_ids=cast("list[object]", candidates),
+                sibling_dependency_ids=cast("dict[object, list[object]]", sibling_deps),
+            ),
+        )
+
+    async def sequence_hold_reason(self, task: TaskTable) -> str | None:
+        """Public accessor for the sequence claim-gate's blocker naming.
+
+        Thin wrapper over ``_claim_blocked_by_sequence`` so gateway callers
+        can surface a clean, distinct ``sequence_held`` envelope BEFORE
+        running the composed claim verb — instead of letting the hold
+        surface as ``TaskService.claim()``'s bare ``None`` return, which the
+        verb runner's intermediate-``None`` guard misdiagnoses as a
+        concurrent-transition race (the 2026-07-24 incident: repeated
+        identical ``invalid_state`` rejections on a ``needs_revision``
+        reclaim that nothing concurrent ever touched — it was sequence-held
+        the whole time).
+        """
+        return await self._claim_blocked_by_sequence(task)
 
     async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
         """True when either sequencing guard blocks this PENDING claim.
@@ -9440,7 +9549,12 @@ class TaskService(BaseService):
         dependency that has not resolved (e.g. a frontend dev coding before
         the UX/UI design lands). The pre-assigned path bypasses
         `list_pending(filter_by_dependencies=True)`, so the dependency gate
-        must be applied here too.
+        must be applied here too — and so must the sequence claim-gate
+        (`_claim_blocked_by_sequence`): without it, give_me_work offered a
+        sequence-held pre-assigned task that `i_will_work_on`'s claim() then
+        rejected (the give_me_work/i_will_work_on disagreement this closes
+        on the PENDING side; `_drop_dependency_held` closes the same class
+        of gap for the `list_assigned_for_agent` NEEDS_REVISION fallback).
 
         F059: a self-heal fix task held for the CEO's Approve-&-Start
         (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
@@ -9484,6 +9598,8 @@ class TaskService(BaseService):
         available: list[TaskTable] = []
         for task in tasks:
             if await self.unmet_dependency_ids(list(task.dependency_ids)):
+                continue
+            if await self._claim_blocked_by_sequence(task) is not None:
                 continue
             available.append(task)
         return available

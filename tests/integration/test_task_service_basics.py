@@ -1737,11 +1737,17 @@ async def test_is_pending_claim_blocked_false_for_missing_task(
 async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """STRICTER than dependency edges where both exist: a wave-1 root-subtask
-    waits for EVERY wave-0 sibling, not just the one edge target the
-    collision analyzer happened to wire — no edges-exist exemption."""
+    """STRICTER than dependency edges where both exist: a MegaTask wave-1
+    root-subtask waits for EVERY wave-0 root-subtask, not just the one edge
+    target the collision analyzer happened to wire — no edges-exist
+    exemption. Scoped to `batch_id`-bearing root-subtasks specifically
+    (`_build_confirm_batch` stamps `sequence` as a one-shot, globally
+    computed Kahn wave index — a deliberate staged-release barrier); a
+    plain (non-batch) same-parent sibling instead needs a real dependency
+    path — see `test_claim_not_blocked_by_unconnected_sibling_in_different_stream`."""
     svc = task_setup["svc"]
     umbrella = await svc.create(_req(task_setup, title="umbrella"))
+    batch_id = uuid4()
     wave0_a = await svc.create(
         _req(task_setup, title="wave0-a", parent_task_id=umbrella.id, sequence=0)
     )
@@ -1756,6 +1762,12 @@ async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     # never wires an edge to it.
     await svc.add_dependency(wave1.id, wave0_a.id)
     wave0_a.status = TaskStatus.COMPLETED
+    # Direct ORM stamp (mirrors `_build_confirm_batch`'s BatchPlacement,
+    # bypassing create-time batch-shape validation the same way the rest of
+    # this test pokes `.status` directly).
+    wave0_a.batch_id = batch_id
+    wave0_b.batch_id = batch_id
+    wave1.batch_id = batch_id
     await db_session.flush()
 
     # The edge is satisfied, but wave0_b is still open with a lower sequence.
@@ -1767,6 +1779,94 @@ async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     await db_session.flush()
     claimed = await svc.claim(wave1.id, task_setup["agent_id"])
     assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_not_blocked_by_unconnected_sibling_in_different_stream(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The 2026-07-24 live incident: a frontend cell with 4 independent
+    dev-task streams — stream1-b (stamped wave 1, a real dependency on
+    stream1-a) must not be phantom-held by stream4-b (wave 0, in_progress)
+    just because they share a same parent and a lower raw sequence number.
+    Unlike the MegaTask-batch case above (no `batch_id` here), a plain
+    same-parent sibling only blocks via a real dependency path."""
+    svc = task_setup["svc"]
+    cell = await svc.create(_req(task_setup, title="cell"))
+    stream1_a = await svc.create(
+        _req(task_setup, title="stream1-a", parent_task_id=cell.id)
+    )
+    stream1_b = await svc.create(
+        _req(task_setup, title="stream1-b", parent_task_id=cell.id)
+    )
+    stream4_b = await svc.create(
+        _req(task_setup, title="stream4-b", parent_task_id=cell.id)
+    )
+    await svc.add_dependency(stream1_b.id, stream1_a.id)
+    await svc.stamp_wave_sequence(stream1_a.id)
+    await svc.stamp_wave_sequence(stream1_b.id)
+    await svc.stamp_wave_sequence(stream4_b.id)
+    assert (stream1_a.sequence, stream1_b.sequence, stream4_b.sequence) == (0, 1, 0)
+
+    # stream1-a (the REAL predecessor) is done; stream4-b (an unconnected
+    # sibling in a different stream) is still open with a lower sequence.
+    stream1_a.status = TaskStatus.COMPLETED
+    stream4_b.status = TaskStatus.IN_PROGRESS
+    stream1_b.branch_name = "feature/frontend/aaaa9999"
+    await db_session.flush()
+
+    claimed = await svc.claim(stream1_b.id, task_setup["agent_id"])
+    assert claimed is not None, (
+        "an unconnected sibling in a different stream must not phantom-hold"
+    )
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_not_blocked_after_real_dependency_pruned_on_completion(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The precise drift mechanic: `_unblock_dependents` strips a completed
+    dependency from the live `dependency_ids` (moving it to
+    `completed_dependency_ids`) the moment it completes — almost always
+    BEFORE the dependent is ever claimed. The sequence claim-gate must
+    still recognize the pruned edge as real graph info (via
+    `completed_dependency_ids`) rather than treating the now-edge-less task
+    as a manually-sequenced, edge-less chain and reviving the raw
+    strictly-lower-sequence bar against an unrelated sibling."""
+    svc = task_setup["svc"]
+    cell = await svc.create(_req(task_setup, title="cell"))
+    real_predecessor = await svc.create(
+        _req(task_setup, title="real predecessor", parent_task_id=cell.id)
+    )
+    dependent = await svc.create(
+        _req(task_setup, title="dependent", parent_task_id=cell.id)
+    )
+    unrelated = await svc.create(
+        _req(task_setup, title="unrelated stream", parent_task_id=cell.id)
+    )
+    await svc.add_dependency(dependent.id, real_predecessor.id)
+    await svc.stamp_wave_sequence(real_predecessor.id)
+    await svc.stamp_wave_sequence(dependent.id)
+    await svc.stamp_wave_sequence(unrelated.id)
+    assert dependent.sequence == 1
+
+    # Simulate `_unblock_dependents`'s exact effect: the completed
+    # predecessor's edge is pruned from the live column and moved to the
+    # completed ledger.
+    real_predecessor.status = TaskStatus.COMPLETED
+    dependent.dependency_ids = []
+    dependent.completed_dependency_ids = [real_predecessor.id]
+    unrelated.status = TaskStatus.IN_PROGRESS
+    dependent.branch_name = "feature/frontend/bbbb8888"
+    await db_session.flush()
+
+    claimed = await svc.claim(dependent.id, task_setup["agent_id"])
+    assert claimed is not None, (
+        "a pruned-but-once-real edge must still count as graph info, not "
+        "revert to the raw edge-less sequence bar"
+    )
     assert claimed.status == TaskStatus.CLAIMED
 
 

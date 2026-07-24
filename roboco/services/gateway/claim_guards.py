@@ -109,6 +109,26 @@ def project_budget_exceeded_guard(
     )
 
 
+def sequence_held_guard(target_task: Any, blocked_by: str | None) -> Envelope | None:
+    """Refuse claim while a same-parent sibling with a lower effective
+    sequence is still non-terminal (CLAUDE.md "sequence is the bar").
+
+    ``blocked_by`` is the caller-resolved blocker description (it requires a
+    DB read of the sibling set — ``TaskService.sequence_hold_reason``) so
+    this predicate stays pure, mirroring ``unmet_dependency_guard``. Runs
+    BEFORE the composed claim verb so the hold surfaces as a clean, distinct
+    ``sequence_held`` envelope naming the blocker instead of
+    ``TaskService.claim()``'s bare ``None`` return being misdiagnosed by the
+    verb runner as a concurrent-transition race (the 2026-07-24 incident:
+    repeated identical ``invalid_state`` rejections on a needs_revision
+    reclaim that was never touched by anything concurrent — it was
+    sequence-held the whole time).
+    """
+    if blocked_by is None:
+        return None
+    return Envelope.sequence_held(blocked_by=blocked_by, task_id=str(target_task.id))
+
+
 def unmet_dependency_guard(
     target_task: Any, unmet_dependency_ids: list[UUID]
 ) -> Envelope | None:

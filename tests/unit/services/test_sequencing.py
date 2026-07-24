@@ -22,6 +22,7 @@ from roboco.services.sequencing import (
     by_osmosis_tail_dev_tasks,
     cell_task_wave_chain_depends_on,
     dev_task_collision_edges,
+    sequence_blocker_id,
 )
 
 
@@ -594,3 +595,75 @@ def test_declared_cycle_rejected() -> None:
     ]
     with pytest.raises(SequencingError):
         SequencingService().analyze(s, _backend, {"backend": 2})
+
+
+# ---------------------------------------------------------------------------
+# sequence_blocker_id — the claim-gate's non-batch reachability decision
+# (the 2026-07-24 phantom cross-stream serialization fix).
+# ---------------------------------------------------------------------------
+
+
+def test_sequence_blocker_no_graph_info_falls_back_to_raw_first_candidate() -> None:
+    """No dependency edge onto ANY same-parent sibling at all — the #452
+    manually-sequenced, edge-less scenario — keeps the strict raw bar: the
+    first (lowest-sequence) candidate blocks unconditionally."""
+    a, b = uuid4(), uuid4()
+    assert (
+        sequence_blocker_id(
+            task_dependency_ids=[],
+            candidate_ids=[a, b],
+            sibling_dependency_ids={a: [], b: []},
+        )
+        == a
+    )
+
+
+def test_sequence_blocker_ignores_unconnected_sibling() -> None:
+    """A same-parent sibling reachable via NO edge (a different stream) must
+    not block once real graph info exists elsewhere."""
+    real_predecessor, unrelated = uuid4(), uuid4()
+    assert (
+        sequence_blocker_id(
+            task_dependency_ids=[real_predecessor],
+            candidate_ids=[unrelated],
+            sibling_dependency_ids={real_predecessor: [], unrelated: []},
+        )
+        is None
+    )
+
+
+def test_sequence_blocker_finds_direct_predecessor() -> None:
+    predecessor = uuid4()
+    assert (
+        sequence_blocker_id(
+            task_dependency_ids=[predecessor],
+            candidate_ids=[predecessor],
+            sibling_dependency_ids={predecessor: []},
+        )
+        == predecessor
+    )
+
+
+def test_sequence_blocker_transitive_two_hop() -> None:
+    """A candidate two hops away (through an already-terminal, non-candidate
+    intermediate) is still found — a genuine ordering must still hold."""
+    intermediate, root_blocker = uuid4(), uuid4()
+    assert (
+        sequence_blocker_id(
+            task_dependency_ids=[intermediate],
+            candidate_ids=[root_blocker],
+            sibling_dependency_ids={intermediate: [root_blocker], root_blocker: []},
+        )
+        == root_blocker
+    )
+
+
+def test_sequence_blocker_no_candidates_is_none() -> None:
+    assert (
+        sequence_blocker_id(
+            task_dependency_ids=[uuid4()],
+            candidate_ids=[],
+            sibling_dependency_ids={},
+        )
+        is None
+    )

@@ -117,7 +117,7 @@ def test_sibling_sequence_blocks_claim_until_earlier_sibling_terminal(
     # No wire_dependency() call anywhere in this test — sequence alone must
     # hold the order; seq0 stays PENDING (open, non-terminal).
 
-    expect_error(
+    env = expect_error(
         main_pm.flow(
             "i_will_plan",
             task_id=str(seq1_id),
@@ -125,9 +125,10 @@ def test_sibling_sequence_blocks_claim_until_earlier_sibling_terminal(
             approach=_APPROACH,
             sub_tasks=_SUB_TASKS,
         ),
-        "invalid_state",
+        "sequence_held",
         "main_pm i_will_plan seq-1 while seq-0 open (no dependency edge)",
     )
+    assert "Revision 0" in (env.get("message") or "")
     assert task_state(stack, seq1_id)["status"] == "pending"
 
     _cancel(stack, seq0_id)
