@@ -114,7 +114,7 @@ export function TabCommits({ task }: TabCommitsProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="grid grid-cols-3 items-center gap-4">
+        <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-3 sm:gap-4">
           <HelpTip label="Commits attributed to this task — new ones link automatically as devs push">
             <CardTitle className="text-lg flex items-center gap-2 w-fit">
               <GitCommit className="h-5 w-5" />
@@ -124,7 +124,7 @@ export function TabCommits({ task }: TabCommitsProps) {
               </span>
             </CardTitle>
           </HelpTip>
-          <div className="flex items-center justify-center gap-2">
+          <div className="flex items-center justify-start gap-2 overflow-x-auto sm:justify-center">
             {task.branch_name && (
               <HelpTip label="Git branch this task is being worked on">
                 <Badge
@@ -277,7 +277,9 @@ export function TabCommits({ task }: TabCommitsProps) {
                           )}
 
                           {/* Time */}
-                          <HelpTip label={formatAbsoluteTimestamp(commit.timestamp)}>
+                          <HelpTip
+                            label={formatAbsoluteTimestamp(commit.timestamp)}
+                          >
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
                               {formatTime(commit.timestamp)}
@@ -291,9 +293,9 @@ export function TabCommits({ task }: TabCommitsProps) {
                         size="sm"
                         variant="ghost"
                         onClick={() => handleDelete(commit.hash)}
-                        className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                        className="h-9 w-9 p-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 text-destructive"
                       >
-                        <Trash2 className="h-3 w-3" />
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </HelpTip>
                   </div>

@@ -14,11 +14,42 @@ import {
   SortField,
   SortDirection,
 } from "@/components/tasks";
+import {
+  DevKanban,
+  QaKanban,
+  PrReviewKanban,
+  PmKanban,
+} from "@/components/kanban";
 import type { TaskFilters as TaskApiFilters } from "@/lib/api/tasks";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { usePageRefresh } from "@/hooks";
 import { useScrollRestorationStore } from "@/lib/stores";
 import { HelpTip } from "@/components/ui/help-tip";
+import { pickTab } from "@/lib/tabs";
+import {
+  List as ListIcon,
+  LayoutGrid,
+  Code,
+  TestTube,
+  GitPullRequest,
+  ClipboardList,
+} from "lucide-react";
+
+type TasksViewTab = "list" | "kanban";
+const TASKS_VIEW_TABS = ["list", "kanban"] as const satisfies readonly TasksViewTab[];
+type KanbanView = "dev" | "qa" | "pr-review" | "pm";
+const KANBAN_VIEWS = [
+  "dev",
+  "qa",
+  "pr-review",
+  "pm",
+] as const satisfies readonly KanbanView[];
 
 function TasksPageContent() {
   const router = useRouter();
@@ -63,6 +94,12 @@ function TasksPageContent() {
     [expandedParam],
   );
 
+  // Top-level List|Kanban tab + Kanban sub-view, both URL-driven so they
+  // share the same query-param state (including the filters above) across
+  // tab switches.
+  const activeTab = pickTab(searchParams.get("tab"), TASKS_VIEW_TABS, "list");
+  const kanbanView = pickTab(searchParams.get("view"), KANBAN_VIEWS, "dev");
+
   // Update URL params
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -102,6 +139,32 @@ function TasksPageContent() {
       updateParams({ team: value.length > 0 ? value.join(",") : null });
     },
     [updateParams],
+  );
+
+  const handleTabChange = useCallback(
+    (value: string) => {
+      updateParams({ tab: value === "list" ? null : value });
+    },
+    [updateParams],
+  );
+
+  const handleKanbanViewChange = useCallback(
+    (value: string) => {
+      updateParams({ view: value === "dev" ? null : value });
+    },
+    [updateParams],
+  );
+
+  // The Kanban views only support a single team selection, while the List
+  // tab's team filter is multi-select — shared only when exactly one team is
+  // active, otherwise the Kanban dropdown reads as "All Teams". Changing it
+  // from either tab writes the same `team` URL param.
+  const sharedKanbanTeam = teamFilter.length === 1 ? teamFilter[0] : undefined;
+  const handleKanbanTeamChange = useCallback(
+    (value: Team | undefined) => {
+      handleTeamChange(value ? [value] : []);
+    },
+    [handleTeamChange],
   );
 
   const handleTaskTypeChange = useCallback(
@@ -319,52 +382,169 @@ function TasksPageContent() {
         </div>
       </div>
 
-      {/* Filters - Sticky */}
-      <div className="sticky top-0 z-10 -mx-6 px-6 py-2 bg-muted/30 backdrop-blur-sm">
-        <TaskFilters
-          searchQuery={searchQuery}
-          onSearchChange={handleSearchChange}
-          statusFilter={statusFilter}
-          onStatusChange={handleStatusChange}
-          teamFilter={teamFilter}
-          onTeamChange={handleTeamChange}
-          taskTypeFilter={taskTypeFilter}
-          onTaskTypeChange={handleTaskTypeChange}
-          projectFilter={projectFilter}
-          onProjectChange={handleProjectChange}
-          projectOptions={projectOptions}
-          productFilter={productFilter}
-          onProductChange={handleProductChange}
-          productOptions={productOptions}
-        />
-      </div>
+      {/* List | Kanban — top-level tabs, URL-driven so both share the same
+          filter/search query-param state and switching tabs preserves it. */}
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <TabsList>
+          <TabsTrigger value="list" className="gap-2">
+            <ListIcon className="h-4 w-4" />
+            List
+          </TabsTrigger>
+          <TabsTrigger value="kanban" className="gap-2">
+            <LayoutGrid className="h-4 w-4" />
+            Kanban
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Content */}
-      {isOffline ? (
-        <OfflineState
-          title="Cannot Load Tasks"
-          description="Start the RoboCo orchestrator to manage tasks. Tasks you create will be picked up by agents when the backend is running."
-          onRetry={() => void refresh()}
-        />
-      ) : (
-        <TaskTable
-          tasks={filteredTasks}
-          isLoading={isLoading}
-          projectNames={projectNames}
-          projectGitUrls={projectGitUrls}
-          productNames={productNames}
-          sortField={sortField}
-          sortDirection={sortDir}
-          onSortChange={handleSortChange}
-          currentPage={currentPage}
-          pageSize={pageSize}
-          onPageChange={handlePageChange}
-          onPageSizeChange={handlePageSizeChange}
-          expandedIds={expandedIds}
-          onExpandedChange={handleExpandedChange}
-          onVisibleOrderChange={handleVisibleOrderChange}
-        />
-      )}
+        <TabsContent value="list" className="space-y-6 mt-6">
+          {/* Filters - Sticky */}
+          <div className="sticky top-0 z-10 -mx-6 px-6 py-2 bg-muted/30 backdrop-blur-sm">
+            <TaskFilters
+              searchQuery={searchQuery}
+              onSearchChange={handleSearchChange}
+              statusFilter={statusFilter}
+              onStatusChange={handleStatusChange}
+              teamFilter={teamFilter}
+              onTeamChange={handleTeamChange}
+              taskTypeFilter={taskTypeFilter}
+              onTaskTypeChange={handleTaskTypeChange}
+              projectFilter={projectFilter}
+              onProjectChange={handleProjectChange}
+              projectOptions={projectOptions}
+              productFilter={productFilter}
+              onProductChange={handleProductChange}
+              productOptions={productOptions}
+            />
+          </div>
+
+          {isOffline ? (
+            <OfflineState
+              title="Cannot Load Tasks"
+              description="Start the RoboCo orchestrator to manage tasks. Tasks you create will be picked up by agents when the backend is running."
+              onRetry={() => void refresh()}
+            />
+          ) : (
+            <TaskTable
+              tasks={filteredTasks}
+              isLoading={isLoading}
+              projectNames={projectNames}
+              projectGitUrls={projectGitUrls}
+              productNames={productNames}
+              sortField={sortField}
+              sortDirection={sortDir}
+              onSortChange={handleSortChange}
+              currentPage={currentPage}
+              pageSize={pageSize}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
+              expandedIds={expandedIds}
+              onExpandedChange={handleExpandedChange}
+              onVisibleOrderChange={handleVisibleOrderChange}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="kanban" className="mt-6">
+          <Tabs value={kanbanView} onValueChange={handleKanbanViewChange}>
+            <TabsList>
+              {/* TooltipTrigger's asChild Slot merge clobbers TabsTrigger's
+                  own data-state with the tooltip's — re-assert the real
+                  selection state explicitly so data-[state=active] styling
+                  survives (same fix as the standalone /kanban page). */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value="dev"
+                    data-state={kanbanView === "dev" ? "active" : "inactive"}
+                    className="gap-2"
+                  >
+                    <Code className="h-4 w-4" />
+                    Developer
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Tasks claimed and worked by developers — backlog through
+                  completion
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value="qa"
+                    data-state={kanbanView === "qa" ? "active" : "inactive"}
+                    className="gap-2"
+                  >
+                    <TestTube className="h-4 w-4" />
+                    QA
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Quality assurance review workflow
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value="pr-review"
+                    data-state={
+                      kanbanView === "pr-review" ? "active" : "inactive"
+                    }
+                    className="gap-2"
+                  >
+                    <GitPullRequest className="h-4 w-4" />
+                    PR Review
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  In-path PR-review gate for assembled PRs, before the PM
+                  merges
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value="pm"
+                    data-state={kanbanView === "pm" ? "active" : "inactive"}
+                    className="gap-2"
+                  >
+                    <ClipboardList className="h-4 w-4" />
+                    PM
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Project management overview — every lifecycle state,
+                  including recovery states
+                </TooltipContent>
+              </Tooltip>
+            </TabsList>
+
+            <TabsContent value="dev" className="mt-6">
+              <DevKanban
+                team={sharedKanbanTeam}
+                onTeamChange={handleKanbanTeamChange}
+              />
+            </TabsContent>
+            <TabsContent value="qa" className="mt-6">
+              <QaKanban
+                team={sharedKanbanTeam}
+                onTeamChange={handleKanbanTeamChange}
+              />
+            </TabsContent>
+            <TabsContent value="pr-review" className="mt-6">
+              <PrReviewKanban
+                team={sharedKanbanTeam}
+                onTeamChange={handleKanbanTeamChange}
+              />
+            </TabsContent>
+            <TabsContent value="pm" className="mt-6">
+              <PmKanban
+                team={sharedKanbanTeam}
+                onTeamChange={handleKanbanTeamChange}
+              />
+            </TabsContent>
+          </Tabs>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

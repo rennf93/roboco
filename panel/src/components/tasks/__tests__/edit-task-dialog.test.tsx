@@ -190,6 +190,70 @@ describe("EditTaskDialog — Budget (USD) input", () => {
   });
 });
 
+describe("EditTaskDialog — Sequence input", () => {
+  beforeEach(() => {
+    mutateAsync.mockClear();
+    spendState.data = undefined;
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("pre-fills the task's current sequence", () => {
+    render(
+      <EditTaskDialog
+        task={{ ...task, sequence: 2 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(
+      (screen.getByLabelText("Sequence") as HTMLInputElement).value,
+    ).toBe("2");
+  });
+
+  it("rejects a negative sequence with a toast and does not submit", async () => {
+    render(
+      <EditTaskDialog
+        task={{ ...task, sequence: 0 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Sequence"), {
+      target: { value: "-1" },
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/non-negative whole number/i),
+      );
+    });
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("submits an updated sequence as a number", async () => {
+    render(
+      <EditTaskDialog
+        task={{ ...task, sequence: 0 }}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Sequence"), {
+      target: { value: "5" },
+    });
+    submit();
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const { updates } = mutateAsync.mock.calls[0][0] as {
+      updates: Record<string, unknown>;
+    };
+    expect(updates.sequence).toBe(5);
+  });
+});
+
 describe("EditTaskDialog — spend read-out", () => {
   beforeEach(() => {
     mutateAsync.mockClear();

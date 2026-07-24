@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 
+// jsdom has no layout engine, so Radix Select's scroll-into-view-on-open call
+// throws there; stub it so opening the Refresh Interval dropdown works.
+Element.prototype.scrollIntoView = vi.fn();
+
 // The four prefs below are CLIENT-ONLY (never sent to the backend — the
 // server's settings allowlist is transcript_retention_days + feature flags
 // only, see roboco/services/settings.py). This mock stands in for the
@@ -41,6 +45,9 @@ vi.mock("@/components/settings/github-app-credentials-card", () => ({
   GitHubAppCredentialsCard: () => null,
 }));
 
+const { toastSuccess } = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
+vi.mock("sonner", () => ({ toast: { success: toastSuccess } }));
+
 import SettingsPage from "../page";
 
 // The Label and Switch/Select are siblings inside a flex row, so the label
@@ -74,6 +81,7 @@ function resetStore() {
 describe("SettingsPage — client-only prefs (store-driven, no server round trip)", () => {
   beforeEach(() => {
     resetStore();
+    toastSuccess.mockReset();
   });
 
   it("has no Save Settings button — every pref is instant-apply", () => {
@@ -96,16 +104,27 @@ describe("SettingsPage — client-only prefs (store-driven, no server round trip
     expect(controlFor("Refresh Interval", "combobox")).toHaveTextContent("1m");
   });
 
-  it("toggling Auto Refresh calls setAutoRefresh directly — no edits/save step", () => {
+  it("toggling Auto Refresh calls setAutoRefresh directly and shows a confirmation toast", () => {
     render(<SettingsPage />);
     fireEvent.click(controlFor("Auto Refresh", "switch"));
     expect(mockStore.setAutoRefresh).toHaveBeenCalledWith(true);
+    expect(toastSuccess).toHaveBeenCalledWith("Auto refresh enabled");
   });
 
-  it("toggling Enable Notifications calls setNotificationsEnabled directly", () => {
+  it("toggling Enable Notifications calls setNotificationsEnabled directly and shows a confirmation toast", () => {
     render(<SettingsPage />);
     fireEvent.click(controlFor("Enable Notifications", "switch"));
     expect(mockStore.setNotificationsEnabled).toHaveBeenCalledWith(false);
+    expect(toastSuccess).toHaveBeenCalledWith("Notifications disabled");
+  });
+
+  it("changing the Refresh Interval select shows a confirmation toast naming the new value", () => {
+    mockStore.autoRefresh = true; // the select is disabled while auto-refresh is off
+    render(<SettingsPage />);
+    fireEvent.click(controlFor("Refresh Interval", "combobox"));
+    fireEvent.click(screen.getByRole("option", { name: "1m" }));
+    expect(mockStore.setRefreshIntervalSeconds).toHaveBeenCalledWith(60);
+    expect(toastSuccess).toHaveBeenCalledWith("Refresh interval set to 60s");
   });
 
   it("Refresh Interval select is disabled while Auto Refresh is off", () => {
@@ -121,6 +140,14 @@ describe("SettingsPage — client-only prefs (store-driven, no server round trip
 
     fireEvent.click(soundSwitch);
     expect(mockStore.setSoundEnabled).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("toggling Sound Alerts calls setSoundEnabled directly and shows a confirmation toast", () => {
+    render(<SettingsPage />);
+    fireEvent.click(controlFor("Sound Alerts", "switch"));
+    expect(mockStore.setSoundEnabled).toHaveBeenCalledWith(false);
+    expect(toastSuccess).toHaveBeenCalledWith("Sound alerts disabled");
   });
 
   // W9-5 follow-up: the disabled Refresh Interval / Sound Alerts controls

@@ -22,6 +22,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Settings, Palette, Bell, Server } from "lucide-react";
+import { toast } from "sonner";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { UserInfoCard } from "@/components/settings/user-info-card";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
@@ -42,6 +43,27 @@ export default function SettingsPage() {
     refreshIntervalSeconds,
     setRefreshIntervalSeconds,
   } = useUIStore();
+
+  // Each of these prefs writes synchronously to the persisted store (no
+  // network round trip, so it can't fail server-side) — but a silent write is
+  // still indistinguishable from a broken one to the person who just clicked
+  // it, so every change surfaces its own confirmation toast.
+  const applyNotificationsEnabled = (enabled: boolean) => {
+    setNotificationsEnabled(enabled);
+    toast.success(`Notifications ${enabled ? "enabled" : "disabled"}`);
+  };
+  const applySoundEnabled = (enabled: boolean) => {
+    setSoundEnabled(enabled);
+    toast.success(`Sound alerts ${enabled ? "enabled" : "disabled"}`);
+  };
+  const applyAutoRefresh = (enabled: boolean) => {
+    setAutoRefresh(enabled);
+    toast.success(`Auto refresh ${enabled ? "enabled" : "disabled"}`);
+  };
+  const applyRefreshInterval = (seconds: number) => {
+    setRefreshIntervalSeconds(seconds);
+    toast.success(`Refresh interval set to ${seconds}s`);
+  };
 
   return (
     <div className="space-y-6">
@@ -131,7 +153,10 @@ export default function SettingsPage() {
                   Periodically re-fetch the current page&apos;s data
                 </p>
               </div>
-              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+              <Switch
+                checked={autoRefresh}
+                onCheckedChange={applyAutoRefresh}
+              />
             </div>
             <Separator />
             <div className="flex items-center justify-between">
@@ -151,7 +176,7 @@ export default function SettingsPage() {
               </div>
               <Select
                 value={String(refreshIntervalSeconds)}
-                onValueChange={(v) => setRefreshIntervalSeconds(Number(v))}
+                onValueChange={(v) => applyRefreshInterval(Number(v))}
                 disabled={!autoRefresh}
               >
                 <SelectTrigger className="w-auto min-w-20">
@@ -192,7 +217,7 @@ export default function SettingsPage() {
               </div>
               <Switch
                 checked={notificationsEnabled}
-                onCheckedChange={setNotificationsEnabled}
+                onCheckedChange={applyNotificationsEnabled}
               />
             </div>
             <Separator />
@@ -213,7 +238,7 @@ export default function SettingsPage() {
               </div>
               <Switch
                 checked={soundEnabled}
-                onCheckedChange={setSoundEnabled}
+                onCheckedChange={applySoundEnabled}
                 disabled={!notificationsEnabled}
               />
             </div>

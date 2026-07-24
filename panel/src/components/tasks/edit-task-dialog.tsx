@@ -123,6 +123,7 @@ function EditTaskDialogInner({
   const [budgetUsd, setBudgetUsd] = useState<string>(
     task.budget_usd != null ? String(task.budget_usd) : "",
   );
+  const [sequence, setSequence] = useState<string>(String(task.sequence ?? 0));
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const updateTask = useUpdateTask();
@@ -155,9 +156,14 @@ function EditTaskDialogInner({
     const trimmedBudget = budgetUsd.trim();
     const parsedBudget = trimmedBudget ? Number(trimmedBudget) : null;
     if (trimmedBudget && (Number.isNaN(parsedBudget) || parsedBudget! <= 0)) {
-      toast.error(
-        "Budget must be greater than 0 — leave it empty for no cap",
-      );
+      toast.error("Budget must be greater than 0 — leave it empty for no cap");
+      return;
+    }
+
+    const trimmedSequence = sequence.trim();
+    const parsedSequence = trimmedSequence === "" ? 0 : Number(trimmedSequence);
+    if (!Number.isInteger(parsedSequence) || parsedSequence < 0) {
+      toast.error("Sequence must be a non-negative whole number");
       return;
     }
 
@@ -183,6 +189,7 @@ function EditTaskDialogInner({
           assigned_to: assignedTo,
           target_date: targetDate ? new Date(targetDate).toISOString() : null,
           budget_usd: parsedBudget,
+          sequence: parsedSequence,
           ...(criteriaChanged && { acceptance_criteria: trimmedCriteria }),
         },
       });
@@ -357,6 +364,21 @@ function EditTaskDialogInner({
                 />
               </div>
 
+              {/* Sequence */}
+              <div className="space-y-2">
+                <HelpTip label="Order within siblings under the same parent — lower runs first. A sibling with a lower sequence must reach a terminal state before this one is claimable; ties run in parallel.">
+                  <Label htmlFor="edit-sequence">Sequence</Label>
+                </HelpTip>
+                <Input
+                  id="edit-sequence"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={sequence}
+                  onChange={(e) => setSequence(e.target.value)}
+                />
+              </div>
+
               {/* Budget (USD) */}
               <div className="space-y-2">
                 <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = no cap.">
@@ -376,7 +398,10 @@ function EditTaskDialogInner({
                   enforce only when explicitly set.
                 </p>
                 {spendUsd != null && (
-                  <p className="text-xs text-muted-foreground" data-testid="task-spend">
+                  <p
+                    className="text-xs text-muted-foreground"
+                    data-testid="task-spend"
+                  >
                     Spent: ${spendUsd.toFixed(2)}
                     {budgetUsd.trim() && !Number.isNaN(Number(budgetUsd))
                       ? ` / $${Number(budgetUsd).toFixed(2)}`

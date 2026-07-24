@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, ListTodo, Kanban, Sparkles } from "lucide-react";
+import { LayoutDashboard, ListTodo, Bot, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { HelpTip } from "@/components/ui/help-tip";
 import { navItems } from "./sidebar";
@@ -16,7 +16,7 @@ function tipFor(href: string): string {
 const BOTTOM_NAV_ITEMS = [
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
   { title: "Tasks", href: "/tasks", icon: ListTodo },
-  { title: "Kanban", href: "/kanban", icon: Kanban },
+  { title: "Agents", href: "/agents", icon: Bot },
   { title: "Chat", href: "/prompter", icon: Sparkles },
 ];
 

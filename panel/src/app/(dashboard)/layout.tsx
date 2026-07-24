@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { BottomTabBar } from "@/components/layout/bottom-tab-bar";
+import { CommandPalette } from "@/components/layout/command-palette";
 import { ScrollRestoration } from "@/components/scroll-restoration";
 import { ScrollJumpButtons } from "@/components/scroll-jump-buttons";
 import { RateLimitBanner } from "@/components/rate-limit/rate-limit-banner";
@@ -34,6 +35,7 @@ export default function DashboardLayout({
         <ScrollJumpButtons />
       </div>
       <BottomTabBar />
+      <CommandPalette />
     </div>
   );
 }
