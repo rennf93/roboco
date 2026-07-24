@@ -45,6 +45,8 @@ export type {
   RoadmapItem,
   RoadmapItemActionResult,
 } from "./roadmap";
+export { boardProgramsApi } from "./board-programs";
+export type { BoardProgram } from "./board-programs";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,

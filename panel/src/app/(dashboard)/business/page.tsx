@@ -13,13 +13,14 @@ import { GoalsTab } from "@/components/business/goals-tab";
 import { CompanyScorecardCard } from "@/components/business/company-scorecard-card";
 import { SecretaryTab } from "@/components/business/secretary-tab";
 import { PitchesTab } from "@/components/business/pitches-tab";
+import { BoardProgramsCard } from "@/components/business/board-programs-card";
 
 // ---------------------------------------------------------------------------
 // Valid tab values
 // ---------------------------------------------------------------------------
 
 interface TabDef {
-  value: "goals" | "scorecard" | "secretary" | "pitches";
+  value: "goals" | "scorecard" | "secretary" | "pitches" | "programs";
   label: string;
   hint: string;
 }
@@ -44,6 +45,11 @@ const TAB_DEFS: TabDef[] = [
     value: "pitches",
     label: "Pitches",
     hint: "Board-authored product pitches awaiting your decision",
+  },
+  {
+    value: "programs",
+    label: "Programs",
+    hint: "Board roles' periodic exploration cycles — enable, monitor, and run off-schedule",
   },
 ];
 
@@ -117,6 +123,10 @@ function BusinessPageContent() {
 
         <TabsContent value="pitches" className="mt-4">
           <PitchesTab />
+        </TabsContent>
+
+        <TabsContent value="programs" className="mt-4">
+          <BoardProgramsCard />
         </TabsContent>
       </Tabs>
     </div>
