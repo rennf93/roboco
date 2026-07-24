@@ -37,6 +37,7 @@ from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
     project_budget_exceeded_guard,
+    sequence_held_guard,
     unmet_dependency_guard,
 )
 from roboco.services.gateway.envelope import Envelope
@@ -829,23 +830,35 @@ class Choreographer:
         return f"call i_will_work_on(task_id='{tid}', plan='<plan>') to start"
 
     async def _drop_dependency_held(self, tasks: list[Any]) -> list[Any]:
-        """Drop pre-assigned PENDING tasks whose non-terminal dependencies are
-        still unresolved.
+        """Drop PENDING/NEEDS_REVISION tasks the claim gate would refuse
+        right now — an unmet dependency or a same-parent sequence hold.
 
-        ``give_me_work``'s ``list_assigned_for_agent`` fallback includes PENDING
-        rows with no dependency filter, so without this a held pre-assigned
-        subtask (e.g. a frontend dev's task waiting on the UX/UI design) would
-        still be offered and the agent only bounced at claim time. Mirrors the
-        gate in ``TaskService.list_pending_for_agent`` and ``_run_claim_guards``.
-        Only PENDING rows are gated — an already-claimed task is past the gate.
+        ``give_me_work``'s ``list_assigned_for_agent`` fallback spans every
+        active status with no hold filter, so without this a held task
+        (e.g. a frontend dev's subtask waiting on the UX/UI design, or a
+        needs_revision reclaim behind a lower-sequence sibling delegated
+        after the first claim) was still offered here and only bounced at
+        claim time — the give_me_work/i_will_work_on offer-then-reject loop
+        the 2026-07-24 incident hit on the needs_revision path.
+        ``is_pending_claim_blocked`` wraps the EXACT predicate
+        ``TaskService.claim()`` enforces (dependency + sequence), so this
+        can't drift from the claim gate. Scoped to PENDING and
+        NEEDS_REVISION — the only statuses that guard reads
+        (``_claim_blocked_by_sequencing``); every other status already
+        passed it at an earlier claim. ``is True`` (not a bare truthy
+        check) keeps this inert under partial test mocks (an unstubbed
+        AsyncMock method returns a truthy mock object, not a real bool) —
+        mirrors ``_pending_not_lane_held``'s identical ``is not True`` guard.
         """
         offerable: list[Any] = []
         for task in tasks:
-            dep_ids = list(getattr(task, "dependency_ids", []) or [])
             if (
-                str(task.status) == "pending"
-                and dep_ids
-                and await self._deps.task.unmet_dependency_ids(dep_ids)
+                str(task.status)
+                in (
+                    "pending",
+                    "needs_revision",
+                )
+                and await self._deps.task.is_pending_claim_blocked(task.id) is True
             ):
                 continue
             offerable.append(task)
@@ -1192,7 +1205,7 @@ class Choreographer:
             paused = await self.task.list_paused_for_agent(agent_id)
             if guard := paused_tasks_guard(paused, task.id):
                 return guard
-        if guard := await self._dependency_claim_guard(task):
+        if guard := await self._sequencing_claim_guard(task):
             return guard
         if check_project_budget and (
             guard := await self._project_budget_claim_guard(task)
@@ -1201,6 +1214,37 @@ class Choreographer:
         if skip_dev_guards:
             return None
         return await self._lane_claim_guard(task)
+
+    async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
+        """Both halves of the claim-time sequencing bar in one call — an
+        unmet dependency or a same-parent sequence hold — mirroring
+        ``TaskService._claim_blocked_by_sequencing``'s own composition.
+        Collapsed into one ``_run_claim_guards`` return so the xenon
+        return-statement budget holds.
+        """
+        if guard := await self._dependency_claim_guard(task):
+            return guard
+        return await self._sequence_claim_guard(task)
+
+    async def _sequence_claim_guard(self, task: Any) -> Envelope | None:
+        """Refuse claim while a same-parent sibling with a lower sequence is
+        still non-terminal — surfaced as a clean, named ``sequence_held``
+        BEFORE the composed claim verb runs (see ``sequence_held_guard``).
+
+        Runs for every ``_run_claim_guards`` caller (``i_will_work_on`` /
+        ``i_will_plan``, both the fresh-claim and stuck-``claimed``-recovery
+        paths), so both the PENDING and NEEDS_REVISION reclaim routes agree
+        with ``TaskService.claim()``'s own sequence bar instead of it
+        surfacing deep inside the verb runner as a misdiagnosed
+        "concurrent transition". ``isinstance(..., str)`` keeps this inert
+        under partial test mocks (an unstubbed AsyncMock method returns a
+        truthy mock object, not ``None`` or a real string) — mirrors
+        ``_pending_not_lane_held``'s identical mock-safety guard.
+        """
+        blocked_by = await self.task.sequence_hold_reason(task)
+        if not isinstance(blocked_by, str):
+            return None
+        return sequence_held_guard(task, blocked_by)
 
     async def _dependency_claim_guard(self, task: Any) -> Envelope | None:
         """Refuse claim while the task has non-terminal dependencies.
