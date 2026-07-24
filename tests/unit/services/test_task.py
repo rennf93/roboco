@@ -35,6 +35,7 @@ from roboco.services.task import (
     GatewayAgentView,
     TaskService,
     _ceo_reject_finding_texts,
+    _reconcile_ac_ids,
     get_task_service,
 )
 from sqlalchemy import select
@@ -1214,12 +1215,49 @@ async def test_create_generates_ac_ids_and_carries_parent_ac_refs() -> None:
     assert list(task.parent_ac_refs) == ["parent-ac-1", "parent-ac-2"]
 
 
+def test_reconcile_ac_ids_preserves_new_and_drops() -> None:
+    # Unchanged text keeps its id (position may shift); a reworded/new entry
+    # mints a fresh one; a dropped criterion's id disappears with it.
+    _N = 3
+    ids = _reconcile_ac_ids(
+        old_criteria=["a", "b", "c"],
+        old_ids=["id-a", "id-b", "id-c"],
+        new_criteria=["a", "c", "d"],  # b dropped, a/c kept (reordered), d new
+    )
+    assert ids[0] == "id-a"
+    assert ids[1] == "id-c"
+    assert ids[2] not in {"id-a", "id-b", "id-c"}
+    assert len(ids) == len(set(ids)) == _N
+
+
+def test_reconcile_ac_ids_mints_fresh_when_nothing_to_preserve() -> None:
+    _N = 2
+    ids = _reconcile_ac_ids(old_criteria=[], old_ids=[], new_criteria=["x", "y"])
+    assert len(ids) == len(set(ids)) == _N
+
+
+def test_reconcile_ac_ids_duplicate_text_matched_in_order() -> None:
+    ids = _reconcile_ac_ids(
+        old_criteria=["dup", "dup"],
+        old_ids=["id-1", "id-2"],
+        new_criteria=["dup", "dup", "dup"],
+    )
+    assert ids[:2] == ["id-1", "id-2"]
+    assert ids[2] not in {"id-1", "id-2"}
+
+
 def _svc_with_children(parent: object, child_rows: list[tuple]) -> TaskService:
     """TaskService whose get() returns `parent` and whose execute() yields the
-    (status, parent_ac_refs) child rows the coverage primitive selects."""
+    (status, parent_ac_refs) child rows the coverage primitive selects.
+
+    ``flush`` is a real AsyncMock (not the unconfigured default) so the
+    empty/mismatched-ids self-heal in ``_parent_ac_ref_sets`` can await it.
+    """
     rows = MagicMock()
     rows.all.return_value = child_rows
-    svc = TaskService(MagicMock(execute=AsyncMock(return_value=rows)))
+    svc = TaskService(
+        MagicMock(execute=AsyncMock(return_value=rows), flush=AsyncMock())
+    )
     _bind(svc, "get", AsyncMock(return_value=parent))
     return svc
 
@@ -1362,12 +1400,48 @@ async def test_parent_ac_coverage_maps_claimed_and_verified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parent_ac_coverage_empty_without_ac_ids() -> None:
-    # No stable ids on the parent (e.g. created before the linkage) -> nothing to
-    # report; the digest stays absent rather than emitting bogus rows.
+async def test_parent_ac_coverage_self_heals_empty_ac_ids() -> None:
+    # fe-pm delegate-loop incident: a coordination root had real
+    # acceptance_criteria but zero acceptance_criteria_ids (an update rewrote
+    # criteria without reconciling ids) -> the digest used to stay [] forever,
+    # silently disabling the parent-coverage gate. It now self-heals by
+    # stamping fresh ids in place so the digest reports for real.
     parent = _build_task(acceptance_criteria=["a"], acceptance_criteria_ids=[])
     svc = _svc_with_children(parent, [(TaskStatus.IN_PROGRESS, ["id-a"])])
-    assert await svc.parent_ac_coverage(parent.id) == []
+    cov = await svc.parent_ac_coverage(parent.id)
+    assert len(cov) == 1
+    assert cov[0]["text"] == "a"
+    assert cov[0]["id"]  # freshly stamped, non-empty
+    assert list(parent.acceptance_criteria_ids) == [cov[0]["id"]]
+
+
+@pytest.mark.asyncio
+async def test_uncovered_parent_acs_self_heals_and_still_matches_text_refs() -> None:
+    # Same legacy shape as above, but proves the self-heal doesn't regress the
+    # id-or-text matching: a child that declared coverage by TEXT (the only
+    # option while the parent had no ids) still resolves through the
+    # freshly-stamped ids, and the gate is live again instead of permanently
+    # inert.
+    _N = 2
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"], acceptance_criteria_ids=[]
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["crit a"])])
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
+    assert len(parent.acceptance_criteria_ids) == _N
+    assert len(set(parent.acceptance_criteria_ids)) == _N
+
+
+@pytest.mark.asyncio
+async def test_parent_ac_coverage_no_self_heal_when_ids_already_1to1() -> None:
+    # The common case (ids already match criteria 1:1) must not re-stamp —
+    # the self-heal only fires on an actual length mismatch.
+    parent = _build_task(
+        acceptance_criteria=["a", "b"], acceptance_criteria_ids=["id-a", "id-b"]
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-a", "id-b"])])
+    await svc.parent_ac_coverage(parent.id)
+    assert list(parent.acceptance_criteria_ids) == ["id-a", "id-b"]
 
 
 @pytest.mark.asyncio

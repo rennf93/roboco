@@ -208,6 +208,22 @@ async def test_update_live_draft_main_pm_updates_and_hands_off(
 
 
 @pytest.mark.asyncio
+async def test_update_live_draft_reconciles_acceptance_criteria_ids(
+    redraft_setup: dict,
+) -> None:
+    # The wiping path: update_live_draft patches acceptance_criteria via the
+    # generic TaskService.update(), which used to leave acceptance_criteria_ids
+    # stale/mismatched against the revised criteria (the fe-pm delegate-loop
+    # incident). Must come out 1:1 with the new criteria after a redraft.
+    _N = 2
+    task = redraft_setup["mk"](True)
+    await redraft_setup["db"].flush()
+    await redraft_setup["svc"].update_live_draft(task.id, _DRAFT, route="main_pm")
+    assert len(task.acceptance_criteria_ids) == len(task.acceptance_criteria) == _N
+    assert len(set(task.acceptance_criteria_ids)) == _N
+
+
+@pytest.mark.asyncio
 async def test_update_live_draft_reboard_resets_flag(redraft_setup: dict) -> None:
     task = redraft_setup["mk"](True)
     await redraft_setup["db"].flush()
