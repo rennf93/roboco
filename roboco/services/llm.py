@@ -33,7 +33,7 @@ Self-hosted (LOCAL) provider support:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import httpx
@@ -72,17 +72,16 @@ if TYPE_CHECKING:
 _OLLAMA_TAGS_TIMEOUT = 5.0  # seconds
 _log = structlog.get_logger(__name__)
 
-# Day-1 cost-tiered seed applied by apply_mode('cost_tiered'): (role,
-# complexity, model_name). "haiku" is the catalog's cheap Anthropic tier
-# (see MODEL_CATALOG_BY_NAME) — developer's LOW-complexity work is
-# mechanical/cache-dominated the same way QA already runs on haiku
-# (ROLE_MODEL_MAP). developer is the only entry: qa/documenter already
-# default to haiku in ROLE_MODEL_MAP (no saving to seed), and cell_pm is
-# deliberately excluded from complexity overrides entirely — a coordinator
-# role, never offered a row (see _COMPLEXITY_OVERRIDE_ROLES in
-# api/routes/provider.py). Extend this tuple to seed more role:complexity
-# rows; nothing else needs editing.
-_COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = (("developer", "low", "haiku"),)
+# Cost-tiered seed applied by apply_mode('cost_tiered'): (role, complexity,
+# model_name). RETIRED to empty (2026-07-24): the one entry seeded
+# developer:low -> haiku, but haiku can't reliably emit the structured
+# lifecycle envelopes (see _below_capability_floor), so the "cheap tier for
+# mechanical work" premise no longer holds — the capability floor would
+# upgrade the seeded row back to sonnet anyway, making the seed a confusing
+# no-op. cost_tiered mode stays wired (empty seed = inert) so an operator can
+# re-seed a genuinely-above-floor role:complexity tier here later; nothing
+# else needs editing.
+_COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 
 # derive_mode()'s single-GLOBAL-assignment lookup — a provider type maps to
 # its "mode" label 1:1 for every mode `apply_mode` can set via a sole GLOBAL
@@ -173,6 +172,29 @@ INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
 )
 
 
+# Capability floor: haiku-class models cannot reliably emit the structured
+# review/coordination envelopes the lifecycle now requires (pass_review's
+# criteria_verified, delegate's covers_parent_criteria, the findings ledger)
+# — a haiku QA/PM/reviewer claims, gets validation-rejected, idles, respawns,
+# and loops without ever advancing a task (2026-07-24 live: fe-qa on haiku
+# looped 4 awaiting_qa tasks to zero progress). Every delivery-lifecycle role
+# runs on structured verbs, so any Anthropic assignment below the floor is
+# upgraded to the floor model at resolution, from whatever source (a pin, a
+# ROLE row, or the retired cost_tiered seed). Non-Anthropic providers are
+# untouched — this is an Anthropic-tier floor, not a provider policy.
+_CAPABILITY_FLOOR_MODEL = "sonnet"
+_BELOW_FLOOR_MODEL_MARKER = "haiku"
+
+
+def _below_capability_floor(resolved: _ResolvedAssignment) -> bool:
+    """True iff an Anthropic assignment resolves below the structured-verb
+    floor (a haiku-class model). Provider-agnostic names never match."""
+    return (
+        resolved.provider.type is ModelProvider.ANTHROPIC
+        and _BELOW_FLOOR_MODEL_MARKER in resolved.model_name.lower()
+    )
+
+
 def _interactive_exempt(agent_slug: str, resolved: _ResolvedAssignment) -> bool:
     """True iff a GLOBAL/ROLE row lands an interactive agent on a
     delivery-only provider — the resolver then keeps it on the legacy path.
@@ -209,6 +231,7 @@ class ModelRoutingService(BaseService):
         """
         role = get_agent_role(agent_slug) or ""
         resolved = await self._resolve_assignment(agent_slug, role, complexity)
+        resolved = self._floor_below_capability(agent_slug, resolved)
         if resolved is not None and _interactive_exempt(agent_slug, resolved):
             # A fleet-wide GLOBAL/ROLE row landed an interactive agent on a
             # delivery-only provider (e.g. the one-click Codex/Gemini mode).
@@ -325,9 +348,32 @@ class ModelRoutingService(BaseService):
             )
             return None
 
+    def _floor_below_capability(
+        self, agent_slug: str, resolved: _ResolvedAssignment | None
+    ) -> _ResolvedAssignment | None:
+        """Upgrade a below-floor Anthropic assignment to the structured-verb
+        floor (see `_below_capability_floor`); pass everything else through."""
+        if resolved is None or not _below_capability_floor(resolved):
+            return resolved
+        self.log.info(
+            "Upgrading below-floor model to the structured-verb floor",
+            agent_slug=agent_slug,
+            from_model=resolved.model_name,
+            to_model=_CAPABILITY_FLOOR_MODEL,
+        )
+        return replace(resolved, model_name=_CAPABILITY_FLOOR_MODEL)
+
     def _legacy_route(self, role: str) -> AgentRoute:
-        """Legacy fallback: role-default short name through MODEL_MAP."""
+        """Legacy fallback: role-default short name through MODEL_MAP.
+
+        The structured-verb capability floor applies here too: any role whose
+        map entry is a below-floor tier is upgraded, so a future map edit
+        (or a role not covered above) can't silently reintroduce a haiku
+        lifecycle agent.
+        """
         short = ROLE_MODEL_MAP.get(role, "sonnet")
+        if _BELOW_FLOOR_MODEL_MARKER in short.lower():
+            short = _CAPABILITY_FLOOR_MODEL
         return AgentRoute(
             provider_id=None,
             provider_type=ModelProvider.ANTHROPIC,

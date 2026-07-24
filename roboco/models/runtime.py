@@ -119,13 +119,16 @@ MODEL_MAP: dict[str, str] = {
 # Default model by role
 ROLE_MODEL_MAP: dict[str, str] = {
     "developer": "sonnet",
-    # QA — mechanical gate work (read diff, run the gate, pass/fail); its cost is
-    # cache-dominated, so the cheapest tier fits. Haiku ignores effort (fine here).
-    "qa": "haiku",
+    # QA — emits structured review envelopes (pass_review's per-AC
+    # criteria_verified, the findings ledger) the haiku tier can't reliably
+    # produce: a haiku QA claims, gets validation-rejected, idles, respawns,
+    # and loops without passing (2026-07-24 live incident). Sonnet is the
+    # floor for every structured-verb lifecycle role.
+    "qa": "sonnet",
     # PR reviewer — reviews untrusted external/fork PRs and gates root→master;
     # highest-stakes review, so opus rather than the sonnet review tier.
     "pr_reviewer": "opus",
-    "documenter": "haiku",
+    "documenter": "sonnet",
     "cell_pm": "sonnet",
     # Main PM — cost is dominated by cache read/write of a large coordination
     # context; Sonnet 5's cache-write is ~12x cheaper than Opus. Experiment: watch

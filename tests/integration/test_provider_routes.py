@@ -956,8 +956,10 @@ async def test_apply_mode_cost_tiered_seeds_day1_rows(
         "/api/providers/complexity-overrides", headers=_HDR_PM
     )
     rows = {(r["role"], r["complexity"]): r["model_name"] for r in listing.json()}
-    # cell_pm is deliberately excluded (a coordinator role) — only developer.
-    assert rows == {("developer", "low"): "haiku"}
+    # Seed retired (2026-07-24): its only entry was developer:low -> haiku,
+    # which the structured-verb capability floor would upgrade to sonnet
+    # anyway. cost_tiered mode stays wired but seeds nothing now.
+    assert rows == {}
 
 
 @pytest.mark.asyncio
@@ -979,11 +981,9 @@ async def test_apply_mode_cost_tiered_is_additive_preserves_global(
     assert response.status_code == HTTPStatus.OK
     assignments = response.json()["assignments"]
     scopes = {(a["scope"], a["scope_value"]) for a in assignments}
-    # The pre-existing GLOBAL row from 'ollama' mode survives untouched.
+    # The pre-existing GLOBAL row from 'ollama' mode survives untouched — the
+    # non-wiping contract holds even with the seed retired to empty.
     assert ("global", None) in scopes
-    assert ("role", "developer:low") in scopes
-    # cell_pm is deliberately excluded from cost_tiered — a coordinator role.
-    assert ("role", "cell_pm:low") not in scopes
 
 
 # =============================================================================
