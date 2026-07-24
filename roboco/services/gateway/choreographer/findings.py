@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from roboco.foundation.policy.content import Finding, Severity
+from roboco.foundation.policy.content import (
+    ContentValidationError,
+    Finding,
+    Severity,
+    validate_findings,
+)
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import BRIEFING_LIST_CAP
 from roboco.services.repositories.review_findings import (
@@ -122,6 +127,36 @@ def findings_count_hint(findings: Sequence[Any]) -> str | None:
         "concerns, a tighter, higher-signal set next round is easier for the "
         "developer to act on. (Allowed, just flagged.)"
     )
+
+
+def validate_or_reject(
+    raw: list[dict[str, Any]],
+) -> tuple[list[Finding], Envelope | None]:
+    """``validate_findings``, converting a ``ContentValidationError`` into a
+    field-aware rejection instead of the generic one every producer
+    (fail_review / pr_fail) used to hardcode regardless of which field failed
+    — unhelpful for a rejected ``file`` in particular, since the generic
+    remediate says "file ... optional", which reads as though the value
+    simply shouldn't have been sent rather than naming where it belongs.
+    """
+    try:
+        return validate_findings(raw), None
+    except ContentValidationError as exc:
+        if exc.field == "file":
+            remediate = (
+                "`file` must be a real repo-relative path — put narrative or "
+                "context in `evidence` instead, and reference a real "
+                "`file`/`line` here"
+            )
+        else:
+            remediate = (
+                "each finding needs expected + actual (file/line/severity/"
+                "criterion/fix/evidence optional)"
+            )
+        return [], Envelope.invalid_state(
+            message=f"malformed finding: {exc.field} — {exc.reason}",
+            remediate=remediate,
+        )
 
 
 def unmatched_criteria(task: Any, criteria: list[str]) -> list[str]:

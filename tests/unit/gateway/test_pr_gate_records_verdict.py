@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from roboco.foundation.policy.content import Finding, Severity
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.choreographer.pr_gate import PRGateMixin
 
 
 def _make_choreographer() -> Choreographer:
@@ -194,3 +195,24 @@ def test_pr_fail_embeds_findings_and_summary_does_not_duplicate() -> None:
     assert "returns 500 on the timestamp branch" not in slot["summary"]
     # The derived TEXT mirror renders the findings table (render_markdown).
     assert "returns 500 on the timestamp branch" in t.pr_reviewer_notes
+
+
+def test_pr_fail_findings_validation_rejects_prose_file_names_evidence() -> None:
+    """The static validator behind ``pr_fail`` — mirrors QA's
+    ``fail_review`` rejection: a non-path ``file`` is refused, and the
+    remediate points the reviewer at ``evidence`` instead."""
+    findings = [
+        {
+            "file": "PR #676 description",
+            "severity": "major",
+            "expected": "matches the acceptance criteria",
+            "actual": "diverges from the acceptance criteria",
+        }
+    ]
+    validated, rejection = PRGateMixin._validate_pr_fail_findings(None, None, findings)
+    assert validated == []
+    assert rejection is not None
+    body = rejection.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "evidence" in body["remediate"]
+    assert "file" in body["remediate"]

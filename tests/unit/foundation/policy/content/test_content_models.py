@@ -346,6 +346,38 @@ def test_finding_accepts_dot_segment_and_double_dot_substring() -> None:
     assert ok.file == "./roboco/services/foo..bar.py"
 
 
+def test_finding_rejects_prose_file_with_spaces() -> None:
+    # Live bug: a finding's `file` carried a PR reference ("PR #676
+    # description") instead of a path — it validated, and the panel then
+    # tried (and failed) to fetch a git blob literally named that.
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="PR #676 description"))
+    with pytest.raises(ValidationError):
+        Finding.model_validate(_finding(file="the description in the PR"))
+
+
+def test_finding_accepts_real_nested_path() -> None:
+    ok = Finding.model_validate(
+        _finding(file="roboco/services/gateway/choreographer/findings.py")
+    )
+    assert ok.file == "roboco/services/gateway/choreographer/findings.py"
+
+
+def test_finding_accepts_nextjs_route_group_and_dynamic_segment_paths() -> None:
+    # This repo's own tracked tree uses parens (route groups) and brackets
+    # (dynamic segments) in real, common paths — the shape gate must not
+    # reject them.
+    ok = Finding.model_validate(
+        _finding(file="panel/src/app/(dashboard)/tasks/[taskId]/page.tsx")
+    )
+    assert ok.file == "panel/src/app/(dashboard)/tasks/[taskId]/page.tsx"
+
+
+def test_finding_file_none_bypasses_the_shape_gate() -> None:
+    f = Finding.model_validate(_finding(file=None))
+    assert f.file is None
+
+
 def test_finding_rejects_non_positive_line() -> None:
     with pytest.raises(ValidationError):
         Finding.model_validate(_finding(line=0))

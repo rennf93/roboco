@@ -26,7 +26,6 @@ from roboco.foundation.policy.batch import is_batch_root_subtask
 from roboco.foundation.policy.content import (
     ContentValidationError,
     markers,
-    validate_findings,
 )
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer.collision import build_collision_context
@@ -174,16 +173,9 @@ class PRGateMixin(_Base):
             )
         if cap := findings_lib.findings_count_guard(raw):
             return [], cap
-        try:
-            validated = validate_findings(raw)
-        except ContentValidationError as exc:
-            return [], Envelope.invalid_state(
-                message=f"malformed finding: {exc.field} — {exc.reason}",
-                remediate=(
-                    "each finding needs expected + actual (file/line/severity/"
-                    "criterion/fix/evidence optional)"
-                ),
-            )
+        validated, bad = findings_lib.validate_or_reject(raw)
+        if bad is not None:
+            return [], bad
         if t is not None and (
             unknown := findings_lib.unknown_finding_criteria(t, validated)
         ):
