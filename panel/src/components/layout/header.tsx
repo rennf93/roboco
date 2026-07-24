@@ -4,7 +4,6 @@ import { useTheme } from "next-themes";
 import { useQuery } from "@tanstack/react-query";
 import { Search, Sun, Moon, Monitor, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,12 +24,14 @@ import { cn } from "@/lib/utils";
 import { usePageRefresh } from "@/hooks";
 import { settingsApi } from "@/lib/api";
 import { CEO_NAME_KEY, DEFAULT_CEO_NAME } from "@/lib/api/settings";
+import { useUIStore } from "@/store";
 
 const REFRESH_LABEL = "Refresh only the current page";
 
 export function Header() {
   const { setTheme } = useTheme();
   const { refresh, loading, disabled } = usePageRefresh();
+  const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   // Same ["settings"] query key as the Settings page's User Info card — the
   // app-wide react-query cache means whichever loads first primes the other.
   // Falls back to the config default while loading/unset, so there's no
@@ -43,24 +44,21 @@ export function Header() {
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-background px-6">
-      {/* Search */}
+      {/* Search — opens the Cmd+K command palette */}
       <div className="flex items-center gap-4 flex-1 max-w-md">
         {/* Mobile nav trigger — only shown below md, where the sidebar is hidden */}
         <MobileSidebar />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="relative w-full">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="search"
-                placeholder="Search tasks, agents..."
-                className="pl-10"
-                disabled={true}
-              />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>Coming Soon</TooltipContent>
-        </Tooltip>
+        <button
+          type="button"
+          onClick={() => setCommandPaletteOpen(true)}
+          className="relative flex w-full items-center rounded-md border border-input bg-transparent px-3 py-2 text-sm text-muted-foreground shadow-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+        >
+          <Search className="mr-2 h-4 w-4 shrink-0" />
+          <span className="flex-1 text-left">Search tasks, agents...</span>
+          <kbd className="hidden shrink-0 items-center gap-0.5 rounded border bg-muted px-1.5 font-mono text-xs sm:inline-flex">
+            <span className="text-xs">⌘</span>K
+          </kbd>
+        </button>
       </div>
 
       {/* Actions */}

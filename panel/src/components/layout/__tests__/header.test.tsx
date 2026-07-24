@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { Header } from "../header";
 import { PageRefreshProvider } from "@/components/providers";
 import { usePageRefresh } from "@/hooks";
+import { useUIStore } from "@/store";
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ theme: "system", setTheme: vi.fn() }),
@@ -177,6 +178,30 @@ describe("Header — navbar refresh button", () => {
 
     resolveRefresh?.();
     await waitFor(() => expect(refreshButton).not.toBeDisabled());
+  });
+});
+
+describe("Header — command palette trigger", () => {
+  beforeEach(() => {
+    useUIStore.setState({ commandPaletteOpen: false });
+  });
+
+  it("has no disabled search input or 'Coming Soon' remnant", () => {
+    const { container } = render(withPageRefresh(<Header />));
+
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(screen.queryByText("Coming Soon")).not.toBeInTheDocument();
+  });
+
+  it("opens the command palette when the search trigger is clicked", () => {
+    render(withPageRefresh(<Header />));
+
+    const trigger = screen.getByRole("button", {
+      name: /search tasks, agents/i,
+    });
+    trigger.click();
+
+    expect(useUIStore.getState().commandPaletteOpen).toBe(true);
   });
 });
 
