@@ -67,7 +67,7 @@ export function ProductCardGrid({ products, isLoading }: ProductCardGridProps) {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 shrink-0"
+                    className="shrink-0"
                     onClick={() => setEditingProductId(product.id)}
                     aria-label="Edit product"
                   >
