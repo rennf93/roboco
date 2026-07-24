@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
   ListTodo,
-  Kanban,
   Activity,
   ChevronLeft,
   Settings,
@@ -53,12 +52,6 @@ export const navItems = [
     href: "/tasks",
     icon: ListTodo,
     tip: "Full task list — filter, search, and open any task's detail",
-  },
-  {
-    title: "Kanban",
-    href: "/kanban",
-    icon: Kanban,
-    tip: "Task board grouped by lifecycle status",
   },
   {
     title: "Git",
