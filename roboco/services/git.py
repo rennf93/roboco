@@ -5904,9 +5904,24 @@ class GitService(BaseService):
         had an unresolvable head and returned an empty diff (QA saw no
         changes on a real PR). ``open_pr`` pushes the leaf branch, so
         ``origin/<branch>`` is the workspace-independent source of truth.
-        Fetch it, then prefer the local branch (dev's own clone) and fall
-        back to ``origin/<branch>``; last resort the bare name so the
-        diff command stays well-formed.
+        Fetch it, then prefer origin and fall back to the local branch;
+        last resort the bare name so the diff command stays well-formed.
+
+        Every caller here is a READER (QA/PM/documenter/PR-gate/panel
+        inspecting a branch they don't own), never the branch's own author
+        mid-write — so origin, not local, is the source of truth whenever
+        it carries anything the local ref lacks. ``origin_only`` counts
+        commits on origin the local ref doesn't have (via ``rev-list``,
+        mirroring ``_reset_head_or_diverged``'s write-path classification):
+        zero means local already contains everything origin has (ahead on
+        unpushed commits, or equal) and stays authoritative; non-zero means
+        origin has moved — whether by a plain fast-forward OR by a
+        force-push that rewrote history (a parked local ref left over from
+        an earlier inspection, or the routine rebase-sync every task branch
+        gets) — and origin wins either way. Unlike the write path's
+        ``_origin_rewritten_locally``, a read never needs to tell a genuine
+        divergence apart from a rewritten one: both resolve to the same
+        action (serve origin), so no patch-equivalence check is needed here.
         """
         await self._run_git(
             workspace, ["fetch", "origin", branch_name], check=False, token=token
@@ -5915,18 +5930,10 @@ class GitService(BaseService):
         local_exists = await self._ref_exists(workspace, branch_name)
         origin_exists = await self._ref_exists(workspace, origin_ref)
         if local_exists and origin_exists:
-            # An assembled branch advances on ORIGIN when child PRs merge on
-            # GitHub, while the inspecting clone's local ref stays parked — a
-            # diff off the stale local ref re-flags work that already landed
-            # (live 2026-07-02: two false pr_fails on the S6 cell PR). Prefer
-            # origin when the local ref is strictly behind it; a local ref
-            # that is ahead (unpushed) or diverged keeps priority.
-            behind = await self._run_git(
-                workspace,
-                ["merge-base", "--is-ancestor", branch_name, origin_ref],
-                check=False,
+            origin_only = await self._rev_list_count(
+                workspace, f"{branch_name}..{origin_ref}"
             )
-            return origin_ref if behind.returncode == 0 else branch_name
+            return origin_ref if origin_only > 0 else branch_name
         if local_exists:
             return branch_name
         if origin_exists:
