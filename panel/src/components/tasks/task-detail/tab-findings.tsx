@@ -12,10 +12,13 @@ import { CodeSnippet } from "@/components/git/code-snippet";
 import { CollapsibleSection } from "./collapsible-section";
 
 // Mirrors the server-side shape gate (Finding._file_repo_relative in
-// roboco/foundation/policy/content/models.py) — keep the two rules
-// consistent. A prose `file` (e.g. a PR reference) predates that gate on
-// older ledger rows and must not drive a doomed CodeSnippet fetch.
-const FILE_SHAPE_RE = /^[\w.\-/()[\]]+$/;
+// roboco/foundation/policy/content/models.py) — keep the character classes
+// in sync, knowing they deliberately diverge on non-ASCII: Python's \w is
+// unicode, JS's is ASCII, so a unicode path the server accepted renders
+// snippetless here (fail-open — the plain-text metadata still shows). A
+// prose `file` (e.g. a PR reference) predates that gate on older ledger
+// rows and must not drive a doomed CodeSnippet fetch.
+const FILE_SHAPE_RE = /^[\w.\-/()[\]+@]+$/;
 function looksLikePath(file: string): boolean {
   return FILE_SHAPE_RE.test(file);
 }

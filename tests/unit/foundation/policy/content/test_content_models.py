@@ -373,6 +373,19 @@ def test_finding_accepts_nextjs_route_group_and_dynamic_segment_paths() -> None:
     assert ok.file == "panel/src/app/(dashboard)/tasks/[taskId]/page.tsx"
 
 
+def test_finding_accepts_client_repo_path_conventions() -> None:
+    # Findings reference paths in arbitrary reviewed projects, not just this
+    # repo: SvelteKit route files (+), @types dirs and @2x assets (@) are
+    # real, common tracked paths a reviewer must be able to cite.
+    for path in (
+        "src/routes/+page.svelte",
+        "src/@types/foo.d.ts",
+        "assets/logo@2x.png",
+    ):
+        ok = Finding.model_validate(_finding(file=path))
+        assert ok.file == path
+
+
 def test_finding_file_none_bypasses_the_shape_gate() -> None:
     f = Finding.model_validate(_finding(file=None))
     assert f.file is None

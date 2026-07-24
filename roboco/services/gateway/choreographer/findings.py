@@ -146,7 +146,8 @@ def validate_or_reject(
             remediate = (
                 "`file` must be a real repo-relative path — put narrative or "
                 "context in `evidence` instead, and reference a real "
-                "`file`/`line` here"
+                "`file`/`line` here (or omit `file` entirely for a "
+                "cross-cutting finding not tied to one file)"
             )
         else:
             remediate = (

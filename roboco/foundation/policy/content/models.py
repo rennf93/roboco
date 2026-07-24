@@ -58,15 +58,17 @@ _WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 # A finding's `file` must look like a path, not prose (a live bug: a finding
 # with `file = "PR #676 description"` validated, and the panel then tried to
 # fetch a git blob literally named that). Word chars/dot/hyphen/slash cover
-# every ordinary path segment; parens and brackets are additionally allowed
-# because this repo's own tracked tree uses them for real, common paths —
-# Next.js route groups (`app/(dashboard)/tasks/page.tsx`) and dynamic segments
-# (`app/[taskId]/page.tsx`). Deliberately excludes spaces: verified via
-# `git ls-files` that only 2 of 2270 tracked paths (both static
-# `vault_assets/meta/` template notes, never a code-review target) contain one,
-# while every prose example a reviewer might mistakenly pass as `file`
+# every ordinary path segment; parens/brackets/plus/at are additionally
+# allowed because findings reference paths in ARBITRARY reviewed projects,
+# not just this repo — Next.js route groups (`app/(dashboard)/page.tsx`) and
+# dynamic segments (`app/[taskId]/page.tsx`) here, SvelteKit route files
+# (`src/routes/+page.svelte`), `@types/` dirs, and `@2x` retina assets in
+# client repos. Deliberately excludes spaces — they ARE the prose signal:
+# verified via `git ls-files` that only 2 of 2270 tracked paths (both static
+# `vault_assets/meta/` template notes, never a code-review target) contain
+# one, while every prose example a reviewer might mistakenly pass as `file`
 # ("PR #676 description", "the description in the PR") always does.
-_PATH_SHAPE_RE = re.compile(r"^[\w.\-/()\[\]]+$")
+_PATH_SHAPE_RE = re.compile(r"^[\w.\-/()\[\]+@]+$")
 
 
 class _Base(BaseModel):
