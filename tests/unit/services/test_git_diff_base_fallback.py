@@ -103,9 +103,12 @@ _BR = "feature/backend/root1234--cellpm56--dev78901"
 
 @pytest.mark.asyncio
 async def test_resolve_head_ref_prefers_local_branch_in_dev_clone() -> None:
-    """Dev's own clone has the local branch — use it unchanged."""
+    """Dev's own clone has the local branch, ahead of/equal to origin
+    (origin has nothing local lacks) — use it unchanged."""
     svc = _git_service()
-    svc._run_git = AsyncMock()
+    svc._run_git = AsyncMock(
+        return_value=type("R", (), {"returncode": 0, "stdout": "0"})()
+    )
     svc._ref_exists = AsyncMock(return_value=True)
 
     head = await svc._resolve_head_ref(Path("/tmp/ws"), _BR)

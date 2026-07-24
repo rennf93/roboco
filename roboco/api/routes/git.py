@@ -243,6 +243,18 @@ async def get_git_log(
         if not branch:
             branch = await git_service.get_current_branch(workspace)
 
+        # This is the CALLER's own clone, which is never the branch's own
+        # author when inspecting another agent's task (QA/PM/documenter
+        # reading a dev's branch) — a local ref left over from an earlier
+        # inspection can be pinned stale (behind, or diverged after a
+        # routine rebase force-push) while origin has since moved. Resolve
+        # through _resolve_head_ref (fetch + prefer origin) instead of the
+        # bare branch name so this reads the same authoritative tip diff()/
+        # read_file_at_branch() do, not whatever this clone happened to
+        # have on disk from the last time it looked.
+        token = await git_service._token_for_branch(branch)
+        head_ref = await git_service._resolve_head_ref(workspace, branch, token=token)
+
         # Get log with format. Don't raise if the branch doesn't exist in
         # this workspace yet — that's a normal race (branch created in a
         # different agent's clone, not yet fetched here). Return empty.
@@ -253,7 +265,7 @@ async def get_git_log(
         log_format = "%H%x1f%h%x1f%s%x1f%an%x1f%aI"
         log_result = await git_service._run_git(
             workspace,
-            ["log", f"--format={log_format}", f"-n{limit}", branch],
+            ["log", f"--format={log_format}", f"-n{limit}", head_ref],
             check=False,
         )
         if log_result.returncode != 0:

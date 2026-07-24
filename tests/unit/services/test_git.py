@@ -722,6 +722,10 @@ async def test_diff_returns_diff_stdout() -> None:
         del check, token
         if args[:1] == ["fetch"]:
             return MagicMock(stdout="", returncode=0)
+        if args[:1] == ["rev-parse"]:
+            return MagicMock(stdout="", returncode=0)
+        if args[:1] == ["rev-list"]:
+            return MagicMock(stdout="0", returncode=0)
         return MagicMock(stdout="diff --git a b\n+hello\n", returncode=0)
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))

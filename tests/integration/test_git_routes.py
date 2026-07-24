@@ -267,6 +267,37 @@ async def test_log_with_branch_success(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_log_resolves_through_head_ref_not_bare_branch(
+    git_client: dict,
+) -> None:
+    """The route must route the requested branch through
+    ``_resolve_head_ref`` (fetch + prefer origin) instead of handing git the
+    bare branch name straight off whatever this clone happens to have on
+    disk — this clone is the CALLER's own, never the branch owner's, and a
+    left-over local ref from an earlier inspection can be pinned stale
+    (live 2026-07-24: a QA clone read a commit 5 review rounds old)."""
+    log_result = MagicMock()
+    log_result.returncode = 0
+    log_result.stdout = ""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc._token_for_branch = AsyncMock(return_value="tok")
+        svc._resolve_head_ref = AsyncMock(return_value="origin/feature/x")
+        svc._run_git = AsyncMock(return_value=log_result)
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/log?project_slug={git_client['project'].slug}&branch=feature/x",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    svc._resolve_head_ref.assert_awaited_once_with("/tmp/ws", "feature/x", token="tok")
+    svc._run_git.assert_awaited_once()
+    logged_args = svc._run_git.await_args.args[1]
+    assert logged_args[-1] == "origin/feature/x"
+
+
+@pytest.mark.asyncio
 async def test_log_no_branch_fetches_current(git_client: dict) -> None:
     log_result = MagicMock()
     log_result.returncode = 0
