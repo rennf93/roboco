@@ -46,6 +46,10 @@ on:
       # can still turn the gate red — without this it fires no run and a PR
       # merges on a false green.
       - 'motion/**'
+      # The Pages redirect stubs land on slave alone; a docs-redirects-only
+      # tip fired no run, and the fail-closed release gate read the missing
+      # conclusion as "unknown" — silently blocking every release proposal.
+      - 'docs-redirects/**'
   pull_request:
     branches:
       - master
@@ -70,6 +74,7 @@ on:
       - 'CHANGELOG.md'
       - 'docs/**'
       - 'motion/**'
+      - 'docs-redirects/**'
   workflow_dispatch:
 
 # A fleet branch that's also an open PR head can get both a `push` and a
