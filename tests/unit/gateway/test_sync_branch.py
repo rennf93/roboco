@@ -132,6 +132,73 @@ async def test_sync_branch_conflicts_aborts_and_steers_to_resolve() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sync_branch_diverged_steers_to_i_am_blocked() -> None:
+    """A diverged branch is not an error — it's a clean ok-envelope hint to
+    escalate, mirroring how a conflict is surfaced (git-only op, no DB
+    transition either way)."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "diverged",
+        "local_only": 2,
+        "origin_only": 1,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid)
+
+    assert env.error is None
+    assert env.next is not None
+    assert "DIVERGED" in env.next
+    assert "i_am_blocked" in env.next
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_diverged_with_stash_pop_conflict_notes_preserved_stash() -> (
+    None
+):
+    """A diverged result can ALSO carry a stash-pop conflict (the stash was
+    taken, the rebase never touched either side, but popping it back still
+    collided) — the hint must not drop that warning."""
+    aid = uuid4()
+    tid = uuid4()
+    t = _task(tid=tid, aid=aid)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    git_svc = AsyncMock()
+    git_svc.sync_task_branch.return_value = {
+        "status": "diverged",
+        "local_only": 2,
+        "origin_only": 1,
+        "stash_pop_conflict": True,
+    }
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    with patch(
+        "roboco.services.gateway.choreographer._impl.resolve_parent_branch",
+        new=AsyncMock(return_value=_BASE),
+    ):
+        env = await c.sync_branch(aid, tid, stash=True)
+
+    assert env.error is None
+    assert env.next is not None
+    assert "DIVERGED" in env.next
+    assert "preserved" in env.next.lower()
+
+
+@pytest.mark.asyncio
 async def test_sync_branch_not_found_for_unknown_task() -> None:
     aid = uuid4()
     tid = uuid4()

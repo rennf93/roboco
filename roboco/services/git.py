@@ -5180,6 +5180,18 @@ class GitService(BaseService):
             can now merge cleanly.
           - ``{"status": "conflicts", "files": [...]}`` — the rebase hit
             conflicts and was aborted; a developer must resolve by hand.
+          - ``{"status": "diverged", "local_only": int, "origin_only": int}``
+            — the local ``head_branch`` and ``origin/<head_branch>`` each
+            carry commits the other lacks with no patch-equivalent on the
+            other side. Most often this is the residue of a PRIOR call to
+            this same method that rebased locally but whose force-push then
+            failed (network blip, a flow-verb timeout kill, a container
+            reap between rebase and push) — that case is recognized by
+            patch-equivalence and self-heals as "ahead" instead (see
+            :meth:`_reset_head_or_diverged`). What's left is a genuine
+            divergence, e.g. the task bounced to a different agent's clone
+            that pushed meanwhile. Refused outright: neither side is
+            touched and nothing is pushed — a human must reconcile.
         Any of the above may carry ``"stash_pop_conflict": True`` when
         ``stash`` popped into a conflict (see below).
 
@@ -5188,32 +5200,47 @@ class GitService(BaseService):
         legitimate when it is the head's true merge target; the choreographer
         refuses only a mis-resolved one.
 
-        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
-        ``git reset --hard`` below can't discard uncommitted agent edits —
-        UNLESS ``stash=True``, in which case the dirty worktree (tracked +
-        untracked, ``-u``) is stashed first and popped back after the rebase
-        instead of refusing outright (the dev-facing dead end this closes:
-        DIRTY_WORKSPACE had no in-gate remedy other than a raw ``git`` the
-        agent is denied). A pop conflict is never auto-resolved — the stash
-        is left in place (never dropped) and the result gets
-        ``stash_pop_conflict: True`` so the caller returns an actionable
-        envelope; the agent's uncommitted work is never lost.
+        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so
+        uncommitted agent edits are never discarded — UNLESS ``stash=True``,
+        in which case the dirty worktree (tracked + untracked, ``-u``) is
+        stashed first and popped back after the rebase instead of refusing
+        outright (the dev-facing dead end this closes: DIRTY_WORKSPACE had no
+        in-gate remedy other than a raw ``git`` the agent is denied). A pop
+        conflict is never auto-resolved — the stash is left in place (never
+        dropped) and the result gets ``stash_pop_conflict: True`` so the
+        caller returns an actionable envelope; the agent's uncommitted work
+        is never lost.
+
+        Beyond uncommitted edits, a COMMITTED local tip is never discarded
+        either. The ``commit`` do-verb never pushes, so mid-rework a dev
+        routinely has committed-but-unpushed commits on ``head_branch`` — the
+        old unconditional ``reset --hard origin/<head_branch>`` right after
+        checkout silently rewound past them before the force-with-lease push
+        republished the truncated branch as authoritative. This now
+        classifies local vs ``origin/<head_branch>`` (post-fetch) first: an
+        absent local ref is recovered from origin (checkout, never reset —
+        nothing local to discard); local behind-or-equal resets to origin as
+        before (origin has nothing to lose); local strictly ahead skips the
+        reset and rebases from the local tip instead (a superset the push
+        below publishes); a genuine divergence refuses via ``"diverged"``
+        rather than guessing which side to keep.
         """
         stashed = await self._stash_if_dirty(workspace, stash=stash)
 
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        await self._ensure_local_head_ref(workspace, head_branch)
         await self._run_git(workspace, ["checkout", head_branch])
-        await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
+        diverged = await self._reset_head_or_diverged(workspace, head_branch)
+        if diverged is not None:
+            if stashed:
+                await self._pop_stash_into(workspace, diverged)
+            return diverged
         rebase = await self._run_git(
             workspace, ["rebase", f"origin/{base_branch}"], check=False
         )
         if rebase.returncode != 0:
             return await self._abort_rebase_conflict(workspace, stashed=stashed)
-        count = await self._run_git(
-            workspace,
-            ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
-        )
-        unique = int(count.stdout.strip() or "0")
+        unique = await self._rev_list_count(workspace, f"origin/{base_branch}..HEAD")
         if unique == 0:
             result: dict[str, Any] = {"status": "superseded"}
         else:
@@ -5226,6 +5253,97 @@ class GitService(BaseService):
         if stashed:
             await self._pop_stash_into(workspace, result)
         return result
+
+    async def _rev_list_count(self, workspace: Path, range_spec: str) -> int:
+        """``git rev-list --count <range_spec>`` as an int (empty stdout → 0)."""
+        result = await self._run_git(workspace, ["rev-list", "--count", range_spec])
+        return int(result.stdout.strip() or "0")
+
+    async def _ensure_local_head_ref(self, workspace: Path, head_branch: str) -> None:
+        """Recover an absent local ``head_branch`` ref from origin before checkout.
+
+        Mirrors :meth:`_assert_on_task_branch`'s recovery: worktree flows
+        normally guarantee the local ref already exists, but a caller running
+        against a bare clone root (or a re-provisioned workspace) may only
+        have the branch on ``origin`` (this runs post-fetch) — create the
+        local ref (never reset one that already exists) so the unconditional
+        checkout right after this never fails on a missing branch.
+        """
+        exists = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{head_branch}"],
+            check=False,
+        )
+        if exists.returncode != 0:
+            await self._run_git(
+                workspace, ["branch", head_branch, f"origin/{head_branch}"]
+            )
+
+    async def _reset_head_or_diverged(
+        self, workspace: Path, head_branch: str
+    ) -> dict[str, Any] | None:
+        """Classify checked-out ``head_branch`` against ``origin/<head_branch>``.
+
+        Resets local to origin when local carries nothing origin lacks
+        (behind or equal — origin is authoritative, today's behavior).
+        Leaves the local tip untouched when it's strictly ahead
+        (committed-but-unpushed work — a superset of origin the
+        force-with-lease push below will publish along with the rebase).
+
+        BOTH sides carrying unique commits by raw SHA isn't proof of a
+        genuine divergence: a prior run of this same method can rebase
+        locally and then have its force-push fail after, leaving local and
+        origin both non-empty forever on retry even though origin's tip is
+        just local's old history under new SHAs. :meth:`_origin_rewritten_locally`
+        tells the two apart by patch-equivalence and this self-heals as
+        "ahead" instead. Only a real two-sided divergence — e.g. the task
+        bounced to a different agent's clone that pushed meanwhile — still
+        returns a ``{"status": "diverged", ...}`` dict; neither side is
+        silently discarded.
+        """
+        local_only = await self._rev_list_count(
+            workspace, f"origin/{head_branch}..HEAD"
+        )
+        origin_only = await self._rev_list_count(
+            workspace, f"HEAD..origin/{head_branch}"
+        )
+        if local_only > 0 and origin_only > 0:
+            if await self._origin_rewritten_locally(workspace, head_branch):
+                return None
+            return {
+                "status": "diverged",
+                "local_only": local_only,
+                "origin_only": origin_only,
+            }
+        if local_only == 0:
+            await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
+        return None
+
+    async def _origin_rewritten_locally(
+        self, workspace: Path, head_branch: str
+    ) -> bool:
+        """True when every origin-only commit has a patch-equivalent local one.
+
+        Rescues the self-inflicted wedge from a rebase whose force-push
+        failed afterwards: local already carries origin's commits under new
+        SHAs, so a raw SHA rev-list count sees both sides positive forever.
+        ``rev-list --cherry-pick --right-only`` drops any origin-only commit
+        whose patch (context-adjusted patch-id, same mechanism as
+        :meth:`unmerged_child_commits`'s ``git cherry``) matches one of
+        local's exclusive commits; whatever survives is truly exclusive to
+        origin, so a non-zero count still refuses as a real divergence.
+        """
+        result = await self._run_git(
+            workspace,
+            [
+                "rev-list",
+                "--count",
+                "--right-only",
+                "--cherry-pick",
+                f"HEAD...origin/{head_branch}",
+            ],
+        )
+        return int(result.stdout.strip() or "0") == 0
 
     async def _stash_if_dirty(self, workspace: Path, *, stash: bool) -> bool:
         """Clean-tree gate for :meth:`rebase_onto_base`.
@@ -5348,7 +5466,8 @@ class GitService(BaseService):
         rebase through the dev ``sync_branch`` verb instead of the CEO/PM-only
         ``/rebase`` HTTP route. Mirrors ``rebase_pr_for_task``'s workspace/token
         resolution and delegates to :meth:`rebase_onto_base`, returning the same
-        classification dict (``rebased`` / ``superseded`` / ``conflicts``).
+        classification dict (``rebased`` / ``superseded`` / ``conflicts`` /
+        ``diverged``).
 
         ``stash`` forwards to :meth:`rebase_onto_base` — auto-stash a dirty
         worktree instead of refusing DIRTY_WORKSPACE.

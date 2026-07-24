@@ -94,21 +94,27 @@ async def test_success_path_returns_rebased_and_does_not_call_abort(
     Call sequence for the success path (rebase OK, 2 unique commits):
       [0] status --porcelain          ← clean (the H8 dirty-tree gate)
       [1] fetch origin
-      [2] checkout HEAD branch
-      [3] reset --hard origin/HEAD
-      [4] rebase origin/BASE          ← exits 0
-      [5] rev-list --count            ← returns "2"
-      [6] push --force-with-lease     ← pushes the rebased branch
+      [2] rev-parse --verify --quiet  ← local HEAD ref exists
+      [3] checkout HEAD branch
+      [4] rev-list --count origin/H..HEAD  ← local_only=0
+      [5] rev-list --count HEAD..origin/H  ← origin_only=0 (not diverged)
+      [6] reset --hard origin/HEAD    ← local has nothing unique
+      [7] rebase origin/BASE          ← exits 0
+      [8] rev-list --count            ← returns "2"
+      [9] push --force-with-lease     ← pushes the rebased branch
     """
     run = AsyncMock(
         side_effect=[
             _result(stdout=""),  # [0] status --porcelain → clean
             _result(),  # [1] fetch
-            _result(),  # [2] checkout
-            _result(),  # [3] reset
-            _result(),  # [4] rebase ← success
-            _result(stdout="2\n"),  # [5] rev-list
-            _result(),  # [6] push
+            _result(returncode=0),  # [2] rev-parse --verify (local ref exists)
+            _result(),  # [3] checkout
+            _result(stdout="0\n"),  # [4] rev-list origin/H..HEAD → local_only=0
+            _result(stdout="0\n"),  # [5] rev-list HEAD..origin/H → origin_only=0
+            _result(),  # [6] reset (local not ahead → reset)
+            _result(),  # [7] rebase ← success
+            _result(stdout="2\n"),  # [8] rev-list origin/BASE..HEAD
+            _result(),  # [9] push
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)
@@ -148,21 +154,27 @@ async def test_conflict_path_calls_diff_then_abort_and_returns_conflict_files(
     Call sequence:
       [0] status --porcelain          ← clean (the H8 dirty-tree gate)
       [1] fetch origin
-      [2] checkout HEAD branch
-      [3] reset --hard origin/HEAD
-      [4] rebase origin/BASE          ← exits 1 (conflict)
-      [5] diff --name-only            ← lists conflicted files
-      [6] rebase --abort              ← exits 0
+      [2] rev-parse --verify --quiet  ← local HEAD ref exists
+      [3] checkout HEAD branch
+      [4] rev-list --count origin/H..HEAD  ← local_only=0
+      [5] rev-list --count HEAD..origin/H  ← origin_only=0 (not diverged)
+      [6] reset --hard origin/HEAD    ← local has nothing unique
+      [7] rebase origin/BASE          ← exits 1 (conflict)
+      [8] diff --name-only            ← lists conflicted files
+      [9] rebase --abort              ← exits 0
     """
     run = AsyncMock(
         side_effect=[
             _result(stdout=""),  # [0] status --porcelain → clean
             _result(),  # [1] fetch
-            _result(),  # [2] checkout
-            _result(),  # [3] reset
-            _result(returncode=1),  # [4] rebase ← conflict
-            _result(stdout="src/a.py\nsrc/b.py\n"),  # [5] diff
-            _result(),  # [6] rebase --abort
+            _result(returncode=0),  # [2] rev-parse --verify (local ref exists)
+            _result(),  # [3] checkout
+            _result(stdout="0\n"),  # [4] rev-list origin/H..HEAD → local_only=0
+            _result(stdout="0\n"),  # [5] rev-list HEAD..origin/H → origin_only=0
+            _result(),  # [6] reset (local not ahead → reset)
+            _result(returncode=1),  # [7] rebase ← conflict
+            _result(stdout="src/a.py\nsrc/b.py\n"),  # [8] diff
+            _result(),  # [9] rebase --abort
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)
@@ -214,21 +226,27 @@ async def test_resilience_when_both_rebase_and_abort_fail_returns_conflict_no_ex
     Call sequence:
       [0] status --porcelain          ← clean (the H8 dirty-tree gate)
       [1] fetch origin
-      [2] checkout HEAD branch
-      [3] reset --hard origin/HEAD
-      [4] rebase origin/BASE          ← exits 1 (conflict)
-      [5] diff --name-only            ← lists conflicted files
-      [6] rebase --abort              ← exits 1 (abort also fails)
+      [2] rev-parse --verify --quiet  ← local HEAD ref exists
+      [3] checkout HEAD branch
+      [4] rev-list --count origin/H..HEAD  ← local_only=0
+      [5] rev-list --count HEAD..origin/H  ← origin_only=0 (not diverged)
+      [6] reset --hard origin/HEAD    ← local has nothing unique
+      [7] rebase origin/BASE          ← exits 1 (conflict)
+      [8] diff --name-only            ← lists conflicted files
+      [9] rebase --abort              ← exits 1 (abort also fails)
     """
     run = AsyncMock(
         side_effect=[
             _result(stdout=""),  # [0] status --porcelain → clean
             _result(),  # [1] fetch
-            _result(),  # [2] checkout
-            _result(),  # [3] reset
-            _result(returncode=1),  # [4] rebase ← conflict
-            _result(stdout="src/conflict.py\n"),  # [5] diff
-            _result(returncode=1),  # [6] rebase --abort ← also fails
+            _result(returncode=0),  # [2] rev-parse --verify (local ref exists)
+            _result(),  # [3] checkout
+            _result(stdout="0\n"),  # [4] rev-list origin/H..HEAD → local_only=0
+            _result(stdout="0\n"),  # [5] rev-list HEAD..origin/H → origin_only=0
+            _result(),  # [6] reset (local not ahead → reset)
+            _result(returncode=1),  # [7] rebase ← conflict
+            _result(stdout="src/conflict.py\n"),  # [8] diff
+            _result(returncode=1),  # [9] rebase --abort ← also fails
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)
@@ -244,6 +262,57 @@ async def test_resilience_when_both_rebase_and_abort_fail_returns_conflict_no_ex
     )
 
     assert result == {"status": "conflicts", "files": ["src/conflict.py"]}
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — diverged: both sides carry unique commits, neither is touched
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_diverged_path_returns_diverged_and_touches_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When local HEAD and origin/HEAD each carry commits the other lacks
+    AND the patch-equivalence probe finds a real origin-only commit (no
+    local match), the method refuses immediately — no reset, no rebase, no
+    push.
+
+    Call sequence:
+      [0] status --porcelain          ← clean (the H8 dirty-tree gate)
+      [1] fetch origin
+      [2] rev-parse --verify --quiet  ← local HEAD ref exists
+      [3] checkout HEAD branch
+      [4] rev-list --count origin/H..HEAD  ← local_only=2
+      [5] rev-list --count HEAD..origin/H  ← origin_only=1
+      [6] rev-list --count --right-only --cherry-pick HEAD...origin/H
+          ← 1 origin-only commit survives patch-equivalence → DIVERGED
+    """
+    run = AsyncMock(
+        side_effect=[
+            _result(stdout=""),  # [0] status --porcelain → clean
+            _result(),  # [1] fetch
+            _result(returncode=0),  # [2] rev-parse --verify (local ref exists)
+            _result(),  # [3] checkout
+            _result(stdout="2\n"),  # [4] rev-list origin/H..HEAD → local_only=2
+            _result(stdout="1\n"),  # [5] rev-list HEAD..origin/H → origin_only=1
+            _result(stdout="1\n"),  # [6] cherry-pick probe → 1 genuinely unmatched
+        ]
+    )
+    monkeypatch.setattr(GitService, "_run_git", run)
+
+    svc = _git_service()
+    result = await svc.rebase_onto_base(
+        _WORKSPACE,
+        head_branch=_HEAD,
+        base_branch=_BASE,
+        git_token=_TOKEN,
+    )
+
+    assert result == {"status": "diverged", "local_only": 2, "origin_only": 1}
+    # Nothing past the classification ran: no reset, no rebase, no push.
+    subcommands = {c.args[1][0] for c in run.call_args_list}
+    assert subcommands.isdisjoint({"reset", "rebase", "push"})
 
 
 # ---------------------------------------------------------------------------
