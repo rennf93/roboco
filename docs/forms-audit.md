@@ -20,6 +20,8 @@ Audited 2026-07-23 directly against the current codebase (v0.26.0) on branch `fe
 
 Form: `panel/src/app/(dashboard)/settings/page.tsx`. Backend: `roboco/services/settings.py` (`SettingsService`, `_VALIDATORS`) plus `panel/src/store/ui-store.ts` (`useUIStore`, client-only, zustand `persist`).
 
+**Persistence mechanism for the four toggle rows below (Enable Notifications, Sound Alerts, Auto Refresh, Refresh Interval):** these do NOT round-trip through `settingsApi`/`SettingsService` — they persist entirely client-side via `useUIStore` (zustand `persist` middleware, backed by `localStorage`; see `settings/page.tsx` lines 44-60), with a `toast.success(...)` confirmation fired on every change. `settingsApi` is used by exactly one row on this page — Retention window (days) — see its own row below.
+
 | Field | Verdict | Notes |
 |---|---|---|
 | Enable Notifications | `ok` (fixed) | Was already migrated to client-only `useUIStore` persistence (localStorage, immediate-apply, no Save button) by a prior fix — see "History" below. This task adds the one piece that was still missing: a confirmation toast on every change. |
@@ -77,16 +79,16 @@ Forms: `panel/src/components/tasks/create-task-dialog.tsx` (backend: `TaskCreate
 | `acceptance_criteria` | ok (`AcceptanceCriteriaEditor`) | ok (`AcceptanceCriteriaEditor`) | `ok` | |
 | `team` | ok | ok | `ok` | |
 | `priority` | ok | ok | `ok` | |
-| `sequence` | missing | missing | `missing` | `TaskCreate.sequence` (create) and the route-level `TaskUpdate.sequence` (edit) both accept sibling ordering; neither dialog exposes a control for it. |
+| `sequence` | ok | ok | `ok` | `TaskCreate.sequence` (create) and the route-level `TaskUpdate.sequence` (edit) both accept sibling ordering; both dialogs now expose a numeric control for it (behind "Advanced Options"), following the existing `budget_usd` numeric-input pattern. |
 | `status` | ok (Pending/Backlog at creation) | `n/a` | `n/a` | Post-creation status changes are lifecycle transitions (claim/complete/etc.) gated through role-specific verbs, not a free-text edit field. |
 | `estimated_complexity` | ok | ok | `ok` | |
 | `nature` | ok | ok | `ok` | |
 | `task_type` | ok (behind "Advanced Options") | ok (behind "Advanced Options") | `ok` | |
-| `target_date` | missing | ok | `missing` | `TaskCreate.target_date` accepts it; only the edit dialog exposes a control. |
+| `target_date` | missing | ok | `missing` (deferred) | `TaskCreate.target_date` accepts it; only the edit dialog exposes a control. Discovered during this audit sweep, not named as a deliverable by the intake — deferred/out-of-scope for this wave rather than building a new create-dialog control; tracked as a follow-up, not fixed here. |
 | `budget_usd` | `n/a` (`TaskCreate` has no such field — update-only) | ok | `ok` | Mirrors the project dialog's `monthly_budget_usd` shape (create has no field, edit does, both intentional per the backend schema). |
 | `project_id` / `product_id` | ok (behind "Advanced Options") | ok (`project_id` only; locked once `branch_name` is set) | `ok` | `product_id` is create-only by design — a fan-out task's per-cell routing is fixed at creation and `TaskUpdate` carries no `product_id`. |
-| `parent_task_id` | ok (behind "Advanced Options") | missing | `missing` | The route-level `TaskUpdate.parent_task_id` accepts re-parenting after creation; the edit dialog has no control for it. |
-| `dependency_ids` | ok (`DependencySelector`) | missing | `missing` | The route-level `TaskUpdate.dependency_ids` accepts it; the edit dialog has no equivalent control even though `Task.dependency_ids` is already in the type. |
+| `parent_task_id` | ok (behind "Advanced Options") | missing | `missing` (deferred) | The route-level `TaskUpdate.parent_task_id` accepts re-parenting after creation; the edit dialog has no control for it. Discovered during this audit sweep, not named as a deliverable by the intake — deferred/out-of-scope for this wave; tracked as a follow-up, not fixed here. |
+| `dependency_ids` | ok (`DependencySelector`) | missing | `missing` (deferred) | The route-level `TaskUpdate.dependency_ids` accepts it; the edit dialog has no equivalent control even though `Task.dependency_ids` is already in the type. Discovered during this audit sweep, not named as a deliverable by the intake — deferred/out-of-scope for this wave; tracked as a follow-up, not fixed here. |
 | `blocker_ids` | `n/a` | `n/a` | `n/a` | Present on the route-level `TaskUpdate` schema but every non-test producer of blockers found in `roboco/services/` sets it programmatically (dependency/lifecycle bookkeeping); no evidence this is meant as a manually-edited dialog field, so it is left as a system-managed field pending explicit product direction otherwise. |
 | `assigned_to` | ok (behind "Advanced Options") | ok (behind "Advanced Options") | `ok` | |
 | `dev_notes` / `qa_notes` / `auditor_notes` / `pr_reviewer_notes` / `doc_notes` / `quick_context` | `n/a` | `n/a` | `n/a` | Role-authored structured note fields written through each role's own gateway verbs, not general-purpose manual edit fields. |

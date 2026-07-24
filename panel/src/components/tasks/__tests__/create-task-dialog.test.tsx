@@ -206,6 +206,63 @@ describe("CreateTaskDialog — project/product mutual exclusivity (F085)", () =>
   });
 });
 
+describe("CreateTaskDialog — Sequence input", () => {
+  beforeEach(() => {
+    mutateAsync.mockClear();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("omits sequence from the payload when left blank", async () => {
+    render(<CreateTaskDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /New Task/i }));
+
+    fillBasics();
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    submit();
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const payload = mutateAsync.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.sequence).toBeUndefined();
+  });
+
+  it("rejects a negative sequence with an inline error and does not submit", async () => {
+    render(<CreateTaskDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /New Task/i }));
+
+    fillBasics();
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    fireEvent.change(screen.getByLabelText("Sequence"), {
+      target: { value: "-1" },
+    });
+    submit();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/non-negative whole number/i),
+      ).toBeInTheDocument();
+    });
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("submits a positive integer sequence as a number", async () => {
+    render(<CreateTaskDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /New Task/i }));
+
+    fillBasics();
+    fireEvent.click(screen.getByRole("button", { name: "Set Project" }));
+    fireEvent.change(screen.getByLabelText("Sequence"), {
+      target: { value: "3" },
+    });
+    submit();
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const payload = mutateAsync.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.sequence).toBe(3);
+  });
+});
+
 describe("CreateTaskDialog — Task Type tooltip (W9-5 follow-up)", () => {
   it("explains what the selected task type produces on hover", async () => {
     const user = userEvent.setup();
