@@ -79,7 +79,6 @@ export function ProjectCardGrid({ projects, isLoading }: ProjectCardGridProps) {
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-6 w-6"
                       onClick={() => setEditingProjectId(project.id)}
                       aria-label="Edit project"
                     >
@@ -87,7 +86,7 @@ export function ProjectCardGrid({ projects, isLoading }: ProjectCardGridProps) {
                     </Button>
                   </HelpTip>
                   <HelpTip label="Open the git repository in a new tab">
-                    <Button variant="ghost" size="icon" className="h-6 w-6" asChild>
+                    <Button variant="ghost" size="icon" asChild>
                       <a
                         href={getExternalUrl(project)}
                         target="_blank"

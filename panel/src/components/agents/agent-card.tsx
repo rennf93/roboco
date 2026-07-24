@@ -114,7 +114,6 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6"
                   aria-label="DM this agent"
                   title="DM this agent"
                   onClick={() =>
@@ -130,7 +129,6 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6"
                   aria-label={dedicatedChat.label}
                   title={dedicatedChat.label}
                   onClick={() => router.push(dedicatedChat.href)}
@@ -145,7 +143,7 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 shrink-0"
+                    className="shrink-0"
                     aria-label="Agent actions"
                     title="Agent actions"
                   >

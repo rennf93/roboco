@@ -96,7 +96,7 @@ export function AcceptanceCriteriaEditor({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0"
+                    className="shrink-0"
                     onClick={() => handleRemove(index)}
                   >
                     <X className="h-4 w-4" />
