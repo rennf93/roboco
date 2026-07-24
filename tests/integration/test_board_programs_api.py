@@ -13,10 +13,18 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.board_programs import router as board_programs_router
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable, SystemSettingTable
+from roboco.db.tables import (
+    AgentTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    SystemSettingTable,
+    TaskTable,
+)
 from roboco.foundation import identity as _foundation
-from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
+from roboco.services.task import ROADMAP_SOURCE
+from sqlalchemy import delete, update
 
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
@@ -113,6 +121,26 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
     app.dependency_overrides.clear()
+    # run-now's route handler commits explicitly (write-route convention), so
+    # anything a test wrote through it (settings-store overrides, an opened
+    # ledger row, the board_roadmap task it originates) would otherwise
+    # outlive this test in the shared, cross-test-persistent DB and poison
+    # every later real-DB roadmap/board-program unit test (dedup checks,
+    # settings-store PK collisions, ledger scalar_one() lookups). Purge
+    # unconditionally — a no-op for the tests here that never wrote anything.
+    await db_session.execute(
+        delete(SystemSettingTable).where(SystemSettingTable.key.like("board_program.%"))
+    )
+    await db_session.execute(delete(BoardProgramCycleTable))
+    await db_session.execute(
+        update(TaskTable)
+        .where(
+            TaskTable.source == ROADMAP_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        .values(status=TaskStatus.CANCELLED)
+    )
+    await db_session.commit()
 
 
 @pytest.mark.asyncio

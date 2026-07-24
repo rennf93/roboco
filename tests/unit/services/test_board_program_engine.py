@@ -9,15 +9,17 @@ RoadmapEngine/XEngine's own internal guards (covered by their own suites).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
+import pytest_asyncio
 from roboco.config import settings as cfg
 from roboco.db.tables import (
     AgentTable,
     BoardProgramCycleTable,
     ProjectTable,
     SystemSettingTable,
+    TaskTable,
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.board_programs import PROGRAMS, BoardProgram, TriggerKind
@@ -40,12 +42,12 @@ from roboco.services.task import (
     TaskCreateRequest,
     get_task_service,
 )
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from uuid import UUID
 
-    from roboco.db.tables import TaskTable
     from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
@@ -53,6 +55,30 @@ PO_UUID = _foundation.AGENTS["product-owner"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
+    """Board Program state (settings-store overrides, ledger rows, open
+    roadmap/x_feature exploration tasks) is shared, cross-test-persistent DB
+    state — this module's own tests write it mid-test, and the write-route
+    integration suite (``test_board_programs_api.py``'s run-now, which
+    commits) can leave it behind too. Purge before every test in this file
+    so a leftover row never reads back as a false "already open"/"already
+    armed" state or collides on a settings-store primary key."""
+    await db_session.execute(
+        delete(SystemSettingTable).where(SystemSettingTable.key.like("board_program.%"))
+    )
+    await db_session.execute(delete(BoardProgramCycleTable))
+    await db_session.execute(
+        update(TaskTable)
+        .where(
+            TaskTable.source.in_([ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE]),
+            TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
+        )
+        .values(status=TS.CANCELLED)
+    )
+    await db_session.commit()
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -108,7 +134,7 @@ async def _make_exploration(
             task_type=TaskType.ADMINISTRATIVE,
             nature=TaskNature.NON_TECHNICAL,
             estimated_complexity=Complexity.LOW,
-            project_id=project.id,
+            project_id=cast("UUID", project.id),
             status=TS.PENDING,
             source=source,
             confirmed_by_human=False,
@@ -353,11 +379,18 @@ async def test_record_decision_targets_named_exploration_over_most_recent(
 
     engine = BoardProgramEngine(db_session)
     await engine.record_decision(
-        "roadmap", "item-1", "approved", exploration_task_id=first_task.id
+        "roadmap",
+        "item-1",
+        "approved",
+        exploration_task_id=cast("UUID", first_task.id),
     )
 
-    first_row = await engine._cycle_for_exploration("roadmap", first_task.id)
-    second_row = await engine._cycle_for_exploration("roadmap", second_task.id)
+    first_row = await engine._cycle_for_exploration(
+        "roadmap", cast("UUID", first_task.id)
+    )
+    second_row = await engine._cycle_for_exploration(
+        "roadmap", cast("UUID", second_task.id)
+    )
     assert first_row is not None
     assert second_row is not None
     assert first_row.items_proposed == ONE

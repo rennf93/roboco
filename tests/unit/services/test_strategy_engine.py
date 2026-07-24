@@ -6,12 +6,25 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from roboco.db.tables import AgentTable, ProjectTable, SystemSettingTable
+import pytest_asyncio
+from roboco.db.tables import (
+    AgentTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    SystemSettingTable,
+    TaskTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.models.base import TaskStatus as TS
 from roboco.services import strategy_engine as se_module
 from roboco.services.strategy_engine import StrategyEngine
-from roboco.services.task import get_task_service
+from roboco.services.task import (
+    ROADMAP_SOURCE,
+    X_FEATURE_EXPLORATION_SOURCE,
+    get_task_service,
+)
+from sqlalchemy import delete, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +41,30 @@ _GOALS_EMPTY: dict[str, Any] = {
     "constraints": [],
     "operating_policy": {},
 }
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
+    """See ``test_board_program_engine.py``'s identical fixture: Board
+    Program settings-store rows / ledger rows / open exploration tasks are
+    shared, cross-test-persistent DB state that a sibling suite (this
+    module's own idle-trigger tests, or the write-route
+    ``test_board_programs_api.py`` run-now test) can leave behind — this
+    module's idle-trigger tests need the roadmap dedup gate genuinely open.
+    Purge before every test in this file."""
+    await db_session.execute(
+        delete(SystemSettingTable).where(SystemSettingTable.key.like("board_program.%"))
+    )
+    await db_session.execute(delete(BoardProgramCycleTable))
+    await db_session.execute(
+        update(TaskTable)
+        .where(
+            TaskTable.source.in_([ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE]),
+            TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
+        )
+        .values(status=TS.CANCELLED)
+    )
+    await db_session.commit()
 
 
 def _engine(
