@@ -69,6 +69,14 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 **Fix:** Either `commit(message=...)` (omit `files` to stage everything) then `sync_branch(task_id)` again, OR call `sync_branch(task_id, stash=True)` to auto-stash (tracked + untracked), rebase, and restore your changes in one call. If the stash pop conflicts, the envelope's `next` tells you so — your stash is preserved (never dropped); resolve by hand and `commit(...)`. Still stuck after that? `unclaim(task_id)` releases the claim back to the pool rather than looping.
 
+## sync_branch refused: branch DIVERGED from its origin copy
+
+**Error:** `sync_branch` returns `next` telling you your branch and its origin copy have DIVERGED (both sides carry commits the other lacks).
+
+**Cause:** Your workspace and `origin/<your-branch>` each hold real work the other doesn't — not the routine "behind base" case. `sync_branch` first checks whether this is actually the harmless residue of an EARLIER `sync_branch` call whose rebase succeeded locally but whose force-push then failed (a network blip, a container reap) — that self-heals silently as an ordinary rebase on this retry. What's left after that check is a genuine divergence, most often your task bounced to a different agent's clone that pushed meanwhile.
+
+**Fix:** Neither side is touched or lost — nothing was reset, nothing was rebased, nothing was pushed. `i_am_blocked(reason='...')` naming the divergence so a human can reconcile the two histories by hand (fetch, inspect both tips, merge or rebase deliberately). If `stash=True` was passed and the stash pop ALSO conflicted, your stash is preserved (never dropped) — resolve it by hand alongside the divergence.
+
 ## src refspec does not match any (during open_pr)
 
 **Error:** `src refspec '<branch>' does not match any`

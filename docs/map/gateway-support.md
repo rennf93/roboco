@@ -125,6 +125,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | hint_for_missing_progress | function | roboco/services/gateway/remediation.py:11 | Hint: make a commit before i_am_done. |
 | hint_for_missing_reflect | function | roboco/services/gateway/remediation.py:18 | Hint: call note(scope='reflect',...). |
 | hint_for_unaddressed_acceptance_criteria | function | roboco/services/gateway/remediation.py:25 | Hint: every AC needs a referencing artifact. |
+| hint_for_missing_ac_coverage | function | roboco/services/gateway/remediation.py | #686: a `delegate` child draft rejected for a `covers_parent_criteria` ref that doesn't resolve now gets a copy-pasteable corrected skeleton with the parent's REAL criteria inlined (id when present, quoted exact text otherwise — never a bare `'<id>'` placeholder), instead of a rejection that named the field but never showed its shape. The coverage-reject path self-heals an empty/out-of-length id list on the parent before rendering so the skeleton always has real references; `cell_pm.md`/`main_pm.md` also show the field on every delegation-guidance child draft now. |
 | hint_for_missing_journal_decision | function | roboco/services/gateway/remediation.py:36 | Hint: call note(scope='decision',...) before complete. |
 | hint_for_missing_journal_learning | function | roboco/services/gateway/remediation.py:43 | Hint: call note(scope='learning',...) before pass/fail. |
 | hint_for_missing_qa_notes | function | roboco/services/gateway/remediation.py:50 | Hint: qa_notes must be >=80 chars. |

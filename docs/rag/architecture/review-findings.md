@@ -30,6 +30,7 @@ Each takes `findings: list[dict]` — a list of structured findings. The legacy 
 
 - `severity`: `blocker` (must fix before merge/pass) → `major` (significant defect) → `minor` (small defect, fix advised) → `nit` (cosmetic).
 - `criterion`, if supplied, must match one of the task's acceptance-criterion ids or exact text — a criterion that matches neither is rejected outright, so a typo doesn't silently detach the finding from what it's actually about.
+- `file`, if supplied, must actually LOOK like a repo-relative path (letters/digits/`._-/()[]+@`, no spaces) — narrative like "PR #676 description" is rejected outright instead of silently accepted and then dooming the panel's code-snippet fetch. Cross-cutting or narrative feedback that has no single file:line home should omit `file` entirely and put the detail in `evidence` instead — that's the legal file-less option, not a workaround.
 - **Count guard**: a soft nudge appears (non-blocking) above 5 findings in one call; more than 10 is a hard reject — split across calls or prioritize the blocking ones first. An oversized findings list is as unreviewable as an oversized task.
 
 ## What happens when you file one
