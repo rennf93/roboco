@@ -1798,7 +1798,7 @@ class ModelAssignmentTable(Base):
         ForeignKey("provider_configs.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    # Raw Claude Code `--model` identifier (`claude-opus-4-7`,
+    # Raw Claude Code `--model` identifier (`claude-opus-5`,
     # `kimi-k2.6:cloud`, etc.). The orchestrator's CLI-translation only
     # fires for anthropic providers; non-anthropic values pass through.
     model_name: Mapped[str] = mapped_column(String(100), nullable=False)

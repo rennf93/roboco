@@ -104,7 +104,7 @@ class TestWriteManifest:
                 role="developer",
                 team="backend",
                 workspace_path=tmp_path,
-                agent_model="claude-opus-4-7",
+                agent_model="claude-opus-5",
             )
         )
         manifest_path = tmp_path / "tool-manifest.json"

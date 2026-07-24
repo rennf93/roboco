@@ -62,10 +62,9 @@ _ANTHROPIC_FRAGMENTS = ("claude", "opus", "sonnet", "haiku")
 # ---------------------------------------------------------------------------
 _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
-    # Opus 5 — same sticker as the Opus 4 family; needs its own fragment
-    # because "claude-opus-4" doesn't substring-match it.
+    # Opus 5
     ("claude-opus-5", 5.00, 25.00, 0.50, 6.25),
-    # Opus 4 family
+    # Opus 4 family — prices the historical usage rows only
     ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
     # Sonnet 4 / 3.7 / 3.5 family
     ("claude-sonnet-4", 3.00, 15.00, 0.30, 0.75),

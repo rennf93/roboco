@@ -113,9 +113,9 @@ function mockTeamUsage(period: UsagePeriod = "24h"): TeamUsageRow[] {
 function mockModelUsage(period: UsagePeriod = "24h"): ModelUsageSlice[] {
   const scale = scaleFor(period);
   const models = [
-    { model: "claude-opus-4", share: 0.548 },
-    { model: "claude-sonnet-4", share: 0.346 },
-    { model: "claude-haiku-4", share: 0.106 },
+    { model: "claude-opus-5", share: 0.548 },
+    { model: "claude-sonnet-5", share: 0.346 },
+    { model: "claude-haiku-4-5", share: 0.106 },
   ];
   const base = 124_800 * scale;
   return models.map((m) => {
@@ -227,7 +227,7 @@ function mockSpawnWaste(period: UsagePeriod = "24h"): SpawnWasteResponse {
 }
 
 function mockSessions(): UsageSession[] {
-  const models = ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"];
+  const models = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"];
   const agentSlugs = ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-qa", "main-pm"];
   return Array.from({ length: 35 }, (_, i) => {
     const agent_slug = agentSlugs[i % agentSlugs.length];

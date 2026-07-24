@@ -940,7 +940,7 @@ async def test_review_code(optimal_client: AsyncClient) -> None:
 async def test_estimate_tokens(optimal_client: AsyncClient) -> None:
     response = await optimal_client.post(
         "/api/optimal/tokens/estimate",
-        json={"content": "Hello world", "model": "claude-opus-4-7"},
+        json={"content": "Hello world", "model": "claude-opus-5"},
         headers=_HDR,
     )
     assert response.status_code == HTTPStatus.OK

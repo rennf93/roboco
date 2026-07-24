@@ -562,15 +562,7 @@ class TestProviderAwareness:
         assert cost == _ZERO_COST
 
     def test_is_anthropic_model_true_for_claude_names(self) -> None:
-        for name in (
-            "claude-opus-4-6",
-            "claude-opus-4-8",
-            "claude-opus-5",
-            "claude-fable-5",
-            "opus",
-            "sonnet",
-            "haiku",
-        ):
+        for name in ("claude-opus-5", "claude-fable-5", "opus", "sonnet", "haiku"):
             assert _is_anthropic_model(name) is True, name
 
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
@@ -629,7 +621,7 @@ class TestCostResult:
         assert result.is_anthropic is False
 
     def test_calculate_cost_matches_structured_cost_usd(self) -> None:
-        model = "claude-opus-4-6"
+        model = "claude-opus-5"
         assert (
             calculate_cost(model, tokens_input=_M, tokens_output=_M)
             == calculate_cost_result(model, tokens_input=_M, tokens_output=_M).cost_usd

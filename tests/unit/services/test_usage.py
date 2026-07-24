@@ -629,7 +629,7 @@ class TestGetByModel:
                 cost_usd=0.02,
             ),
             _make_row(
-                model="claude-opus-4-5",
+                model="claude-opus-5",
                 tokens_input=100,
                 tokens_output=100,
                 tokens_cache_read=0,
