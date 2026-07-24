@@ -7219,11 +7219,21 @@ class Choreographer:
         else ``None``.
 
         The progress fingerprint is deliberately cheap — commit count +
-        revision_count are already loaded on ``t``, so this adds no query.
-        Findings only move via QA/PR-review/PM-reject, a different lifecycle
-        path from escalate_up/unblock entirely, so they carry no signal here.
+        revision_count are already loaded on ``t``, plus one COUNT query for
+        terminal children. The child count matters because a PM coordination
+        root never commits itself (all real progress lands on child rows), so
+        the first two components alone are structurally static on one — a
+        busy root would false-trip on its 6th lifetime legitimate escalation
+        even with children completing between rounds. Findings only move via
+        QA/PR-review/PM-reject, a different lifecycle path from
+        escalate_up/unblock entirely, so they carry no signal here.
         """
-        progress_fp = [len(t.commits or []), int(t.revision_count or 0)]
+        terminal_children = await self.task.terminal_children_count(task_id)
+        progress_fp = [
+            len(t.commits or []),
+            int(t.revision_count or 0),
+            terminal_children,
+        ]
         strikes = markers.bump_oscillation_strikes(t, progress_fp)
         if strikes <= _OSCILLATION_TRIP_THRESHOLD:
             return None

@@ -551,13 +551,16 @@ def clear_budget_blocked(task: HasMarkers) -> None:
 # the escalator and the resolver each own only half the cycle's spawns, so
 # neither agent's own counter accrues at the cycle's real rate. `unblock`
 # stamps this marker on every restore with a cheap progress fingerprint
-# (commit count + revision_count, both already loaded on the task row — no
-# extra query); an unchanged fingerprint accrues a strike, any change (real
-# forward motion between escalations) resets to 1. Past the trip threshold
-# the task is force-BLOCKED for a human instead of restored, and `unblock`
-# refuses every further call on it until an admin override moves it out of
-# BLOCKED (which also clears this marker — see `_restore_block_ownership`).
-# Payload: {"strikes": int, "progress_fp": [int, int], "tripped": bool}.
+# (commit count + revision_count, both already loaded on the task row, plus
+# one COUNT query for terminal children — a PM coordination root never
+# commits itself, so child completions are its only progress signal); an
+# unchanged fingerprint accrues a strike, any change (real forward motion
+# between escalations) resets to 1. Past the trip threshold the task is
+# force-BLOCKED for a human instead of restored, and `unblock` refuses every
+# further call on it until a human clears it — either an admin status
+# override out of BLOCKED (`TaskService._admin_out_of_blocked`, snapshot or
+# not) or the legacy human/panel unblock route (`TaskService.unblock`).
+# Payload: {"strikes": int, "progress_fp": [int, int, int], "tripped": bool}.
 
 OSCILLATION_STRIKES = "oscillation_strikes"
 

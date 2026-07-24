@@ -531,6 +531,58 @@ async def test_unblock_notifies_once_not_twice_on_repeated_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unblock_clears_tripped_oscillation_marker() -> None:
+    """The legacy human/panel unblock route never goes through the gateway's
+    _oscillation_unblock_guard — reaching a tripped task here IS the human
+    intervention the breaker demands, so it must clear the marker rather
+    than leave it to refuse the task's next legitimate cycle."""
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=uuid4()
+    )
+    for _ in range(6):
+        markers.bump_oscillation_strikes(task, [0, 0, 0])
+    markers.mark_oscillation_tripped(task)
+    assert markers.is_oscillation_tripped(task) is True
+
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        out = await svc.unblock(task.id)
+
+    assert out is task
+    assert markers.is_oscillation_tripped(task) is False
+    assert markers.get_oscillation_strikes(task) == 0
+
+
+@pytest.mark.asyncio
+async def test_unblock_leaves_untripped_marker_alone() -> None:
+    """A normal (non-tripped) unblock must not reset an in-flight, still-live
+    strike count — only a tripped marker is cleared."""
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=uuid4()
+    )
+    markers.bump_oscillation_strikes(task, [0, 0, 0])
+    assert markers.is_oscillation_tripped(task) is False
+
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.unblock(task.id)
+
+    assert markers.get_oscillation_strikes(task) == 1
+
+
+@pytest.mark.asyncio
 async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
     """Collision-sequencing notification fires only for freshly-added edges.
 
@@ -2205,6 +2257,101 @@ async def test_admin_set_status_force_no_revision_bump(
         "admin force terminal->needs_revision bumped revision_count — "
         "admin recovery must not be counted as rework in metrics"
     )
+
+
+# ---------------------------------------------------------------------------
+# Oscillation breaker — post-trip topology. The trip fires AFTER the restore
+# already wiped pre_block_assignee/pre_block_state (a fresh re-block via
+# admin_set_status stamps no new snapshot), so a CEO override out of BLOCKED
+# must clear the marker even with no snapshot to drive a restore — otherwise
+# it latently refuses this task's next legitimate gateway unblock forever.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ceo_override_clears_oscillation_marker_with_wiped_snapshot(
+    db_session: AsyncSession,
+) -> None:
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.MAIN_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    task = TaskTable(
+        id=tid,
+        title="t",
+        description="d",
+        acceptance_criteria=["done"],
+        status=TaskStatus.BLOCKED,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.LOW,
+        team=Team.BACKEND,
+        confirmed_by_human=True,
+        project_id=project.id,
+        created_by=agent.id,
+        assigned_to=agent.id,
+        branch_name="feature/x",
+        # The exact post-trip topology: unblock_with_restore already wiped
+        # the snapshot before the trip fired, and the force-block into
+        # BLOCKED (admin_set_status, from a non-BLOCKED from_status) stamps
+        # no new one of its own.
+        pre_block_state=None,
+        pre_block_assignee=None,
+        blocker_resolver_type=BlockerResolverType.HUMAN,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    # A real trip: strikes accrued past threshold with an unchanging
+    # fingerprint, then force-blocked.
+    for _ in range(6):
+        markers.bump_oscillation_strikes(task, [0, 0, 0])
+    markers.mark_oscillation_tripped(task)
+    assert markers.is_oscillation_tripped(task) is True
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    out = await svc.admin_set_status(
+        tid, TaskStatus.IN_PROGRESS, actor_id=cast("UUID", agent.id), actor_role="ceo"
+    )
+    assert out is not None
+    await db_session.flush()
+
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
+    assert row.status == TaskStatus.IN_PROGRESS
+    assert markers.is_oscillation_tripped(row) is False
+    assert markers.get_oscillation_strikes(row) == 0, (
+        "the marker must be gone entirely, not just its tripped flag, so the "
+        "next cycle's first bump starts a fresh strike count"
+    )
+    # A later legitimate block/unblock cycle counts from fresh, not from the
+    # old strike count.
+    fresh_strikes = markers.bump_oscillation_strikes(row, [1, 0, 0])
+    assert fresh_strikes == 1
 
 
 # ---------------------------------------------------------------------------

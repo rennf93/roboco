@@ -67,6 +67,10 @@ def _osc_setup() -> tuple[Choreographer, Any, Any, Any, Any]:
     task_svc.get.return_value = t
     task_svc.unblock_with_restore.return_value = t
     task_svc.unmet_dependency_ids.return_value = []
+    # A PM coordination root never commits itself — held constant here so
+    # existing scenarios (driven purely by commits/revision_count) are
+    # unaffected; tests targeting the child-count component override it.
+    task_svc.terminal_children_count = AsyncMock(return_value=0)
     c = Choreographer(_make_deps(task=task_svc))
     return c, pm_id, task_id, t, task_svc
 
@@ -151,6 +155,50 @@ async def test_revision_count_advance_also_counts_as_progress() -> None:
         assert env.error is None, env.as_dict()
 
     assert markers.is_oscillation_tripped(t) is False
+    cc._notify_ceo_oscillation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_static_terminal_children_still_trips() -> None:
+    """A coordination root with existing terminal children that DON'T change
+    between rounds still trips — the child count is one more progress
+    signal, not blanket forgiveness for an otherwise stalled cycle."""
+    c, pm_id, task_id, t, task_svc = _osc_setup()
+    cc: Any = c
+    cc._notify_ceo_oscillation = AsyncMock()
+    task_svc.terminal_children_count = AsyncMock(return_value=3)
+
+    envs = [
+        await _unblock_once(c, pm_id, task_id, t) for _ in range(_TRIP_THRESHOLD + 1)
+    ]
+
+    tripped = envs[-1]
+    assert tripped.error is None, tripped.as_dict()
+    assert markers.is_oscillation_tripped(t) is True
+    cc._notify_ceo_oscillation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_child_completing_between_rounds_resets_strikes() -> None:
+    """On a PM coordination root the commit/revision_count components are
+    structurally static (PMs never commit) — a child landing COMPLETED
+    between escalations is the only progress signal available, and must
+    still reset strikes like the other two."""
+    c, pm_id, task_id, t, task_svc = _osc_setup()
+    cc: Any = c
+    cc._notify_ceo_oscillation = AsyncMock()
+
+    counts = iter([0, 0, 1, 1, 2])  # a child completes on round 3, then round 5
+    task_svc.terminal_children_count = AsyncMock(side_effect=lambda _tid: next(counts))
+
+    for _ in range(5):
+        env = await _unblock_once(c, pm_id, task_id, t)
+        assert env.error is None, env.as_dict()
+
+    assert markers.is_oscillation_tripped(t) is False
+    # Round 5's fingerprint differs from round 4's (1 -> 2 children), so this
+    # round's strike count reset to 1.
+    assert markers.get_oscillation_strikes(t) == 1
     cc._notify_ceo_oscillation.assert_not_awaited()
 
 
