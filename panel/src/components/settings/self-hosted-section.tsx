@@ -142,7 +142,6 @@ export function SelfHostedSection({
 
   return (
     <section className="space-y-4">
-      {/* Header */}
       <div className="flex items-center gap-2">
         <Server className="h-4 w-4 text-muted-foreground" />
         <HelpTip label="Routes agents to any locally-run OpenAI-compatible endpoint (Ollama, vLLM, LM Studio) instead of a cloud provider.">
@@ -164,7 +163,6 @@ export function SelfHostedSection({
         )}
       </div>
 
-      {/* Base URL input */}
       <div className="space-y-1">
         <HelpTip label="Any OpenAI-compatible endpoint — e.g. Ollama, vLLM, LM Studio.">
           <Label className="text-xs text-muted-foreground">Base URL</Label>
@@ -184,7 +182,6 @@ export function SelfHostedSection({
         </div>
       </div>
 
-      {/* Auth token input with Eye toggle */}
       <div className="space-y-1">
         <HelpTip label="Stored encrypted server-side; never displayed once saved.">
           <Label className="text-xs text-muted-foreground">
@@ -240,7 +237,6 @@ export function SelfHostedSection({
         )}
       </div>
 
-      {/* Test Connection button + inline result badge */}
       <div className="flex items-center gap-3">
         <Button
           variant="outline"
@@ -258,7 +254,6 @@ export function SelfHostedSection({
           )}
         </Button>
 
-        {/* Inline result badge */}
         {testResult?.ok === true && (
           <Badge className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-0 px-3 py-1 text-xs">
             <CheckCircle2 className="h-3.5 w-3.5" />
@@ -274,7 +269,6 @@ export function SelfHostedSection({
         )}
       </div>
 
-      {/* ── Empty state 1: no base URL configured ── */}
       {showNoUrlState && (
         <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
           <p className="font-medium">No base URL configured</p>
@@ -287,7 +281,6 @@ export function SelfHostedSection({
         </div>
       )}
 
-      {/* ── Empty state 2: error state ── */}
       {showErrorState && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900/40 dark:bg-red-950/20">
           <div className="flex items-start gap-2">
@@ -312,7 +305,6 @@ export function SelfHostedSection({
         </div>
       )}
 
-      {/* ── Empty state 3: connected but 0 models ── */}
       {showNoModelsState && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/40 dark:bg-amber-950/20">
           <div className="flex items-start gap-2">
@@ -326,7 +318,6 @@ export function SelfHostedSection({
         </div>
       )}
 
-      {/* ── Model list ── */}
       {showModelList && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
