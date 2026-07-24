@@ -542,3 +542,74 @@ def is_budget_blocked(task: HasMarkers) -> bool:
 
 def clear_budget_blocked(task: HasMarkers) -> None:
     clear_marker(task, BUDGET_BLOCKED)
+
+
+# --- escalate_up/unblock oscillation breaker -------------------------------
+# A round trip (escalate_up blocks the task, unblock restores it) that keeps
+# repeating with nothing landing in between is a deadlock, not rework — and
+# the orchestrator's per-(agent, task) respawn breaker misses it structurally:
+# the escalator and the resolver each own only half the cycle's spawns, so
+# neither agent's own counter accrues at the cycle's real rate. `unblock`
+# stamps this marker on every restore with a cheap progress fingerprint
+# (commit count + revision_count, both already loaded on the task row — no
+# extra query); an unchanged fingerprint accrues a strike, any change (real
+# forward motion between escalations) resets to 1. Past the trip threshold
+# the task is force-BLOCKED for a human instead of restored, and `unblock`
+# refuses every further call on it until an admin override moves it out of
+# BLOCKED (which also clears this marker — see `_restore_block_ownership`).
+# Payload: {"strikes": int, "progress_fp": [int, int], "tripped": bool}.
+
+OSCILLATION_STRIKES = "oscillation_strikes"
+
+
+def get_oscillation_strikes(task: HasMarkers) -> int:
+    val = get_marker(task, OSCILLATION_STRIKES)
+    strikes = val.get("strikes") if isinstance(val, dict) else None
+    return int(strikes) if isinstance(strikes, int) else 0
+
+
+def _get_oscillation_progress_fp(task: HasMarkers) -> list[int] | None:
+    val = get_marker(task, OSCILLATION_STRIKES)
+    fp = val.get("progress_fp") if isinstance(val, dict) else None
+    return list(fp) if isinstance(fp, list) else None
+
+
+def is_oscillation_tripped(task: HasMarkers) -> bool:
+    val = get_marker(task, OSCILLATION_STRIKES)
+    return bool(val.get("tripped")) if isinstance(val, dict) else False
+
+
+def bump_oscillation_strikes(task: HasMarkers, progress_fp: list[int]) -> int:
+    """Record one restore cycle against ``progress_fp``; returns the new
+    strike count. A fingerprint that differs from the last recorded one
+    resets to 1 (real progress happened between escalations); the first-ever
+    call (no prior fingerprint) and a repeated, unchanged fingerprint both
+    accrue from wherever the counter already was."""
+    prior_fp = _get_oscillation_progress_fp(task)
+    strikes = (
+        get_oscillation_strikes(task) + 1
+        if prior_fp is None or prior_fp == progress_fp
+        else 1
+    )
+    set_marker(
+        task,
+        OSCILLATION_STRIKES,
+        {
+            "strikes": strikes,
+            "progress_fp": progress_fp,
+            "tripped": is_oscillation_tripped(task),
+        },
+    )
+    return strikes
+
+
+def mark_oscillation_tripped(task: HasMarkers) -> None:
+    set_marker(
+        task,
+        OSCILLATION_STRIKES,
+        {
+            "strikes": get_oscillation_strikes(task),
+            "progress_fp": _get_oscillation_progress_fp(task) or [],
+            "tripped": True,
+        },
+    )

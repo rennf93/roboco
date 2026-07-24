@@ -319,6 +319,43 @@ async def test_dispatch_claimed_without_agent_spawns_at_most_one_per_tick(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_claimed_without_agent_has_no_progress_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike `_dispatch_blocker_work` (every spawn gated through
+    `_pm_respawn_should_gate`), this dispatcher carries no respawn-loop
+    protection of its own — it unconditionally respawns an agentless
+    claimed/in_progress task every tick past the grace window. This is half
+    of why the escalate_up/unblock oscillation defeats the per-(agent, task)
+    breaker: the resolved side of the cycle (the PM restored to in_progress)
+    has no counter here to ever trip, so the loop's other half never runs out
+    of fuel on its own — only a task-scoped breaker that also covers this
+    path (by moving the task to `blocked` entirely, which this dispatcher
+    doesn't fetch) can stop it.
+    """
+    orch = _orch()
+    task = {
+        "id": "t1",
+        "status": "in_progress",
+        "assigned_to": AGENT_UUIDS["fe-pm"],
+        "updated_at": _STALE,
+    }
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    _stub_git_context(orch, monkeypatch)
+    monkeypatch.setattr(orch, "_get_prompt_for_agent", AsyncMock(return_value="p"))
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    cycles = 10
+    for _ in range(cycles):
+        orch._tick_handled_tasks = set()  # a fresh dispatch tick each cycle
+        await orch._dispatch_claimed_without_agent(client=MagicMock())
+
+    # No cycle was ever refused — zero backoff anywhere in this call path.
+    assert spawn.await_count == cycles
+
+
+@pytest.mark.asyncio
 async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -10927,6 +10927,15 @@ class TaskService(BaseService):
             self._emit_admin_override_audit(
                 task, pre_status, restored_status, actor_id, actor_role
             )
+            # A human manually moved the task out of BLOCKED — the
+            # escalate/unblock oscillation breaker's job for this cycle is
+            # done; clear it so a later, unrelated block/unblock on the same
+            # task starts its strike count fresh rather than inheriting a
+            # stale "tripped" flag. The in-band unblock(restore=True) path
+            # does NOT reach here — its own gateway call site reads/bumps
+            # this marker around this same restore, so clearing it here would
+            # erase the count before it ever gets checked.
+            markers.clear_marker(task, markers.OSCILLATION_STRIKES)
         if (
             restored_status == TaskStatus.NEEDS_REVISION
             and pre_status != TaskStatus.NEEDS_REVISION.value

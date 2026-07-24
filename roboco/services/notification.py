@@ -168,6 +168,59 @@ class NotificationService:
             )
         )
 
+    async def send_oscillation_blocked_notification(
+        self,
+        task_id: str,
+        strikes: int,
+        escalator: str | UUID | None,
+        resolver: str | UUID | None,
+        to_agent: str = "ceo",
+        db_session: AsyncSession | None = None,
+        task_title: str | None = None,
+    ) -> None:
+        """Alert the CEO that an escalate/unblock cycle was force-blocked.
+
+        Raised from the choreographer's ``unblock`` once the round-trip
+        counter (progress-discriminated — see
+        ``markers.bump_oscillation_strikes``) crosses the trip threshold: the
+        task keeps bouncing between the same two agents (one escalates, the
+        other unblocks) with nothing landing in between, so automatic
+        recovery hands it to a human instead of burning more spawns.
+        """
+        logger.info(
+            "Sending oscillation-blocked notification",
+            task_id=task_id,
+            strikes=strikes,
+            escalator=str(escalator) if escalator else None,
+            resolver=str(resolver) if resolver else None,
+        )
+        display = task_display(task_title, task_id)
+        escalator_label = await agent_display(escalator, db_session)
+        resolver_label = await agent_display(resolver, db_session)
+        who = (
+            " and ".join(s for s in (escalator_label, resolver_label) if s)
+            or "its agents"
+        )
+        body = (
+            f"Task {display} bounced between {who} {strikes} times "
+            "(escalate_up / unblock) with no progress in between and has "
+            "been force-blocked for a human to resolve. Automatic respawns "
+            "are stopped for this task — reassign it, fix the root cause, "
+            "or cancel it."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_agent],
+                subject=f"Task {display} oscillation-blocked ({strikes}x)",
+                body=body,
+                related_task_id=task_id,
+            ),
+            db_session=db_session,
+        )
+
     async def send_qa_ready_notification(
         self,
         task_id: str,

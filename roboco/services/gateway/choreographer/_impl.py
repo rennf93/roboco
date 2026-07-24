@@ -110,6 +110,16 @@ _PM_SUBTASKS_MAX = 7
 # forward progress before anyone noticed).
 _BLOCK_FLIP_NOTIFY_THRESHOLD = 3
 
+# unblock's oscillation breaker: past the (higher) notify threshold above, a
+# cycle that keeps repeating with NO progress between rounds (see
+# markers.bump_oscillation_strikes) is force-blocked for a human instead of
+# restored again — the notify threshold alone only alerts, it never stops the
+# respawns (live incident: an escalate_up/unblock cycle split across two
+# agents' per-(agent, task) respawn counters, neither of which accrued at the
+# cycle's real rate, burned spawns for hours with the CEO alert already fired
+# and ignored/unactioned).
+_OSCILLATION_TRIP_THRESHOLD = 5
+
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
     """Return a hint if any PM sub_task is title-only / thin / over-long.
@@ -7022,6 +7032,61 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, None),
         )
 
+    async def _unblock_preflight_guards(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, role: str
+    ) -> Envelope | None:
+        """Verb-specific preflight gates for ``unblock``, checked in order;
+        the first rejection wins, ``None`` means proceed. Factored out to
+        keep ``unblock`` under the return-count budget as gates accrete
+        (status / dependency / budget / oscillation).
+        """
+        if str(t.status) != "blocked":
+            return Envelope.invalid_state(
+                message=f"task {task_id} is in {t.status}, expected blocked",
+                remediate=(
+                    "this task is not blocked; call triage() to find blocked tasks"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            ).with_introspection(task=t, role=role)
+
+        # A dependency block must not be cleared by hand. It auto-clears via
+        # _unblock_dependents the moment its last dependency reaches a terminal
+        # state; forcing it now would let the dependent proceed without the
+        # upstream's work (e.g. a frontend task built before its UX design lands).
+        dep_ids = list(t.dependency_ids or [])
+        unmet = await self.task.unmet_dependency_ids(dep_ids) if dep_ids else []
+        if unmet:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} still depends on {len(unmet)} "
+                    "unfinished task(s); a dependency block clears on its "
+                    "own once the upstream work completes"
+                ),
+                remediate=(
+                    "don't force this — let the dependency finish; the task "
+                    "auto-unblocks the moment its last dependency reaches "
+                    "completed/cancelled"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            ).with_introspection(task=t, role=role)
+
+        # Budget-breach block: re-check spend-vs-cap before letting the PM
+        # clear it. Without this, a PM unblock on a task the orchestrator's
+        # sweep blocked for a $ overrun would silently re-breach the same cap
+        # the very next tick if the CEO's raise didn't actually clear it (or
+        # never raised it at all).
+        if guard := await self._budget_unblock_guard(t):
+            return guard.with_introspection(task=t, role=role)
+
+        # Oscillation breaker: once tripped (an escalate_up/unblock round
+        # trip repeated past the threshold with no progress between rounds),
+        # only a human admin override clears it — see
+        # _oscillation_unblock_guard / _maybe_trip_oscillation_breaker.
+        if guard := self._oscillation_unblock_guard(t):
+            return guard.with_introspection(task=t, role=role)
+
+        return None
+
     async def unblock(
         self, pm_agent_id: UUID, task_id: UUID, reason: str, *, restore: bool = True
     ) -> Envelope:
@@ -7038,57 +7103,9 @@ class Choreographer:
             )
         agent = await self.task.agent_for(pm_agent_id)
         role = str(agent.role) if agent is not None else "cell_pm"
-        if str(t.status) != "blocked":
+        if env := await self._unblock_preflight_guards(pm_agent_id, task_id, t, role):
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"task {task_id} is in {t.status}, expected blocked",
-                    remediate=(
-                        "this task is not blocked; call triage() to find blocked tasks"
-                    ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
-            )
-
-        # A dependency block must not be cleared by hand. It auto-clears via
-        # _unblock_dependents the moment its last dependency reaches a terminal
-        # state; forcing it now would let the dependent proceed without the
-        # upstream's work (e.g. a frontend task built before its UX design lands).
-        dep_ids = list(t.dependency_ids or [])
-        unmet = await self.task.unmet_dependency_ids(dep_ids) if dep_ids else []
-        if unmet:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=(
-                        f"task {task_id} still depends on {len(unmet)} "
-                        "unfinished task(s); a dependency block clears on its "
-                        "own once the upstream work completes"
-                    ),
-                    remediate=(
-                        "don't force this — let the dependency finish; the task "
-                        "auto-unblocks the moment its last dependency reaches "
-                        "completed/cancelled"
-                    ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
-            )
-
-        # Budget-breach block: re-check spend-vs-cap before letting the PM
-        # clear it. Without this, a PM unblock on a task the orchestrator's
-        # sweep blocked for a $ overrun would silently re-breach the same cap
-        # the very next tick if the CEO's raise didn't actually clear it (or
-        # never raised it at all).
-        if guard := await self._budget_unblock_guard(t):
-            return await self._emit_rejection(
-                guard.with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
+                env, agent_id=pm_agent_id, task_id=task_id, verb="unblock"
             )
 
         # Write-then-gate: the PM's unblock reason is recorded as the
@@ -7106,8 +7123,15 @@ class Choreographer:
                 verb="unblock",
             )
 
+        # Captured before the restore below clears it (_restore_block_ownership)
+        # — the oscillation-trip notification names both sides of the round trip.
+        escalator_id = t.blocker_raised_by
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
         await self._maybe_notify_block_flip(task_id, t, t.title)
+        if tripped := await self._maybe_trip_oscillation_breaker(
+            task_id, t, escalator_id=escalator_id, resolver_id=pm_agent_id
+        ):
+            return tripped.with_introspection(task=t, role=role)
         next_msg = (
             "task restored to its pre-block state — original assignee will resume"
             if restore
@@ -7155,6 +7179,113 @@ class Choreographer:
                 "failed to send CEO block-flip notification",
                 task_id=str(task_id),
                 flip_count=flip_count,
+            )
+
+    def _oscillation_unblock_guard(self, t: Any) -> Envelope | None:
+        """Refuse ``unblock`` once the oscillation breaker has tripped.
+
+        Unlike the budget guard (``_budget_unblock_guard``) there is no live
+        condition to re-check here (no "spend dropped below cap" analogue) —
+        a human must actively resolve this: reassign the task, fix whatever
+        the escalation kept citing, or cancel it. An admin status override
+        (``admin_set_status`` out of BLOCKED) bypasses this guard entirely and
+        clears the marker as part of that restore, so the human path stays
+        open regardless.
+        """
+        if not markers.is_oscillation_tripped(t):
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"task {t.id} was force-blocked: its escalate_up/unblock "
+                "cycle repeated with no progress between rounds"
+            ),
+            remediate=(
+                "this needs a human to resolve — reassign the task, fix the "
+                "underlying blocker, or cancel it; unblock() will keep "
+                "refusing until an admin moves the task out of blocked"
+            ),
+        )
+
+    async def _maybe_trip_oscillation_breaker(
+        self,
+        task_id: UUID,
+        t: Any,
+        *,
+        escalator_id: Any,
+        resolver_id: UUID,
+    ) -> Envelope | None:
+        """Force-BLOCK a task whose escalate/unblock cycle keeps repeating
+        with no progress; returns the envelope to hand back on a fresh trip,
+        else ``None``.
+
+        The progress fingerprint is deliberately cheap — commit count +
+        revision_count are already loaded on ``t``, so this adds no query.
+        Findings only move via QA/PR-review/PM-reject, a different lifecycle
+        path from escalate_up/unblock entirely, so they carry no signal here.
+        """
+        progress_fp = [len(t.commits or []), int(t.revision_count or 0)]
+        strikes = markers.bump_oscillation_strikes(t, progress_fp)
+        if strikes <= _OSCILLATION_TRIP_THRESHOLD:
+            return None
+        from roboco.models.base import BlockerResolverType, TaskStatus
+
+        try:
+            t.blocker_resolver_type = BlockerResolverType.HUMAN
+            await self.task.admin_set_status(
+                task_id, TaskStatus.BLOCKED, actor_role="system"
+            )
+            markers.mark_oscillation_tripped(t)
+        except Exception:
+            logger.warning(
+                "failed to force-block oscillating task",
+                task_id=str(task_id),
+                strikes=strikes,
+            )
+            return None
+        await self._notify_ceo_oscillation(
+            task_id,
+            strikes,
+            t.title,
+            escalator_id=escalator_id,
+            resolver_id=resolver_id,
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "this task's escalate/unblock cycle repeated with no progress "
+                "and was force-blocked for a human to resolve — do not call "
+                "unblock again; wait for the CEO"
+            ),
+        )
+
+    async def _notify_ceo_oscillation(
+        self,
+        task_id: UUID,
+        strikes: int,
+        task_title: str | None,
+        *,
+        escalator_id: Any,
+        resolver_id: UUID,
+    ) -> None:
+        """Best-effort CEO alert when the oscillation breaker trips; never
+        raises — the block itself already happened regardless."""
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_oscillation_blocked_notification(
+                task_id=str(task_id),
+                strikes=strikes,
+                escalator=escalator_id,
+                resolver=resolver_id,
+                db_session=self.task.session,
+                task_title=task_title,
+            )
+        except Exception:
+            logger.warning(
+                "failed to send CEO oscillation-blocked notification",
+                task_id=str(task_id),
+                strikes=strikes,
             )
 
     async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
