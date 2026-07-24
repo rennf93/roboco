@@ -69,13 +69,40 @@ async def test_ensures_worktree_when_task_short_id_set() -> None:
     # Healthy clone -> no re-clone, just the worktree self-heal.
     ws.ensure_workspace.assert_not_awaited()
     ws.ensure_worktree_self_heal.assert_awaited_once()
-    args = ws.ensure_worktree_self_heal.call_args.args
-    assert args[0] == Path("/data/workspaces/roboco-api/backend/be-dev-1")
-    assert args[1] == Path(
+    call = ws.ensure_worktree_self_heal.call_args
+    assert call.args[0] == Path("/data/workspaces/roboco-api/backend/be-dev-1")
+    assert call.args[1] == Path(
         "/data/workspaces/roboco-api/backend/be-dev-1/.worktrees/a3c40fe7"
     )
-    assert args[2] == "feature/backend/abc12345"
-    assert args[3] == "roboco-api"
+    assert call.args[2] == "feature/backend/abc12345"
+    assert call.args[3] == "roboco-api"
+    # be-dev-1 is a developer — an author-capable role.
+    assert call.kwargs["can_author"] is True
+
+
+@pytest.mark.asyncio
+async def test_reader_role_classified_as_non_author_for_refresh() -> None:
+    # A QA/PR-reviewer/PM respawn onto the SAME task-branch worktree must be
+    # classified as a pure reader so ensure_worktree_self_heal knows a stale
+    # checkout there is always safe to reset to origin.
+    orch = _make_orchestrator()
+    ws = MagicMock()
+    ws.ensure_worktree_self_heal = AsyncMock()
+    ws.ensure_workspace = AsyncMock()
+
+    with (
+        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=True,
+        ),
+    ):
+        await orch._ensure_worktree_before_spawn(
+            _ctx(), "roboco-api", "backend", "be-qa", "task-1"
+        )
+
+    assert ws.ensure_worktree_self_heal.call_args.kwargs["can_author"] is False
 
 
 @pytest.mark.asyncio

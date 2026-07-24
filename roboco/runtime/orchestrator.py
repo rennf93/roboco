@@ -53,6 +53,7 @@ from roboco.foundation.identity import (
     CELL_TEAMS,
     is_human_only_role,
     is_spawnable_agent_slug,
+    is_worktree_author_role,
     role_for_slug_or_none,
 )
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
@@ -2535,10 +2536,14 @@ class AgentOrchestrator:
         worktree (reaper, disk pressure, manual cleanup while the agent was
         down) — or a vanished clone root (disk loss, a redeploy that wiped
         ``/data/workspaces``) — would start the agent in a missing directory.
-        Idempotent: a present worktree is a no-op; a pruned worktree is re-added
-        from the surviving branch ref; a missing clone is re-cloned and the
-        branch ref recovered from origin (``create_branch`` pushes at claim
-        time) so the pushed work survives. No-op for branchless / no-task spawns.
+        Idempotent: a pruned worktree is re-added from the surviving branch
+        ref; a missing clone is re-cloned and the branch ref recovered from
+        origin (``create_branch`` pushes at claim time) so the pushed work
+        survives. A PRESENT worktree is refreshed against origin, role-aware
+        (see ``ensure_worktree_self_heal``) rather than left frozen at
+        whatever commit it was created on — the role comes from
+        ``get_agent_role``, the same lookup ``_prepare_agent_spawn`` already
+        makes for this agent. No-op for branchless / no-task spawns.
 
         The reaper-style claim release preserves ownership + ``branch_name``, so
         a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
@@ -2559,6 +2564,7 @@ class AgentOrchestrator:
                 project_slug, team, agent_id, git_context.task_short_id
             )
         )
+        can_author = is_worktree_author_role(get_agent_role(agent_id))
         from roboco.db.base import get_db_context
         from roboco.services.workspace import WorkspaceError, WorkspaceService
 
@@ -2574,7 +2580,11 @@ class AgentOrchestrator:
                 if not WorkspaceService._is_workspace_healthy(clone_root):
                     await ws.ensure_workspace(project_slug, agent_id)
                 await ws.ensure_worktree_self_heal(
-                    clone_root, worktree, git_context.branch_name, project_slug
+                    clone_root,
+                    worktree,
+                    git_context.branch_name,
+                    project_slug,
+                    can_author=can_author,
                 )
         except WorkspaceError as e:
             # Fatal git state (clone won't re-clone, token missing, branch ref

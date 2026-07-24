@@ -263,7 +263,14 @@ def _ref_exists(repo: Path, ref: str) -> bool:
     )
 
 
-async def test_self_heal_noop_when_worktree_present(clone: Path) -> None:
+async def test_self_heal_present_worktree_fetches_but_noops_without_origin(
+    clone: Path,
+) -> None:
+    # A present worktree is no longer an unconditional no-op (the respawn
+    # bug): a fetch is now always attempted. This `clone` fixture carries no
+    # `origin` remote at all, so `origin/<branch>` can never resolve and the
+    # refresh has nothing to compare against — same observable outcome as
+    # the old no-op, but for a different reason (unresolvable, not skipped).
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"
     with patch("roboco.services.workspace._ensure_agent_owned"):
@@ -275,9 +282,11 @@ async def test_self_heal_noop_when_worktree_present(clone: Path) -> None:
         ) as fetch,
         patch("roboco.services.workspace._ensure_agent_owned"),
     ):
-        await svc.ensure_worktree_self_heal(clone, wt, "feature/a3c40fe7", "proj")
+        await svc.ensure_worktree_self_heal(
+            clone, wt, "feature/a3c40fe7", "proj", can_author=True
+        )
 
-    assert fetch.await_count == 0, "present worktree must not trigger a fetch"
+    assert fetch.await_count == 1, "present worktree must now attempt a fetch"
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
 
 
@@ -297,7 +306,10 @@ async def test_self_heal_readds_pruned_worktree_from_local_ref(clone: Path) -> N
         ) as fetch,
         patch("roboco.services.workspace._ensure_agent_owned"),
     ):
-        await svc.ensure_worktree_self_heal(clone, wt, "feature/a3c40fe7", "proj")
+        # can_author is irrelevant on the absent-worktree path (pre-refresh).
+        await svc.ensure_worktree_self_heal(
+            clone, wt, "feature/a3c40fe7", "proj", can_author=True
+        )
 
     assert fetch.await_count == 0, "local ref survives -> no fetch needed"
     assert wt.exists()
@@ -363,7 +375,8 @@ async def test_self_heal_recovers_branch_from_origin(tmp_path: Path) -> None:
         ) as fetch,
         patch("roboco.services.workspace._ensure_agent_owned"),
     ):
-        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+        # can_author is irrelevant on the absent-worktree path (pre-refresh).
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj", can_author=True)
 
     assert fetch.await_count == 1, "missing local ref must trigger a fetch"
     assert wt.exists()
@@ -394,11 +407,164 @@ async def test_self_heal_falls_back_to_origin_head_when_branch_not_pushed(
         ) as fetch,
         patch("roboco.services.workspace._ensure_agent_owned"),
     ):
-        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+        # can_author is irrelevant on the absent-worktree path (pre-refresh).
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj", can_author=True)
 
     assert fetch.await_count == 1, "missing local ref still attempts a fetch"
     assert wt.exists(), "fallback -b from origin/HEAD must break the loop"
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+
+
+# ---------------------------------------------------------------------------
+# _refresh_present_worktree — role-aware respawn refresh of an ALREADY-PRESENT
+# worktree (the respawn bug). A worktree created once (first claim / first
+# claim_review) must not stay frozen at that commit across every later
+# respawn while origin moves on. `_fetch_branch_ref` is mocked (a spy, as
+# above) — the tests pre-seed `origin/<branch>`'s remote-tracking ref with a
+# real `git fetch` so the classification runs against real git state.
+# ---------------------------------------------------------------------------
+
+
+async def _synced_clone_and_worktree(tmp_path: Path, remote: Path, branch: str) -> Path:
+    """Clone `remote`, create+push a worktree on `branch` at origin's tip.
+
+    Mirrors `create_branch`'s real shape: the worktree branch is cut, then
+    pushed, so local and `origin/<branch>` start perfectly in sync.
+    """
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", str(remote), str(clone)], check=True, capture_output=True
+    )
+    svc = _service()
+    wt = clone / ".worktrees" / branch.rsplit("/", 1)[-1]
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, branch, "main")
+    _git(wt, "push", "origin", branch)
+    return clone
+
+
+def _push_extra_commit(tmp_path: Path, remote: Path, branch: str, name: str) -> None:
+    """A second clone pushes one more commit onto `branch` (simulates a dev's
+    force-pushed fix landing on origin between two reviewer respawns)."""
+    other = tmp_path / name
+    subprocess.run(
+        ["git", "clone", str(remote), str(other)], check=True, capture_output=True
+    )
+    _git(other, "checkout", branch)
+    (other / "origin_advance.txt").write_text(name)
+    _git(other, "add", "origin_advance.txt")
+    _git(other, "commit", "-m", "origin advances")
+    _git(other, "push", "origin", branch)
+
+
+def _commit_local_only(wt: Path) -> None:
+    """A commit in the worktree that never reaches origin (unpushed work)."""
+    (wt / "local_only.txt").write_text("mine")
+    _git(wt, "add", "local_only.txt")
+    _git(wt, "commit", "-m", "local unpushed work")
+
+
+async def _run_self_heal(
+    svc: WorkspaceService, clone: Path, wt: Path, branch: str, *, can_author: bool
+) -> None:
+    with (
+        patch.object(WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock),
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_self_heal(
+            clone, wt, branch, "proj", can_author=can_author
+        )
+
+
+async def test_refresh_reader_diverged_resets_to_origin(tmp_path: Path) -> None:
+    branch = "feature/reader-diverged"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "reader-diverged"
+    _commit_local_only(wt)  # local ref now ahead of origin/<branch>
+    _push_extra_commit(tmp_path, remote, branch, "other")  # ...and origin too
+    _git(clone, "fetch", "origin", branch)  # what the mocked _fetch_branch_ref would do
+    assert (wt / "local_only.txt").exists(), "precondition: local commit present"
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=False)
+
+    assert not (wt / "local_only.txt").exists(), (
+        "reader's diverged local history is disposable — must reset to origin"
+    )
+    assert (wt / "origin_advance.txt").exists(), "origin's tip must now be checked out"
+    assert (
+        _git(wt, "rev-parse", "HEAD").strip()
+        == _git(clone, "rev-parse", f"origin/{branch}").strip()
+    )
+
+
+async def test_refresh_author_ahead_untouched(tmp_path: Path) -> None:
+    branch = "feature/author-ahead"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "author-ahead"
+    _commit_local_only(wt)  # strictly ahead — origin never moved
+    _git(clone, "fetch", "origin", branch)
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=True)
+
+    assert (wt / "local_only.txt").exists(), "strictly-ahead work is never discarded"
+
+
+async def test_refresh_author_diverged_untouched(tmp_path: Path) -> None:
+    branch = "feature/author-diverged"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "author-diverged"
+    _commit_local_only(wt)
+    _push_extra_commit(tmp_path, remote, branch, "other")
+    _git(clone, "fetch", "origin", branch)
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=True)
+
+    assert (wt / "local_only.txt").exists(), (
+        "an author's diverged history is sync_branch's job, never a silent reset"
+    )
+    assert not (wt / "origin_advance.txt").exists(), "no reset must have run at all"
+
+
+async def test_refresh_behind_fast_forwards_for_any_role(tmp_path: Path) -> None:
+    branch = "feature/behind"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "behind"
+    _push_extra_commit(tmp_path, remote, branch, "other")  # local has nothing unique
+    _git(clone, "fetch", "origin", branch)
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=True)
+
+    assert (wt / "origin_advance.txt").exists(), (
+        "behind-or-equal is safe to fast-forward for every role"
+    )
+
+
+async def test_refresh_dirty_author_tree_preserved_even_when_behind(
+    tmp_path: Path,
+) -> None:
+    branch = "feature/dirty-author"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "dirty-author"
+    (wt / "pyproject.toml").write_text("[project]\nname = 'edited'\n")  # uncommitted
+    _push_extra_commit(tmp_path, remote, branch, "other")
+    _git(clone, "fetch", "origin", branch)
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=True)
+
+    assert (wt / "pyproject.toml").read_text() == "[project]\nname = 'edited'\n", (
+        "an author's uncommitted edit must never be discarded by a reset"
+    )
+    assert not (wt / "origin_advance.txt").exists(), "no reset must have run at all"
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +646,8 @@ async def test_self_heal_recovers_clone_root_left_on_task_branch(clone: Path) ->
 
     wt = clone / ".worktrees" / "d3dab0fc"
     with patch("roboco.services.workspace._ensure_agent_owned"):
-        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+        # can_author is irrelevant on the absent-worktree path (pre-refresh).
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj", can_author=True)
 
     assert (wt / ".git").is_file()
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch

@@ -6147,6 +6147,18 @@ class GitService(BaseService):
 
         ``preferred_parent`` threads to ``list_changed_files`` — the in-path
         PR-review gate's cross-team parent (see ``diff``'s docstring).
+
+        The changed-file LIST above comes from git objects (``list_changed_files``
+        fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
+        off the physical worktree, which only ``_ensure_worktree_for_commit``
+        touches here (re-add if pruned, no refresh). These could disagree on a
+        worktree that predates the branch's current tip — but
+        ``ensure_worktree_self_heal`` (the spawn chokepoint, run before this
+        agent's session ever started) already reset a reviewer's worktree to
+        origin, and the assembled PR under review can gain no further commits
+        while it sits in this task's own review state. So by the time this
+        runs, list and content are the same origin tip already; no independent
+        refresh is needed here.
         """
         try:
             branch = task.branch_name
