@@ -110,7 +110,7 @@ class WaitingRecord:
 
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
-    "opus": "claude-opus-4-8",
+    "opus": "claude-opus-5",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }

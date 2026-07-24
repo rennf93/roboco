@@ -945,7 +945,7 @@ class TestGetRecentSessions:
         row = MagicMock()
         row.id = sid
         row.agent_slug = "product-owner"
-        row.model = "claude-opus-4-8"
+        row.model = "claude-opus-5"
         row.started_at = datetime.datetime(2026, 6, 11, 20, 41, tzinfo=datetime.UTC)
         row.ended_at = datetime.datetime(2026, 6, 11, 20, 42, tzinfo=datetime.UTC)
         row.tokens_input = exp_in
@@ -966,7 +966,7 @@ class TestGetRecentSessions:
         s = out[0]
         assert s["id"] == str(sid)
         assert s["agent_slug"] == "product-owner"
-        assert s["model"] == "claude-opus-4-8"
+        assert s["model"] == "claude-opus-5"
         assert s["tokens_input"] == exp_in
         assert s["tokens_output"] == exp_out
         assert s["tokens_cache"] == exp_cr + exp_cw

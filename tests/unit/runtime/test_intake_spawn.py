@@ -56,7 +56,7 @@ def _spec(**overrides: Any) -> _IntakeRunSpec:
         },
         "session_id": "sess-abc",
         "cwd": "/data/workspaces/roboco/board/intake-1",
-        "cli_model": "claude-opus-4-8",
+        "cli_model": "claude-opus-5",
         "api_url": "http://roboco-orchestrator:8000",
         "provider_base_url": None,
         "provider_auth_token": None,
@@ -108,7 +108,7 @@ class TestBuildIntakeRunCmd:
         assert "ROBOCO_WORKSPACE=/data/workspaces/roboco/board/intake-1" in cmd
         assert "ROBOCO_API_URL=http://roboco-orchestrator:8000" in cmd
         assert "ROBOCO_AGENT_ID=intake-1" in cmd
-        assert "CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8" in cmd
+        assert "CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-5" in cmd
 
     def test_mounts_prompt_and_workspaces(self) -> None:
         cmd = AgentOrchestrator._build_intake_run_cmd(_spec())

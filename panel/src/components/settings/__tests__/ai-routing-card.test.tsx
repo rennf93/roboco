@@ -33,9 +33,9 @@ const {
 } = vi.hoisted(() => ({
   catalog: vi.fn(async () => [
     {
-      model_name: "claude-opus-4-8",
+      model_name: "claude-opus-5",
       provider_type: "anthropic",
-      display_name: "Claude Opus 4.8",
+      display_name: "Claude Opus 5",
     },
     {
       model_name: "grok-build-0.1",
@@ -719,14 +719,14 @@ describe("AIRoutingCard", () => {
 
       const devLow = screen.getByTestId("complexity-select-developer-low");
       fireEvent.click(
-        await within(devLow).findByRole("option", { name: "Claude Opus 4.8" }),
+        await within(devLow).findByRole("option", { name: "Claude Opus 5" }),
       );
 
       await waitFor(() =>
         expect(setComplexityOverride).toHaveBeenCalledWith({
           role: "developer",
           complexity: "low",
-          model_name: "claude-opus-4-8",
+          model_name: "claude-opus-5",
         }),
       );
     });
@@ -764,7 +764,7 @@ describe("AIRoutingCard", () => {
 
       const devLow = screen.getByTestId("complexity-select-developer-low");
       fireEvent.click(
-        await within(devLow).findByRole("option", { name: "Claude Opus 4.8" }),
+        await within(devLow).findByRole("option", { name: "Claude Opus 5" }),
       );
 
       await waitFor(() => expect(setComplexityOverride).toHaveBeenCalled());

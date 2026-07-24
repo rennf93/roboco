@@ -7,7 +7,7 @@ the router maps back to the correct pre-seeded provider row.
 
 **Anthropic entries derive from `runtime.MODEL_MAP`** — that's the single
 source of truth for which Claude versions are supported. Bumping a model
-version there (e.g. `claude-opus-4-8` → a newer id) updates the
+version there (e.g. `claude-opus-5` → a newer id) updates the
 catalog automatically without a second edit here.
 
 Ollama Cloud entries are hand-maintained because Ollama's cloud tags
@@ -46,7 +46,7 @@ def _build_anthropic_entries() -> tuple[CatalogEntry, ...]:
 
     Keeps the UI honest: a user picking "Claude Opus" sees exactly which
     underlying Claude Code model id will be used at spawn
-    (e.g. "Claude Opus · claude-opus-4-8"), so version bumps in
+    (e.g. "Claude Opus · claude-opus-5"), so version bumps in
     `runtime.MODEL_MAP` are immediately visible.
     """
     entries: list[CatalogEntry] = []

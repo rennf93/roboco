@@ -565,6 +565,7 @@ class TestProviderAwareness:
         for name in (
             "claude-opus-4-6",
             "claude-opus-4-8",
+            "claude-opus-5",
             "claude-fable-5",
             "opus",
             "sonnet",

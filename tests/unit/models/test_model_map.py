@@ -12,10 +12,9 @@ def test_sonnet_alias_resolves_to_sonnet_5() -> None:
     assert MODEL_MAP["sonnet"] == "claude-sonnet-5"
 
 
-def test_opus_alias_resolves_to_opus_4_8() -> None:
-    # CEO upgrade to the newest Opus tier ("Opus 5" does not exist — the
-    # Claude 5 family is Fable/Mythos/Sonnet; Opus tops out at 4.8).
-    assert MODEL_MAP["opus"] == "claude-opus-4-8"
+def test_opus_alias_resolves_to_opus_5() -> None:
+    # CEO upgrade to the newest Opus tier (Opus 5, released 2026-07-25).
+    assert MODEL_MAP["opus"] == "claude-opus-5"
 
 
 def test_sonnet_5_is_priced() -> None:

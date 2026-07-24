@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- **The `opus` alias upgrades from Claude Opus 4.6 to Claude Opus 4.8.** `MODEL_MAP["opus"]` now resolves to `claude-opus-4-8` — the newest Opus tier, at the same price as 4.6 — so every Opus-routed role (PR reviewer, Auditor, Board, CEO, Intake, Secretary) rides it at next spawn. Pricing already covered the id via the `claude-opus-4` fragment; a new `test_opus_is_priced` guard keeps the alias from ever pointing at an unpriced model.
+- **The `opus` alias upgrades from Claude Opus 4.6 to Claude Opus 5.** `MODEL_MAP["opus"]` now resolves to `claude-opus-5` — the newest Opus tier, released 2026-07-25 at the same $5/$25 price — so every Opus-routed role (PR reviewer, Auditor, Board, CEO, Intake, Secretary) rides it at next spawn. The pricing table gains a dedicated `claude-opus-5` fragment (the `claude-opus-4` substring doesn't cover it — without the row, Opus fleet usage would silently cost-track as $0), and a new `test_opus_is_priced` guard keeps the alias from ever pointing at an unpriced model.
 - **Panel dialogs converge on one shape: one disclosure primitive, DialogFooter everywhere, three dialog widths.** `collapsible-section` becomes the single sectioned-disclosure primitive — task dialogs' raw `Collapsible` and create-project's ad-hoc `showAdvanced` both move onto it; every hand-rolled dialog footer becomes `DialogFooter`; dialog widths collapse from ten ad-hoc classes to three named sizes, with deliberate outliers annotated. No behavioral change.
 
 ### Fixed

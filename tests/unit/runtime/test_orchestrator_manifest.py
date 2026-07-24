@@ -99,7 +99,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-dev-1", "claude-opus-4-8")
+            result = _build_manifest_for_agent("be-dev-1", "claude-opus-5")
 
         assert result is not None
         data = json.loads(result.read_text())

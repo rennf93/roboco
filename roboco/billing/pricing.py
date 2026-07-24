@@ -57,11 +57,14 @@ _ANTHROPIC_FRAGMENTS = ("claude", "opus", "sonnet", "haiku")
 # Cache read is charged at ~10 % of the input price.
 # Cache write is charged at ~25 % of the input price.
 #
-# Match on *substring* of model name so "claude-opus-4-8" and "opus" both
+# Match on *substring* of model name so "claude-opus-5" and "opus" both
 # resolve to the same tier.
 # ---------------------------------------------------------------------------
 _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
+    # Opus 5 — same sticker as the Opus 4 family; needs its own fragment
+    # because "claude-opus-4" doesn't substring-match it.
+    ("claude-opus-5", 5.00, 25.00, 0.50, 6.25),
     # Opus 4 family
     ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
     # Sonnet 4 / 3.7 / 3.5 family

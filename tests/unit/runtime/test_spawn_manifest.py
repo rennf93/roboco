@@ -87,7 +87,7 @@ class TestBuildForRole:
                 role=role,
                 team="board",
                 workspace_path=Path("/tmp/x"),
-                agent_model="claude-opus-4-8",
+                agent_model="claude-opus-5",
             )
         )
         assert "read_messages" in m.do_tools

@@ -182,7 +182,7 @@ async def test_log_agent_event_resolves_slug_to_uuid(
         event_type="agent.spawned",
         agent_slug=slug,
         task_id=task_id,
-        details={"container_id": "abc123def456", "model": "claude-opus-4-8"},
+        details={"container_id": "abc123def456", "model": "claude-opus-5"},
     )
 
     # Read back the row.
