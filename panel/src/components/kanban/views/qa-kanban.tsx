@@ -33,10 +33,22 @@ const QA_COLUMNS = [
 
 interface QaKanbanProps {
   initialTeam?: Team;
+  // Controlled team filter (e.g. shared with the Tasks List tab via URL
+  // state). Passing onTeamChange switches this view from its own internal
+  // team state to the caller's — omit both to keep the uncontrolled
+  // initialTeam-only behavior the standalone /kanban page still relies on.
+  team?: Team;
+  onTeamChange?: (team: Team | undefined) => void;
 }
 
-export function QaKanban({ initialTeam }: QaKanbanProps) {
-  const [team, setTeam] = useState<Team | undefined>(initialTeam);
+export function QaKanban({
+  initialTeam,
+  team: controlledTeam,
+  onTeamChange,
+}: QaKanbanProps) {
+  const [localTeam, setLocalTeam] = useState<Team | undefined>(initialTeam);
+  const isControlled = onTeamChange !== undefined;
+  const team = isControlled ? controlledTeam : localTeam;
 
   return (
     <KanbanBoard
@@ -44,7 +56,11 @@ export function QaKanban({ initialTeam }: QaKanbanProps) {
       description="Quality assurance review workflow"
       columns={QA_COLUMNS}
       teamFilter={team}
-      onTeamChange={(t) => setTeam(t === "all" ? undefined : t)}
+      onTeamChange={(t) => {
+        const next = t === "all" ? undefined : t;
+        if (isControlled) onTeamChange(next);
+        else setLocalTeam(next);
+      }}
       showQaActions
     />
   );
