@@ -77,3 +77,57 @@ async def test_resolve_for_agent_no_assignment_is_silent_legacy_fallback() -> No
 
     assert route.provider_type == ModelProvider.ANTHROPIC
     svc.log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_haiku_lifecycle_assignment_upgraded_to_the_floor() -> None:
+    """The structured-verb capability floor: a haiku-class Anthropic
+    assignment on any lifecycle role resolves to sonnet instead, so a QA/PM
+    agent can produce the structured review envelopes (2026-07-24 retirement).
+    """
+    provider = MagicMock(
+        enabled=True, id="prov-anthropic", type=ModelProvider.ANTHROPIC
+    )
+    resolved = _ResolvedAssignment(
+        provider=provider,
+        model_name="claude-haiku-4-5-20251001",
+        scope=AssignmentScope.ROLE,
+    )
+    svc = _svc()
+    captured: dict[str, str] = {}
+
+    async def _fake_route(res: _ResolvedAssignment, _slug: str) -> object:
+        captured["model"] = res.model_name
+        return object()
+
+    with (
+        patch.object(svc, "_resolve_assignment", AsyncMock(return_value=resolved)),
+        patch.object(svc, "_route_from_resolved", _fake_route),
+    ):
+        await svc.resolve_for_agent("be-qa")
+
+    assert captured["model"] == "sonnet"
+
+
+@pytest.mark.asyncio
+async def test_non_anthropic_below_floor_name_is_untouched() -> None:
+    """The floor is an Anthropic-tier policy — a non-Anthropic model whose
+    name happens to contain the marker is never upgraded."""
+    provider = MagicMock(enabled=True, id="prov-grok", type=ModelProvider.GROK)
+    resolved = _ResolvedAssignment(
+        provider=provider, model_name="grok-haiku-ish", scope=AssignmentScope.ROLE
+    )
+    svc = _svc()
+    captured: dict[str, str] = {}
+
+    async def _fake_route(res: _ResolvedAssignment, _slug: str) -> object:
+        captured["model"] = res.model_name
+        return object()
+
+    with (
+        patch.object(svc, "_resolve_assignment", AsyncMock(return_value=resolved)),
+        patch.object(svc, "_route_from_resolved", _fake_route),
+    ):
+        await svc.resolve_for_agent("be-qa")
+
+    assert captured["model"] == "grok-haiku-ish"
