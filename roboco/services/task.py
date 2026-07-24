@@ -9694,14 +9694,15 @@ class TaskService(BaseService):
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
 
-    async def _self_heal_ac_ids(self, parent: TaskTable) -> None:
+    async def self_heal_ac_ids(self, parent: TaskTable) -> None:
         """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
         of length with ``acceptance_criteria`` -- a legacy row from before every
         AC rewrite reconciled ids (``TaskService.update``), or any other drift.
         No-op when already 1:1. Reconciling against the row's own current
         criteria means any id a child already references by matching TEXT
         survives; the parent-coverage gate is live again instead of skipped
-        forever (``_parent_ac_ref_sets``).
+        forever (``_parent_ac_ref_sets``). Public: also called directly by the
+        delegate-coverage guard so its rejection hint always has real ids.
         """
         if len(parent.acceptance_criteria_ids or []) == len(parent.acceptance_criteria):
             return
@@ -9737,12 +9738,12 @@ class TaskService(BaseService):
         A parent whose ``acceptance_criteria_ids`` is empty or out of length
         with ``acceptance_criteria`` (a legacy row from before every AC
         rewrite reconciled ids — or any other drift) self-heals via
-        ``_self_heal_ac_ids`` rather than silently disabling coverage.
+        ``self_heal_ac_ids`` rather than silently disabling coverage.
         """
         parent = await self.get(task_id)
         if not parent or not parent.acceptance_criteria:
             return None
-        await self._self_heal_ac_ids(parent)
+        await self.self_heal_ac_ids(parent)
         result = await self.session.execute(
             select(TaskTable.status, TaskTable.parent_ac_refs).where(
                 TaskTable.parent_task_id == task_id

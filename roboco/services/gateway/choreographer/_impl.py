@@ -5435,9 +5435,9 @@ class Choreographer:
         )
         if guard is not None:
             return guard
-        return self._delegate_ac_coverage_guard(parent, inputs)
+        return await self._delegate_ac_coverage_guard(parent, inputs)
 
-    def _delegate_ac_coverage_guard(
+    async def _delegate_ac_coverage_guard(
         self, parent: Any, inputs: DelegateInputs
     ) -> Envelope | None:
         """Reject a child that doesn't map to the parent's own criteria.
@@ -5454,6 +5454,12 @@ class Choreographer:
         coverage in one call: a wave may deliberately leave criteria for a
         later delegate (see the success envelope's ``parent_ac_coverage``
         evidence for that signal).
+
+        On reject, self-heals a legacy/drifted parent's
+        ``acceptance_criteria_ids`` in place before rendering the hint (same
+        touchpoint ``uncovered_parent_acceptance_criteria`` et al. reach via
+        ``_parent_ac_ref_sets``) — otherwise a criteria-bearing parent with
+        empty ids renders a ``'<id>'`` placeholder the PM can't act on.
         """
         ac_texts = parent.acceptance_criteria or []
         if not ac_texts:
@@ -5462,6 +5468,7 @@ class Choreographer:
         bad = self.task.unknown_ac_refs(parent, refs) if refs else []
         if refs and not bad:
             return None
+        await self.task.self_heal_ac_ids(parent)
         if not refs:
             message = (
                 f"'{inputs.title}' declares no covers_parent_criteria, but the "
@@ -5472,11 +5479,11 @@ class Choreographer:
                 f"'{inputs.title}' covers_parent_criteria has unresolvable "
                 f"ref(s): {'; '.join(bad)}"
             )
-        ac_ids = parent.acceptance_criteria_ids or []
         return Envelope.invalid_state(
             message=message,
             remediate=hint_for_missing_ac_coverage(
-                criteria=list(zip(ac_ids, ac_texts, strict=False)),
+                ids=parent.acceptance_criteria_ids or [],
+                texts=ac_texts,
                 title=inputs.title,
             ),
             context_briefing={},
