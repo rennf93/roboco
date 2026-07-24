@@ -292,7 +292,11 @@ async def test_self_heal_present_worktree_fetches_but_noops_without_origin(
 
 async def test_self_heal_readds_pruned_worktree_from_local_ref(clone: Path) -> None:
     # Common resume case: clone healthy, worktree pruned, local branch ref
-    # survives -> re-add with NO fetch (no origin round-trip on every spawn).
+    # survives -> re-add, THEN run it through the same fetch-and-classify
+    # refresh a present worktree gets (a stale local ref must not resurrect an
+    # untouched checkout). This `clone` fixture carries no `origin` remote, so
+    # there is nothing to classify against — the refresh's own fetch still
+    # runs, it just has no origin/<branch> to compare to.
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"
     with patch("roboco.services.workspace._ensure_agent_owned"):
@@ -311,9 +315,45 @@ async def test_self_heal_readds_pruned_worktree_from_local_ref(clone: Path) -> N
             clone, wt, "feature/a3c40fe7", "proj", can_author=True
         )
 
-    assert fetch.await_count == 0, "local ref survives -> no fetch needed"
+    assert fetch.await_count == 1, (
+        "a re-add from a surviving local ref must now refresh"
+    )
     assert wt.exists()
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
+
+
+async def test_self_heal_readd_from_stale_local_ref_lands_on_origin_tip_for_reader(
+    tmp_path: Path,
+) -> None:
+    # THE BUG SCENARIO: a reviewer's round-1 claim_review creates the worktree
+    # + local ref at origin's tip A; the worktree is evicted (disk pressure /
+    # manual cleanup) while the local ref survives; a dev then pushes tip B.
+    # A round-2 respawn's re-add must land on B, not resurrect the stale local
+    # ref's A.
+    branch = "feature/pruned-stale-ref"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "pruned-stale-ref"
+    _git(clone, "worktree", "remove", str(wt), "--force")  # evicted; local ref survives
+    assert not wt.exists()
+    assert _ref_exists(clone, f"refs/heads/{branch}"), (
+        "precondition: local ref survives"
+    )
+    _push_extra_commit(tmp_path, remote, branch, "other")  # origin advances to tip B
+    _git(clone, "fetch", "origin", branch)  # what the mocked _fetch_branch_ref would do
+
+    svc = _service()
+    await _run_self_heal(svc, clone, wt, branch, can_author=False)
+
+    assert wt.exists()
+    assert (wt / "origin_advance.txt").exists(), (
+        "a re-add from a stale local ref must land on origin's tip, not the "
+        "ref's stale commit"
+    )
+    assert (
+        _git(wt, "rev-parse", "HEAD").strip()
+        == _git(clone, "rev-parse", f"origin/{branch}").strip()
+    )
 
 
 def _bare_remote_with_branch(tmp_path: Path, branch: str, push_branch: bool) -> Path:
@@ -567,6 +607,44 @@ async def test_refresh_dirty_author_tree_preserved_even_when_behind(
     assert not (wt / "origin_advance.txt").exists(), "no reset must have run at all"
 
 
+def test_worktree_is_dirty_treats_failed_status_as_dirty(tmp_path: Path) -> None:
+    # A failed `git status` (nonzero returncode, empty stdout) must read as
+    # dirty, never clean — a false "clean" here lets an author+behind branch
+    # proceed straight to `reset --hard` and discard uncommitted edits.
+    failed = subprocess.CompletedProcess(
+        args=[], returncode=128, stdout="", stderr="fatal: not a git repository"
+    )
+    with patch.object(WorkspaceService, "_worktree_git", return_value=failed):
+        assert WorkspaceService._worktree_is_dirty(tmp_path) is True
+
+
+async def test_refresh_skips_reset_when_worktree_drifted_off_task_branch(
+    tmp_path: Path,
+) -> None:
+    # A worktree parked on some OTHER branch (a crashed mid-rebase, a drifted
+    # checkout) must never have the task branch's ref reset under it — a
+    # `reset --hard` runs in the worktree's own checked-out branch, not
+    # necessarily the task branch, so blindly resetting would move the wrong
+    # ref.
+    branch = "feature/drifted"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
+    wt = clone / ".worktrees" / "drifted"
+    _push_extra_commit(tmp_path, remote, branch, "other")  # task branch now behind
+    _git(clone, "fetch", "origin", branch)
+    _git(wt, "checkout", "-b", "other-work")  # worktree drifts off the task branch
+
+    svc = _service()
+    with patch("roboco.services.workspace.logger.warning") as warn:
+        await _run_self_heal(svc, clone, wt, branch, can_author=True)
+
+    assert warn.called, "a drifted worktree must log a warning instead of resetting"
+    assert not (wt / "origin_advance.txt").exists(), (
+        "a worktree drifted off its task branch must be left alone"
+    )
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "other-work"
+
+
 # ---------------------------------------------------------------------------
 # Clone-root-left-on-task-branch recovery (live be-pm needs_revision wedge,
 # 2026-06-30). F123 invariant: the clone root parks on the default branch (or
@@ -645,8 +723,15 @@ async def test_self_heal_recovers_clone_root_left_on_task_branch(clone: Path) ->
     _clone_on_branch(clone, branch)
 
     wt = clone / ".worktrees" / "d3dab0fc"
-    with patch("roboco.services.workspace._ensure_agent_owned"):
-        # can_author is irrelevant on the absent-worktree path (pre-refresh).
+    with (
+        patch.object(WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock),
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        # The local ref here comes straight from `_clone_on_branch`, not a
+        # prior `ensure_worktree` — a surviving local ref now also re-adds
+        # through the present-worktree refresh; origin/<branch> is
+        # unresolvable (only origin/main was seeded), so the refresh's fetch
+        # is a no-op past the re-add.
         await svc.ensure_worktree_self_heal(clone, wt, branch, "proj", can_author=True)
 
     assert (wt / ".git").is_file()

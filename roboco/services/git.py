@@ -6151,14 +6151,24 @@ class GitService(BaseService):
         The changed-file LIST above comes from git objects (``list_changed_files``
         fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
         off the physical worktree, which only ``_ensure_worktree_for_commit``
-        touches here (re-add if pruned, no refresh). These could disagree on a
-        worktree that predates the branch's current tip — but
-        ``ensure_worktree_self_heal`` (the spawn chokepoint, run before this
-        agent's session ever started) already reset a reviewer's worktree to
-        origin, and the assembled PR under review can gain no further commits
-        while it sits in this task's own review state. So by the time this
-        runs, list and content are the same origin tip already; no independent
-        refresh is needed here.
+        touches here (re-add if pruned, no refresh — no fetch, no classify).
+        These could disagree on a worktree that predates the branch's current
+        tip. For the FIRST claim of a review session, they don't:
+        ``ensure_worktree_self_heal`` (the spawn chokepoint, run once before
+        this agent's session started — including its re-add-from-a-surviving-
+        local-ref path) already classified the worktree against origin, and
+        the assembled PR under review can gain no further commits while it
+        sits in this task's own review state, so list and content are the
+        same origin tip by the time this runs.
+
+        Narrow accepted ceiling: a reviewer session that claims a SECOND task
+        mid-session (same container, no respawn) never gets another spawn-time
+        refresh — that only runs once, before the session started. A fresh
+        worktree this session creates for that claim has nothing to disagree
+        with (both list and content start at its own branch tip), but a
+        worktree this session INHERITS from an earlier, still-open claim of
+        that same task could be stale by whatever origin gained since. No
+        claim-time refresh exists to close this; it is accepted, not fixed.
         """
         try:
             branch = task.branch_name
