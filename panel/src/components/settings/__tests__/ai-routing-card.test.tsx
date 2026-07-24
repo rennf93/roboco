@@ -9,10 +9,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import React from "react";
-import type {
-  ComplexityOverride,
-  RoutingPreset,
-} from "@/lib/api/providers";
+import type { ComplexityOverride, RoutingPreset } from "@/lib/api/providers";
 
 const {
   catalog,
@@ -36,9 +33,9 @@ const {
 } = vi.hoisted(() => ({
   catalog: vi.fn(async () => [
     {
-      model_name: "claude-opus-4-6",
+      model_name: "claude-opus-4-8",
       provider_type: "anthropic",
-      display_name: "Claude Opus 4.6",
+      display_name: "Claude Opus 4.8",
     },
     {
       model_name: "grok-build-0.1",
@@ -643,9 +640,7 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Per-agent override (mix mode)");
 
-      expect(
-        screen.getByRole("button", { name: "Clear all" }),
-      ).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
     });
 
     it("clears persisted pins via an empty per_agent map on confirm", async () => {
@@ -654,9 +649,7 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Per-agent override (mix mode)");
       await waitFor(() =>
-        expect(
-          screen.getByRole("button", { name: "Clear all" }),
-        ).toBeEnabled(),
+        expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled(),
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
@@ -673,9 +666,7 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Per-agent override (mix mode)");
       await waitFor(() =>
-        expect(
-          screen.getByRole("button", { name: "Clear all" }),
-        ).toBeEnabled(),
+        expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled(),
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
@@ -702,7 +693,9 @@ describe("AIRoutingCard", () => {
       render(withQueryClient(<AIRoutingCard />));
       await screen.findByText("Complexity overrides");
 
-      const section = screen.getByText("Complexity overrides").closest("section")!;
+      const section = screen
+        .getByText("Complexity overrides")
+        .closest("section")!;
       for (const label of ["Developer", "QA", "Documenter"]) {
         expect(within(section).getByText(label)).toBeInTheDocument();
       }
@@ -712,7 +705,9 @@ describe("AIRoutingCard", () => {
       // mix table's roster).
       expect(within(section).queryByText("Cell PM")).not.toBeInTheDocument();
       expect(within(section).queryByText("Main PM")).not.toBeInTheDocument();
-      expect(within(section).queryByText("PR Reviewer")).not.toBeInTheDocument();
+      expect(
+        within(section).queryByText("PR Reviewer"),
+      ).not.toBeInTheDocument();
 
       // 3 roles x 2 (low/high) selects.
       expect(section.querySelectorAll('[role="combobox"]')).toHaveLength(6);
@@ -724,14 +719,14 @@ describe("AIRoutingCard", () => {
 
       const devLow = screen.getByTestId("complexity-select-developer-low");
       fireEvent.click(
-        await within(devLow).findByRole("option", { name: "Claude Opus 4.6" }),
+        await within(devLow).findByRole("option", { name: "Claude Opus 4.8" }),
       );
 
       await waitFor(() =>
         expect(setComplexityOverride).toHaveBeenCalledWith({
           role: "developer",
           complexity: "low",
-          model_name: "claude-opus-4-6",
+          model_name: "claude-opus-4-8",
         }),
       );
     });
@@ -769,7 +764,7 @@ describe("AIRoutingCard", () => {
 
       const devLow = screen.getByTestId("complexity-select-developer-low");
       fireEvent.click(
-        await within(devLow).findByRole("option", { name: "Claude Opus 4.6" }),
+        await within(devLow).findByRole("option", { name: "Claude Opus 4.8" }),
       );
 
       await waitFor(() => expect(setComplexityOverride).toHaveBeenCalled());
@@ -805,9 +800,10 @@ describe("AIRoutingCard", () => {
       // (its combobox reflects the current value via data-value) before
       // clearing it — otherwise the click races the query resolving.
       await waitFor(() =>
-        expect(
-          within(documenterLow).getByRole("combobox"),
-        ).toHaveAttribute("data-value", "grok-build-0.1"),
+        expect(within(documenterLow).getByRole("combobox")).toHaveAttribute(
+          "data-value",
+          "grok-build-0.1",
+        ),
       );
       fireEvent.click(
         within(documenterLow).getByRole("option", { name: "(none)" }),
@@ -909,9 +905,7 @@ describe("AIRoutingCard", () => {
       expect(
         await within(beDevRow).findByText("Codex (OpenAI)"),
       ).toBeInTheDocument();
-      expect(
-        within(beDevRow).getByText("Gemini (Google)"),
-      ).toBeInTheDocument();
+      expect(within(beDevRow).getByText("Gemini (Google)")).toBeInTheDocument();
     });
 
     it("excludes Codex and Gemini from the Intake/Secretary/PR Review group, with an inline note", async () => {
@@ -1043,9 +1037,9 @@ describe("AIRoutingCard", () => {
         skipped: ["Skipped role:developer (ghost-model) — Unknown model"],
       });
       render(withQueryClient(<AIRoutingCard />));
-      const presetSection = (await screen.findByText("Routing presets")).closest(
-        "section",
-      )!;
+      const presetSection = (
+        await screen.findByText("Routing presets")
+      ).closest("section")!;
       fireEvent.click(
         await within(presetSection).findByRole("option", {
           name: "Cheap Fleet",
@@ -1068,9 +1062,9 @@ describe("AIRoutingCard", () => {
         { id: "p1", name: "Cheap Fleet", created_at: "2026-07-01T00:00:00Z" },
       ]);
       render(withQueryClient(<AIRoutingCard />));
-      const presetSection = (await screen.findByText("Routing presets")).closest(
-        "section",
-      )!;
+      const presetSection = (
+        await screen.findByText("Routing presets")
+      ).closest("section")!;
       fireEvent.click(
         await within(presetSection).findByRole("option", {
           name: "Cheap Fleet",

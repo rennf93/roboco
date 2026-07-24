@@ -57,7 +57,7 @@ _ANTHROPIC_FRAGMENTS = ("claude", "opus", "sonnet", "haiku")
 # Cache read is charged at ~10 % of the input price.
 # Cache write is charged at ~25 % of the input price.
 #
-# Match on *substring* of model name so "claude-opus-4-6" and "opus" both
+# Match on *substring* of model name so "claude-opus-4-8" and "opus" both
 # resolve to the same tier.
 # ---------------------------------------------------------------------------
 _PRICING: list[tuple[str, float, float, float, float]] = [

@@ -106,7 +106,7 @@ def test_build_anthropic_entries_skips_missing_models() -> None:
     # Patch MODEL_MAP to be missing one entry → loop hits the `continue` branch.
     with patch(
         "roboco.models.llm_catalog.MODEL_MAP",
-        {"opus": "claude-opus-4-6"},  # sonnet+haiku missing
+        {"opus": "claude-opus-4-8"},  # sonnet+haiku missing
     ):
         entries = _build_anthropic_entries()
     # Only one entry survives — opus.

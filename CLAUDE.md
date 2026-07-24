@@ -79,7 +79,7 @@ pnpm test
 | RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
-| Cloud LLM | Claude API (claude-opus-4-6) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) |
+| Cloud LLM | Claude API (claude-opus-4-8) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) |
 | Local LLM | Ollama (glm-5.2:cloud for RAG/hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |

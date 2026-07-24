@@ -12,14 +12,21 @@ def test_sonnet_alias_resolves_to_sonnet_5() -> None:
     assert MODEL_MAP["sonnet"] == "claude-sonnet-5"
 
 
-def test_opus_alias_unchanged() -> None:
-    # CEO preference: stay on Opus 4.6 (4.7/4.8 not preferred).
-    assert MODEL_MAP["opus"] == "claude-opus-4-6"
+def test_opus_alias_resolves_to_opus_4_8() -> None:
+    # CEO upgrade to the newest Opus tier ("Opus 5" does not exist — the
+    # Claude 5 family is Fable/Mythos/Sonnet; Opus tops out at 4.8).
+    assert MODEL_MAP["opus"] == "claude-opus-4-8"
 
 
 def test_sonnet_5_is_priced() -> None:
     # Guard against pointing an alias at an unpriced model (silent $0 cost-count).
     cost = calculate_cost(MODEL_MAP["sonnet"], tokens_input=_M, tokens_output=0)
+    assert cost > 0.0
+
+
+def test_opus_is_priced() -> None:
+    # Same silent-$0 guard for the opus alias.
+    cost = calculate_cost(MODEL_MAP["opus"], tokens_input=_M, tokens_output=0)
     assert cost > 0.0
 
 

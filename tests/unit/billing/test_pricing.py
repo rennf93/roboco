@@ -562,7 +562,14 @@ class TestProviderAwareness:
         assert cost == _ZERO_COST
 
     def test_is_anthropic_model_true_for_claude_names(self) -> None:
-        for name in ("claude-opus-4-6", "claude-fable-5", "opus", "sonnet", "haiku"):
+        for name in (
+            "claude-opus-4-6",
+            "claude-opus-4-8",
+            "claude-fable-5",
+            "opus",
+            "sonnet",
+            "haiku",
+        ):
             assert _is_anthropic_model(name) is True, name
 
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
