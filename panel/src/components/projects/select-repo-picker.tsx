@@ -11,6 +11,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -124,7 +125,7 @@ export function SelectRepoDialog({ onSelect }: SelectRepoDialogProps) {
         </span>
       </HelpTip>
 
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className={DIALOG_SIZES.md}>
         <DialogHeader>
           <DialogTitle>Select a repository</DialogTitle>
           <DialogDescription>

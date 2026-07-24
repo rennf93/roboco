@@ -12,6 +12,7 @@ import {
   DialogTitle,
   DialogDescription,
   DialogTrigger,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import {
   Tooltip,
@@ -121,12 +122,12 @@ function QuickActionsCustomizeDialog() {
           </Button>
         </DialogTrigger>
       </HelpTip>
-      <DialogContent className="max-w-md">
+      <DialogContent className={DIALOG_SIZES.sm}>
         <DialogHeader>
           <DialogTitle>Customize Quick Actions</DialogTitle>
           <DialogDescription>
-            Pick which shortcuts show on the Overview dashboard and reorder
-            them with the arrows. Saved to this browser only.
+            Pick which shortcuts show on the Overview dashboard and reorder them
+            with the arrows. Saved to this browser only.
           </DialogDescription>
         </DialogHeader>
 

@@ -11,6 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -165,7 +166,9 @@ function EditProductForm({
           </HelpTip>
           {cells.map((cell) => (
             <div key={cell.value} className="grid gap-2">
-              <HelpTip label={`Which project the ${cell.label} cell works on for this product.`}>
+              <HelpTip
+                label={`Which project the ${cell.label} cell works on for this product.`}
+              >
                 <Label
                   htmlFor={`cell-${cell.value}`}
                   className="text-sm text-muted-foreground"
@@ -216,7 +219,9 @@ export function EditProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[525px] max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={`${DIALOG_SIZES.md} max-h-[90vh] overflow-y-auto`}
+      >
         {isLoading ? (
           <div className="space-y-4 py-4">
             <Skeleton className="h-8 w-48" />

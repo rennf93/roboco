@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,6 +32,7 @@ import {
   type SelectedRepo,
 } from "@/components/projects/select-repo-picker";
 import { HelpTip } from "@/components/ui/help-tip";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -152,7 +154,7 @@ export function CreateProjectDialog() {
           </Button>
         </DialogTrigger>
       </HelpTip>
-      <DialogContent className="sm:max-w-[525px]">
+      <DialogContent className={DIALOG_SIZES.md}>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create Project</DialogTitle>
@@ -315,151 +317,145 @@ export function CreateProjectDialog() {
               }
             />
 
-            {/* Advanced Options Toggle */}
-            <HelpTip label="Test/Format/Build are reference-only today; Lint + Typecheck (or Quality Gate below, which replaces both) run automatically at the dev's pre-submit gate.">
-              <Button
-                type="button"
-                variant="ghost"
-                className="justify-start px-0 text-muted-foreground"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-              >
-                {showAdvanced ? "Hide" : "Show"} CI/CD Commands
-              </Button>
-            </HelpTip>
+            {/* Advanced Options */}
+            <CollapsibleSection
+              variant="button"
+              open={showAdvanced}
+              onOpenChange={setShowAdvanced}
+              title={
+                <HelpTip label="Test/Format/Build are reference-only today; Lint + Typecheck (or Quality Gate below, which replaces both) run automatically at the dev's pre-submit gate.">
+                  <span>CI/CD Commands</span>
+                </HelpTip>
+              }
+            >
+              {/* CI/CD Commands */}
+              <div className="grid gap-2">
+                <HelpTip label="Reference only — not yet wired into any automated gate or CI run by RoboCo itself.">
+                  <Label htmlFor="test_command">Test Command</Label>
+                </HelpTip>
+                <Input
+                  id="test_command"
+                  value={formData.test_command || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, test_command: e.target.value })
+                  }
+                  placeholder="uv run pytest"
+                />
+              </div>
 
-            {showAdvanced && (
-              <>
-                {/* CI/CD Commands */}
-                <div className="grid gap-2">
-                  <HelpTip label="Reference only — not yet wired into any automated gate or CI run by RoboCo itself.">
-                    <Label htmlFor="test_command">Test Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="test_command"
-                    value={formData.test_command || ""}
-                    onChange={(e) =>
-                      setFormData({ ...formData, test_command: e.target.value })
-                    }
-                    placeholder="uv run pytest"
-                  />
-                </div>
+              <div className="grid gap-2">
+                <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Typecheck — unless Quality Gate Command below is set, which replaces both.">
+                  <Label htmlFor="lint_command">Lint Command</Label>
+                </HelpTip>
+                <Input
+                  id="lint_command"
+                  value={formData.lint_command || ""}
+                  onChange={(e) =>
+                    setFormData({ ...formData, lint_command: e.target.value })
+                  }
+                  placeholder="uv run ruff check ."
+                />
+              </div>
 
-                <div className="grid gap-2">
-                  <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Typecheck — unless Quality Gate Command below is set, which replaces both.">
-                    <Label htmlFor="lint_command">Lint Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="lint_command"
-                    value={formData.lint_command || ""}
-                    onChange={(e) =>
-                      setFormData({ ...formData, lint_command: e.target.value })
-                    }
-                    placeholder="uv run ruff check ."
-                  />
-                </div>
+              <div className="grid gap-2">
+                <HelpTip label="Reference only — deliberately excluded from the automated gate since formatting mutates files.">
+                  <Label htmlFor="format_command">Format Command</Label>
+                </HelpTip>
+                <Input
+                  id="format_command"
+                  value={formData.format_command || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      format_command: e.target.value,
+                    })
+                  }
+                  placeholder="uv run ruff format ."
+                />
+              </div>
 
-                <div className="grid gap-2">
-                  <HelpTip label="Reference only — deliberately excluded from the automated gate since formatting mutates files.">
-                    <Label htmlFor="format_command">Format Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="format_command"
-                    value={formData.format_command || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        format_command: e.target.value,
-                      })
-                    }
-                    placeholder="uv run ruff format ."
-                  />
-                </div>
+              <div className="grid gap-2">
+                <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Lint — unless Quality Gate Command below is set, which replaces both.">
+                  <Label htmlFor="typecheck_command">Typecheck Command</Label>
+                </HelpTip>
+                <Input
+                  id="typecheck_command"
+                  value={formData.typecheck_command || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      typecheck_command: e.target.value,
+                    })
+                  }
+                  placeholder="uv run mypy src/"
+                />
+              </div>
 
-                <div className="grid gap-2">
-                  <HelpTip label="Runs at the dev's pre-submit gate (i_am_done) alongside Lint — unless Quality Gate Command below is set, which replaces both.">
-                    <Label htmlFor="typecheck_command">Typecheck Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="typecheck_command"
-                    value={formData.typecheck_command || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        typecheck_command: e.target.value,
-                      })
-                    }
-                    placeholder="uv run mypy src/"
-                  />
-                </div>
+              <div className="grid gap-2">
+                <HelpTip label="Reference only — not run automatically; the slow build/test suite is left to CI.">
+                  <Label htmlFor="build_command">Build Command</Label>
+                </HelpTip>
+                <Input
+                  id="build_command"
+                  value={formData.build_command || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      build_command: e.target.value,
+                    })
+                  }
+                  placeholder="pnpm build"
+                />
+              </div>
 
-                <div className="grid gap-2">
-                  <HelpTip label="Reference only — not run automatically; the slow build/test suite is left to CI.">
-                    <Label htmlFor="build_command">Build Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="build_command"
-                    value={formData.build_command || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        build_command: e.target.value,
-                      })
-                    }
-                    placeholder="pnpm build"
-                  />
-                </div>
-
-                <div className="grid gap-2">
-                  <HelpTip label="When set, replaces the Lint + Typecheck pair as the dev's complete pre-submit gate command.">
-                    <Label htmlFor="quality_command">
-                      Quality Gate Command
-                    </Label>
-                  </HelpTip>
-                  <Input
-                    id="quality_command"
-                    value={formData.quality_command || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        quality_command: e.target.value,
-                      })
-                    }
-                    placeholder="make gate"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Fast pre-submit gate (lint + types + complexity, no tests)
-                    run in the dev&apos;s workspace at hand-off to QA.
-                  </p>
-                </div>
-
-                <div className="grid gap-2">
-                  <HelpTip label="Command that regenerates checked-in generated files, e.g. `make codegen`; run and committed before push so codegen drift never fails CI. Leave blank if the project has no generated artifacts.">
-                    <Label htmlFor="codegen_command">Codegen Command</Label>
-                  </HelpTip>
-                  <Input
-                    id="codegen_command"
-                    value={formData.codegen_command || ""}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        codegen_command: e.target.value,
-                      })
-                    }
-                    placeholder="make codegen"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Regenerates checked-in generated artifacts; any drift is
-                    committed in the task&apos;s workspace before each push.
-                  </p>
-                </div>
-
+              <div className="grid gap-2">
+                <HelpTip label="When set, replaces the Lint + Typecheck pair as the dev's complete pre-submit gate command.">
+                  <Label htmlFor="quality_command">Quality Gate Command</Label>
+                </HelpTip>
+                <Input
+                  id="quality_command"
+                  value={formData.quality_command || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      quality_command: e.target.value,
+                    })
+                  }
+                  placeholder="make gate"
+                />
                 <p className="text-xs text-muted-foreground">
-                  Autonomous maintenance (CI-watch, video engine,
-                  dependency-update bot, sandbox DB/Redis/Mongo) is configured
-                  after creation, from this project&apos;s Edit Project dialog.
+                  Fast pre-submit gate (lint + types + complexity, no tests) run
+                  in the dev&apos;s workspace at hand-off to QA.
                 </p>
-              </>
-            )}
+              </div>
+
+              <div className="grid gap-2">
+                <HelpTip label="Command that regenerates checked-in generated files, e.g. `make codegen`; run and committed before push so codegen drift never fails CI. Leave blank if the project has no generated artifacts.">
+                  <Label htmlFor="codegen_command">Codegen Command</Label>
+                </HelpTip>
+                <Input
+                  id="codegen_command"
+                  value={formData.codegen_command || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      codegen_command: e.target.value,
+                    })
+                  }
+                  placeholder="make codegen"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Regenerates checked-in generated artifacts; any drift is
+                  committed in the task&apos;s workspace before each push.
+                </p>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Autonomous maintenance (CI-watch, video engine,
+                dependency-update bot, sandbox DB/Redis/Mongo) is configured
+                after creation, from this project&apos;s Edit Project dialog.
+              </p>
+            </CollapsibleSection>
           </div>
           <DialogFooter>
             <Button

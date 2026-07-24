@@ -11,6 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -174,7 +175,7 @@ export function QuickEditProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className={DIALOG_SIZES.sm}>
         {isLoading ? (
           <div className="space-y-4 py-4">
             <Skeleton className="h-8 w-48" />

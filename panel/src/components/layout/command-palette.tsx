@@ -74,6 +74,9 @@ export function CommandPalette() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
+      {/* Outlier: kept explicit — this isn't just a width, it's a full custom
+          position/spacing override (top-anchored, no gap, no padding) that a
+          DIALOG_SIZES bucket can't express. */}
       <DialogContent
         showCloseButton={false}
         className="top-[20%] max-w-xl translate-y-0 gap-0 overflow-hidden p-0"

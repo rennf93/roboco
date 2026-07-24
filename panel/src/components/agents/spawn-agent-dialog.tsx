@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -124,7 +125,7 @@ export function SpawnAgentDialog({
               placeholder="Initial instructions for the agent"
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <DialogFooter>
             <HelpTip label="Closes without spawning">
               <Button variant="outline" onClick={() => setOpen(false)}>
                 Cancel
@@ -137,7 +138,7 @@ export function SpawnAgentDialog({
                 </Button>
               </span>
             </HelpTip>
-          </div>
+          </DialogFooter>
         </div>
       </DialogContent>
     </Dialog>

@@ -9,6 +9,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -159,7 +160,11 @@ export function CeoRejectDialog({
               Cancel
             </Button>
           </HelpTip>
-          <HelpTip label={!notes.trim() ? "Explain what changes are needed to enable" : null}>
+          <HelpTip
+            label={
+              !notes.trim() ? "Explain what changes are needed to enable" : null
+            }
+          >
             <span
               className="inline-block"
               tabIndex={!notes.trim() ? 0 : undefined}
@@ -298,7 +303,9 @@ export function CeoApproveDialog({
           </HelpTip>
           {/* Button's own disabled:pointer-events-none would swallow hover, so
               the tip sits on a wrapping span rather than the Button itself. */}
-          <HelpTip label={remainingCharsTip(notes.trim().length, _CEO_NOTES_MIN)}>
+          <HelpTip
+            label={remainingCharsTip(notes.trim().length, _CEO_NOTES_MIN)}
+          >
             <span className="inline-block" tabIndex={tooShort ? 0 : undefined}>
               <Button onClick={handleConfirm} disabled={tooShort || isPending}>
                 {isPending ? "Approving..." : "Approve & Merge"}
@@ -521,7 +528,7 @@ export function CreatePRDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[525px]">
+      <DialogContent className={DIALOG_SIZES.md}>
         <DialogHeader>
           <DialogTitle>Create Pull Request</DialogTitle>
           <DialogDescription>

@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -113,7 +114,9 @@ export function CreateProductDialog() {
           </Button>
         </DialogTrigger>
       </HelpTip>
-      <DialogContent className="sm:max-w-[525px] max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={`${DIALOG_SIZES.md} max-h-[90vh] overflow-y-auto`}
+      >
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create Product</DialogTitle>
@@ -172,7 +175,9 @@ export function CreateProductDialog() {
               </HelpTip>
               {cells.map((cell) => (
                 <div key={cell.value} className="grid gap-2">
-                  <HelpTip label={`Which project the ${cell.label} cell works on for this product.`}>
+                  <HelpTip
+                    label={`Which project the ${cell.label} cell works on for this product.`}
+                  >
                     <Label
                       htmlFor={`cell-${cell.value}`}
                       className="text-sm text-muted-foreground"

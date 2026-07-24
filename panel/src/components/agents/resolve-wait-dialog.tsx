@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -67,7 +68,9 @@ export function ResolveWaitDialog({ agentId }: ResolveWaitDialogProps) {
         <div className="space-y-4">
           <div className="space-y-2">
             <HelpTip label="Delivered to the agent verbatim as the answer to what it's waiting on">
-              <Label htmlFor="resolution" className="w-fit">Resolution Message</Label>
+              <Label htmlFor="resolution" className="w-fit">
+                Resolution Message
+              </Label>
             </HelpTip>
             <Textarea
               id="resolution"
@@ -77,7 +80,7 @@ export function ResolveWaitDialog({ agentId }: ResolveWaitDialogProps) {
               rows={4}
             />
           </div>
-          <div className="flex justify-end gap-2">
+          <DialogFooter>
             <HelpTip label="Closes without sending anything to the agent">
               <Button variant="outline" onClick={() => setOpen(false)}>
                 Cancel
@@ -85,12 +88,15 @@ export function ResolveWaitDialog({ agentId }: ResolveWaitDialogProps) {
             </HelpTip>
             <HelpTip label="Delivers the message above to the agent so it can resume">
               <span>
-                <Button onClick={handleResolve} disabled={resolveWait.isPending}>
+                <Button
+                  onClick={handleResolve}
+                  disabled={resolveWait.isPending}
+                >
                   {resolveWait.isPending ? "Sending..." : "Send Resolution"}
                 </Button>
               </span>
             </HelpTip>
-          </div>
+          </DialogFooter>
         </div>
       </DialogContent>
     </Dialog>

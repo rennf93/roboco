@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { ListChecks } from "lucide-react";
 import { CodeSnippet } from "@/components/git/code-snippet";
-import { CollapsibleSection } from "./collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 
 // Mirrors the server-side shape gate (Finding._file_repo_relative in
 // roboco/foundation/policy/content/models.py) — keep the character classes
