@@ -1,5 +1,26 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
+// The dialog itself (its own hooks/queries) is covered by
+// quick-edit-project-dialog.test.tsx; here we only care whether the name
+// click opens it with the right project id, not what it renders.
+vi.mock("../quick-edit-project-dialog", () => ({
+  QuickEditProjectDialog: ({
+    projectId,
+    open,
+  }: {
+    projectId: string;
+    open: boolean;
+  }) =>
+    open ? (
+      <div data-testid="quick-edit-dialog" data-project-id={projectId} />
+    ) : null,
+}));
 
 import { ProjectTable } from "../project-table";
 import { Team } from "@/types";
@@ -20,6 +41,10 @@ const project: ProjectSummary = {
 };
 
 describe("ProjectTable", () => {
+  beforeEach(() => {
+    mockPush.mockClear();
+  });
+
   it("renders the project name, task counts, and CI-watch badge", () => {
     render(<ProjectTable projects={[project]} isLoading={false} />);
     expect(screen.getByText("RoboCo Core")).toBeInTheDocument();
@@ -50,5 +75,22 @@ describe("ProjectTable", () => {
   it("does not show the empty state while loading", () => {
     render(<ProjectTable projects={undefined} isLoading={true} />);
     expect(screen.queryByText("No projects found")).not.toBeInTheDocument();
+  });
+
+  it("the Edit action routes to the full settings page instead of opening a dialog", () => {
+    render(<ProjectTable projects={[project]} isLoading={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit project" }));
+    expect(mockPush).toHaveBeenCalledWith("/projects/p1/settings");
+    expect(screen.queryByTestId("quick-edit-dialog")).not.toBeInTheDocument();
+  });
+
+  it("clicking the project name opens the slim quick-edit dialog instead of navigating", () => {
+    render(<ProjectTable projects={[project]} isLoading={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "RoboCo Core" }));
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.getByTestId("quick-edit-dialog")).toHaveAttribute(
+      "data-project-id",
+      "p1",
+    );
   });
 });

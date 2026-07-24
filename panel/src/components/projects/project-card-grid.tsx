@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { ExternalLink, GitBranch, Pencil } from "lucide-react";
 import type { ProjectSummary } from "@/types";
-import { EditProjectDialog } from "./edit-project-dialog";
+import { QuickEditProjectDialog } from "./quick-edit-project-dialog";
 import {
   CiWatchBadge,
   TasksCell,
@@ -29,6 +30,7 @@ interface ProjectCardGridProps {
 const GRID_COLS = "grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]";
 
 export function ProjectCardGrid({ projects, isLoading }: ProjectCardGridProps) {
+  const router = useRouter();
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
 
   if (isLoading) {
@@ -75,11 +77,13 @@ export function ProjectCardGrid({ projects, isLoading }: ProjectCardGridProps) {
                   </Button>
                 </CardTitle>
                 <div className="flex shrink-0 items-center gap-0.5">
-                  <HelpTip label="Edit project settings and CI/CD commands">
+                  <HelpTip label="Open the full settings page: git auth, placement, environments, CI/CD commands, budget & ops, sandbox, and conventions">
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => setEditingProjectId(project.id)}
+                      onClick={() =>
+                        router.push(`/projects/${project.id}/settings`)
+                      }
                       aria-label="Edit project"
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -122,8 +126,10 @@ export function ProjectCardGrid({ projects, isLoading }: ProjectCardGridProps) {
         ))}
       </div>
 
+      {/* Quick-edit Project Dialog (name/cell/active only — the pencil
+          action routes to the full settings page instead). */}
       {editingProjectId && (
-        <EditProjectDialog
+        <QuickEditProjectDialog
           projectId={editingProjectId}
           open={!!editingProjectId}
           onOpenChange={(open) => {
