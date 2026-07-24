@@ -645,12 +645,19 @@ services:
       ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-true}
       ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-true}
       # Remaining default-OFF capabilities, ARMED here (personal deploy): web
-      # research (inert without ROBOCO_RESEARCH_API_KEY → empty results), pitch
-      # auto-provisioning (inert until a pitch is approved + a git token is set),
-      # and transcript pruning (retention maintenance). All left OFF in the
+      # research (inert without ROBOCO_RESEARCH_API_KEY → empty results — the
+      # two lines below are what actually gets the .env key/provider into the
+      # container; without them .env values never reach it), pitch
+      # auto-provisioning (inert until a pitch is approved + a git token is
+      # set — same deal for ROBOCO_PROVISIONING_TOKEN/_ORG below), and
+      # transcript pruning (retention maintenance). All left OFF in the
       # registry compose. Override any via .env.
       ROBOCO_RESEARCH_ENABLED: ${ROBOCO_RESEARCH_ENABLED:-true}
+      ROBOCO_RESEARCH_API_KEY: ${ROBOCO_RESEARCH_API_KEY:-}
+      ROBOCO_RESEARCH_PROVIDER: ${ROBOCO_RESEARCH_PROVIDER:-tavily}
       ROBOCO_PROVISIONING_ENABLED: ${ROBOCO_PROVISIONING_ENABLED:-true}
+      ROBOCO_PROVISIONING_TOKEN: ${ROBOCO_PROVISIONING_TOKEN:-}
+      ROBOCO_PROVISIONING_ORG: ${ROBOCO_PROVISIONING_ORG:-}
       ROBOCO_TRANSCRIPT_PRUNE_ENABLED: ${ROBOCO_TRANSCRIPT_PRUNE_ENABLED:-true}
       # Two knobs that also default ON here (like every feature), but change
       # FAILURE / AUTH behavior — the .env must be set up for each before a real

@@ -15869,9 +15869,11 @@ Your job:
 2. Check quality drift: QA pass/fail patterns, convention violations,
    tracing gaps on recently completed work
 3. Spot cross-cell hand-off friction and silent stranded work
-4. Record every observation via note(scope='reflect'); if nothing is
+4. Call triage() — beyond anomalies it also surfaces the oldest pending
+   playbook draft awaiting your approve_playbook/reject_playbook curation
+5. Record every observation via note(scope='reflect'); if nothing is
    amiss, note exactly that
-5. Call i_am_idle() when complete
+6. Call i_am_idle() when complete
 """
 
         return """Periodic AUDIT requested.
