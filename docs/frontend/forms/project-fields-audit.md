@@ -2,7 +2,7 @@
 
 **Status:** Complete as of Task f1957610 (2026-07-23)
 
-This document maps which project configuration fields are exposed in each dialog for future reference. The backend ProjectCreateRequest and ProjectUpdateRequest schemas are the source of truth; frontend types mirror them exactly.
+This document maps which project configuration fields are exposed in each dialog for future reference. The backend ProjectCreateRequest and ProjectUpdateRequest schemas are the source of truth; frontend types mirror them exactly. The per-field consistency VERDICTS (ok/missing/stale, across settings + project + task forms) live in the sibling [`forms-audit.md`](./forms-audit.md) — this file is the field/type reference, that one is the living audit; update both when a schema changes.
 
 ## Create Project Dialog
 
@@ -55,4 +55,4 @@ When adding a new project field to the backend ProjectCreateRequest or ProjectUp
 2. Update both frontend types (`panel/src/types/index.ts`)
 3. Add to **both** dialogs (unless explicitly create-only or edit-only by design)
 4. Mirror help text and validation between dialogs where fields overlap
-5. Update this audit table
+5. Update this reference and the matching verdict row in [`forms-audit.md`](./forms-audit.md)

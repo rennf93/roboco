@@ -20,6 +20,8 @@ Documentation for the Frontend Cell team.
 - [`a2a-filtering.md`](./a2a-filtering.md) — A2A filter bar, conversation list, and pulse-flash hook
 - [`a2a-conversation-first-layout.md`](./a2a-conversation-first-layout.md) — Agent identity colors, connection states, context pane, transcript motion, and empty/error states
 - [`hooks.md`](./hooks.md) — `usePageRefresh` and `PageRefreshProvider` usage and API reference
+- [`forms/forms-audit.md`](./forms/forms-audit.md) — the living panel-forms ↔ backend-schema consistency audit (settings page + project + task dialogs); update the matching row in the same PR as any schema change
+- [`forms/project-fields-audit.md`](./forms/project-fields-audit.md) — project dialog field reference (types, create-vs-edit exposure, the add-a-field checklist)
 
 ## Contributing
 

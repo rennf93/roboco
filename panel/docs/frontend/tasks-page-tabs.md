@@ -94,9 +94,9 @@ Each kanban view is embedded inside a `TabsContent` and receives two props:
 Each kanban view wrapper (DevKanban, QaKanban, PrReviewKanban, PmKanban) was updated to support **optional controlled team state**:
 
 - **Controlled (when embedded on tasks page)**: If `onTeamChange` is provided, the view is controlled by the parent's URL-driven state
-- **Uncontrolled (when used standalone on /kanban page)**: If `onTeamChange` is omitted, the view manages its own internal team state via `useState`
+- **Uncontrolled (fallback)**: If `onTeamChange` is omitted, the view manages its own internal team state via `useState`
 
-This backward-compatible pattern allows the kanban views to be reused independently without modification.
+The tasks page is now the sole consumer and always passes `onTeamChange` (the old `/kanban` route is a pure redirect) — the uncontrolled fallback remains as a cheap, independently-testable default for any future standalone embedding, not a live code path today.
 
 ## Implementation Details
 

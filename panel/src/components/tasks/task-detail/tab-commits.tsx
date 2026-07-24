@@ -277,7 +277,9 @@ export function TabCommits({ task }: TabCommitsProps) {
                           )}
 
                           {/* Time */}
-                          <HelpTip label={formatAbsoluteTimestamp(commit.timestamp)}>
+                          <HelpTip
+                            label={formatAbsoluteTimestamp(commit.timestamp)}
+                          >
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
                               {formatTime(commit.timestamp)}
@@ -291,7 +293,7 @@ export function TabCommits({ task }: TabCommitsProps) {
                         size="sm"
                         variant="ghost"
                         onClick={() => handleDelete(commit.hash)}
-                        className="h-9 w-9 p-0 opacity-0 group-hover:opacity-100 text-destructive"
+                        className="h-9 w-9 p-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 text-destructive"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
