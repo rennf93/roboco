@@ -716,6 +716,8 @@ class WorkspaceService:
         worktree: Path,
         branch: str,
         project_slug: str,
+        *,
+        can_author: bool,
     ) -> None:
         """Re-attach a per-task worktree, self-healing a vanished clone + ref.
 
@@ -732,21 +734,43 @@ class WorkspaceService:
         unhealthy (re-clone from default). This then recovers the task branch
         ref so the worktree re-attaches with the pushed work intact:
 
-        1. A present, registered worktree is a no-op (just venv + ownership).
+        1. A present, registered worktree is refreshed against origin — see
+           :meth:`_refresh_present_worktree` — then venv-linked + chowned.
+           Without this a worktree created once (a reviewer's first
+           ``claim_review``) stayed frozen at that commit across every
+           respawn even as new commits landed on origin (a QA/PR-gate round
+           2+ reviewing its own stale round-1 checkout).
         2. If the local ``refs/heads/{branch}`` ref is absent (a re-clone has
            none), fetch ``origin <branch>`` (token-aware) and create the local
            ref from ``refs/remotes/origin/{branch}`` when origin has it —
            recovering the pushed commits. (``create_branch`` always pushes at
-           claim time, so a claimed task's branch is on origin.)
-        3. ``ensure_worktree`` reuses the recovered ref, or — if origin doesn't
-           have it (a never-pushed branch) — re-creates it from ``origin/HEAD``;
-           no pushed work is lost because none existed.
+           claim time, so a claimed task's branch is on origin.) ``ensure_worktree``
+           then reuses the recovered ref, or — if origin doesn't have it (a
+           never-pushed branch) — re-creates it from ``origin/HEAD``; no pushed
+           work is lost because none existed.
+        3. If the local ref instead SURVIVED (the worktree itself was pruned —
+           disk pressure, manual cleanup, a reaper evict — while the branch ref
+           lived on), re-add via ``ensure_worktree`` and then run it through the
+           SAME :meth:`_refresh_present_worktree` classification as a present
+           worktree. Re-adding alone would resurrect whatever commit the local
+           ref happened to point at, however far origin moved since (a
+           reviewer's round-1 worktree evicted, then re-added by a round-2
+           respawn into its own stale round-1 checkout — the present-worktree
+           bug's absent-worktree twin).
 
         A transient fetch failure falls through to the ``origin/HEAD`` ``-b``
-        rather than fatal-looping; a diverged branch re-syncs on the agent's
-        first ``sync_branch``.
+        rather than fatal-looping; a diverged author-role branch re-syncs on
+        the agent's first ``sync_branch``.
+
+        ``can_author`` (see ``foundation.identity.WORKTREE_AUTHOR_ROLES``) is
+        the caller's role classification, not a task property — the SAME
+        branch is a developer's own worktree in the dev's clone and a pure
+        reader's worktree in QA's/the reviewer's own separate clone.
         """
         if worktree.exists() and (worktree / ".git").is_file():
+            await self._refresh_present_worktree(
+                clone_root, worktree, branch, project_slug, can_author=can_author
+            )
             self._link_shared_venv(worktree, clone_root)
             await asyncio.to_thread(_ensure_agent_owned, worktree)
             await asyncio.to_thread(_ensure_agent_owned, clone_root)
@@ -769,8 +793,150 @@ class WorkspaceService:
                     ["branch", branch, f"refs/remotes/origin/{branch}"],
                     check=False,
                 )
-        # Reuse refs/heads/{branch} if recovered; else -b from origin/HEAD.
+            # Reuse refs/heads/{branch} if recovered; else -b from origin/HEAD.
+            await self.ensure_worktree(clone_root, worktree, branch, "origin/HEAD")
+            return
+        # A surviving local ref means the WORKTREE was pruned, not that its
+        # would-be checkout is current — re-add, then classify it exactly like
+        # a present worktree instead of trusting the ref's stale commit.
         await self.ensure_worktree(clone_root, worktree, branch, "origin/HEAD")
+        await self._refresh_present_worktree(
+            clone_root, worktree, branch, project_slug, can_author=can_author
+        )
+        self._link_shared_venv(worktree, clone_root)
+        await asyncio.to_thread(_ensure_agent_owned, worktree)
+        await asyncio.to_thread(_ensure_agent_owned, clone_root)
+
+    @staticmethod
+    def _worktree_is_dirty(worktree: Path) -> bool:
+        """True iff the worktree has staged/unstaged/untracked changes.
+
+        A failed ``git status`` (nonzero returncode, empty stdout) fails
+        toward DIRTY, never clean — the caller uses this to decide whether an
+        author's uncommitted edits are safe to reset out from under, and a
+        false "clean" would discard them.
+        """
+        status = WorkspaceService._worktree_git(
+            worktree, ["status", "--porcelain"], check=False
+        )
+        return status.returncode != 0 or bool(status.stdout.strip())
+
+    @staticmethod
+    def _worktree_on_task_branch(worktree: Path, branch: str) -> bool:
+        """True iff the worktree's checked-out branch IS ``branch``.
+
+        Guards every ``reset --hard origin/<branch>`` below: a detached HEAD
+        (mid-rebase, a crashed checkout) or a worktree drifted onto a
+        different ref must never have ``branch``'s ref reset out from under
+        it.
+        """
+        current = WorkspaceService._worktree_git(
+            worktree, ["branch", "--show-current"], check=False
+        )
+        return current.returncode == 0 and current.stdout.strip() == branch
+
+    @classmethod
+    def _safe_to_reset(cls, worktree: Path, branch: str) -> bool:
+        if cls._worktree_on_task_branch(worktree, branch):
+            return True
+        logger.warning(
+            "ensure_worktree_self_heal: worktree not on its task branch, "
+            "skipping reset",
+            worktree=str(worktree),
+            branch=branch,
+        )
+        return False
+
+    async def _refresh_present_worktree(
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str,
+        project_slug: str,
+        *,
+        can_author: bool,
+    ) -> None:
+        """Re-sync an ALREADY-PRESENT worktree with origin before a respawn
+        reuses it.
+
+        A per-task worktree is created once (first claim, or a reviewer's
+        first ``claim_review``/``claim_gate_review``) and, before this, never
+        touched again — every later respawn saw whatever commit happened to
+        be checked out at creation time, however far origin moved since (a
+        QA/PR-gate reviewer bounced a task back for fixes, the dev pushed —
+        routinely a force-pushed rebase — then respawned the reviewer into
+        its OWN still-round-1 checkout: the root mechanism behind a live
+        multi-round QA bounce loop).
+
+        Best-effort throughout — an offline spawn must not break: a failed
+        fetch or an unresolvable ``origin/<branch>`` leaves the worktree
+        exactly as it was (the absent-worktree path already falls back to
+        ``origin/HEAD`` in that case; a present one has nothing better to do
+        than keep what it has).
+
+        Classifies local HEAD (normally ``branch`` — the worktree is meant to
+        be checked out on it) against ``origin/<branch>``:
+          - behind-or-equal (origin has every local commit): fast-forward to
+            origin. Safe content-wise for every role — nothing local is
+            unique — but an author-capable role's UNCOMMITTED edits are never
+            discarded to get there; a dirty author tree is left alone
+            entirely rather than resetting under it.
+          - strictly ahead (local has commits origin lacks): always leave
+            alone — real unpushed work, author or not.
+          - diverged: an author-capable role keeps its own history —
+            ``sync_branch``'s patch-equivalence probe is the self-heal path
+            for a diverged author. A pure reader's local history can only
+            ever be a stale prior-round checkout (readers never hold the
+            gateway's ``commit`` tool — see
+            ``foundation.identity.WORKTREE_AUTHOR_ROLES`` — and a reader's
+            durable outputs, e.g. QA's render previews, are written outside
+            the worktree entirely), so it hard-resets to origin, discarding
+            any uncommitted scratch along with it.
+
+        Every reset above is additionally guarded by ``_safe_to_reset``: a
+        detached HEAD or a worktree drifted onto a different branch (mid-rebase,
+        a crashed checkout) is left untouched with a warning rather than have
+        ``branch``'s ref moved under it.
+        """
+        await self._fetch_branch_ref(clone_root, branch, project_slug)
+        origin_ref = f"origin/{branch}"
+        if (
+            self._worktree_git(
+                clone_root,
+                ["rev-parse", "--verify", "--quiet", origin_ref],
+                check=False,
+            ).returncode
+            != 0
+        ):
+            return  # never pushed, or the fetch failed — nothing to compare to
+        ahead = self._worktree_git(
+            clone_root, ["rev-list", "--count", f"{origin_ref}..{branch}"], check=False
+        )
+        behind = self._worktree_git(
+            clone_root, ["rev-list", "--count", f"{branch}..{origin_ref}"], check=False
+        )
+        if ahead.returncode != 0 or behind.returncode != 0:
+            return
+        local_ahead = ahead.stdout.strip()
+        local_behind = behind.stdout.strip()
+        if local_ahead == "0":
+            if local_behind == "0":
+                return  # already in sync
+            if can_author and self._worktree_is_dirty(worktree):
+                return  # never discard an author's uncommitted edits
+            self._reset_worktree_if_safe(worktree, branch, origin_ref)
+            return
+        if local_behind == "0":
+            return  # strictly ahead — someone's real unpushed work
+        # Diverged: only a pure reader's copy is disposable.
+        if not can_author:
+            self._reset_worktree_if_safe(worktree, branch, origin_ref)
+
+    def _reset_worktree_if_safe(
+        self, worktree: Path, branch: str, origin_ref: str
+    ) -> None:
+        if self._safe_to_reset(worktree, branch):
+            self._worktree_git(worktree, ["reset", "--hard", origin_ref], check=False)
 
     async def remove_worktree(self, clone_root: Path, worktree: Path) -> None:
         """Remove a per-task worktree (cancel / terminal / reaper evict).

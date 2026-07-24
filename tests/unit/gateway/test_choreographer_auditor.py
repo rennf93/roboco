@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -76,11 +76,42 @@ async def test_auditor_triage_returns_idle_when_no_anomalies() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.auditor_triage(auditor_id)
+    playbook_svc = AsyncMock()
+    playbook_svc.list_drafts.return_value = []
+    with patch(
+        "roboco.services.playbook.get_playbook_service", return_value=playbook_svc
+    ):
+        env = await c.auditor_triage(auditor_id)
     body = env.as_dict()
     assert body["status"] == "idle"
     assert body["task_id"] is None
     assert "i_am_idle" in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_auditor_triage_surfaces_playbook_draft_when_no_anomalies() -> None:
+    """No anomalies, but a pending playbook draft — surfaced instead of idle
+    so the Auditor's approve_playbook/reject_playbook duty is discoverable."""
+    auditor_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="auditor", team="board")
+    task_svc.list_long_running_blocked.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    draft = MagicMock(id=uuid4(), title="Rebase onto a live rung before cutting")
+    playbook_svc = AsyncMock()
+    playbook_svc.list_drafts.return_value = [draft]
+    with patch(
+        "roboco.services.playbook.get_playbook_service", return_value=playbook_svc
+    ):
+        env = await c.auditor_triage(auditor_id)
+    body = env.as_dict()
+    assert body["status"] == "draft"
+    assert body["task_id"] is None
+    assert str(draft.id)[:8] in body["next"]
+    assert "approve_playbook" in body["next"]
+    assert "reject_playbook" in body["next"]
 
 
 @pytest.mark.asyncio

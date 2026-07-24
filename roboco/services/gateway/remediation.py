@@ -33,6 +33,36 @@ def hint_for_unaddressed_acceptance_criteria(
     )
 
 
+def hint_for_missing_ac_coverage(
+    *, ids: list[str], texts: list[str], title: str
+) -> str:
+    """`ids`/`texts`: the parent's own acceptance-criteria ids and texts, in
+    declaration order — kept separate rather than pre-paired, so a criterion
+    with no id at its index (a legacy/drifted parent the caller didn't heal)
+    still gets a real reference: its own quoted text, the other legal
+    ``covers_parent_criteria`` form. Never renders an ``'<id>'`` placeholder
+    when a real reference exists, and never drops a criterion past a
+    shorter `ids` list.
+
+    Shows the exact corrected call shape with a real inlined reference so a
+    PM fixing a rejected delegate can copy it verbatim instead of
+    re-deriving the field's syntax or retyping criterion text (fragile —
+    exact-text matching breaks on any punctuation drift).
+    """
+    refs = [ids[i] if i < len(ids) else text for i, text in enumerate(texts)]
+    example_ref = refs[0] if refs else "<id>"
+    mapping = "; ".join(
+        f"{ref!r}" if ref == text else f'{ref}="{text}"'
+        for ref, text in zip(refs, texts, strict=True)
+    )
+    return (
+        f"delegate(title={title!r}, ..., covers_parent_criteria=[{example_ref!r}]) "
+        "— list the id(s) or exact text(s) of the parent criteria this child "
+        "actually advances (one or more, not necessarily all of them). "
+        f"Parent criteria (ref=text): {mapping}."
+    )
+
+
 def hint_for_open_findings(*, finding_ids: list[str], task_id: str) -> str:
     ids = ", ".join(finding_ids)
     return (

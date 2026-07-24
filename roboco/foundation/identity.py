@@ -328,6 +328,19 @@ def is_human_only_role(role: Role | None) -> bool:
     return role in _HUMAN_ONLY_ROLES
 
 
+# Roles whose task worktree may legitimately hold committed-unpushed work —
+# mirrors the gateway commit tool's RBAC (content_actions._COMMIT_ALLOWED_ROLES).
+# Every other role (qa, pr_reviewer, cell_pm, main_pm, board) only ever reads a
+# task's worktree, so a stale respawn checkout there is always safe to reset to
+# origin — it can never be discarding real unpushed work.
+WORKTREE_AUTHOR_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER, Role.DOCUMENTER})
+
+
+def is_worktree_author_role(role: str | None) -> bool:
+    """True for developer/documenter. See :data:`WORKTREE_AUTHOR_ROLES`."""
+    return role in WORKTREE_AUTHOR_ROLES
+
+
 def is_spawnable_agent_slug(slug: str) -> bool:
     """True only when ``slug`` resolves to a known non-human agent role.
 

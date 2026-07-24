@@ -30,6 +30,11 @@ def _bind(svc: TaskService, name: str, value: object) -> None:
 def _service() -> TaskService:
     session = MagicMock()
     session.flush = AsyncMock()
+    # reassign_active_claim now retargets the agent-side claim marker
+    # (_retarget_agent_claim), which reads agent rows via session.get —
+    # default to "no matching row" so tests that don't care about the
+    # agent side effect stay a no-op there.
+    session.get = AsyncMock(return_value=None)
     return TaskService(session)
 
 

@@ -28,7 +28,7 @@ from roboco.agents_config import (
     get_pm_for_team,
 )
 from roboco.config import settings
-from roboco.db.tables import AgentTable, NotificationTable, TaskTable
+from roboco.db.tables import AgentTable, NotificationTable, PitchTable, TaskTable
 from roboco.events import Event, EventType, get_event_bus
 from roboco.foundation.policy.communications import (
     ACK_REQUIRED_BY_TYPE,
@@ -1162,6 +1162,41 @@ class NotificationDeliveryService(BaseService):
         await self._persist_and_deliver(notification)
         await self._notify_telegram(
             task_id=task_id, subject=notification.subject, actionable=True
+        )
+
+    async def notify_ceo_of_pitch(self, *, pitch: PitchTable) -> None:
+        """Best-effort CEO nudge the moment a Board pitch is proposed —
+        without it a pitch sits in the queue with no signal until the CEO
+        happens to open the panel. Shaped like ``notify_ceo_of_escalation``
+        (APPROVAL/HIGH to the CEO + a Telegram push), but a pitch isn't a
+        task: ``related_task_id`` stays unset and the Telegram link points
+        at the panel's Pitches tab instead of a task deep-link.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        cells = ", ".join(pitch.target_cells)
+        problem_line = pitch.problem.strip().split("\n", 1)[0][:200]
+        notification = NotificationTable(
+            type=NotificationType.APPROVAL,
+            priority=NotificationPriority.HIGH,
+            from_agent=pitch.created_by,
+            to_agents=[ceo.id],
+            subject=f"Pitch awaiting review: {pitch.title}",
+            body=(
+                f"Slug: {pitch.slug}\nTarget cells: {cells}\n\n"
+                f"{problem_line}\n\n"
+                "Review it in the panel's Pitches tab (Business page)."
+            ),
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.APPROVAL],
+        )
+        await self._persist_and_deliver(notification)
+        text = f"<b>{_esc(notification.subject)}</b>"
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/business?tab=pitches"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
         )
 
     async def notify_ceo_of_budget_breach(

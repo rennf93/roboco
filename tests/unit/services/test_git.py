@@ -722,6 +722,10 @@ async def test_diff_returns_diff_stdout() -> None:
         del check, token
         if args[:1] == ["fetch"]:
             return MagicMock(stdout="", returncode=0)
+        if args[:1] == ["rev-parse"]:
+            return MagicMock(stdout="", returncode=0)
+        if args[:1] == ["rev-list"]:
+            return MagicMock(stdout="0", returncode=0)
         return MagicMock(stdout="diff --git a b\n+hello\n", returncode=0)
 
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
@@ -1463,7 +1467,10 @@ async def test_rebase_onto_base_stash_true_auto_stashes_and_pops() -> None:
         if args[:2] == ["status", "--porcelain"]:
             res.stdout = " M dirty.py\n"
         elif args[:2] == ["rev-list", "--count"]:
-            res.stdout = "1"
+            # Only the post-rebase unique-vs-base count is non-zero; the
+            # pre-rebase local-vs-origin(HEAD) classification reads as
+            # "nothing unique on either side" (behind/equal, not diverged).
+            res.stdout = "1" if args[2] == "origin/master..HEAD" else "0"
         else:
             res.stdout = ""
         return res
@@ -1499,7 +1506,10 @@ async def test_rebase_onto_base_stash_pop_conflict_preserves_stash() -> None:
         if args[:2] == ["status", "--porcelain"]:
             res.stdout = " M dirty.py\n"
         elif args[:2] == ["rev-list", "--count"]:
-            res.stdout = "1"
+            # Only the post-rebase unique-vs-base count is non-zero; the
+            # pre-rebase local-vs-origin(HEAD) classification reads as
+            # "nothing unique on either side" (behind/equal, not diverged).
+            res.stdout = "1" if args[2] == "origin/master..HEAD" else "0"
         elif args == ["stash", "pop"]:
             res.returncode = 1  # pop conflicted — stash is NOT dropped by git
         else:

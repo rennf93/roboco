@@ -138,9 +138,13 @@ class AgentTable(Base):
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
 
-    # Relationships - use lazy="joined" for single optional relationship
+    # Relationships - use lazy="joined" for single optional relationship.
+    # post_update: agents.current_task_id and tasks.assigned_to reference each
+    # other, so a flush touching both rows (a claim marking its agent ACTIVE)
+    # is an instance-level cycle SQLAlchemy cannot topologically sort —
+    # post_update breaks it by emitting this FK as a second UPDATE.
     current_task: Mapped["TaskTable | None"] = relationship(
-        "TaskTable", foreign_keys=[current_task_id], lazy="joined"
+        "TaskTable", foreign_keys=[current_task_id], lazy="joined", post_update=True
     )
 
 
@@ -210,7 +214,7 @@ class TaskTable(Base):
     )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     # Cost budget (migration 079, feature-flagged: ROBOCO_TASK_BUDGETS_ENABLED).
-    # Null falls back to the TaskType default when the flag is on; a pure
+    # Null = no cap: budgets enforce only when explicitly set; a pure
     # no-op off. Enforced periodically by the orchestrator's budget sweep.
     budget_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 

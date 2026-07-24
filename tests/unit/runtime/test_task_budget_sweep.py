@@ -236,16 +236,16 @@ async def test_handle_breach_skips_a_task_that_already_moved_on() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _task_budget_breach: cap resolution (null -> TaskType default) + spend sum
+# _task_budget_breach: explicit-input-only cap (null budget = never a breach)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_breach_falls_back_to_tasktype_default_when_budget_null() -> None:
-    """Cap resolution (task.budget_usd null -> TaskType default) and spend
-    both delegate to TaskService now (task_spend_usd's own open-session
-    pricing is covered directly by its shared implementation — see
-    test_project_month_spend_usd_db.py's real-DB open-session case)."""
+async def test_null_budget_is_never_a_breach() -> None:
+    """Budgets enforce only when explicitly set: a task with no budget_usd is
+    uncapped, regardless of spend — the spend query is never even issued (the
+    old per-TaskType default table blocked a default-budget coordination root
+    one opus planning turn in)."""
     orch = _make_orchestrator()
     task_id = "44444444-4444-4444-4444-444444444444"
     task = MagicMock(
@@ -262,10 +262,8 @@ async def test_breach_falls_back_to_tasktype_default_when_budget_null() -> None:
     ):
         breach = await orch._task_budget_breach(task_id)
 
-    assert breach is not None
-    cap_usd, spend_usd = breach
-    assert cap_usd == 1.0  # TASK_TYPE_DEFAULT_BUDGET_USD[DOCUMENTATION]
-    assert spend_usd == _MOCK_TASK_SPEND_USD
+    assert breach is None
+    task_svc.task_spend_usd.assert_not_awaited()
 
 
 @pytest.mark.asyncio

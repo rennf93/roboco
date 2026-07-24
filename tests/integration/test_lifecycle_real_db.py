@@ -756,11 +756,20 @@ async def test_pr_review_gate_pass_path(
     assert claimed is not None
     assert str(claimed.status) == Status.AWAITING_PR_REVIEW.value
     assert claimed.assigned_to == reviewer.id
+    # pr_gate_claim (via _qa_or_doc_claim) flips the reviewer's fleet marker.
+    reviewer_row = await db_session.get(AgentTable, reviewer_id)
+    assert reviewer_row is not None
+    assert reviewer_row.status == AgentStatus.ACTIVE
+    assert reviewer_row.current_task_id == task.id
 
     passed = await svc.pr_pass(reviewer_id, task.id, notes="integration verified")
     assert passed is not None
     assert str(passed.status) == Status.AWAITING_PM_REVIEW.value
     assert passed.assigned_to is None  # cleared so the PM-closure dispatch routes
+    # pr_pass releases the reviewer's fleet marker too.
+    reviewer_row = await db_session.get(AgentTable, reviewer_id)
+    assert reviewer_row is not None
+    assert reviewer_row.current_task_id is None
 
     final = await svc.get(task.id)
     assert final is not None

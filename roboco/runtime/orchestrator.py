@@ -53,6 +53,7 @@ from roboco.foundation.identity import (
     CELL_TEAMS,
     is_human_only_role,
     is_spawnable_agent_slug,
+    is_worktree_author_role,
     role_for_slug_or_none,
 )
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
@@ -2535,10 +2536,14 @@ class AgentOrchestrator:
         worktree (reaper, disk pressure, manual cleanup while the agent was
         down) — or a vanished clone root (disk loss, a redeploy that wiped
         ``/data/workspaces``) — would start the agent in a missing directory.
-        Idempotent: a present worktree is a no-op; a pruned worktree is re-added
-        from the surviving branch ref; a missing clone is re-cloned and the
-        branch ref recovered from origin (``create_branch`` pushes at claim
-        time) so the pushed work survives. No-op for branchless / no-task spawns.
+        Idempotent: a pruned worktree is re-added from the surviving branch
+        ref; a missing clone is re-cloned and the branch ref recovered from
+        origin (``create_branch`` pushes at claim time) so the pushed work
+        survives. A PRESENT worktree is refreshed against origin, role-aware
+        (see ``ensure_worktree_self_heal``) rather than left frozen at
+        whatever commit it was created on — the role comes from
+        ``get_agent_role``, the same lookup ``_prepare_agent_spawn`` already
+        makes for this agent. No-op for branchless / no-task spawns.
 
         The reaper-style claim release preserves ownership + ``branch_name``, so
         a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
@@ -2559,6 +2564,7 @@ class AgentOrchestrator:
                 project_slug, team, agent_id, git_context.task_short_id
             )
         )
+        can_author = is_worktree_author_role(get_agent_role(agent_id))
         from roboco.db.base import get_db_context
         from roboco.services.workspace import WorkspaceError, WorkspaceService
 
@@ -2574,7 +2580,11 @@ class AgentOrchestrator:
                 if not WorkspaceService._is_workspace_healthy(clone_root):
                     await ws.ensure_workspace(project_slug, agent_id)
                 await ws.ensure_worktree_self_heal(
-                    clone_root, worktree, git_context.branch_name, project_slug
+                    clone_root,
+                    worktree,
+                    git_context.branch_name,
+                    project_slug,
+                    can_author=can_author,
                 )
         except WorkspaceError as e:
             # Fatal git state (clone won't re-clone, token missing, branch ref
@@ -4831,29 +4841,32 @@ class AgentOrchestrator:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
-    async def _fetch_task_status(
+    async def _fetch_task_fields(
         self, client: httpx.AsyncClient, task_id: str
-    ) -> str | None:
-        """Best-effort GET /tasks/{id} → status string (None on any failure —
+    ) -> dict[str, Any] | None:
+        """Best-effort GET /tasks/{id} → full task dict (None on any failure —
         fail-open so a fetch hiccup never suppresses a real escalation)."""
         try:
             resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
-                status = resp.json().get("status")
-                return str(status) if status is not None else None
+                return cast("dict[str, Any]", resp.json())
         except Exception as exc:
-            logger.debug("notification task-status fetch failed", error=str(exc))
+            logger.debug("notification task-fields fetch failed", error=str(exc))
         return None
 
     async def _notification_has_live_work(
         self, client: httpx.AsyncClient, notif: dict[str, Any]
     ) -> bool:
         """False when a notification has no live work behind it — the 'is there
-        actually something to do' gate for notification-triggered spawns. Three
+        actually something to do' gate for notification-triggered spawns. Four
         obvious markers: it has expired, it is stale past the spawn-age window
-        (wedged / reloaded from before a restart), or its related task is
-        already terminal (the work is done). Fail-open: an unparseable field or
-        a failed task fetch never suppresses a spawn.
+        (wedged / reloaded from before a restart), its related task is already
+        terminal (the work is done), or that task is HITL-blocked (a human,
+        not a respawn, resolves it — e.g. the oscillation breaker tripped and
+        force-blocked it; the task-status dispatchers already skip these via
+        ``_is_hitl_blocked``, but this notification-driven path carries no
+        task-status gate of its own). Fail-open: an unparseable field or a
+        failed task fetch never suppresses a spawn.
         """
         now = datetime.now(UTC)
         expires = self._parse_iso_dt(notif.get("expires_at"))
@@ -4865,9 +4878,12 @@ class AgentOrchestrator:
             return False
         task_id = notif.get("related_task_id")
         if task_id:
-            status = await self._fetch_task_status(client, str(task_id))
-            if status in ("completed", "cancelled"):
-                return False
+            fields = await self._fetch_task_fields(client, str(task_id))
+            if fields is not None:
+                if fields.get("status") in ("completed", "cancelled"):
+                    return False
+                if self._is_hitl_blocked(fields):
+                    return False
         return True
 
     def _is_parallel_phase_claim(
@@ -8053,11 +8069,12 @@ Start by:
     async def _task_budget_breach(self, task_id_str: str) -> tuple[float, float] | None:
         """``(cap_usd, spend_usd)`` if this task's own $ budget is breached.
 
-        ``None`` when unbreached OR the task has already left claimed/
+        ``None`` when unbreached, when the task carries no explicit
+        ``budget_usd`` (budgets are explicit-input only — an unset budget
+        means no cap; ``effective_task_budget_usd`` is the shared resolver
+        ``unblock``'s re-check uses), OR the task has already left claimed/
         in_progress (a stale re-check racing the task's own progress — not a
-        breach). The cap is ``task.budget_usd``, falling back to the
-        TaskType default (``effective_task_budget_usd`` — the same resolver
-        ``unblock``'s re-check uses) when null. Spend is
+        breach). Spend is
         ``TaskService.task_spend_usd`` (closed-session cost + open-session
         live-token pricing via ``calculate_cost`` — a DB-only read off
         ``_sweep_token_snapshots``'s periodically-refreshed token columns, no
@@ -8082,6 +8099,8 @@ Start by:
             ):
                 return None
             cap_usd = effective_task_budget_usd(task)
+            if cap_usd is None:
+                return None
             spend_usd = await svc.task_spend_usd(task_id)
         if spend_usd < cap_usd:
             return None
@@ -9505,9 +9524,11 @@ Start by:
         Repo-aware: collapses active projects to one canonical project per
         distinct repo (so a monorepo product yields ONE review per PR, not one
         per cell-project), lists each repo's open PRs, and ingests a de-duped
-        review task for each reviewable one — external/fork PRs, and (when
-        internal review is on) org-repo PRs not tied to an active task. Commits
-        once at the end.
+        review task for each reviewable one. A same-repo PR whose head branch
+        an active task owns (repo-wide, sibling cell-projects included) is the
+        org's own and never ingested, regardless of author — the rest split
+        into external/fork PRs and (when internal review is on) org-repo PRs
+        opened outside the task flow. Commits once at the end.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -9551,6 +9572,20 @@ Start by:
         # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
         if pr.get("author_is_owner"):
             return False
+        # The org's own in-flight PRs are recognized by BRANCH OWNERSHIP, not
+        # author identity: with a GitHub App bound, fleet PRs are authored by
+        # <app-slug>[bot] whose author_association is NONE, which the external
+        # heuristic below reads as an outsider (2026-07-23 live incident: a
+        # same-repo dev-stream PR was ingested as external_pr and adversarially
+        # reviewed). A same-repo head branch owned by an active task is ours
+        # regardless of who authored the PR, so this check must run BEFORE the
+        # author-based classification. Residual: an org PR whose task went
+        # terminal with the PR left open falls through to the author heuristics.
+        if not pr.get("is_fork") and await task_service.active_task_owns_branch(
+            str(pr.get("head_ref") or ""),
+            cast("UUID", project.id),
+        ):
+            return False
         if self._is_external_pr(pr):
             if not settings.external_pr_enabled or not self._pr_author_allowed(
                 pr, allowlist
@@ -9559,11 +9594,6 @@ Start by:
             source = "external_pr"
         else:
             if not settings.internal_pr_enabled:
-                return False
-            if await task_service.active_task_owns_branch(
-                str(pr.get("head_ref") or ""),
-                cast("UUID", project.id),
-            ):
                 return False
             source = "internal_pr"
         created = await task_service.ingest_external_pr(
@@ -15855,9 +15885,11 @@ Your job:
 2. Check quality drift: QA pass/fail patterns, convention violations,
    tracing gaps on recently completed work
 3. Spot cross-cell hand-off friction and silent stranded work
-4. Record every observation via note(scope='reflect'); if nothing is
+4. Call triage() — beyond anomalies it also surfaces the oldest pending
+   playbook draft awaiting your approve_playbook/reject_playbook curation
+5. Record every observation via note(scope='reflect'); if nothing is
    amiss, note exactly that
-5. Call i_am_idle() when complete
+6. Call i_am_idle() when complete
 """
 
         return """Periodic AUDIT requested.

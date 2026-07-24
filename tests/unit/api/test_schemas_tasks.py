@@ -32,8 +32,17 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
-from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.db.tables import TaskTable
+from roboco.models.base import (
+    BlockerResolverType,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.models.product import ProductCellMapping
+from roboco.runtime.orchestrator import AgentOrchestrator
 
 _ORDER_DEFAULT = 0
 
@@ -311,6 +320,7 @@ def _stub_task(*, with_project: bool = False) -> Any:
         description="d",
         acceptance_criteria=["a"],
         status=TaskStatus.PENDING,
+        blocker_resolver_type=None,
         priority=1,
         sequence=0,
         nature=TaskNature.TECHNICAL,
@@ -486,6 +496,90 @@ def test_task_list_to_response_returns_list() -> None:
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
         out = task_list_to_response(stubs)
     assert len(out) == len(stubs)
+
+
+# ---------------------------------------------------------------------------
+# blocker_resolver_type — wire-shaped regression. A hand-rolled stub (like
+# _stub_task above) can't catch a field TaskResponse silently drops; this
+# builds a REAL TaskTable row and pushes it through the actual serialization
+# path the orchestrator's dispatchers see over HTTP.
+# ---------------------------------------------------------------------------
+
+
+def _hitl_blocked_task_row() -> TaskTable:
+    """A real TaskTable instance (never added to a session) in the exact
+    shape `unblock`'s oscillation-breaker trip leaves behind: BLOCKED with
+    blocker_resolver_type=HUMAN."""
+    return TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["a"],
+        acceptance_criteria_ids=[],
+        parent_ac_refs=[],
+        status=TaskStatus.BLOCKED,
+        blocker_resolver_type=BlockerResolverType.HUMAN,
+        priority=2,
+        sequence=0,
+        nature=TaskNature.TECHNICAL,
+        task_type=TaskType.CODE,
+        project_id=None,
+        product_id=None,
+        docs_complete=False,
+        pr_created=False,
+        board_review_complete=False,
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=None,
+        parent_task_id=None,
+        dependency_ids=[],
+        blocker_ids=[],
+        batch_id=None,
+        created_at=datetime.now(UTC),
+        updated_at=None,
+        claimed_at=None,
+        claimed_by=None,
+        started_at=None,
+        completed_at=None,
+        target_date=None,
+        estimated_complexity=Complexity.LOW,
+        plan=None,
+        checkpoints=[],
+        progress_updates=[],
+        commits=[],
+        documents=[],
+        dev_notes=None,
+        qa_notes=None,
+        auditor_notes=None,
+        self_verified=False,
+        qa_verified=None,
+        branch_name=None,
+        pr_number=None,
+        pr_url=None,
+        source="manual",
+        confirmed_by_human=True,
+    )
+
+
+def test_task_to_response_serializes_blocker_resolver_type() -> None:
+    """A real ORM row's blocker_resolver_type must round-trip — the field was
+    silently missing from TaskResponse, so every dispatcher reading it over
+    the wire saw None regardless of the DB value."""
+    row = _hitl_blocked_task_row()
+    resp = task_to_response(row)
+    assert resp.blocker_resolver_type == BlockerResolverType.HUMAN
+
+
+def test_wire_shaped_hitl_blocked_task_trips_is_hitl_blocked() -> None:
+    """End-to-end wire simulation: real TaskTable -> task_to_response ->
+    JSON-mode serialization (what httpx.json() hands the orchestrator) ->
+    AgentOrchestrator._is_hitl_blocked. Before the fix this always read
+    None over the wire and never fired."""
+    row = _hitl_blocked_task_row()
+    resp = task_to_response(row)
+    wire_dict = resp.model_dump(mode="json")
+    assert wire_dict["blocker_resolver_type"] == "human"
+    assert AgentOrchestrator._is_hitl_blocked(wire_dict) is True
 
 
 # ---------------------------------------------------------------------------

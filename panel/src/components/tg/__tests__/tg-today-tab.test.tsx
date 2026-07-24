@@ -228,6 +228,25 @@ describe("TgTodayTab", () => {
     expect(screen.getByText(/idle · 21/)).toBeInTheDocument();
   });
 
+  it("labels an untracked subscription-billed spend day instead of a bare $0", async () => {
+    get.mockResolvedValue({
+      data: brief({
+        spend: {
+          tokens_today: 456_221,
+          cost_today_usd: 0,
+          subscription_billed: true,
+          series: [1, 2, 3, 4, 5, 6, 0],
+          delta_pct: null,
+        },
+      }),
+    });
+    renderTab();
+
+    expect(await screen.findByText("≈$0")).toBeInTheDocument();
+    expect(screen.getByText(/subscription \(untracked\)/i)).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
   it("shows an error state when the brief fails to load", async () => {
     get.mockRejectedValue(new Error("boom"));
     renderTab();

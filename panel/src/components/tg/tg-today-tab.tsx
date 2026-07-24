@@ -69,6 +69,11 @@ export interface TodayBrief {
   spend: {
     tokens_today: number;
     cost_today_usd: number;
+    /** True when cost_today_usd is $0 because today's tokens ran on an
+     * Ollama Cloud model with no grounded per-token rate (subscription-
+     * billed, not literally free) — the hero renders "untracked", never a
+     * bare misleading $0.00. */
+    subscription_billed: boolean;
     series: number[];
     delta_pct: number | null;
   };
@@ -134,10 +139,16 @@ function SpendHero({
         />
       </div>
       <span className="tg-display block text-[44px] leading-none tabular-nums">
-        ${cost.toFixed(2)}
+        {spend.subscription_billed ? "≈$0" : `$${cost.toFixed(2)}`}
       </span>
       <div className="mt-1.5 flex items-center gap-2">
-        <TgDeltaChip pct={spend.delta_pct} />
+        {spend.subscription_billed ? (
+          <span className="text-xs font-medium text-amber-500">
+            subscription (untracked)
+          </span>
+        ) : (
+          <TgDeltaChip pct={spend.delta_pct} />
+        )}
         <span className="text-xs tabular-nums text-muted-foreground">
           {fmtTokens(spend.tokens_today)} tokens
         </span>

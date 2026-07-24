@@ -1196,12 +1196,24 @@ class ContentActions:
                 remediate="fix the pitch fields and retry",
                 context_briefing={},
             )
+        await self._notify_pitch(pitch)
         return Envelope.ok(
             status="proposed",
             task_id=str(pitch.id),
             next="await the CEO's approval in the Pitches queue",
             context_briefing={},
         )
+
+    async def _notify_pitch(self, pitch: Any) -> None:
+        """Best-effort CEO nudge the moment a pitch is proposed — without it
+        a pitch rots silently until the CEO happens to open the Pitches
+        queue. A send failure never fails ``pitch()`` itself."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_pitch(pitch=pitch)
+        except Exception as exc:
+            logger.warning("pitch telegram notify failed (best-effort)", error=str(exc))
 
     @classmethod
     def _reject_roadmap_item_fields(

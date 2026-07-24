@@ -2316,7 +2316,11 @@ class GitService(BaseService):
             "title": pr.get("title") or "",
             "head_ref": head.get("ref"),
             "head_sha": head.get("sha"),
-            "is_fork": bool(head_full and head_full != base_full),
+            # A null head repo (GitHub sends head.repo=null when the fork was
+            # deleted) is NOT ours — fail closed to fork/external so the
+            # branch-ownership skip can never silently swallow a genuine fork
+            # whose head_ref collides with an org branch name.
+            "is_fork": (head_full != base_full) if head_full else True,
             "user_login": login,
             # The reviewer reviews PRs the org did NOT author. A PR opened by the
             # repo-owner account is a self-review (GitHub 422s REQUEST_CHANGES on
@@ -5176,6 +5180,18 @@ class GitService(BaseService):
             can now merge cleanly.
           - ``{"status": "conflicts", "files": [...]}`` — the rebase hit
             conflicts and was aborted; a developer must resolve by hand.
+          - ``{"status": "diverged", "local_only": int, "origin_only": int}``
+            — the local ``head_branch`` and ``origin/<head_branch>`` each
+            carry commits the other lacks with no patch-equivalent on the
+            other side. Most often this is the residue of a PRIOR call to
+            this same method that rebased locally but whose force-push then
+            failed (network blip, a flow-verb timeout kill, a container
+            reap between rebase and push) — that case is recognized by
+            patch-equivalence and self-heals as "ahead" instead (see
+            :meth:`_reset_head_or_diverged`). What's left is a genuine
+            divergence, e.g. the task bounced to a different agent's clone
+            that pushed meanwhile. Refused outright: neither side is
+            touched and nothing is pushed — a human must reconcile.
         Any of the above may carry ``"stash_pop_conflict": True`` when
         ``stash`` popped into a conflict (see below).
 
@@ -5184,32 +5200,47 @@ class GitService(BaseService):
         legitimate when it is the head's true merge target; the choreographer
         refuses only a mis-resolved one.
 
-        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
-        ``git reset --hard`` below can't discard uncommitted agent edits —
-        UNLESS ``stash=True``, in which case the dirty worktree (tracked +
-        untracked, ``-u``) is stashed first and popped back after the rebase
-        instead of refusing outright (the dev-facing dead end this closes:
-        DIRTY_WORKSPACE had no in-gate remedy other than a raw ``git`` the
-        agent is denied). A pop conflict is never auto-resolved — the stash
-        is left in place (never dropped) and the result gets
-        ``stash_pop_conflict: True`` so the caller returns an actionable
-        envelope; the agent's uncommitted work is never lost.
+        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so
+        uncommitted agent edits are never discarded — UNLESS ``stash=True``,
+        in which case the dirty worktree (tracked + untracked, ``-u``) is
+        stashed first and popped back after the rebase instead of refusing
+        outright (the dev-facing dead end this closes: DIRTY_WORKSPACE had no
+        in-gate remedy other than a raw ``git`` the agent is denied). A pop
+        conflict is never auto-resolved — the stash is left in place (never
+        dropped) and the result gets ``stash_pop_conflict: True`` so the
+        caller returns an actionable envelope; the agent's uncommitted work
+        is never lost.
+
+        Beyond uncommitted edits, a COMMITTED local tip is never discarded
+        either. The ``commit`` do-verb never pushes, so mid-rework a dev
+        routinely has committed-but-unpushed commits on ``head_branch`` — the
+        old unconditional ``reset --hard origin/<head_branch>`` right after
+        checkout silently rewound past them before the force-with-lease push
+        republished the truncated branch as authoritative. This now
+        classifies local vs ``origin/<head_branch>`` (post-fetch) first: an
+        absent local ref is recovered from origin (checkout, never reset —
+        nothing local to discard); local behind-or-equal resets to origin as
+        before (origin has nothing to lose); local strictly ahead skips the
+        reset and rebases from the local tip instead (a superset the push
+        below publishes); a genuine divergence refuses via ``"diverged"``
+        rather than guessing which side to keep.
         """
         stashed = await self._stash_if_dirty(workspace, stash=stash)
 
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        await self._ensure_local_head_ref(workspace, head_branch)
         await self._run_git(workspace, ["checkout", head_branch])
-        await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
+        diverged = await self._reset_head_or_diverged(workspace, head_branch)
+        if diverged is not None:
+            if stashed:
+                await self._pop_stash_into(workspace, diverged)
+            return diverged
         rebase = await self._run_git(
             workspace, ["rebase", f"origin/{base_branch}"], check=False
         )
         if rebase.returncode != 0:
             return await self._abort_rebase_conflict(workspace, stashed=stashed)
-        count = await self._run_git(
-            workspace,
-            ["rev-list", "--count", f"origin/{base_branch}..HEAD"],
-        )
-        unique = int(count.stdout.strip() or "0")
+        unique = await self._rev_list_count(workspace, f"origin/{base_branch}..HEAD")
         if unique == 0:
             result: dict[str, Any] = {"status": "superseded"}
         else:
@@ -5222,6 +5253,97 @@ class GitService(BaseService):
         if stashed:
             await self._pop_stash_into(workspace, result)
         return result
+
+    async def _rev_list_count(self, workspace: Path, range_spec: str) -> int:
+        """``git rev-list --count <range_spec>`` as an int (empty stdout → 0)."""
+        result = await self._run_git(workspace, ["rev-list", "--count", range_spec])
+        return int(result.stdout.strip() or "0")
+
+    async def _ensure_local_head_ref(self, workspace: Path, head_branch: str) -> None:
+        """Recover an absent local ``head_branch`` ref from origin before checkout.
+
+        Mirrors :meth:`_assert_on_task_branch`'s recovery: worktree flows
+        normally guarantee the local ref already exists, but a caller running
+        against a bare clone root (or a re-provisioned workspace) may only
+        have the branch on ``origin`` (this runs post-fetch) — create the
+        local ref (never reset one that already exists) so the unconditional
+        checkout right after this never fails on a missing branch.
+        """
+        exists = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{head_branch}"],
+            check=False,
+        )
+        if exists.returncode != 0:
+            await self._run_git(
+                workspace, ["branch", head_branch, f"origin/{head_branch}"]
+            )
+
+    async def _reset_head_or_diverged(
+        self, workspace: Path, head_branch: str
+    ) -> dict[str, Any] | None:
+        """Classify checked-out ``head_branch`` against ``origin/<head_branch>``.
+
+        Resets local to origin when local carries nothing origin lacks
+        (behind or equal — origin is authoritative, today's behavior).
+        Leaves the local tip untouched when it's strictly ahead
+        (committed-but-unpushed work — a superset of origin the
+        force-with-lease push below will publish along with the rebase).
+
+        BOTH sides carrying unique commits by raw SHA isn't proof of a
+        genuine divergence: a prior run of this same method can rebase
+        locally and then have its force-push fail after, leaving local and
+        origin both non-empty forever on retry even though origin's tip is
+        just local's old history under new SHAs. :meth:`_origin_rewritten_locally`
+        tells the two apart by patch-equivalence and this self-heals as
+        "ahead" instead. Only a real two-sided divergence — e.g. the task
+        bounced to a different agent's clone that pushed meanwhile — still
+        returns a ``{"status": "diverged", ...}`` dict; neither side is
+        silently discarded.
+        """
+        local_only = await self._rev_list_count(
+            workspace, f"origin/{head_branch}..HEAD"
+        )
+        origin_only = await self._rev_list_count(
+            workspace, f"HEAD..origin/{head_branch}"
+        )
+        if local_only > 0 and origin_only > 0:
+            if await self._origin_rewritten_locally(workspace, head_branch):
+                return None
+            return {
+                "status": "diverged",
+                "local_only": local_only,
+                "origin_only": origin_only,
+            }
+        if local_only == 0:
+            await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
+        return None
+
+    async def _origin_rewritten_locally(
+        self, workspace: Path, head_branch: str
+    ) -> bool:
+        """True when every origin-only commit has a patch-equivalent local one.
+
+        Rescues the self-inflicted wedge from a rebase whose force-push
+        failed afterwards: local already carries origin's commits under new
+        SHAs, so a raw SHA rev-list count sees both sides positive forever.
+        ``rev-list --cherry-pick --right-only`` drops any origin-only commit
+        whose patch (context-adjusted patch-id, same mechanism as
+        :meth:`unmerged_child_commits`'s ``git cherry``) matches one of
+        local's exclusive commits; whatever survives is truly exclusive to
+        origin, so a non-zero count still refuses as a real divergence.
+        """
+        result = await self._run_git(
+            workspace,
+            [
+                "rev-list",
+                "--count",
+                "--right-only",
+                "--cherry-pick",
+                f"HEAD...origin/{head_branch}",
+            ],
+        )
+        return int(result.stdout.strip() or "0") == 0
 
     async def _stash_if_dirty(self, workspace: Path, *, stash: bool) -> bool:
         """Clean-tree gate for :meth:`rebase_onto_base`.
@@ -5344,7 +5466,8 @@ class GitService(BaseService):
         rebase through the dev ``sync_branch`` verb instead of the CEO/PM-only
         ``/rebase`` HTTP route. Mirrors ``rebase_pr_for_task``'s workspace/token
         resolution and delegates to :meth:`rebase_onto_base`, returning the same
-        classification dict (``rebased`` / ``superseded`` / ``conflicts``).
+        classification dict (``rebased`` / ``superseded`` / ``conflicts`` /
+        ``diverged``).
 
         ``stash`` forwards to :meth:`rebase_onto_base` — auto-stash a dirty
         worktree instead of refusing DIRTY_WORKSPACE.
@@ -5781,9 +5904,24 @@ class GitService(BaseService):
         had an unresolvable head and returned an empty diff (QA saw no
         changes on a real PR). ``open_pr`` pushes the leaf branch, so
         ``origin/<branch>`` is the workspace-independent source of truth.
-        Fetch it, then prefer the local branch (dev's own clone) and fall
-        back to ``origin/<branch>``; last resort the bare name so the
-        diff command stays well-formed.
+        Fetch it, then prefer origin and fall back to the local branch;
+        last resort the bare name so the diff command stays well-formed.
+
+        Every caller here is a READER (QA/PM/documenter/PR-gate/panel
+        inspecting a branch they don't own), never the branch's own author
+        mid-write — so origin, not local, is the source of truth whenever
+        it carries anything the local ref lacks. ``origin_only`` counts
+        commits on origin the local ref doesn't have (via ``rev-list``,
+        mirroring ``_reset_head_or_diverged``'s write-path classification):
+        zero means local already contains everything origin has (ahead on
+        unpushed commits, or equal) and stays authoritative; non-zero means
+        origin has moved — whether by a plain fast-forward OR by a
+        force-push that rewrote history (a parked local ref left over from
+        an earlier inspection, or the routine rebase-sync every task branch
+        gets) — and origin wins either way. Unlike the write path's
+        ``_origin_rewritten_locally``, a read never needs to tell a genuine
+        divergence apart from a rewritten one: both resolve to the same
+        action (serve origin), so no patch-equivalence check is needed here.
         """
         await self._run_git(
             workspace, ["fetch", "origin", branch_name], check=False, token=token
@@ -5792,18 +5930,10 @@ class GitService(BaseService):
         local_exists = await self._ref_exists(workspace, branch_name)
         origin_exists = await self._ref_exists(workspace, origin_ref)
         if local_exists and origin_exists:
-            # An assembled branch advances on ORIGIN when child PRs merge on
-            # GitHub, while the inspecting clone's local ref stays parked — a
-            # diff off the stale local ref re-flags work that already landed
-            # (live 2026-07-02: two false pr_fails on the S6 cell PR). Prefer
-            # origin when the local ref is strictly behind it; a local ref
-            # that is ahead (unpushed) or diverged keeps priority.
-            behind = await self._run_git(
-                workspace,
-                ["merge-base", "--is-ancestor", branch_name, origin_ref],
-                check=False,
+            origin_only = await self._rev_list_count(
+                workspace, f"{branch_name}..{origin_ref}"
             )
-            return origin_ref if behind.returncode == 0 else branch_name
+            return origin_ref if origin_only > 0 else branch_name
         if local_exists:
             return branch_name
         if origin_exists:
@@ -6017,6 +6147,28 @@ class GitService(BaseService):
 
         ``preferred_parent`` threads to ``list_changed_files`` — the in-path
         PR-review gate's cross-team parent (see ``diff``'s docstring).
+
+        The changed-file LIST above comes from git objects (``list_changed_files``
+        fetches + diffs ``origin/<branch>``); the validator below reads CONTENT
+        off the physical worktree, which only ``_ensure_worktree_for_commit``
+        touches here (re-add if pruned, no refresh — no fetch, no classify).
+        These could disagree on a worktree that predates the branch's current
+        tip. For the FIRST claim of a review session, they don't:
+        ``ensure_worktree_self_heal`` (the spawn chokepoint, run once before
+        this agent's session started — including its re-add-from-a-surviving-
+        local-ref path) already classified the worktree against origin, and
+        the assembled PR under review can gain no further commits while it
+        sits in this task's own review state, so list and content are the
+        same origin tip by the time this runs.
+
+        Narrow accepted ceiling: a reviewer session that claims a SECOND task
+        mid-session (same container, no respawn) never gets another spawn-time
+        refresh — that only runs once, before the session started. A fresh
+        worktree this session creates for that claim has nothing to disagree
+        with (both list and content start at its own branch tip), but a
+        worktree this session INHERITS from an earlier, still-open claim of
+        that same task could be stale by whatever origin gained since. No
+        claim-time refresh exists to close this; it is accepted, not fixed.
         """
         try:
             branch = task.branch_name

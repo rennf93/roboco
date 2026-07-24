@@ -35,6 +35,7 @@ from roboco.services.task import (
     GatewayAgentView,
     TaskService,
     _ceo_reject_finding_texts,
+    _reconcile_ac_ids,
     get_task_service,
 )
 from sqlalchemy import select
@@ -530,6 +531,58 @@ async def test_unblock_notifies_once_not_twice_on_repeated_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unblock_clears_tripped_oscillation_marker() -> None:
+    """The legacy human/panel unblock route never goes through the gateway's
+    _oscillation_unblock_guard — reaching a tripped task here IS the human
+    intervention the breaker demands, so it must clear the marker rather
+    than leave it to refuse the task's next legitimate cycle."""
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=uuid4()
+    )
+    for _ in range(6):
+        markers.bump_oscillation_strikes(task, [0, 0, 0])
+    markers.mark_oscillation_tripped(task)
+    assert markers.is_oscillation_tripped(task) is True
+
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        out = await svc.unblock(task.id)
+
+    assert out is task
+    assert markers.is_oscillation_tripped(task) is False
+    assert markers.get_oscillation_strikes(task) == 0
+
+
+@pytest.mark.asyncio
+async def test_unblock_leaves_untripped_marker_alone() -> None:
+    """A normal (non-tripped) unblock must not reset an in-flight, still-live
+    strike count — only a tripped marker is cleared."""
+    task = _build_task(
+        status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=uuid4()
+    )
+    markers.bump_oscillation_strikes(task, [0, 0, 0])
+    assert markers.is_oscillation_tripped(task) is False
+
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_index_lifecycle_event_background", AsyncMock())
+    mock_ns = MagicMock()
+    mock_ns.send_unblock_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc.unblock(task.id)
+
+    assert markers.get_oscillation_strikes(task) == 1
+
+
+@pytest.mark.asyncio
 async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
     """Collision-sequencing notification fires only for freshly-added edges.
 
@@ -567,12 +620,15 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 @pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
-    agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE)
+    agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE, current_task_id=uuid4())
     result = MagicMock()
     result.scalar_one_or_none.return_value = agent
     svc = _service_with(result)
     await svc.mark_agent_idle(agent.id)
     assert agent.status == AgentStatus.IDLE
+    # Otherwise the agent keeps reporting its last task as "currently
+    # working" forever — nothing else ever clears this column.
+    assert agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +643,10 @@ async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
     result.scalar_one_or_none.return_value = task
     session = MagicMock(flush=AsyncMock())
     session.execute = AsyncMock(return_value=result)
+    # _qa_or_doc_claim now looks up the claiming agent via session.get to
+    # flip its ACTIVE marker — default to "no matching row" for a test that
+    # doesn't care about that side effect.
+    session.get = AsyncMock(return_value=None)
     svc = TaskService(session)
     qa_id = uuid4()
     out = await svc.qa_claim(qa_id, task.id)
@@ -617,6 +677,7 @@ async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
     result.scalar_one_or_none.return_value = task
     session = MagicMock(flush=AsyncMock())
     session.execute = AsyncMock(return_value=result)
+    session.get = AsyncMock(return_value=None)
     svc = TaskService(session)
     doc_id = uuid4()
     out = await svc.doc_claim(doc_id, task.id)
@@ -677,7 +738,10 @@ async def test_unblock_with_restore_returns_to_pre_block_state() -> None:
         blocker_resolver_type=BlockerResolverType.AGENT,
         blocker_raised_by=pre_assignee,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner via session.get
+    # to flip its ACTIVE marker — default to "no matching row".
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.unblock_with_restore(uuid4(), task.id, restore=True)
     assert out is task
@@ -721,13 +785,17 @@ async def test_unblock_no_branch_returns_to_pending() -> None:
     task = _build_task(
         status=TaskStatus.BLOCKED, branch_name=None, blocker_raised_by=raiser
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    session = MagicMock(flush=AsyncMock())
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_index_lifecycle_event_background", AsyncMock())
     out = await svc.unblock(task.id)
     assert out is task
     assert task.status == TaskStatus.PENDING
     assert task.assigned_to == raiser
+    # A PENDING restore is NOT a resume — the owner isn't marked active here;
+    # a fresh claim() is what actually resumes it, so no agent lookup runs.
+    session.get.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -747,7 +815,10 @@ async def test_admin_set_status_out_of_blocked_restores_pre_block_owner() -> Non
         pre_block_state="in_progress",
         pre_block_assignee=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner (dev) via
+    # session.get to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
     assert out is task
@@ -791,7 +862,10 @@ async def test_admin_set_status_into_review_queue_clears_active_claimant() -> No
         claimed_by=dev,
         active_claimant_id=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claimant now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
     assert out is task
@@ -943,7 +1017,10 @@ async def test_admin_set_status_blocked_to_review_state_clears_claim() -> None:
         pre_block_state="awaiting_pm_review",
         pre_block_assignee=pm,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claim now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_PM_REVIEW)
     assert out is task
@@ -970,7 +1047,10 @@ async def test_admin_set_status_blocked_to_needs_revision_clears_claim() -> None
         pre_block_state="awaiting_pm_review",
         pre_block_assignee=pm,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Clearing the stale claim now looks it up via session.get to release
+    # its ACTIVE marker too.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.NEEDS_REVISION)
     assert out is task
@@ -1085,7 +1165,10 @@ async def test_admin_set_status_pre_block_restore_syncs_active_claimant() -> Non
         pre_block_state="in_progress",
         pre_block_assignee=dev,
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # An IN_PROGRESS restore now looks up the restored owner (dev) via
+    # session.get to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
     assert out is task
@@ -1184,12 +1267,49 @@ async def test_create_generates_ac_ids_and_carries_parent_ac_refs() -> None:
     assert list(task.parent_ac_refs) == ["parent-ac-1", "parent-ac-2"]
 
 
+def test_reconcile_ac_ids_preserves_new_and_drops() -> None:
+    # Unchanged text keeps its id (position may shift); a reworded/new entry
+    # mints a fresh one; a dropped criterion's id disappears with it.
+    _N = 3
+    ids = _reconcile_ac_ids(
+        old_criteria=["a", "b", "c"],
+        old_ids=["id-a", "id-b", "id-c"],
+        new_criteria=["a", "c", "d"],  # b dropped, a/c kept (reordered), d new
+    )
+    assert ids[0] == "id-a"
+    assert ids[1] == "id-c"
+    assert ids[2] not in {"id-a", "id-b", "id-c"}
+    assert len(ids) == len(set(ids)) == _N
+
+
+def test_reconcile_ac_ids_mints_fresh_when_nothing_to_preserve() -> None:
+    _N = 2
+    ids = _reconcile_ac_ids(old_criteria=[], old_ids=[], new_criteria=["x", "y"])
+    assert len(ids) == len(set(ids)) == _N
+
+
+def test_reconcile_ac_ids_duplicate_text_matched_in_order() -> None:
+    ids = _reconcile_ac_ids(
+        old_criteria=["dup", "dup"],
+        old_ids=["id-1", "id-2"],
+        new_criteria=["dup", "dup", "dup"],
+    )
+    assert ids[:2] == ["id-1", "id-2"]
+    assert ids[2] not in {"id-1", "id-2"}
+
+
 def _svc_with_children(parent: object, child_rows: list[tuple]) -> TaskService:
     """TaskService whose get() returns `parent` and whose execute() yields the
-    (status, parent_ac_refs) child rows the coverage primitive selects."""
+    (status, parent_ac_refs) child rows the coverage primitive selects.
+
+    ``flush`` is a real AsyncMock (not the unconfigured default) so the
+    empty/mismatched-ids self-heal in ``_parent_ac_ref_sets`` can await it.
+    """
     rows = MagicMock()
     rows.all.return_value = child_rows
-    svc = TaskService(MagicMock(execute=AsyncMock(return_value=rows)))
+    svc = TaskService(
+        MagicMock(execute=AsyncMock(return_value=rows), flush=AsyncMock())
+    )
     _bind(svc, "get", AsyncMock(return_value=parent))
     return svc
 
@@ -1332,12 +1452,48 @@ async def test_parent_ac_coverage_maps_claimed_and_verified() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parent_ac_coverage_empty_without_ac_ids() -> None:
-    # No stable ids on the parent (e.g. created before the linkage) -> nothing to
-    # report; the digest stays absent rather than emitting bogus rows.
+async def test_parent_ac_coverage_self_heals_empty_ac_ids() -> None:
+    # fe-pm delegate-loop incident: a coordination root had real
+    # acceptance_criteria but zero acceptance_criteria_ids (an update rewrote
+    # criteria without reconciling ids) -> the digest used to stay [] forever,
+    # silently disabling the parent-coverage gate. It now self-heals by
+    # stamping fresh ids in place so the digest reports for real.
     parent = _build_task(acceptance_criteria=["a"], acceptance_criteria_ids=[])
     svc = _svc_with_children(parent, [(TaskStatus.IN_PROGRESS, ["id-a"])])
-    assert await svc.parent_ac_coverage(parent.id) == []
+    cov = await svc.parent_ac_coverage(parent.id)
+    assert len(cov) == 1
+    assert cov[0]["text"] == "a"
+    assert cov[0]["id"]  # freshly stamped, non-empty
+    assert list(parent.acceptance_criteria_ids) == [cov[0]["id"]]
+
+
+@pytest.mark.asyncio
+async def test_uncovered_parent_acs_self_heals_and_still_matches_text_refs() -> None:
+    # Same legacy shape as above, but proves the self-heal doesn't regress the
+    # id-or-text matching: a child that declared coverage by TEXT (the only
+    # option while the parent had no ids) still resolves through the
+    # freshly-stamped ids, and the gate is live again instead of permanently
+    # inert.
+    _N = 2
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"], acceptance_criteria_ids=[]
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["crit a"])])
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit b"]
+    assert len(parent.acceptance_criteria_ids) == _N
+    assert len(set(parent.acceptance_criteria_ids)) == _N
+
+
+@pytest.mark.asyncio
+async def test_parent_ac_coverage_no_self_heal_when_ids_already_1to1() -> None:
+    # The common case (ids already match criteria 1:1) must not re-stamp —
+    # the self-heal only fires on an actual length mismatch.
+    parent = _build_task(
+        acceptance_criteria=["a", "b"], acceptance_criteria_ids=["id-a", "id-b"]
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["id-a", "id-b"])])
+    await svc.parent_ac_coverage(parent.id)
+    assert list(parent.acceptance_criteria_ids) == ["id-a", "id-b"]
 
 
 @pytest.mark.asyncio
@@ -1566,7 +1722,10 @@ async def test_unblock_with_branch_resumes_in_progress() -> None:
         branch_name="feature/backend/abc12345",
         blocker_raised_by=uuid4(),
     )
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    # Resuming IN_PROGRESS now looks up the restored owner via session.get
+    # to flip its ACTIVE marker.
+    session = MagicMock(flush=AsyncMock(), get=AsyncMock(return_value=None))
+    svc = TaskService(session)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_index_lifecycle_event_background", AsyncMock())
     out = await svc.unblock(task.id)
@@ -1810,6 +1969,56 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finalize_claim_sets_agent_active_then_rolls_back_on_failure() -> None:
+    """_finalize_claim must flip agent.status/current_task_id to ACTIVE/this
+    task BEFORE the branch step runs (previously nothing ever wrote these
+    fields at all — the fleet-status bug), and roll them back to their
+    pre-claim values on a branch-creation failure, same as the task fields.
+    """
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+
+    task = _build_task(
+        status=TaskStatus.PENDING,
+        branch_name=None,
+        project_id=uuid4(),
+        product_id=None,
+        batch_id=None,
+        parent_task_id=None,
+        cell_projects=[],
+        pr_created=False,
+        pr_number=None,
+    )
+    agent = MagicMock(
+        id=uuid4(),
+        role=AgentRole.DEVELOPER,
+        status=AgentStatus.IDLE,
+        current_task_id=None,
+    )
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    captured: dict[str, object] = {}
+
+    async def _boom(_task: object, _agent_id: object) -> str:
+        captured["status"] = agent.status
+        captured["current_task_id"] = agent.current_task_id
+        raise RuntimeError("branch boom")
+
+    _bind(svc, "_ensure_branch_for_task", _boom)
+
+    with pytest.raises(RuntimeError, match="branch boom"):
+        await svc._finalize_claim(task, agent, agent.id)
+
+    # Set to ACTIVE/this-task before the branch step ran...
+    assert captured["status"] == AgentStatus.ACTIVE
+    assert captured["current_task_id"] == task.id
+    # ...and rolled back to the pre-claim values once branch creation failed.
+    assert agent.status == AgentStatus.IDLE
+    assert agent.current_task_id is None
+
+
+@pytest.mark.asyncio
 async def test_emit_status_transition_audit_writes_in_session_atomically() -> None:
     """The status-transition audit row is written into the CALLER's session (same
     transaction as the transition), not fire-and-forget on a separate connection,
@@ -2048,6 +2257,101 @@ async def test_admin_set_status_force_no_revision_bump(
         "admin force terminal->needs_revision bumped revision_count — "
         "admin recovery must not be counted as rework in metrics"
     )
+
+
+# ---------------------------------------------------------------------------
+# Oscillation breaker — post-trip topology. The trip fires AFTER the restore
+# already wiped pre_block_assignee/pre_block_state (a fresh re-block via
+# admin_set_status stamps no new snapshot), so a CEO override out of BLOCKED
+# must clear the marker even with no snapshot to drive a restore — otherwise
+# it latently refuses this task's next legitimate gateway unblock forever.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ceo_override_clears_oscillation_marker_with_wiped_snapshot(
+    db_session: AsyncSession,
+) -> None:
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.MAIN_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    task = TaskTable(
+        id=tid,
+        title="t",
+        description="d",
+        acceptance_criteria=["done"],
+        status=TaskStatus.BLOCKED,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.LOW,
+        team=Team.BACKEND,
+        confirmed_by_human=True,
+        project_id=project.id,
+        created_by=agent.id,
+        assigned_to=agent.id,
+        branch_name="feature/x",
+        # The exact post-trip topology: unblock_with_restore already wiped
+        # the snapshot before the trip fired, and the force-block into
+        # BLOCKED (admin_set_status, from a non-BLOCKED from_status) stamps
+        # no new one of its own.
+        pre_block_state=None,
+        pre_block_assignee=None,
+        blocker_resolver_type=BlockerResolverType.HUMAN,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    # A real trip: strikes accrued past threshold with an unchanging
+    # fingerprint, then force-blocked.
+    for _ in range(6):
+        markers.bump_oscillation_strikes(task, [0, 0, 0])
+    markers.mark_oscillation_tripped(task)
+    assert markers.is_oscillation_tripped(task) is True
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    out = await svc.admin_set_status(
+        tid, TaskStatus.IN_PROGRESS, actor_id=cast("UUID", agent.id), actor_role="ceo"
+    )
+    assert out is not None
+    await db_session.flush()
+
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
+    assert row.status == TaskStatus.IN_PROGRESS
+    assert markers.is_oscillation_tripped(row) is False
+    assert markers.get_oscillation_strikes(row) == 0, (
+        "the marker must be gone entirely, not just its tripped flag, so the "
+        "next cycle's first bump starts a fresh strike count"
+    )
+    # A later legitimate block/unblock cycle counts from fresh, not from the
+    # old strike count.
+    fresh_strikes = markers.bump_oscillation_strikes(row, [1, 0, 0])
+    assert fresh_strikes == 1
 
 
 # ---------------------------------------------------------------------------

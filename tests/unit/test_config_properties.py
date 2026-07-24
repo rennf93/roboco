@@ -200,3 +200,24 @@ def test_resolve_uvicorn_loop_factory_uvloop_returns_new_event_loop() -> None:
         assert isinstance(loop, uvloop.Loop)
     finally:
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# display_timezone — the TG cockpit's day-bucketing timezone (Issue 2)
+# ---------------------------------------------------------------------------
+
+
+def test_display_timezone_defaults_to_utc() -> None:
+    """Default is a no-op for every deployment that doesn't set it."""
+    assert Settings().display_timezone == "UTC"
+
+
+def test_display_timezone_accepts_valid_iana_name() -> None:
+    assert Settings(display_timezone="Europe/Berlin").display_timezone == (
+        "Europe/Berlin"
+    )
+
+
+def test_display_timezone_rejects_unknown_name() -> None:
+    with pytest.raises(ValidationError):
+        Settings(display_timezone="Not/AZone")

@@ -142,6 +142,37 @@ class Envelope:
         )
 
     @classmethod
+    def sequence_held(
+        cls,
+        *,
+        blocked_by: str,
+        task_id: str | None = None,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """A same-parent sibling with a lower effective sequence is still
+        non-terminal (CLAUDE.md "sequence is the bar"). Distinct from
+        `invalid_state` so an agent (and the audit log) can tell a real,
+        named hold from a genuine concurrent-transition race — the bare
+        `None` `TaskService.claim()` used to return for this case surfaced
+        as a cryptic "concurrent transition" `invalid_state` (the
+        2026-07-24 misdiagnosis: 6 identical rejections on a stably-held
+        needs_revision reclaim nothing concurrent ever touched).
+        """
+        return cls(
+            error="sequence_held",
+            task_id=task_id,
+            message=(
+                f"blocked by {blocked_by} — a same-parent sibling with a "
+                "lower sequence is still in progress."
+            ),
+            remediate=(
+                "wait for the blocking sibling to reach completed/cancelled, "
+                "or call give_me_work() for other available work meanwhile"
+            ),
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
     def not_authorized(
         cls,
         *,

@@ -44,7 +44,7 @@ describe("TabFindings", () => {
     ).toBeInTheDocument();
   });
 
-  it("groups findings by round and renders severity/status", () => {
+  it("groups findings by round, expands the newest, collapses older rounds", async () => {
     const response: TaskFindingsResponse = {
       findings: [
         {
@@ -99,8 +99,20 @@ describe("TabFindings", () => {
 
     expect(screen.getByText("Round 2")).toBeInTheDocument();
     expect(screen.getByText("Round 1")).toBeInTheDocument();
+    // The newest round (2) is expanded by default — its finding is visible.
+    const round2Button = screen.getByText("Round 2").closest("button");
+    const round1Button = screen.getByText("Round 1").closest("button");
+    expect(round2Button).toHaveAttribute("aria-expanded", "true");
+    expect(round1Button).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("blocker")).toBeInTheDocument();
-    expect(screen.getByText("minor")).toBeInTheDocument();
+    // Round 1's finding is collapsed, so its content isn't rendered yet.
+    expect(screen.queryByText("minor")).toBeNull();
+    expect(screen.queryByText("abc1234")).toBeNull();
+
+    // Expanding round 1 reveals its finding.
+    const user = userEvent.setup();
+    await user.click(round1Button!);
+    expect(await screen.findByText("minor")).toBeInTheDocument();
     expect(screen.getByText("abc1234")).toBeInTheDocument();
     expect(screen.queryByText(/more not shown/)).toBeNull();
   });
@@ -178,5 +190,76 @@ describe("TabFindings", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Must be fixed before this task can pass review.",
     );
+  });
+
+  it("skips the CodeSnippet fetch for a non-path file but still renders it as text", () => {
+    const response: TaskFindingsResponse = {
+      findings: [
+        {
+          id: "eeeeeeee-0000-0000-0000-000000000000",
+          task_id: "t1",
+          origin: "pm",
+          round: 1,
+          author_slug: "be-pm",
+          file: "PR #676 description",
+          line: null,
+          severity: "major",
+          criterion: null,
+          expected: "x",
+          actual: "y",
+          fix: null,
+          evidence: null,
+          status: "open",
+          addressed_by_commit: null,
+          resolution_note: null,
+          created_at: "2026-07-11T00:00:00Z",
+          updated_at: null,
+        },
+      ],
+      summary: [],
+      total: 1,
+      truncated: false,
+    };
+    useTaskFindings.mockReturnValue({ data: response, isLoading: false });
+    render(<TabFindings task={buildTask()} />);
+
+    // The prose file still renders as plain metadata text...
+    expect(screen.getByText("PR #676 description")).toBeInTheDocument();
+    // ...but never drives the doomed CodeSnippet fetch.
+    expect(screen.queryByTestId("code-snippet")).toBeNull();
+  });
+
+  it("still renders CodeSnippet for a real path-shaped file", () => {
+    const response: TaskFindingsResponse = {
+      findings: [
+        {
+          id: "ffffffff-0000-0000-0000-000000000000",
+          task_id: "t1",
+          origin: "qa",
+          round: 1,
+          author_slug: "be-qa",
+          file: "roboco/services/task.py",
+          line: 12,
+          severity: "major",
+          criterion: null,
+          expected: "x",
+          actual: "y",
+          fix: null,
+          evidence: null,
+          status: "open",
+          addressed_by_commit: null,
+          resolution_note: null,
+          created_at: "2026-07-11T00:00:00Z",
+          updated_at: null,
+        },
+      ],
+      summary: [],
+      total: 1,
+      truncated: false,
+    };
+    useTaskFindings.mockReturnValue({ data: response, isLoading: false });
+    render(<TabFindings task={buildTask()} />);
+
+    expect(screen.getByTestId("code-snippet")).toBeInTheDocument();
   });
 });

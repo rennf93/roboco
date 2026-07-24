@@ -9,6 +9,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTip } from "@/components/ui/help-tip";
 import { ListChecks } from "lucide-react";
 import { CodeSnippet } from "@/components/git/code-snippet";
+import { CollapsibleSection } from "./collapsible-section";
+
+// Mirrors the server-side shape gate (Finding._file_repo_relative in
+// roboco/foundation/policy/content/models.py) — keep the character classes
+// in sync, knowing they deliberately diverge on non-ASCII: Python's \w is
+// unicode, JS's is ASCII, so a unicode path the server accepted renders
+// snippetless here (fail-open — the plain-text metadata still shows). A
+// prose `file` (e.g. a PR reference) predates that gate on older ledger
+// rows and must not drive a doomed CodeSnippet fetch.
+const FILE_SHAPE_RE = /^[\w.\-/()[\]+@]+$/;
+function looksLikePath(file: string): boolean {
+  return FILE_SHAPE_RE.test(file);
+}
 
 interface TabFindingsProps {
   task: Task;
@@ -43,14 +56,16 @@ const ORIGIN_LABEL: Record<string, string> = {
 // findings-ledger domain (roboco/foundation/policy/conventions/findings.py).
 const SEVERITY_DESCRIPTIONS: Record<string, string> = {
   blocker: "Must be fixed before this task can pass review.",
-  major: "A significant defect; should be fixed but isn't review-blocking alone.",
+  major:
+    "A significant defect; should be fixed but isn't review-blocking alone.",
   minor: "A smaller defect worth fixing.",
   nit: "A nitpick — cosmetic or stylistic; fix if convenient.",
 };
 
 const STATUS_DESCRIPTIONS: Record<string, string> = {
   open: "Not yet addressed by the assignee.",
-  addressed: "The assignee says this is fixed — awaiting reviewer verification.",
+  addressed:
+    "The assignee says this is fixed — awaiting reviewer verification.",
   verified: "A reviewer confirmed the fix.",
   waived: "Explicitly waived — no fix required.",
 };
@@ -67,7 +82,9 @@ function FindingCard({
       <CardContent className="pt-4 space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <HelpTip label={SEVERITY_DESCRIPTIONS[finding.severity]}>
-            <Badge className={SEVERITY_CLASS[finding.severity] ?? SEVERITY_CLASS.nit}>
+            <Badge
+              className={SEVERITY_CLASS[finding.severity] ?? SEVERITY_CLASS.nit}
+            >
               {finding.severity}
             </Badge>
           </HelpTip>
@@ -95,7 +112,7 @@ function FindingCard({
             </HelpTip>
           )}
         </div>
-        {finding.file && (
+        {finding.file && looksLikePath(finding.file) && (
           <CodeSnippet
             branch={branch}
             file={finding.file}
@@ -158,8 +175,7 @@ export function TabFindings({ task }: TabFindingsProps) {
         <ListChecks className="mx-auto mb-4 h-12 w-12 opacity-50" />
         <p>No revision findings recorded yet.</p>
         <p className="mt-2 text-sm">
-          Findings appear here after the first QA / PR-review / PM / CEO
-          bounce.
+          Findings appear here after the first QA / PR-review / PM / CEO bounce.
         </p>
       </div>
     );
@@ -190,27 +206,43 @@ export function TabFindings({ task }: TabFindingsProps) {
           ))}
         </div>
       )}
-      {rounds.map((group) => (
-        <div key={group.round} className="space-y-3">
-          <div className="flex items-center gap-2">
-            <HelpTip label="Each bounce back to the assignee starts a new round">
-              <h3 className="text-sm font-semibold w-fit">
-                Round {group.round}
-              </h3>
-            </HelpTip>
-            <HelpTip label="Which reviewer stage raised this round's findings">
-              <Badge variant="outline">
-                {ORIGIN_LABEL[group.origin] ?? group.origin}
-              </Badge>
-            </HelpTip>
-          </div>
-          <div className="space-y-3">
-            {group.items.map((f) => (
-              <FindingCard key={f.id} finding={f} branch={task.branch_name} />
-            ))}
-          </div>
-        </div>
-      ))}
+      {rounds.map((group, idx) => {
+        const openCount = group.items.filter((f) => f.status === "open").length;
+        return (
+          <CollapsibleSection
+            key={group.round}
+            // Rounds arrive newest-first (see the grouping loop above) — only
+            // the newest is worth seeing without a click; older rounds are
+            // usually already resolved history.
+            defaultOpen={idx === 0}
+            title={
+              <div className="flex flex-wrap items-center gap-2">
+                <HelpTip label="Each bounce back to the assignee starts a new round">
+                  <span>Round {group.round}</span>
+                </HelpTip>
+                <HelpTip label="Which reviewer stage raised this round's findings">
+                  <Badge variant="outline">
+                    {ORIGIN_LABEL[group.origin] ?? group.origin}
+                  </Badge>
+                </HelpTip>
+                <HelpTip label="Total findings this round, and how many are still unaddressed">
+                  <Badge variant="secondary">
+                    {group.items.length}{" "}
+                    {group.items.length === 1 ? "finding" : "findings"}
+                    {openCount > 0 ? ` · ${openCount} open` : ""}
+                  </Badge>
+                </HelpTip>
+              </div>
+            }
+          >
+            <div className="space-y-3">
+              {group.items.map((f) => (
+                <FindingCard key={f.id} finding={f} branch={task.branch_name} />
+              ))}
+            </div>
+          </CollapsibleSection>
+        );
+      })}
       {data?.truncated && (
         <p className="text-xs text-muted-foreground">
           … {data.total - findings.length} more not shown ({data.total} total)

@@ -460,3 +460,56 @@ def by_osmosis_tail_dev_tasks(
         )
         tails.append(getattr(tail, "id", tail))
     return tails
+
+
+# ---------------------------------------------------------------------------
+# Claim-gate sequence-blocker resolution — the pure decision behind
+# TaskService._claim_blocked_by_sequence's non-batch branch.
+# ---------------------------------------------------------------------------
+
+
+def sequence_blocker_id(
+    task_dependency_ids: list[object],
+    candidate_ids: list[object],
+    sibling_dependency_ids: dict[object, list[object]],
+) -> object | None:
+    """Pick the same-parent sibling (if any) that really blocks a claim.
+
+    ``candidate_ids`` are same-parent siblings with a strictly lower
+    effective sequence that are still non-terminal (the caller has already
+    applied both filters) — this only decides WHICH of them, if any,
+    actually blocks. ``sibling_dependency_ids`` maps every same-parent
+    sibling's id to its own ``dependency_ids`` (candidates and non-candidates
+    alike — a non-candidate can still be an intermediate hop in a chain).
+
+    ``dependency_ids`` is the stable, authoritative ordering; ``sequence`` is
+    a derived redundancy that drifts once a completed dependency's edge is
+    pruned (``_unblock_dependents``) or a later sibling is stamped from a
+    different partial view of the graph (``stamp_wave_sequence`` runs
+    per-task at delegate time, not as one coordinated plan) — the live
+    2026-07-24 incident: an unrelated, never-connected sibling in a
+    different stream phantom-held a claim purely because it shared a lower
+    raw sequence number. So a candidate only blocks when it is a real
+    (transitive) dependency-graph predecessor of this task — UNLESS the task
+    carries NO dependency edge onto ANY same-parent sibling at all, in which
+    case there is no graph to consult and the original raw bar applies
+    unchanged (a PM delegating siblings 0..N with zero wired edges between
+    them still holds strict order — the #452 incident this guard exists
+    for). Batch root-subtasks (MegaTask) never reach this — see
+    ``_claim_blocked_by_sequence``.
+    """
+    dep_ids: set[object] = set(task_dependency_ids)
+    if not (dep_ids & sibling_dependency_ids.keys()):
+        return candidate_ids[0] if candidate_ids else None
+    candidates: set[object] = set(candidate_ids)
+    seen: set[object] = set()
+    frontier: list[object] = list(dep_ids)
+    while frontier:
+        node = frontier.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node in candidates:
+            return node
+        frontier.extend(sibling_dependency_ids.get(node, []))
+    return None

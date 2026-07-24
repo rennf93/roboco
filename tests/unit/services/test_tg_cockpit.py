@@ -9,12 +9,13 @@ assumed.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
 from roboco.config import settings
-from roboco.db.tables import AgentTable, TaskTable
+from roboco.db.tables import AgentSpawnSessionTable, AgentTable, TaskTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -42,6 +43,28 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 
 CI_WATCH_SOURCE = "ci_watch"
+
+_COST_TOL = 0.005
+_TOKENS_FLOOR = 1
+
+
+def _spawn_session(
+    *, started_at: datetime, model: str, cost: float, tokens_input: int = 1000
+) -> AgentSpawnSessionTable:
+    return AgentSpawnSessionTable(
+        id=uuid4(),
+        agent_slug=f"be-dev-{uuid4().hex[:6]}",
+        team="backend",
+        role="developer",
+        model=model,
+        task_id=None,
+        started_at=started_at,
+        ended_at=started_at + timedelta(minutes=5),
+        tokens_input=tokens_input,
+        tokens_output=0,
+        estimated_cost_usd=cost,
+    )
+
 
 # 1 awaiting + 1 blocked + 4 held drafts (release/x/video/roadmap-item).
 EXPECTED_NEEDS_YOU_TOTAL = 6
@@ -195,3 +218,110 @@ async def test_today_composes_needs_you_fleet_and_ship(
 
     assert brief["ship"]["open_release_proposal"] is True
     assert brief["ship"]["ci_fix_tasks"] == baseline["ship"]["ci_fix_tasks"] + 1
+
+
+# ---------------------------------------------------------------------------
+# Display-timezone bucketing (Issue 2) — "today" is display_timezone-aware,
+# not always the server's UTC day. `_session_metrics_by_day` is called
+# directly with an explicit historical `days` window so the test is fully
+# deterministic (disconnected from the real "now").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_metrics_by_day_buckets_by_display_timezone(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """23:30 UTC on the 15th is already 00:30 on the 16th in Europe/Berlin
+    (winter, CET = UTC+1) — the exact 'evening activity lands on the wrong
+    display day' bug this fix targets."""
+    started = datetime(2026, 1, 15, 23, 30, tzinfo=UTC)
+    session_row = _spawn_session(started_at=started, model="claude-sonnet-5", cost=1.23)
+    db_session.add(session_row)
+    await db_session.flush()
+
+    svc = get_tg_cockpit_service(db_session)
+
+    monkeypatch.setattr(settings, "display_timezone", "UTC")
+    cost_utc, tokens_utc, _ = await svc._session_metrics_by_day([date(2026, 1, 15)])
+    assert cost_utc.get(date(2026, 1, 15), 0.0) >= _COST_TOL
+    assert tokens_utc.get(date(2026, 1, 15), 0) >= _TOKENS_FLOOR
+
+    monkeypatch.setattr(settings, "display_timezone", "Europe/Berlin")
+    cost_berlin, tokens_berlin, _ = await svc._session_metrics_by_day(
+        [date(2026, 1, 16)]
+    )
+    assert cost_berlin.get(date(2026, 1, 16), 0.0) >= _COST_TOL
+    assert tokens_berlin.get(date(2026, 1, 16), 0) >= _TOKENS_FLOOR
+    # And the SAME row must NOT double-count into the UTC calendar day under
+    # the Berlin bucketing — the 15th should now come up empty for this row.
+    cost_berlin_15, _, _ = await svc._session_metrics_by_day([date(2026, 1, 15)])
+    assert cost_berlin_15.get(date(2026, 1, 15), 0.0) < _COST_TOL
+
+
+@pytest.mark.asyncio
+async def test_window_dates_shifts_with_display_timezone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_window_dates` (real 'now') must reflect the configured display
+    timezone, not always UTC."""
+    svc = get_tg_cockpit_service(cast("AsyncSession", None))
+    monkeypatch.setattr(settings, "display_timezone", "UTC")
+    utc_dates = svc._window_dates()
+    monkeypatch.setattr(settings, "display_timezone", "Pacific/Kiritimati")
+    # UTC+14 — the furthest-ahead real timezone; "today" there is never
+    # earlier, and is later whenever UTC hasn't crossed its own midnight yet.
+    kiritimati_dates = svc._window_dates()
+    assert kiritimati_dates[-1] >= utc_dates[-1]
+
+
+# ---------------------------------------------------------------------------
+# Ollama Cloud honesty-labeling (Issue 1) — an ungrounded ':cloud' model's $0
+# is flagged subscription_billed, never rendered as a bare misleading "$0".
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_today_spend_flags_ungrounded_ollama_cloud_as_subscription_billed(
+    db_session: AsyncSession,
+) -> None:
+    now = datetime.now(UTC)
+    db_session.add(
+        _spawn_session(started_at=now, model="some-future-model:cloud", cost=0.0)
+    )
+    await db_session.flush()
+
+    summary = await get_tg_cockpit_service(db_session).today_spend()
+
+    assert summary["cost_today_usd"] == pytest.approx(0.0)
+    assert summary["subscription_billed"] is True
+
+
+@pytest.mark.asyncio
+async def test_today_spend_not_subscription_billed_when_priced(
+    db_session: AsyncSession,
+) -> None:
+    """A real per-token cost (even from a priced Ollama Cloud model like
+    GLM-5.2) is never mislabeled as an untracked subscription figure."""
+    now = datetime.now(UTC)
+    db_session.add(_spawn_session(started_at=now, model="glm-5.2:cloud", cost=2.5))
+    await db_session.flush()
+
+    summary = await get_tg_cockpit_service(db_session).today_spend()
+
+    assert summary["subscription_billed"] is False
+
+
+@pytest.mark.asyncio
+async def test_today_spend_not_subscription_billed_for_local_ollama(
+    db_session: AsyncSession,
+) -> None:
+    """A genuinely-free self-hosted model (no ':cloud' tag) at $0 is just
+    free, not an untracked subscription."""
+    now = datetime.now(UTC)
+    db_session.add(_spawn_session(started_at=now, model="ollama/llama3", cost=0.0))
+    await db_session.flush()
+
+    summary = await get_tg_cockpit_service(db_session).today_spend()
+
+    assert summary["subscription_billed"] is False

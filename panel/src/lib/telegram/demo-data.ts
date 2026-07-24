@@ -180,6 +180,7 @@ export const DEMO_TODAY: TodayBrief = {
   spend: {
     tokens_today: 2_400_000,
     cost_today_usd: 18.72,
+    subscription_billed: false,
     series: [12.4, 9.1, 15.8, 11.2, 21.6, 14.9, 18.72],
     delta_pct: 25.6,
   },

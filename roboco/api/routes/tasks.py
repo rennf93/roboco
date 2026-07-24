@@ -1629,11 +1629,16 @@ async def pause_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only assigned agent can pause their task
-    if task.assigned_to != agent.agent_id:
+    # Only the assigned agent or the CEO can pause a task. The lifecycle
+    # spec's in_progress->paused transition carries no role restriction of
+    # its own (enforced upstream by the gateway's flow verbs, which never
+    # expose pause to agents at all) — this route is the sole gate, and the
+    # CEO carve-out here is deliberately narrower than unblock/block's
+    # (assignee-or-{CELL_PM, MAIN_PM, CEO}): pause has no PM-role carve-out.
+    if task.assigned_to != agent.agent_id and agent.role != AgentRole.CEO:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned agent can pause this task",
+            detail="Only the assigned agent or the CEO can pause this task",
         )
 
     task = await service.pause(task_id, agent.role)
@@ -1661,11 +1666,13 @@ async def resume_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Only assigned agent can resume their task
-    if task.assigned_to != agent.agent_id:
+    # Only the assigned agent or the CEO can resume a task — same carve-out
+    # as pause above, so a CEO who paused a task through the front door can
+    # also resume it through the front door.
+    if task.assigned_to != agent.agent_id and agent.role != AgentRole.CEO:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the assigned agent can resume this task",
+            detail="Only the assigned agent or the CEO can resume this task",
         )
 
     task = await service.resume(task_id, agent.role)

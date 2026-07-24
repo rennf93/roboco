@@ -64,7 +64,14 @@ async def test_rebase_rebased_force_pushes_when_unique_commits() -> None:
             pushed.append(args)
             return _result()
         if args[:2] == ["rev-list", "--count"]:
-            return _result(stdout="3\n")
+            # Only the post-rebase unique-vs-base count is non-zero; the
+            # pre-rebase local-vs-origin(HEAD) classification must read as
+            # "nothing unique on either side" or this would misclassify as
+            # diverged before the rebase ever runs.
+            range_spec = next(iter(args[2:]), "")
+            if range_spec == f"origin/{_BASE}..HEAD":
+                return _result(stdout="3\n")
+            return _result(stdout="0\n")
         return _result()
 
     with patch.object(svc, "_run_git", new=fake_run):

@@ -515,6 +515,40 @@ async def test_update_returns_none_for_missing(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_acceptance_criteria_restamps_ids_1to1(
+    task_setup: dict,
+) -> None:
+    # fe-pm delegate-loop root cause: TaskService.update() rewrote
+    # acceptance_criteria without touching acceptance_criteria_ids, leaving a
+    # stale/mismatched id list. A criterion whose TEXT is unchanged must keep
+    # its id (children/findings reference it by id or exact text); a new one
+    # mints a fresh id; a dropped one drops its id.
+    _N = 3
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, acceptance_criteria=["a", "b", "c"]))
+    old_ids = list(task.acceptance_criteria_ids)
+    updated = await svc.update(task.id, acceptance_criteria=["a", "c", "d"])
+    assert updated is not None
+    assert len(updated.acceptance_criteria_ids) == _N
+    assert updated.acceptance_criteria_ids[0] == old_ids[0]  # "a" unchanged
+    assert updated.acceptance_criteria_ids[1] == old_ids[2]  # "c" unchanged
+    assert updated.acceptance_criteria_ids[2] not in old_ids  # "d" is new
+    assert len(set(updated.acceptance_criteria_ids)) == _N
+
+
+@pytest.mark.asyncio
+async def test_update_without_acceptance_criteria_leaves_ids_untouched(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, acceptance_criteria=["a", "b"]))
+    old_ids = list(task.acceptance_criteria_ids)
+    updated = await svc.update(task.id, title="renamed")
+    assert updated is not None
+    assert list(updated.acceptance_criteria_ids) == old_ids
+
+
+@pytest.mark.asyncio
 async def test_add_progress(task_setup: dict) -> None:
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
@@ -989,6 +1023,12 @@ async def test_unblock_restores_to_in_progress(
     # Owner restored into both fields so the dev dispatcher respawns it.
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
+    # A real resume with no fresh claim() call — unblock must flip the
+    # owner's fleet marker itself (mirrors _finalize_claim/_qa_or_doc_claim).
+    owner_row = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert owner_row is not None
+    assert owner_row.status == AgentStatus.ACTIVE
+    assert owner_row.current_task_id == task.id
 
 
 @pytest.mark.asyncio
@@ -1019,6 +1059,67 @@ async def test_unblock_keeps_owner_for_give_me_work_claim(
     assert unblocked.status == TaskStatus.IN_PROGRESS
     assert unblocked.assigned_to == task_setup["agent_id"]
     assert unblocked.claimed_by == task_setup["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_into_review_queue_releases_agent_marker(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A non-blocked admin override into a review/queue state clears the
+    stale claimant's active_claimant_id (M19) — it must release that
+    claimant's fleet marker too, or a dead escalation claim keeps reporting
+    an agent as active forever."""
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = dev_id
+    task.claimed_by = dev_id
+    task.active_claimant_id = dev_id
+    await db_session.flush()
+    dev_agent = await db_session.get(AgentTable, dev_id)
+    assert dev_agent is not None
+    dev_agent.status = AgentStatus.ACTIVE
+    dev_agent.current_task_id = task.id
+    await db_session.flush()
+
+    out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
+    assert out is not None
+    assert out.active_claimant_id is None
+
+    dev_agent = await db_session.get(AgentTable, dev_id)
+    assert dev_agent is not None
+    assert dev_agent.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_divert_owned_task_to_pool_idles_prior_owner(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """_divert_owned_task_to_pool clears ownership entirely — the refused
+    owner isn't engaged with this task at all anymore, so its fleet marker
+    must be released (mirrors _force_unclaim_to_pending's reaper release)."""
+    svc = task_setup["svc"]
+    owner_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.assigned_to = owner_id
+    task.claimed_by = owner_id
+    await db_session.flush()
+    owner_agent = await db_session.get(AgentTable, owner_id)
+    assert owner_agent is not None
+    owner_agent.status = AgentStatus.ACTIVE
+    owner_agent.current_task_id = task.id
+    await db_session.flush()
+
+    await svc._divert_owned_task_to_pool(task, note="test diversion")
+
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to is None
+    owner_agent = await db_session.get(AgentTable, owner_id)
+    assert owner_agent is not None
+    assert owner_agent.status == AgentStatus.IDLE
+    assert owner_agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1068,13 +1169,21 @@ async def test_pass_qa_clears_active_claimant_for_doc_claim(
     task.status = TaskStatus.AWAITING_QA
     task.pr_number = 42
     task.pr_url = "https://github.com/x/y/pull/42"
-    task.assigned_to = qa_id
-    task.claimed_by = qa_id
-    task.active_claimant_id = qa_id
     await db_session.flush()
+    # qa_claim (via _qa_or_doc_claim) flips the QA agent's fleet marker —
+    # verify it, then verify pass_qa releases it symmetrically.
+    qa_claimed = await svc.qa_claim(qa_id, task.id)
+    assert qa_claimed is not None
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.status == AgentStatus.ACTIVE
+    assert qa_agent.current_task_id == task.id
     passed = await svc.pass_qa(task.id, notes="LGTM", agent_role="qa")
     assert passed is not None
     assert passed.active_claimant_id is None
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.current_task_id is None
     doc = AgentTable(
         id=uuid4(),
         name="Doc",
@@ -1093,6 +1202,10 @@ async def test_pass_qa_clears_active_claimant_for_doc_claim(
     claimed = await svc.doc_claim(doc.id, task.id)
     assert claimed is not None
     assert to_uuid(claimed.active_claimant_id) == doc.id
+    doc_agent = await db_session.get(AgentTable, doc.id)
+    assert doc_agent is not None
+    assert doc_agent.status == AgentStatus.ACTIVE
+    assert doc_agent.current_task_id == task.id
 
 
 @pytest.mark.asyncio
@@ -1106,13 +1219,15 @@ async def test_fail_qa_clears_active_claimant(
     qa_id = task_setup["agent_id"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_QA
-    task.assigned_to = qa_id
-    task.claimed_by = qa_id
-    task.active_claimant_id = qa_id
     await db_session.flush()
+    assert await svc.qa_claim(qa_id, task.id) is not None
     failed = await svc.fail_qa(task.id, notes="please fix X")
     assert failed is not None
     assert failed.active_claimant_id is None
+    # fail_qa releases the QA agent's fleet marker too.
+    qa_agent = await db_session.get(AgentTable, qa_id)
+    assert qa_agent is not None
+    assert qa_agent.current_task_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -1368,6 +1483,70 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
     assert claimed.status == TaskStatus.CLAIMED
 
 
+@pytest.mark.asyncio
+async def test_claim_sets_agent_active_and_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """_finalize_claim is the one production chokepoint every claim verb
+    routes through — before this fix, nothing ever wrote agent.status=ACTIVE
+    or current_task_id, so the fleet/Today-brief breakdown could never show
+    a real "active" agent or populate "working[]"."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+
+    claimed = await svc.claim(task.id, task_setup["agent_id"])
+    assert claimed is not None
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.status == AgentStatus.ACTIVE
+    assert agent.current_task_id == task.id
+
+
+@pytest.mark.asyncio
+async def test_mark_agent_idle_clears_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Idling an agent must clear current_task_id — otherwise it keeps
+    reporting the last-claimed task as "currently working" forever, since
+    nothing else ever clears the column."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.claim(task.id, task_setup["agent_id"])
+
+    await svc.mark_agent_idle(task_setup["agent_id"])
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.status == AgentStatus.IDLE
+    assert agent.current_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_unclaim_for_agent_clears_current_task(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A voluntary unclaim releases the claim marker on the AGENT too, not
+    just the task — otherwise the fleet keeps showing the agent as working
+    on a task it just gave up."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abcd1234"
+    await db_session.flush()
+    await svc.claim(task.id, task_setup["agent_id"])
+
+    result = await svc.unclaim_for_agent(task.id, task_setup["agent_id"])
+    assert result is not None
+
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    assert agent.current_task_id is None
+
+
 # ---------------------------------------------------------------------------
 # Sequence claim guardrail (CEO directive: sequence is the bar, independent
 # of dependency_ids — see _claim_blocked_by_sequence).
@@ -1592,11 +1771,17 @@ async def test_is_pending_claim_blocked_false_for_missing_task(
 async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """STRICTER than dependency edges where both exist: a wave-1 root-subtask
-    waits for EVERY wave-0 sibling, not just the one edge target the
-    collision analyzer happened to wire — no edges-exist exemption."""
+    """STRICTER than dependency edges where both exist: a MegaTask wave-1
+    root-subtask waits for EVERY wave-0 root-subtask, not just the one edge
+    target the collision analyzer happened to wire — no edges-exist
+    exemption. Scoped to `batch_id`-bearing root-subtasks specifically
+    (`_build_confirm_batch` stamps `sequence` as a one-shot, globally
+    computed Kahn wave index — a deliberate staged-release barrier); a
+    plain (non-batch) same-parent sibling instead needs a real dependency
+    path — see `test_claim_not_blocked_by_unconnected_sibling_in_different_stream`."""
     svc = task_setup["svc"]
     umbrella = await svc.create(_req(task_setup, title="umbrella"))
+    batch_id = uuid4()
     wave0_a = await svc.create(
         _req(task_setup, title="wave0-a", parent_task_id=umbrella.id, sequence=0)
     )
@@ -1611,6 +1796,12 @@ async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     # never wires an edge to it.
     await svc.add_dependency(wave1.id, wave0_a.id)
     wave0_a.status = TaskStatus.COMPLETED
+    # Direct ORM stamp (mirrors `_build_confirm_batch`'s BatchPlacement,
+    # bypassing create-time batch-shape validation the same way the rest of
+    # this test pokes `.status` directly).
+    wave0_a.batch_id = batch_id
+    wave0_b.batch_id = batch_id
+    wave1.batch_id = batch_id
     await db_session.flush()
 
     # The edge is satisfied, but wave0_b is still open with a lower sequence.
@@ -1622,6 +1813,94 @@ async def test_claim_batch_wave_blocked_by_all_wave0_siblings_no_edges(
     await db_session.flush()
     claimed = await svc.claim(wave1.id, task_setup["agent_id"])
     assert claimed is not None
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_not_blocked_by_unconnected_sibling_in_different_stream(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The 2026-07-24 live incident: a frontend cell with 4 independent
+    dev-task streams — stream1-b (stamped wave 1, a real dependency on
+    stream1-a) must not be phantom-held by stream4-b (wave 0, in_progress)
+    just because they share a same parent and a lower raw sequence number.
+    Unlike the MegaTask-batch case above (no `batch_id` here), a plain
+    same-parent sibling only blocks via a real dependency path."""
+    svc = task_setup["svc"]
+    cell = await svc.create(_req(task_setup, title="cell"))
+    stream1_a = await svc.create(
+        _req(task_setup, title="stream1-a", parent_task_id=cell.id)
+    )
+    stream1_b = await svc.create(
+        _req(task_setup, title="stream1-b", parent_task_id=cell.id)
+    )
+    stream4_b = await svc.create(
+        _req(task_setup, title="stream4-b", parent_task_id=cell.id)
+    )
+    await svc.add_dependency(stream1_b.id, stream1_a.id)
+    await svc.stamp_wave_sequence(stream1_a.id)
+    await svc.stamp_wave_sequence(stream1_b.id)
+    await svc.stamp_wave_sequence(stream4_b.id)
+    assert (stream1_a.sequence, stream1_b.sequence, stream4_b.sequence) == (0, 1, 0)
+
+    # stream1-a (the REAL predecessor) is done; stream4-b (an unconnected
+    # sibling in a different stream) is still open with a lower sequence.
+    stream1_a.status = TaskStatus.COMPLETED
+    stream4_b.status = TaskStatus.IN_PROGRESS
+    stream1_b.branch_name = "feature/frontend/aaaa9999"
+    await db_session.flush()
+
+    claimed = await svc.claim(stream1_b.id, task_setup["agent_id"])
+    assert claimed is not None, (
+        "an unconnected sibling in a different stream must not phantom-hold"
+    )
+    assert claimed.status == TaskStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_claim_not_blocked_after_real_dependency_pruned_on_completion(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The precise drift mechanic: `_unblock_dependents` strips a completed
+    dependency from the live `dependency_ids` (moving it to
+    `completed_dependency_ids`) the moment it completes — almost always
+    BEFORE the dependent is ever claimed. The sequence claim-gate must
+    still recognize the pruned edge as real graph info (via
+    `completed_dependency_ids`) rather than treating the now-edge-less task
+    as a manually-sequenced, edge-less chain and reviving the raw
+    strictly-lower-sequence bar against an unrelated sibling."""
+    svc = task_setup["svc"]
+    cell = await svc.create(_req(task_setup, title="cell"))
+    real_predecessor = await svc.create(
+        _req(task_setup, title="real predecessor", parent_task_id=cell.id)
+    )
+    dependent = await svc.create(
+        _req(task_setup, title="dependent", parent_task_id=cell.id)
+    )
+    unrelated = await svc.create(
+        _req(task_setup, title="unrelated stream", parent_task_id=cell.id)
+    )
+    await svc.add_dependency(dependent.id, real_predecessor.id)
+    await svc.stamp_wave_sequence(real_predecessor.id)
+    await svc.stamp_wave_sequence(dependent.id)
+    await svc.stamp_wave_sequence(unrelated.id)
+    assert dependent.sequence == 1
+
+    # Simulate `_unblock_dependents`'s exact effect: the completed
+    # predecessor's edge is pruned from the live column and moved to the
+    # completed ledger.
+    real_predecessor.status = TaskStatus.COMPLETED
+    dependent.dependency_ids = []
+    dependent.completed_dependency_ids = [real_predecessor.id]
+    unrelated.status = TaskStatus.IN_PROGRESS
+    dependent.branch_name = "feature/frontend/bbbb8888"
+    await db_session.flush()
+
+    claimed = await svc.claim(dependent.id, task_setup["agent_id"])
+    assert claimed is not None, (
+        "a pruned-but-once-real edge must still count as graph info, not "
+        "revert to the raw edge-less sequence bar"
+    )
     assert claimed.status == TaskStatus.CLAIMED
 
 
@@ -1900,6 +2179,33 @@ async def test_unclaim_for_reaper_resets(
     assert refreshed.claimed_by == task_setup["agent_id"]
 
 
+@pytest.mark.asyncio
+async def test_unclaim_for_reaper_idles_the_provably_dead_holder(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The reaper's holder is provably dead (heartbeat past TTL) — it must
+    stop reporting ACTIVE with a stale current_task_id, or the fleet keeps
+    showing a dead agent as "working" until the eventual re-claim."""
+    svc = task_setup["svc"]
+    agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert agent is not None
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    task.claimed_by = task_setup["agent_id"]
+    task.active_claimant_id = task_setup["agent_id"]
+    agent.status = AgentStatus.ACTIVE
+    agent.current_task_id = task.id
+    await db_session.flush()
+
+    await svc.unclaim_for_reaper(task.id)
+
+    refreshed_agent = await db_session.get(AgentTable, task_setup["agent_id"])
+    assert refreshed_agent is not None
+    assert refreshed_agent.status == AgentStatus.IDLE
+    assert refreshed_agent.current_task_id is None
+
+
 # ---------------------------------------------------------------------------
 # resume_for_agent
 # ---------------------------------------------------------------------------
@@ -2100,6 +2406,11 @@ async def test_pr_gate_claim_allows_first_reviewer_when_pm_owns_root(
     assert task.active_claimant_id == reviewer.id
     assert task.claimed_by == reviewer.id
     assert task.assigned_to == reviewer.id
+    # pr_gate_claim (via _qa_or_doc_claim) flips the reviewer's fleet marker.
+    reviewer_row = await db_session.get(AgentTable, reviewer.id)
+    assert reviewer_row is not None
+    assert reviewer_row.status == AgentStatus.ACTIVE
+    assert reviewer_row.current_task_id == task.id
 
 
 @pytest.mark.asyncio

@@ -12,16 +12,31 @@ before any subtask is created.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.services.gateway.choreographer import (
     Choreographer,
     ChoreographerDeps,
     DelegateInputs,
 )
+from roboco.services.task import get_task_service
+from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -211,3 +226,82 @@ async def test_delegate_wave_leaving_acs_uncovered_still_succeeds() -> None:
     assert coverage["covered"] == ["Criterion A"]
     assert coverage["uncovered"] == ["Criterion B", "Criterion C"]
     task_svc.create_subtask.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ac_coverage_guard_heals_empty_ids_parent_in_place(
+    db_session: AsyncSession,
+) -> None:
+    """A criteria-bearing parent whose ``acceptance_criteria_ids`` is empty
+    (a legacy row from before every AC rewrite reconciled ids) is
+    self-healed to 1:1 by the reject path itself, against a real DB row —
+    not just papered over in the rendered hint. Regression coverage for the
+    adversarial finding on commit d259476b: the pre-fix guard rendered a
+    literal ``'<id>'`` placeholder and an empty criteria listing on exactly
+    this row shape, re-rejecting a PM who copy-pasted it verbatim."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="PM",
+        slug=f"pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="parent",
+            description="d",
+            acceptance_criteria=["Criterion A", "Criterion B"],
+            acceptance_criteria_ids=[],
+            status=TaskStatus.IN_PROGRESS,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+            assigned_to=agent.id,
+        )
+    )
+    await db_session.flush()
+    task_svc = get_task_service(db_session)
+    parent = await task_svc.get(tid)
+    assert parent is not None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c._delegate_ac_coverage_guard(parent, _inputs(title="Orphan slice"))
+
+    assert env is not None
+    body = env.as_dict()
+    assert "'<id>'" not in body["remediate"]
+    assert "Criterion A" in body["remediate"]
+    assert "Criterion B" in body["remediate"]
+
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
+    assert len(row.acceptance_criteria_ids) == len(row.acceptance_criteria)
+    assert len(set(row.acceptance_criteria_ids)) == len(row.acceptance_criteria_ids)

@@ -34,6 +34,11 @@ def _bind(svc: TaskService, name: str, value: object) -> None:
 def _service() -> TaskService:
     session = MagicMock()
     session.flush = AsyncMock()
+    # reassign_active_claim now retargets the agent-side claim marker
+    # (_retarget_agent_claim), which reads agent rows via session.get —
+    # default to "no matching row" so tests that don't care about the
+    # agent side effect stay a no-op there.
+    session.get = AsyncMock(return_value=None)
     return TaskService(session)
 
 
@@ -611,6 +616,9 @@ async def test_unblock_with_restore_emits_audit_event() -> None:
     ``AuditLogTable`` added to the session."""
     session = MagicMock()
     session.flush = AsyncMock()
+    # An IN_PROGRESS restore now looks up the restored owner via session.get
+    # to flip its ACTIVE marker — default to "no matching row".
+    session.get = AsyncMock(return_value=None)
     added: list[object] = []
     session.add.side_effect = added.append
     svc = TaskService(session)

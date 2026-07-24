@@ -1,33 +1,43 @@
 """TgCockpitService — the Mini App's one-round-trip "Today" brief.
 
 Composes existing read paths (TaskService listers, DashboardService's agent
-snapshot, UsageService's day rollup) into a single phone-sized payload
+snapshot, raw agent_spawn_sessions rows) into a single phone-sized payload
 answering "does anything need me?". Deliberately DB-only and cheap: no live
 GitHub calls, no release-readiness snapshot (that path clones + shells out to
 git), no orchestrator singleton — the ship-state red/green proxy is the set
 of open ci_watch fix tasks, which exists precisely when a watched repo went
 red.
+
+"Today" and the trailing 7-day series bucket by calendar day in
+``settings.display_timezone`` (default UTC, a no-op for anyone who hasn't set
+it), not the server's UTC day — a GMT+2 CEO's evening activity used to land
+on the wrong display day. This intentionally bypasses ``UsageService.
+get_today_summary`` (which reads the UTC-keyed ``daily_usage_rollups`` table,
+unchanged and still used by the main CEO dashboard) and instead reads raw
+``agent_spawn_sessions`` rows directly, bucketing them in Python by the
+display timezone — the rollup table's key stays UTC-only, but the underlying
+timestamped rows let the COCKPIT'S read side be timezone-correct without
+touching the rollup pipeline.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import cast as sql_cast
-from sqlalchemy import func, select
-from sqlalchemy.types import Date
+from sqlalchemy import select
 
+from roboco.billing.pricing import is_ollama_cloud_model
 from roboco.config import settings
 from roboco.db.tables import AgentSpawnSessionTable, TaskTable
+from roboco.foundation.policy import display_time
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.task import get_task_service
-from roboco.services.usage import get_usage_service
 
 if TYPE_CHECKING:
+    from datetime import date
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,9 +83,9 @@ class TgCockpitService(BaseService):
         }
 
     def _window_dates(self) -> list[date]:
-        """The last ``_SERIES_DAYS`` calendar dates (UTC), oldest → today."""
-        today = datetime.now(UTC).date()
-        return [today - timedelta(days=n) for n in reversed(range(_SERIES_DAYS))]
+        """The last ``_SERIES_DAYS`` calendar dates in the display timezone,
+        oldest -> today."""
+        return display_time.trailing_dates(settings.display_timezone, _SERIES_DAYS)
 
     async def _needs_you(self, tasks: TaskService) -> dict[str, Any]:
         awaiting = await tasks.list_awaiting_ceo_approval()
@@ -141,62 +151,121 @@ class TgCockpitService(BaseService):
         # Mirrors the CEO dashboard overview: a usage hiccup degrades the
         # brief to zeros instead of failing the whole endpoint.
         try:
-            summary = await get_usage_service(self.session).get_today_summary()
-            series = await self._spend_series()
-            today = series[-1] if series else 0.0
-            prior = series[-2] if len(series) >= 2 else 0.0  # noqa: PLR2004
+            days = self._window_dates()
+            (
+                cost_by_day,
+                tokens_by_day,
+                models_by_day,
+            ) = await self._session_metrics_by_day(days)
+            series = [round(cost_by_day.get(d, 0.0), 4) for d in days]
+            today_cost = series[-1] if series else 0.0
+            prior_cost = series[-2] if len(series) >= 2 else 0.0  # noqa: PLR2004
+            today_tokens = tokens_by_day.get(days[-1], 0) if days else 0
+            today_models = models_by_day.get(days[-1], set()) if days else set()
+            # $0 with real tokens spent, on a subscription-billed-but-
+            # untracked model (an Ollama Cloud tag with no grounded rate) —
+            # "subscription (untracked)", never a bare misleading "$0".
+            subscription_billed = (
+                today_cost == 0.0
+                and today_tokens > 0
+                and any(is_ollama_cloud_model(m) for m in today_models)
+            )
             return {
-                "tokens_today": int(summary.get("tokens_today", 0)),
-                "cost_today_usd": float(summary.get("cost_today_usd", 0.0)),
+                "tokens_today": today_tokens,
+                "cost_today_usd": today_cost,
+                "subscription_billed": subscription_billed,
                 "series": series,
-                "delta_pct": _pct_change(today, prior),
+                "delta_pct": _pct_change(today_cost, prior_cost),
             }
         except Exception:  # pragma: no cover - defensive degradation
             self.log.warning("today-brief usage summary failed", exc_info=True)
             return {
                 "tokens_today": 0,
                 "cost_today_usd": 0.0,
+                "subscription_billed": False,
                 "series": [0.0] * _SERIES_DAYS,
                 "delta_pct": None,
             }
 
-    async def _spend_series(self) -> list[float]:
-        """Per-day cost (USD) over the trailing window, zero-filled — the
-        hero sparkline. Grouped by the spawn session's start date, matching
-        what today's spend counts."""
-        day = sql_cast(AgentSpawnSessionTable.started_at, Date).label("day")
+    async def today_spend(self) -> dict[str, Any]:
+        """Just today's tokens/cost/subscription_billed, no series — the
+        bot's ``/usage`` command doesn't need the 7-day sparkline. Shares the
+        Today brief's own ``_spend`` computation so the two can never
+        silently disagree on what "today" means."""
+        spend = await self._spend()
+        return {
+            "tokens_today": spend["tokens_today"],
+            "cost_today_usd": spend["cost_today_usd"],
+            "subscription_billed": spend["subscription_billed"],
+        }
+
+    async def _session_metrics_by_day(
+        self, days: list[date]
+    ) -> tuple[dict[date, float], dict[date, int], dict[date, set[str]]]:
+        """One raw ``agent_spawn_sessions`` query spanning the whole window,
+        bucketed into display-timezone calendar days: cost, total tokens, and
+        the distinct models used per day. Backs both the spend hero (today +
+        the 7-day series) and the subscription-billed detection off the SAME
+        read, rather than two queries that could silently disagree on what
+        "today" means."""
+        tz = settings.display_timezone
+        start_utc, _ = display_time.day_bounds_utc(tz, days[0])
+        _, end_utc = display_time.day_bounds_utc(tz, days[-1])
         result = await self.session.execute(
             select(
-                day,
-                func.coalesce(
-                    func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
-                ).label("cost"),
+                AgentSpawnSessionTable.started_at,
+                AgentSpawnSessionTable.estimated_cost_usd,
+                AgentSpawnSessionTable.tokens_input,
+                AgentSpawnSessionTable.tokens_output,
+                AgentSpawnSessionTable.tokens_cache_read,
+                AgentSpawnSessionTable.tokens_cache_write,
+                AgentSpawnSessionTable.model,
+            ).where(
+                AgentSpawnSessionTable.started_at >= start_utc,
+                AgentSpawnSessionTable.started_at < end_utc,
             )
-            .where(
-                sql_cast(AgentSpawnSessionTable.started_at, Date)
-                >= self._window_dates()[0]
-            )
-            .group_by(day)
         )
-        by_day = {row.day: float(row.cost) for row in result}
-        return [round(by_day.get(d, 0.0), 4) for d in self._window_dates()]
+        cost_by_day: dict[date, float] = {}
+        tokens_by_day: dict[date, int] = {}
+        models_by_day: dict[date, set[str]] = {}
+        for row in result:
+            d = display_time.local_date(row.started_at, tz)
+            cost_by_day[d] = cost_by_day.get(d, 0.0) + float(
+                row.estimated_cost_usd or 0.0
+            )
+            tokens_by_day[d] = tokens_by_day.get(d, 0) + (
+                int(row.tokens_input or 0)
+                + int(row.tokens_output or 0)
+                + int(row.tokens_cache_read or 0)
+                + int(row.tokens_cache_write or 0)
+            )
+            models_by_day.setdefault(d, set()).add(row.model or "")
+        return cost_by_day, tokens_by_day, models_by_day
 
     async def _velocity(self) -> dict[str, Any]:
         """Per-day completed-task counts over the trailing window (the
-        'shipped this week' bars) plus the window total."""
+        'shipped this week' bars) plus the window total, bucketed by the
+        display timezone."""
         try:
-            day = sql_cast(TaskTable.completed_at, Date).label("day")
+            days = self._window_dates()
+            tz = settings.display_timezone
+            start_utc, _ = display_time.day_bounds_utc(tz, days[0])
+            _, end_utc = display_time.day_bounds_utc(tz, days[-1])
             result = await self.session.execute(
-                select(day, func.count(TaskTable.id).label("n"))
-                .where(
+                select(TaskTable.completed_at).where(
                     TaskTable.status == TaskStatus.COMPLETED,
                     TaskTable.completed_at.isnot(None),
-                    sql_cast(TaskTable.completed_at, Date) >= self._window_dates()[0],
+                    TaskTable.completed_at >= start_utc,
+                    TaskTable.completed_at < end_utc,
                 )
-                .group_by(day)
             )
-            by_day = {row.day: int(row.n) for row in result}
-            series = [by_day.get(d, 0) for d in self._window_dates()]
+            by_day: dict[date, int] = {}
+            for completed_at in result.scalars():
+                if completed_at is None:  # excluded by the WHERE clause already
+                    continue
+                d = display_time.local_date(completed_at, tz)
+                by_day[d] = by_day.get(d, 0) + 1
+            series = [by_day.get(d, 0) for d in days]
             return {"series": series, "week_total": sum(series)}
         except Exception:  # pragma: no cover - defensive degradation
             self.log.warning("today-brief velocity failed", exc_info=True)

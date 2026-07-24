@@ -388,14 +388,14 @@ function EditTaskDialogInner({
                   type="number"
                   min="0.01"
                   step="0.01"
-                  placeholder="Task-type default"
+                  placeholder="No cap"
                   value={budgetUsd}
                   onChange={(e) => setBudgetUsd(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
                   Must be greater than 0 — a 0 budget would block the task
-                  before it spends a cent. Leave blank for the task-type
-                  default.
+                  before it spends a cent. Leave blank for no cap: budgets
+                  enforce only when explicitly set.
                 </p>
                 {spendUsd != null && (
                   <p

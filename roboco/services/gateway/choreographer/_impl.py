@@ -37,6 +37,7 @@ from roboco.services.gateway.claim_guards import (
     already_active_guard,
     paused_tasks_guard,
     project_budget_exceeded_guard,
+    sequence_held_guard,
     unmet_dependency_guard,
 )
 from roboco.services.gateway.envelope import Envelope
@@ -50,6 +51,7 @@ from roboco.services.gateway.evidence_builder import (
 from roboco.services.gateway.merge_chain import resolve_parent_branch
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
+    hint_for_missing_ac_coverage,
     hint_for_missing_doc_files,
     hint_for_missing_journal_decision,
     hint_for_missing_journal_learning,
@@ -107,6 +109,16 @@ _PM_SUBTASKS_MAX = 7
 # block/unblock this many times (live incident: 10 flips, 43 spawns with no
 # forward progress before anyone noticed).
 _BLOCK_FLIP_NOTIFY_THRESHOLD = 3
+
+# unblock's oscillation breaker: past the (higher) notify threshold above, a
+# cycle that keeps repeating with NO progress between rounds (see
+# markers.bump_oscillation_strikes) is force-blocked for a human instead of
+# restored again — the notify threshold alone only alerts, it never stops the
+# respawns (live incident: an escalate_up/unblock cycle split across two
+# agents' per-(agent, task) respawn counters, neither of which accrued at the
+# cycle's real rate, burned spawns for hours with the CEO alert already fired
+# and ignored/unactioned).
+_OSCILLATION_TRIP_THRESHOLD = 5
 
 
 def _thin_subtask_hint(sub_tasks: list[Any]) -> str | None:
@@ -829,23 +841,35 @@ class Choreographer:
         return f"call i_will_work_on(task_id='{tid}', plan='<plan>') to start"
 
     async def _drop_dependency_held(self, tasks: list[Any]) -> list[Any]:
-        """Drop pre-assigned PENDING tasks whose non-terminal dependencies are
-        still unresolved.
+        """Drop PENDING/NEEDS_REVISION tasks the claim gate would refuse
+        right now — an unmet dependency or a same-parent sequence hold.
 
-        ``give_me_work``'s ``list_assigned_for_agent`` fallback includes PENDING
-        rows with no dependency filter, so without this a held pre-assigned
-        subtask (e.g. a frontend dev's task waiting on the UX/UI design) would
-        still be offered and the agent only bounced at claim time. Mirrors the
-        gate in ``TaskService.list_pending_for_agent`` and ``_run_claim_guards``.
-        Only PENDING rows are gated — an already-claimed task is past the gate.
+        ``give_me_work``'s ``list_assigned_for_agent`` fallback spans every
+        active status with no hold filter, so without this a held task
+        (e.g. a frontend dev's subtask waiting on the UX/UI design, or a
+        needs_revision reclaim behind a lower-sequence sibling delegated
+        after the first claim) was still offered here and only bounced at
+        claim time — the give_me_work/i_will_work_on offer-then-reject loop
+        the 2026-07-24 incident hit on the needs_revision path.
+        ``is_pending_claim_blocked`` wraps the EXACT predicate
+        ``TaskService.claim()`` enforces (dependency + sequence), so this
+        can't drift from the claim gate. Scoped to PENDING and
+        NEEDS_REVISION — the only statuses that guard reads
+        (``_claim_blocked_by_sequencing``); every other status already
+        passed it at an earlier claim. ``is True`` (not a bare truthy
+        check) keeps this inert under partial test mocks (an unstubbed
+        AsyncMock method returns a truthy mock object, not a real bool) —
+        mirrors ``_pending_not_lane_held``'s identical ``is not True`` guard.
         """
         offerable: list[Any] = []
         for task in tasks:
-            dep_ids = list(getattr(task, "dependency_ids", []) or [])
             if (
-                str(task.status) == "pending"
-                and dep_ids
-                and await self._deps.task.unmet_dependency_ids(dep_ids)
+                str(task.status)
+                in (
+                    "pending",
+                    "needs_revision",
+                )
+                and await self._deps.task.is_pending_claim_blocked(task.id) is True
             ):
                 continue
             offerable.append(task)
@@ -997,6 +1021,7 @@ class Choreographer:
                     "unclaimed_parent_acs": [
                         c["id"] for c in coverage if not c["claimed"]
                     ],
+                    "delegate_hint": self._COVERS_PARENT_CRITERIA_HINT,
                 }
         return briefing
 
@@ -1192,7 +1217,7 @@ class Choreographer:
             paused = await self.task.list_paused_for_agent(agent_id)
             if guard := paused_tasks_guard(paused, task.id):
                 return guard
-        if guard := await self._dependency_claim_guard(task):
+        if guard := await self._sequencing_claim_guard(task):
             return guard
         if check_project_budget and (
             guard := await self._project_budget_claim_guard(task)
@@ -1201,6 +1226,37 @@ class Choreographer:
         if skip_dev_guards:
             return None
         return await self._lane_claim_guard(task)
+
+    async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
+        """Both halves of the claim-time sequencing bar in one call — an
+        unmet dependency or a same-parent sequence hold — mirroring
+        ``TaskService._claim_blocked_by_sequencing``'s own composition.
+        Collapsed into one ``_run_claim_guards`` return so the xenon
+        return-statement budget holds.
+        """
+        if guard := await self._dependency_claim_guard(task):
+            return guard
+        return await self._sequence_claim_guard(task)
+
+    async def _sequence_claim_guard(self, task: Any) -> Envelope | None:
+        """Refuse claim while a same-parent sibling with a lower sequence is
+        still non-terminal — surfaced as a clean, named ``sequence_held``
+        BEFORE the composed claim verb runs (see ``sequence_held_guard``).
+
+        Runs for every ``_run_claim_guards`` caller (``i_will_work_on`` /
+        ``i_will_plan``, both the fresh-claim and stuck-``claimed``-recovery
+        paths), so both the PENDING and NEEDS_REVISION reclaim routes agree
+        with ``TaskService.claim()``'s own sequence bar instead of it
+        surfacing deep inside the verb runner as a misdiagnosed
+        "concurrent transition". ``isinstance(..., str)`` keeps this inert
+        under partial test mocks (an unstubbed AsyncMock method returns a
+        truthy mock object, not ``None`` or a real string) — mirrors
+        ``_pending_not_lane_held``'s identical mock-safety guard.
+        """
+        blocked_by = await self.task.sequence_hold_reason(task)
+        if not isinstance(blocked_by, str):
+            return None
+        return sequence_held_guard(task, blocked_by)
 
     async def _dependency_claim_guard(self, task: Any) -> Envelope | None:
         """Refuse claim while the task has non-terminal dependencies.
@@ -1278,7 +1334,9 @@ class Choreographer:
             return None
         spend_usd = await self.task.task_spend_usd(t.id)
         cap_usd = effective_task_budget_usd(t)
-        if spend_usd >= cap_usd:
+        # No explicit budget = no cap: the breach that stamped the marker was
+        # since resolved by clearing the budget field — unblock proceeds.
+        if cap_usd is not None and spend_usd >= cap_usd:
             return Envelope.invalid_state(
                 message=(
                     f"task {t.id} is still over its cost budget: "
@@ -2658,8 +2716,10 @@ class Choreographer:
         branch onto its base is safe; ``sync_task_branch`` pushes only the
         HEAD branch (master/main are never written). Fail-open on probe/sync
         errors — the PR/merge layer keeps its own behind checks — but a rebase
-        CONFLICT is a hard reject naming the files, so the PM routes a
-        conflict-resolution revision instead of re-submitting blind.
+        CONFLICT is a hard reject naming the files, and a DIVERGED branch (the
+        PM's own clone and origin each carry unique commits) is likewise a
+        hard reject, so the PM routes a conflict-resolution revision instead
+        of re-submitting blind.
         """
         if not getattr(t, "branch_name", None) or not base_branch:
             return None
@@ -2677,7 +2737,34 @@ class Choreographer:
                 "assembled_freshen_sync_failed", task_id=str(t.id), error=str(exc)
             )
             return None
-        if result.get("status") == "conflicts":
+        reject = self._freshen_rejection_for(
+            result, behind=behind, base_branch=base_branch, verb=verb
+        )
+        if reject is not None:
+            return reject
+        logger.info(
+            "assembled_branch_freshened",
+            task_id=str(t.id),
+            verb=verb,
+            base_branch=base_branch,
+            behind=behind,
+            status=result.get("status"),
+        )
+        return None
+
+    @staticmethod
+    def _freshen_rejection_for(
+        result: dict[str, Any], *, behind: int, base_branch: str, verb: str
+    ) -> Envelope | None:
+        """Hard-reject shapes for ``_freshen_assembled_branch``'s sync result.
+
+        Conflicts and divergence both mean the auto-sync could not safely
+        reconcile the branch on its own — extracted so the caller's
+        return-statement count stays under the PLR0911 budget (mirrors
+        ``_sync_branch_preflight_rejection``).
+        """
+        status = result.get("status")
+        if status == "conflicts":
             files = ", ".join(result.get("files") or []) or "unknown files"
             return Envelope.invalid_state(
                 message=(
@@ -2694,14 +2781,23 @@ class Choreographer:
                 ),
                 context_briefing={},
             )
-        logger.info(
-            "assembled_branch_freshened",
-            task_id=str(t.id),
-            verb=verb,
-            base_branch=base_branch,
-            behind=behind,
-            status=result.get("status"),
-        )
+        if status == "diverged":
+            return Envelope.invalid_state(
+                message=(
+                    f"{verb} refused: the assembled branch has DIVERGED from "
+                    f"its origin copy ({result.get('local_only', '?')} "
+                    f"local-only commit(s), {result.get('origin_only', '?')} "
+                    "origin-only commit(s)) — this workspace and origin each "
+                    "carry work the other lacks"
+                ),
+                remediate=(
+                    "a human must reconcile the two histories by hand (fetch, "
+                    "inspect both tips, merge or rebase deliberately) before "
+                    "re-submitting — auto-sync refuses to guess which side to "
+                    "keep"
+                ),
+                context_briefing={},
+            )
         return None
 
     async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
@@ -4568,11 +4664,28 @@ class Choreographer:
     def _sync_branch_next_hint(t: Any, result: dict[str, Any]) -> str:
         """Compute the ``next`` hint for a completed ``sync_branch`` run.
 
-        Three shapes: a rebase conflict (files listed, stash noted if one was
-        taken), a clean rebase whose stash pop then conflicted (stash
+        Four shapes: a genuine divergence (neither side touched, a human
+        must reconcile), a rebase conflict (files listed, stash noted if one
+        was taken), a clean rebase whose stash pop then conflicted (stash
         preserved, never dropped), or the plain spec default.
         """
         status = str(result.get("status", "unknown"))
+        if status == "diverged":
+            hint = (
+                "sync_branch refused: your branch and its origin copy have "
+                f"DIVERGED ({result.get('local_only', '?')} commit(s) only "
+                f"in your workspace, {result.get('origin_only', '?')} only "
+                "on origin) — neither side was touched. escalate via "
+                "i_am_blocked(reason='...') so a human can reconcile the two "
+                "histories by hand"
+            )
+            if result.get("stash_pop_conflict"):
+                hint += (
+                    " — your stashed changes were also popped back into a "
+                    "conflict; the stash is preserved (not dropped), resolve "
+                    "it by hand once the divergence is reconciled"
+                )
+            return hint
         if status == "conflicts":
             hint = (
                 f"sync_branch hit conflicts on {result.get('files', [])};"
@@ -5332,9 +5445,9 @@ class Choreographer:
         )
         if guard is not None:
             return guard
-        return self._delegate_ac_coverage_guard(parent, inputs)
+        return await self._delegate_ac_coverage_guard(parent, inputs)
 
-    def _delegate_ac_coverage_guard(
+    async def _delegate_ac_coverage_guard(
         self, parent: Any, inputs: DelegateInputs
     ) -> Envelope | None:
         """Reject a child that doesn't map to the parent's own criteria.
@@ -5351,6 +5464,12 @@ class Choreographer:
         coverage in one call: a wave may deliberately leave criteria for a
         later delegate (see the success envelope's ``parent_ac_coverage``
         evidence for that signal).
+
+        On reject, self-heals a legacy/drifted parent's
+        ``acceptance_criteria_ids`` in place before rendering the hint (same
+        touchpoint ``uncovered_parent_acceptance_criteria`` et al. reach via
+        ``_parent_ac_ref_sets``) — otherwise a criteria-bearing parent with
+        empty ids renders a ``'<id>'`` placeholder the PM can't act on.
         """
         ac_texts = parent.acceptance_criteria or []
         if not ac_texts:
@@ -5359,7 +5478,7 @@ class Choreographer:
         bad = self.task.unknown_ac_refs(parent, refs) if refs else []
         if refs and not bad:
             return None
-        listing = "; ".join(ac_texts)
+        await self.task.self_heal_ac_ids(parent)
         if not refs:
             message = (
                 f"'{inputs.title}' declares no covers_parent_criteria, but the "
@@ -5372,10 +5491,10 @@ class Choreographer:
             )
         return Envelope.invalid_state(
             message=message,
-            remediate=(
-                "Map this subtask to the parent criteria it advances via "
-                "covers_parent_criteria (by id or exact text), or fix the "
-                f"parent's criteria first. Parent criteria: {listing}"
+            remediate=hint_for_missing_ac_coverage(
+                ids=parent.acceptance_criteria_ids or [],
+                texts=ac_texts,
+                title=inputs.title,
             ),
             context_briefing={},
         )
@@ -5383,6 +5502,19 @@ class Choreographer:
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
     # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
     _SUBTASK_HARD_CAP: int = 12
+
+    # Proactive nudge surfaced alongside ``parent_ac_coverage`` in the
+    # planning briefing and the delegate success envelope, ahead of any
+    # rejection — delegate() enforces covers_parent_criteria on every call
+    # once the parent has acceptance criteria, it is NOT deferred to
+    # i_am_idle's separate, opt-in unclaimed-parent-acs self-check (a PM
+    # reading only that gate's docs can otherwise assume the mapping is
+    # optional and loop on the delegate-time rejection for hours).
+    _COVERS_PARENT_CRITERIA_HINT: ClassVar[str] = (
+        "every delegate() call under this parent must pass "
+        "covers_parent_criteria=[<one or more ids from parent_ac_coverage>] "
+        "— it is enforced right now, on this call, not deferred to i_am_idle."
+    )
 
     async def _delegate_extra_guards(
         self,
@@ -6131,6 +6263,7 @@ class Choreographer:
                 **briefing,
                 "parent_ac_coverage": coverage,
                 "unclaimed_parent_acs": [c["id"] for c in coverage if not c["claimed"]],
+                "delegate_hint": self._COVERS_PARENT_CRITERIA_HINT,
             }
         return Envelope.ok(
             status="created",
@@ -6899,6 +7032,61 @@ class Choreographer:
             context_briefing=await self._briefing_for(pm_agent_id, None),
         )
 
+    async def _unblock_preflight_guards(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, role: str
+    ) -> Envelope | None:
+        """Verb-specific preflight gates for ``unblock``, checked in order;
+        the first rejection wins, ``None`` means proceed. Factored out to
+        keep ``unblock`` under the return-count budget as gates accrete
+        (status / dependency / budget / oscillation).
+        """
+        if str(t.status) != "blocked":
+            return Envelope.invalid_state(
+                message=f"task {task_id} is in {t.status}, expected blocked",
+                remediate=(
+                    "this task is not blocked; call triage() to find blocked tasks"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            ).with_introspection(task=t, role=role)
+
+        # A dependency block must not be cleared by hand. It auto-clears via
+        # _unblock_dependents the moment its last dependency reaches a terminal
+        # state; forcing it now would let the dependent proceed without the
+        # upstream's work (e.g. a frontend task built before its UX design lands).
+        dep_ids = list(t.dependency_ids or [])
+        unmet = await self.task.unmet_dependency_ids(dep_ids) if dep_ids else []
+        if unmet:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} still depends on {len(unmet)} "
+                    "unfinished task(s); a dependency block clears on its "
+                    "own once the upstream work completes"
+                ),
+                remediate=(
+                    "don't force this — let the dependency finish; the task "
+                    "auto-unblocks the moment its last dependency reaches "
+                    "completed/cancelled"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            ).with_introspection(task=t, role=role)
+
+        # Budget-breach block: re-check spend-vs-cap before letting the PM
+        # clear it. Without this, a PM unblock on a task the orchestrator's
+        # sweep blocked for a $ overrun would silently re-breach the same cap
+        # the very next tick if the CEO's raise didn't actually clear it (or
+        # never raised it at all).
+        if guard := await self._budget_unblock_guard(t):
+            return guard.with_introspection(task=t, role=role)
+
+        # Oscillation breaker: once tripped (an escalate_up/unblock round
+        # trip repeated past the threshold with no progress between rounds),
+        # only a human admin override clears it — see
+        # _oscillation_unblock_guard / _maybe_trip_oscillation_breaker.
+        if guard := self._oscillation_unblock_guard(t):
+            return guard.with_introspection(task=t, role=role)
+
+        return None
+
     async def unblock(
         self, pm_agent_id: UUID, task_id: UUID, reason: str, *, restore: bool = True
     ) -> Envelope:
@@ -6915,57 +7103,9 @@ class Choreographer:
             )
         agent = await self.task.agent_for(pm_agent_id)
         role = str(agent.role) if agent is not None else "cell_pm"
-        if str(t.status) != "blocked":
+        if env := await self._unblock_preflight_guards(pm_agent_id, task_id, t, role):
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"task {task_id} is in {t.status}, expected blocked",
-                    remediate=(
-                        "this task is not blocked; call triage() to find blocked tasks"
-                    ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
-            )
-
-        # A dependency block must not be cleared by hand. It auto-clears via
-        # _unblock_dependents the moment its last dependency reaches a terminal
-        # state; forcing it now would let the dependent proceed without the
-        # upstream's work (e.g. a frontend task built before its UX design lands).
-        dep_ids = list(t.dependency_ids or [])
-        unmet = await self.task.unmet_dependency_ids(dep_ids) if dep_ids else []
-        if unmet:
-            return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=(
-                        f"task {task_id} still depends on {len(unmet)} "
-                        "unfinished task(s); a dependency block clears on its "
-                        "own once the upstream work completes"
-                    ),
-                    remediate=(
-                        "don't force this — let the dependency finish; the task "
-                        "auto-unblocks the moment its last dependency reaches "
-                        "completed/cancelled"
-                    ),
-                    context_briefing=await self._briefing_for(pm_agent_id, task_id),
-                ).with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
-            )
-
-        # Budget-breach block: re-check spend-vs-cap before letting the PM
-        # clear it. Without this, a PM unblock on a task the orchestrator's
-        # sweep blocked for a $ overrun would silently re-breach the same cap
-        # the very next tick if the CEO's raise didn't actually clear it (or
-        # never raised it at all).
-        if guard := await self._budget_unblock_guard(t):
-            return await self._emit_rejection(
-                guard.with_introspection(task=t, role=role),
-                agent_id=pm_agent_id,
-                task_id=task_id,
-                verb="unblock",
+                env, agent_id=pm_agent_id, task_id=task_id, verb="unblock"
             )
 
         # Write-then-gate: the PM's unblock reason is recorded as the
@@ -6983,8 +7123,15 @@ class Choreographer:
                 verb="unblock",
             )
 
+        # Captured before the restore below clears it (_restore_block_ownership)
+        # — the oscillation-trip notification names both sides of the round trip.
+        escalator_id = t.blocker_raised_by
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
         await self._maybe_notify_block_flip(task_id, t, t.title)
+        if tripped := await self._maybe_trip_oscillation_breaker(
+            task_id, t, escalator_id=escalator_id, resolver_id=pm_agent_id
+        ):
+            return tripped.with_introspection(task=t, role=role)
         next_msg = (
             "task restored to its pre-block state — original assignee will resume"
             if restore
@@ -7032,6 +7179,123 @@ class Choreographer:
                 "failed to send CEO block-flip notification",
                 task_id=str(task_id),
                 flip_count=flip_count,
+            )
+
+    def _oscillation_unblock_guard(self, t: Any) -> Envelope | None:
+        """Refuse ``unblock`` once the oscillation breaker has tripped.
+
+        Unlike the budget guard (``_budget_unblock_guard``) there is no live
+        condition to re-check here (no "spend dropped below cap" analogue) —
+        a human must actively resolve this: reassign the task, fix whatever
+        the escalation kept citing, or cancel it. An admin status override
+        (``admin_set_status`` out of BLOCKED) bypasses this guard entirely and
+        clears the marker as part of that restore, so the human path stays
+        open regardless.
+        """
+        if not markers.is_oscillation_tripped(t):
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"task {t.id} was force-blocked: its escalate_up/unblock "
+                "cycle repeated with no progress between rounds"
+            ),
+            remediate=(
+                "this needs a human to resolve — reassign the task, fix the "
+                "underlying blocker, or cancel it; unblock() will keep "
+                "refusing until an admin moves the task out of blocked"
+            ),
+        )
+
+    async def _maybe_trip_oscillation_breaker(
+        self,
+        task_id: UUID,
+        t: Any,
+        *,
+        escalator_id: Any,
+        resolver_id: UUID,
+    ) -> Envelope | None:
+        """Force-BLOCK a task whose escalate/unblock cycle keeps repeating
+        with no progress; returns the envelope to hand back on a fresh trip,
+        else ``None``.
+
+        The progress fingerprint is deliberately cheap — commit count +
+        revision_count are already loaded on ``t``, plus one COUNT query for
+        terminal children. The child count matters because a PM coordination
+        root never commits itself (all real progress lands on child rows), so
+        the first two components alone are structurally static on one — a
+        busy root would false-trip on its 6th lifetime legitimate escalation
+        even with children completing between rounds. Findings only move via
+        QA/PR-review/PM-reject, a different lifecycle path from
+        escalate_up/unblock entirely, so they carry no signal here.
+        """
+        terminal_children = await self.task.terminal_children_count(task_id)
+        progress_fp = [
+            len(t.commits or []),
+            int(t.revision_count or 0),
+            terminal_children,
+        ]
+        strikes = markers.bump_oscillation_strikes(t, progress_fp)
+        if strikes <= _OSCILLATION_TRIP_THRESHOLD:
+            return None
+        from roboco.models.base import BlockerResolverType, TaskStatus
+
+        try:
+            t.blocker_resolver_type = BlockerResolverType.HUMAN
+            await self.task.admin_set_status(
+                task_id, TaskStatus.BLOCKED, actor_role="system"
+            )
+            markers.mark_oscillation_tripped(t)
+        except Exception:
+            logger.warning(
+                "failed to force-block oscillating task",
+                task_id=str(task_id),
+                strikes=strikes,
+            )
+            return None
+        await self._notify_ceo_oscillation(
+            task_id,
+            strikes,
+            t.title,
+            escalator_id=escalator_id,
+            resolver_id=resolver_id,
+        )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "this task's escalate/unblock cycle repeated with no progress "
+                "and was force-blocked for a human to resolve — do not call "
+                "unblock again; wait for the CEO"
+            ),
+        )
+
+    async def _notify_ceo_oscillation(
+        self,
+        task_id: UUID,
+        strikes: int,
+        task_title: str | None,
+        *,
+        escalator_id: Any,
+        resolver_id: UUID,
+    ) -> None:
+        """Best-effort CEO alert when the oscillation breaker trips; never
+        raises — the block itself already happened regardless."""
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_oscillation_blocked_notification(
+                task_id=str(task_id),
+                strikes=strikes,
+                escalator=escalator_id,
+                resolver=resolver_id,
+                db_session=self.task.session,
+                task_title=task_title,
+            )
+        except Exception:
+            logger.warning(
+                "failed to send CEO oscillation-blocked notification",
+                task_id=str(task_id),
+                strikes=strikes,
             )
 
     async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
