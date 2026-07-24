@@ -21,7 +21,13 @@ export type UsagePeriod = "24h" | "7d" | "30d" | "90d";
 
 /** Linear scale factor for mock aggregates so a longer window shows more volume. */
 function scaleFor(period: UsagePeriod): number {
-  return period === "90d" ? 90 : period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  return period === "90d"
+    ? 90
+    : period === "30d"
+      ? 30
+      : period === "7d"
+        ? 7
+        : 1;
 }
 
 function mockSummary(period: UsagePeriod = "24h"): UsageSummary {
@@ -39,7 +45,8 @@ function mockSummary(period: UsagePeriod = "24h"): UsageSummary {
 
 function mockTimeSeries(period: UsagePeriod = "24h"): UsageTimePoint[] {
   const now = new Date();
-  const points = period === "24h" ? 24 : period === "7d" ? 7 : period === "90d" ? 90 : 30;
+  const points =
+    period === "24h" ? 24 : period === "7d" ? 7 : period === "90d" ? 90 : 30;
   const step = period === "24h" ? "hour" : "day";
   return Array.from({ length: points }, (_, i) => {
     const ts = new Date(now);
