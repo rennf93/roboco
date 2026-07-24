@@ -1694,6 +1694,46 @@ async def test_production_replay_root_with_child_and_root_owned_coverage(
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
 
 
+@pytest.mark.asyncio
+async def test_parent_ac_edit_preserves_ids_children_still_resolve(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A board-redraft-style parent AC edit that drops one criterion and adds
+    another must keep the id of every criterion whose TEXT is unchanged, so a
+    child's existing parent_ac_refs -- by id OR by exact text -- still
+    resolves after the rewrite instead of orphaning."""
+    svc = task_setup["svc"]
+    parent = await svc.create(
+        _req(task_setup, acceptance_criteria=["crit a", "crit b", "crit x"])
+    )
+    id_a, _id_b, id_x = parent.acceptance_criteria_ids
+    child_by_id = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=[id_a])
+    )
+    child_by_id.status = TaskStatus.COMPLETED
+    child_by_text = await svc.create(
+        _req(task_setup, parent_task_id=parent.id, parent_ac_refs=["crit x"])
+    )
+    child_by_text.status = TaskStatus.COMPLETED
+    await db_session.flush()
+
+    # "crit b" dropped, "crit new" added, "crit a"/"crit x" kept (reordered).
+    await svc.update(
+        parent.id,
+        acceptance_criteria=["crit x", "crit a", "crit new"],
+    )
+    await db_session.flush()
+
+    refreshed = await svc.get(parent.id)
+    assert refreshed is not None
+    assert set(refreshed.acceptance_criteria_ids[:2]) == {id_a, id_x}
+    assert refreshed.acceptance_criteria_ids[2] not in {id_a, id_x}
+
+    # Both the id-based and text-based refs still resolve -- only the
+    # brand-new criterion is uncovered.
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == ["crit new"]
+
+
 # ---------------------------------------------------------------------------
 # _unblock_dependents
 # ---------------------------------------------------------------------------

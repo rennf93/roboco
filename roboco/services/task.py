@@ -740,6 +740,35 @@ def supersede_marker_line(task: Any) -> str:
     return markers.get_external_pr_supersede(task) or ""
 
 
+def _reconcile_ac_ids(
+    *,
+    old_criteria: list[str],
+    old_ids: list[str],
+    new_criteria: list[str],
+) -> list[str]:
+    """Stable per-criterion ids (migration 036) across an AC rewrite.
+
+    One id per element of ``new_criteria``. A criterion whose TEXT is
+    unchanged keeps its existing id — ``covers_parent_criteria``, the
+    findings ledger's ``criterion`` matcher, and ``parent_ac_refs`` all
+    reference a criterion by stable id or exact text, so a blanket re-mint on
+    every edit would silently orphan every existing reference and open
+    finding. A new or reworded criterion mints a fresh id; a dropped one
+    drops its id. Same routine serves a genuine caller-driven rewrite (``old``
+    is the row's pre-update state) and a legacy self-heal (``old`` and `new`
+    are the same current row, reconciling ids that drifted out of sync before
+    every write routed through this helper). Duplicate text is matched in
+    encounter order (first ``old`` occurrence to first ``new`` occurrence).
+    """
+    pool: dict[str, list[str]] = {}
+    for ac_text, cid in zip(old_criteria, old_ids, strict=False):
+        pool.setdefault(ac_text, []).append(cid)
+    return [
+        pool[ac_text].pop(0) if pool.get(ac_text) else uuid4().hex
+        for ac_text in new_criteria
+    ]
+
+
 class TaskService(BaseService):
     """
     Service for managing tasks.
@@ -1264,9 +1293,9 @@ class TaskService(BaseService):
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
-        ac_ids = req.acceptance_criteria_ids or [
-            uuid4().hex for _ in (req.acceptance_criteria or [])
-        ]
+        ac_ids = req.acceptance_criteria_ids or _reconcile_ac_ids(
+            old_criteria=[], old_ids=[], new_criteria=req.acceptance_criteria or []
+        )
         task = TaskTable(
             title=req.title,
             description=req.description,
@@ -2901,10 +2930,25 @@ class TaskService(BaseService):
         task_id: UUID,
         **updates: Any,
     ) -> TaskTable | None:
-        """Update a task."""
+        """Update a task.
+
+        A rewritten ``acceptance_criteria`` re-stamps ``acceptance_criteria_ids``
+        1:1 unless the caller already supplied its own ids explicitly — every
+        writer of this generic setter (the PATCH route, the board-redraft
+        patches) otherwise left the old ids in place, mismatched or empty
+        against the new criteria list (see ``_reconcile_ac_ids``).
+        """
         task = await self.get(task_id)
         if not task:
             return None
+
+        new_criteria = updates.get("acceptance_criteria")
+        if new_criteria is not None and "acceptance_criteria_ids" not in updates:
+            updates["acceptance_criteria_ids"] = _reconcile_ac_ids(
+                old_criteria=list(task.acceptance_criteria or []),
+                old_ids=list(task.acceptance_criteria_ids or []),
+                new_criteria=new_criteria,
+            )
 
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
@@ -9650,19 +9694,37 @@ class TaskService(BaseService):
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
 
+    async def _self_heal_ac_ids(self, parent: TaskTable) -> None:
+        """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
+        of length with ``acceptance_criteria`` -- a legacy row from before every
+        AC rewrite reconciled ids (``TaskService.update``), or any other drift.
+        No-op when already 1:1. Reconciling against the row's own current
+        criteria means any id a child already references by matching TEXT
+        survives; the parent-coverage gate is live again instead of skipped
+        forever (``_parent_ac_ref_sets``).
+        """
+        if len(parent.acceptance_criteria_ids or []) == len(parent.acceptance_criteria):
+            return
+        parent.acceptance_criteria_ids = _reconcile_ac_ids(
+            old_criteria=parent.acceptance_criteria,
+            old_ids=list(parent.acceptance_criteria_ids or []),
+            new_criteria=parent.acceptance_criteria,
+        )
+        await self.session.flush()
+
     async def _parent_ac_ref_sets(
         self, task_id: UUID
     ) -> tuple[TaskTable, set[str], set[str], bool, set[str]] | None:
         """Load a parent and its children's parent-AC-ref coverage sets.
 
         Shared core of the three AC-coverage primitives. Returns ``None`` when
-        the parent is missing or has no stable criterion ids (nothing to cover).
-        Otherwise ``(parent, claimed, verified, any_declared, root_owned)``
-        where ``claimed`` is the union of parent_ac_refs over all non-cancelled
-        children, ``verified`` the union over COMPLETED children only, and
-        ``any_declared`` whether *any* child declared a ref at all (the
-        safe-by-construction inertness signal — a cancelled-only declaration
-        still counts as "coverage tracking is active here").
+        the parent is missing or has no acceptance criteria at all (nothing to
+        cover). Otherwise ``(parent, claimed, verified, any_declared,
+        root_owned)`` where ``claimed`` is the union of parent_ac_refs over all
+        non-cancelled children, ``verified`` the union over COMPLETED children
+        only, and ``any_declared`` whether *any* child declared a ref at all
+        (the safe-by-construction inertness signal — a cancelled-only
+        declaration still counts as "coverage tracking is active here").
 
         ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
         itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
@@ -9671,10 +9733,16 @@ class TaskService(BaseService):
         folded into both ``claimed`` and ``verified``: there is no child
         status to gate on, the work happens at/after the root's own
         submit/supersede by construction.
+
+        A parent whose ``acceptance_criteria_ids`` is empty or out of length
+        with ``acceptance_criteria`` (a legacy row from before every AC
+        rewrite reconciled ids — or any other drift) self-heals via
+        ``_self_heal_ac_ids`` rather than silently disabling coverage.
         """
         parent = await self.get(task_id)
-        if not parent or not parent.acceptance_criteria_ids:
+        if not parent or not parent.acceptance_criteria:
             return None
+        await self._self_heal_ac_ids(parent)
         result = await self.session.execute(
             select(TaskTable.status, TaskTable.parent_ac_refs).where(
                 TaskTable.parent_task_id == task_id

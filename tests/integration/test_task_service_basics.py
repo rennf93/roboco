@@ -515,6 +515,40 @@ async def test_update_returns_none_for_missing(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_acceptance_criteria_restamps_ids_1to1(
+    task_setup: dict,
+) -> None:
+    # fe-pm delegate-loop root cause: TaskService.update() rewrote
+    # acceptance_criteria without touching acceptance_criteria_ids, leaving a
+    # stale/mismatched id list. A criterion whose TEXT is unchanged must keep
+    # its id (children/findings reference it by id or exact text); a new one
+    # mints a fresh id; a dropped one drops its id.
+    _N = 3
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, acceptance_criteria=["a", "b", "c"]))
+    old_ids = list(task.acceptance_criteria_ids)
+    updated = await svc.update(task.id, acceptance_criteria=["a", "c", "d"])
+    assert updated is not None
+    assert len(updated.acceptance_criteria_ids) == _N
+    assert updated.acceptance_criteria_ids[0] == old_ids[0]  # "a" unchanged
+    assert updated.acceptance_criteria_ids[1] == old_ids[2]  # "c" unchanged
+    assert updated.acceptance_criteria_ids[2] not in old_ids  # "d" is new
+    assert len(set(updated.acceptance_criteria_ids)) == _N
+
+
+@pytest.mark.asyncio
+async def test_update_without_acceptance_criteria_leaves_ids_untouched(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup, acceptance_criteria=["a", "b"]))
+    old_ids = list(task.acceptance_criteria_ids)
+    updated = await svc.update(task.id, title="renamed")
+    assert updated is not None
+    assert list(updated.acceptance_criteria_ids) == old_ids
+
+
+@pytest.mark.asyncio
 async def test_add_progress(task_setup: dict) -> None:
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
