@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,9 +19,16 @@ import {
   ResponsiveTableCardRow,
 } from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ExternalLink, Pencil, GitBranch, Key, KeyRound, Radar } from "lucide-react";
+import {
+  ExternalLink,
+  Pencil,
+  GitBranch,
+  Key,
+  KeyRound,
+  Radar,
+} from "lucide-react";
 import type { ProjectSummary, ProjectTaskCounts, Team } from "@/types";
-import { EditProjectDialog } from "./edit-project-dialog";
+import { QuickEditProjectDialog } from "./quick-edit-project-dialog";
 import { HelpTip } from "@/components/ui/help-tip";
 
 interface ProjectTableProps {
@@ -148,6 +156,7 @@ export function getExternalUrl(project: Pick<ProjectSummary, "git_url">) {
 }
 
 export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
+  const router = useRouter();
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
 
   if (isLoading) {
@@ -248,11 +257,13 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     <TableCell>{getStatusBadge(project.is_active)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
-                        <HelpTip label="Edit project settings and CI/CD commands">
+                        <HelpTip label="Open the full settings page: git auth, placement, environments, CI/CD commands, budget & ops, sandbox, and conventions">
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => setEditingProjectId(project.id)}
+                            onClick={() =>
+                              router.push(`/projects/${project.id}/settings`)
+                            }
                             aria-label="Edit project"
                           >
                             <Pencil className="h-4 w-4" />
@@ -302,11 +313,13 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     </HelpTip>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <HelpTip label="Edit project settings and CI/CD commands">
+                    <HelpTip label="Open the full settings page: git auth, placement, environments, CI/CD commands, budget & ops, sandbox, and conventions">
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => setEditingProjectId(project.id)}
+                        onClick={() =>
+                          router.push(`/projects/${project.id}/settings`)
+                        }
                         aria-label="Edit project"
                       >
                         <Pencil className="h-4 w-4" />
@@ -357,9 +370,10 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
         }
       />
 
-      {/* Edit Project Dialog */}
+      {/* Quick-edit Project Dialog (name/cell/active only — the pencil
+          action routes to the full settings page instead). */}
       {editingProjectId && (
-        <EditProjectDialog
+        <QuickEditProjectDialog
           projectId={editingProjectId}
           open={!!editingProjectId}
           onOpenChange={(open) => {
