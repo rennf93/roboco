@@ -4,7 +4,9 @@ import { Header } from "@/components/layout/header";
 import { BottomTabBar } from "@/components/layout/bottom-tab-bar";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { ScrollRestoration } from "@/components/scroll-restoration";
+import { ScrollJumpButtons } from "@/components/scroll-jump-buttons";
 import { RateLimitBanner } from "@/components/rate-limit/rate-limit-banner";
+import { AutoRefreshDriver } from "@/components/providers/auto-refresh-driver";
 
 export default function DashboardLayout({
   children,
@@ -15,6 +17,7 @@ export default function DashboardLayout({
     // h-dvh (not h-screen/100vh): mobile Safari's dynamic toolbar resizes the
     // viewport, and 100vh doesn't track that — dvh does.
     <div className="flex h-dvh overflow-hidden">
+      <AutoRefreshDriver />
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header />
@@ -26,6 +29,10 @@ export default function DashboardLayout({
           </Suspense>
           {children}
         </main>
+        {/* Sibling of <main>, not a child — fixed positioning overlays it
+            regardless, and staying out keeps ScrollJumpButtons' own DOM node
+            from being mistaken for the page content root it measures. */}
+        <ScrollJumpButtons />
       </div>
       <BottomTabBar />
       <CommandPalette />
