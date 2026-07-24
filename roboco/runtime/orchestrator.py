@@ -4831,29 +4831,32 @@ class AgentOrchestrator:
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
-    async def _fetch_task_status(
+    async def _fetch_task_fields(
         self, client: httpx.AsyncClient, task_id: str
-    ) -> str | None:
-        """Best-effort GET /tasks/{id} → status string (None on any failure —
+    ) -> dict[str, Any] | None:
+        """Best-effort GET /tasks/{id} → full task dict (None on any failure —
         fail-open so a fetch hiccup never suppresses a real escalation)."""
         try:
             resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
-                status = resp.json().get("status")
-                return str(status) if status is not None else None
+                return cast("dict[str, Any]", resp.json())
         except Exception as exc:
-            logger.debug("notification task-status fetch failed", error=str(exc))
+            logger.debug("notification task-fields fetch failed", error=str(exc))
         return None
 
     async def _notification_has_live_work(
         self, client: httpx.AsyncClient, notif: dict[str, Any]
     ) -> bool:
         """False when a notification has no live work behind it — the 'is there
-        actually something to do' gate for notification-triggered spawns. Three
+        actually something to do' gate for notification-triggered spawns. Four
         obvious markers: it has expired, it is stale past the spawn-age window
-        (wedged / reloaded from before a restart), or its related task is
-        already terminal (the work is done). Fail-open: an unparseable field or
-        a failed task fetch never suppresses a spawn.
+        (wedged / reloaded from before a restart), its related task is already
+        terminal (the work is done), or that task is HITL-blocked (a human,
+        not a respawn, resolves it — e.g. the oscillation breaker tripped and
+        force-blocked it; the task-status dispatchers already skip these via
+        ``_is_hitl_blocked``, but this notification-driven path carries no
+        task-status gate of its own). Fail-open: an unparseable field or a
+        failed task fetch never suppresses a spawn.
         """
         now = datetime.now(UTC)
         expires = self._parse_iso_dt(notif.get("expires_at"))
@@ -4865,9 +4868,12 @@ class AgentOrchestrator:
             return False
         task_id = notif.get("related_task_id")
         if task_id:
-            status = await self._fetch_task_status(client, str(task_id))
-            if status in ("completed", "cancelled"):
-                return False
+            fields = await self._fetch_task_fields(client, str(task_id))
+            if fields is not None:
+                if fields.get("status") in ("completed", "cancelled"):
+                    return False
+                if self._is_hitl_blocked(fields):
+                    return False
         return True
 
     def _is_parallel_phase_claim(

@@ -8,6 +8,7 @@ from roboco.foundation.policy.content import markers as m
 
 # Named constant — ruff PLR2004 forbids magic-value comparisons.
 _TWO = 2
+_THREE = 3
 
 
 def _task(om: dict | None = None) -> SimpleNamespace:
@@ -155,3 +156,47 @@ def test_block_flip_count_bump_and_notify() -> None:
     assert m.is_block_flip_notified(t) is True
     # Marking notified must not reset the counter.
     assert m.get_block_flip_count(t) == _TWO
+
+
+def test_oscillation_strikes_accrue_on_unchanged_fingerprint() -> None:
+    t = _task()
+    assert m.get_oscillation_strikes(t) == 0
+    assert m.is_oscillation_tripped(t) is False
+    assert m.bump_oscillation_strikes(t, [0, 0]) == 1
+    assert m.bump_oscillation_strikes(t, [0, 0]) == _TWO
+    assert m.bump_oscillation_strikes(t, [0, 0]) == _THREE
+    assert m.get_oscillation_strikes(t) == _THREE
+    assert m.is_oscillation_tripped(t) is False
+
+
+def test_oscillation_strikes_reset_on_progress() -> None:
+    t = _task()
+    m.bump_oscillation_strikes(t, [0, 0])
+    assert m.bump_oscillation_strikes(t, [0, 0]) == _TWO
+    # A new commit landed between rounds — real progress resets to 1.
+    assert m.bump_oscillation_strikes(t, [1, 0]) == 1
+    # A revision round completing is progress too.
+    assert m.bump_oscillation_strikes(t, [1, 0]) == _TWO
+    assert m.bump_oscillation_strikes(t, [1, 1]) == 1
+
+
+def test_mark_oscillation_tripped_preserves_strikes_and_fingerprint() -> None:
+    t = _task()
+    m.bump_oscillation_strikes(t, [2, 1])
+    m.bump_oscillation_strikes(t, [2, 1])
+    m.mark_oscillation_tripped(t)
+    assert m.is_oscillation_tripped(t) is True
+    assert m.get_oscillation_strikes(t) == _TWO
+    # tripped survives a subsequent bump (belt-and-suspenders — the guard is
+    # meant to refuse before another bump ever happens).
+    m.bump_oscillation_strikes(t, [2, 1])
+    assert m.is_oscillation_tripped(t) is True
+
+
+def test_clear_marker_removes_oscillation_state() -> None:
+    t = _task()
+    m.bump_oscillation_strikes(t, [0, 0])
+    m.mark_oscillation_tripped(t)
+    m.clear_marker(t, m.OSCILLATION_STRIKES)
+    assert m.get_oscillation_strikes(t) == 0
+    assert m.is_oscillation_tripped(t) is False

@@ -5248,6 +5248,19 @@ class TaskService(BaseService):
         )
         return task
 
+    def _clear_tripped_oscillation_marker(self, task: TaskTable) -> None:
+        """The legacy human/panel unblock route never goes through the
+        gateway's `_oscillation_unblock_guard` — reaching a tripped task
+        here IS the human intervention the breaker demands, so clear it
+        rather than leave it to haunt the task's next legitimate
+        block/unblock cycle. The agent-verb `unblock` gateway path never
+        reaches here with the marker still tripped: its own guard already
+        refused before this method runs. A no-op when not tripped, so an
+        in-flight (non-tripped) strike count survives an ordinary unblock.
+        """
+        if markers.is_oscillation_tripped(task):
+            markers.clear_marker(task, markers.OSCILLATION_STRIKES)
+
     async def unblock(
         self, task_id: UUID, agent_role: str | None = None
     ) -> TaskTable | None:
@@ -5289,6 +5302,7 @@ class TaskService(BaseService):
             task.claimed_by = owner
         # Clear resolver metadata — only meaningful while BLOCKED.
         task.blocker_resolver_type = None
+        self._clear_tripped_oscillation_marker(task)
         # A task with a branch was claimed before it blocked, so resume it
         # in_progress. A task with NO branch was blocked before it was ever
         # claimed (e.g. a dependency-gated claim that got escalated); it cannot
@@ -9694,6 +9708,22 @@ class TaskService(BaseService):
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
 
+    async def terminal_children_count(self, task_id: UUID) -> int:
+        """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
+
+        One cheap COUNT query — feeds the oscillation breaker's progress
+        fingerprint, since a PM coordination root never commits itself (all
+        real progress lands on child rows); ``unblock`` is rare enough that
+        the extra query is fine.
+        """
+        result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                TaskTable.parent_task_id == task_id,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return result.scalar_one()
+
     async def self_heal_ac_ids(self, parent: TaskTable) -> None:
         """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
         of length with ``acceptance_criteria`` -- a legacy row from before every
@@ -10927,6 +10957,13 @@ class TaskService(BaseService):
             self._emit_admin_override_audit(
                 task, pre_status, restored_status, actor_id, actor_role
             )
+            # The oscillation-strikes marker is cleared by the caller
+            # (_admin_out_of_blocked) for every admin exit from BLOCKED,
+            # snapshot-driven or not — this branch only runs when a snapshot
+            # exists, so it must not clear it again here (the in-band
+            # unblock(restore=True) path never reaches this branch either —
+            # its own gateway call site reads/bumps this marker around this
+            # same restore).
         if (
             restored_status == TaskStatus.NEEDS_REVISION
             and pre_status != TaskStatus.NEEDS_REVISION.value
@@ -10980,10 +11017,16 @@ class TaskService(BaseService):
         pending/in_progress with a snapshot → full pre-block restore (returns
         the restored task). Review/queue targets → clear the stale claim so
         the next claimant starts clean (returns None; caller sets status).
-        Any other target → no-op (returns None).
+        Any other target → no-op (returns None). Every branch below also
+        clears the oscillation breaker's strike marker — a human is the one
+        moving the task out of BLOCKED here, so its job for this cycle is
+        done regardless of whether a pre-block snapshot survived to drive a
+        restore (a trip can wipe it before the force-block re-lands the task
+        in BLOCKED with no snapshot of its own).
         """
-        if from_status != TaskStatus.BLOCKED.value:
+        if from_status != TaskStatus.BLOCKED.value or new_status == TaskStatus.BLOCKED:
             return None
+        markers.clear_marker(task, markers.OSCILLATION_STRIKES)
         if (
             new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
             and task.pre_block_assignee is not None

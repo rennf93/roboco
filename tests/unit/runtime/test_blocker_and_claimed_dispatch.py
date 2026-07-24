@@ -100,6 +100,63 @@ def test_blocked_task_non_cell_team_unassigned_is_unroutable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _dispatch_blocker_work — wire-shaped HITL skip. `_fetch_tasks` hands this
+# dispatcher plain dicts decoded straight from GET /tasks JSON — this pins
+# that shape (blocker_resolver_type as the lowercase enum-value string
+# TaskResponse now serializes) rather than an in-process TaskTable/enum.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_blocker_work_skips_wire_shaped_hitl_blocked_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _orch()
+    task: dict[str, Any] = {
+        "id": "t1",
+        "status": "blocked",
+        "blocker_resolver_type": "human",
+        "team": "backend",
+        "assigned_to": AGENT_UUIDS["be-dev-1"],
+    }
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._dispatch_blocker_work(client=MagicMock())
+
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_blocker_work_spawns_non_hitl_blocked_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control case: an agent-resolvable block (no HITL marker) still
+    dispatches normally — the wire-shaped skip above isn't just refusing
+    every blocked task."""
+    orch = _orch()
+    task: dict[str, Any] = {
+        "id": "t1",
+        "status": "blocked",
+        "blocker_resolver_type": None,
+        "team": "backend",
+        "assigned_to": AGENT_UUIDS["be-pm"],
+    }
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    monkeypatch.setattr(orch, "_is_agent_active", lambda _agent_id: False)
+    monkeypatch.setattr(orch, "_pm_respawn_should_gate", AsyncMock(return_value=False))
+    monkeypatch.setattr(orch, "_build_pm_blocker_prompt", lambda _task: "p")
+    monkeypatch.setattr(orch, "_task_git_context", lambda _task: None)
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._dispatch_blocker_work(client=MagicMock())
+
+    spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # _claimed_task_needs_agent — claimed-but-no-agent detection
 # ---------------------------------------------------------------------------
 
@@ -316,6 +373,43 @@ async def test_dispatch_claimed_without_agent_spawns_at_most_one_per_tick(
 
     # Three agentless claims, but only ONE container spawned this tick.
     spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_claimed_without_agent_has_no_progress_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike `_dispatch_blocker_work` (every spawn gated through
+    `_pm_respawn_should_gate`), this dispatcher carries no respawn-loop
+    protection of its own — it unconditionally respawns an agentless
+    claimed/in_progress task every tick past the grace window. This is half
+    of why the escalate_up/unblock oscillation defeats the per-(agent, task)
+    breaker: the resolved side of the cycle (the PM restored to in_progress)
+    has no counter here to ever trip, so the loop's other half never runs out
+    of fuel on its own — only a task-scoped breaker that also covers this
+    path (by moving the task to `blocked` entirely, which this dispatcher
+    doesn't fetch) can stop it.
+    """
+    orch = _orch()
+    task = {
+        "id": "t1",
+        "status": "in_progress",
+        "assigned_to": AGENT_UUIDS["fe-pm"],
+        "updated_at": _STALE,
+    }
+    monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
+    _stub_git_context(orch, monkeypatch)
+    monkeypatch.setattr(orch, "_get_prompt_for_agent", AsyncMock(return_value="p"))
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    cycles = 10
+    for _ in range(cycles):
+        orch._tick_handled_tasks = set()  # a fresh dispatch tick each cycle
+        await orch._dispatch_claimed_without_agent(client=MagicMock())
+
+    # No cycle was ever refused — zero backoff anywhere in this call path.
+    assert spawn.await_count == cycles
 
 
 @pytest.mark.asyncio

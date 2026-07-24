@@ -309,6 +309,10 @@ class TaskResponse(BaseModel):
 
     # Status
     status: TaskStatus
+    # Who resolves a `blocked` task: AGENT (respawn as normal) or HUMAN (the
+    # dispatchers must skip it — see orchestrator._is_hitl_blocked). None
+    # outside `blocked`.
+    blocker_resolver_type: BlockerResolverType | None = None
     priority: int
     sequence: int  # Order number within siblings
     # Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). Null = no cap (explicit-input only).
@@ -891,6 +895,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         constraints=getattr(task, "constraints", None),
         acceptance_criteria=task.acceptance_criteria or [],
         status=task.status,
+        blocker_resolver_type=task.blocker_resolver_type,
         priority=task.priority,
         sequence=task.sequence,
         budget_usd=getattr(task, "budget_usd", None),
