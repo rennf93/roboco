@@ -52,7 +52,7 @@ export const QUICK_ACTIONS_REGISTRY: QuickAction[] = [
     id: "kanban",
     label: "Kanban",
     icon: Kanban,
-    href: "/kanban",
+    href: "/tasks?tab=kanban",
     tip: "Task board grouped by lifecycle status",
   },
   {
