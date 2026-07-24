@@ -2164,6 +2164,37 @@ async def test_resume_task_success(task_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pause_task_ceo_success(task_client: dict) -> None:
+    """The CEO can pause a task assigned to someone else through the plain
+    pause route (a non-assignee, non-CEO caller still gets 403 —
+    ``test_pause_task_forbidden`` covers that unchanged)."""
+    other = await _seed_agent(task_client)
+    task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS, assigned_to=other.id)
+    await task_client["db"].flush()
+    _as_ceo(task_client)
+    response = await task_client["client"].post(
+        f"/api/tasks/{task.id}/pause", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["status"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_resume_task_ceo_success(task_client: dict) -> None:
+    """The CEO can resume a task assigned to someone else through the plain
+    resume route — same carve-out as pause above."""
+    other = await _seed_agent(task_client)
+    task = _seed_task(task_client, status=TaskStatus.PAUSED, assigned_to=other.id)
+    await task_client["db"].flush()
+    _as_ceo(task_client)
+    response = await task_client["client"].post(
+        f"/api/tasks/{task.id}/resume", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["status"] != "paused"
+
+
+@pytest.mark.asyncio
 async def test_verify_task_success(task_client: dict) -> None:
     task = _seed_task(
         task_client,

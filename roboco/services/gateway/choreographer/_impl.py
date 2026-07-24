@@ -51,6 +51,7 @@ from roboco.services.gateway.evidence_builder import (
 from roboco.services.gateway.merge_chain import resolve_parent_branch
 from roboco.services.gateway.remediation import (
     hint_for_evidence_not_inspected,
+    hint_for_missing_ac_coverage,
     hint_for_missing_doc_files,
     hint_for_missing_journal_decision,
     hint_for_missing_journal_learning,
@@ -1010,6 +1011,7 @@ class Choreographer:
                     "unclaimed_parent_acs": [
                         c["id"] for c in coverage if not c["claimed"]
                     ],
+                    "delegate_hint": self._COVERS_PARENT_CRITERIA_HINT,
                 }
         return briefing
 
@@ -5460,7 +5462,6 @@ class Choreographer:
         bad = self.task.unknown_ac_refs(parent, refs) if refs else []
         if refs and not bad:
             return None
-        listing = "; ".join(ac_texts)
         if not refs:
             message = (
                 f"'{inputs.title}' declares no covers_parent_criteria, but the "
@@ -5471,12 +5472,12 @@ class Choreographer:
                 f"'{inputs.title}' covers_parent_criteria has unresolvable "
                 f"ref(s): {'; '.join(bad)}"
             )
+        ac_ids = parent.acceptance_criteria_ids or []
         return Envelope.invalid_state(
             message=message,
-            remediate=(
-                "Map this subtask to the parent criteria it advances via "
-                "covers_parent_criteria (by id or exact text), or fix the "
-                f"parent's criteria first. Parent criteria: {listing}"
+            remediate=hint_for_missing_ac_coverage(
+                criteria=list(zip(ac_ids, ac_texts, strict=False)),
+                title=inputs.title,
             ),
             context_briefing={},
         )
@@ -5484,6 +5485,19 @@ class Choreographer:
     # Gate Set B subtask cap (pre-gateway implicit, made explicit here).
     # Soft warn at 8, hard block at 13. Cap enforced by ``_subtask_cap_guard``.
     _SUBTASK_HARD_CAP: int = 12
+
+    # Proactive nudge surfaced alongside ``parent_ac_coverage`` in the
+    # planning briefing and the delegate success envelope, ahead of any
+    # rejection — delegate() enforces covers_parent_criteria on every call
+    # once the parent has acceptance criteria, it is NOT deferred to
+    # i_am_idle's separate, opt-in unclaimed-parent-acs self-check (a PM
+    # reading only that gate's docs can otherwise assume the mapping is
+    # optional and loop on the delegate-time rejection for hours).
+    _COVERS_PARENT_CRITERIA_HINT: ClassVar[str] = (
+        "every delegate() call under this parent must pass "
+        "covers_parent_criteria=[<one or more ids from parent_ac_coverage>] "
+        "— it is enforced right now, on this call, not deferred to i_am_idle."
+    )
 
     async def _delegate_extra_guards(
         self,
@@ -6232,6 +6246,7 @@ class Choreographer:
                 **briefing,
                 "parent_ac_coverage": coverage,
                 "unclaimed_parent_acs": [c["id"] for c in coverage if not c["claimed"]],
+                "delegate_hint": self._COVERS_PARENT_CRITERIA_HINT,
             }
         return Envelope.ok(
             status="created",

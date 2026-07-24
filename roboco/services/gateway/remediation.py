@@ -33,6 +33,24 @@ def hint_for_unaddressed_acceptance_criteria(
     )
 
 
+def hint_for_missing_ac_coverage(*, criteria: list[tuple[str, str]], title: str) -> str:
+    """`criteria`: the parent's own (id, text) pairs, in declaration order.
+
+    Shows the exact corrected call shape with a real inlined id so a PM
+    fixing a rejected delegate can copy it verbatim instead of re-deriving
+    the field's syntax or retyping criterion text (fragile — exact-text
+    matching breaks on any punctuation drift).
+    """
+    example_id = criteria[0][0] if criteria else "<id>"
+    mapping = "; ".join(f'{cid}="{text}"' for cid, text in criteria)
+    return (
+        f"delegate(title={title!r}, ..., covers_parent_criteria=[{example_id!r}]) "
+        "— list the id(s) of the parent criteria this child actually advances "
+        f"(one or more, not necessarily all of them). Parent criteria (id=text): "
+        f"{mapping}."
+    )
+
+
 def hint_for_open_findings(*, finding_ids: list[str], task_id: str) -> str:
     ids = ", ".join(finding_ids)
     return (

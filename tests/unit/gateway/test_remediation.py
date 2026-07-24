@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from roboco.services.gateway.remediation import (
+    hint_for_missing_ac_coverage,
     hint_for_missing_progress,
     hint_for_missing_reflect,
     hint_for_unaddressed_acceptance_criteria,
@@ -27,3 +28,19 @@ def test_unaddressed_criteria_hint() -> None:
     assert "criterion 1" in h
     assert "criterion 3" in h
     assert "t-1" in h
+
+
+def test_missing_ac_coverage_hint_shows_call_shape_and_real_ids() -> None:
+    h = hint_for_missing_ac_coverage(
+        criteria=[("id-a", "Criterion A"), ("id-b", "Criterion B")],
+        title="Orphan slice",
+    )
+    assert "delegate(title='Orphan slice'" in h
+    assert "covers_parent_criteria=['id-a']" in h
+    assert 'id-a="Criterion A"' in h
+    assert 'id-b="Criterion B"' in h
+
+
+def test_missing_ac_coverage_hint_handles_no_criteria() -> None:
+    h = hint_for_missing_ac_coverage(criteria=[], title="X")
+    assert "<id>" in h
