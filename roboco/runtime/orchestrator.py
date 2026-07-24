@@ -1220,8 +1220,7 @@ class AgentOrchestrator:
         self._env_sync_task: asyncio.Task | None = None
         self._release_manager_task: asyncio.Task | None = None
         self._x_mentions_task: asyncio.Task | None = None
-        self._roadmap_engine_task: asyncio.Task | None = None
-        self._x_feature_spotlight_task: asyncio.Task | None = None
+        self._board_program_task: asyncio.Task | None = None
         self._video_render_task: asyncio.Task | None = None
         self._vault_intake_task: asyncio.Task | None = None
         self._vault_janitor_task: asyncio.Task | None = None
@@ -1318,10 +1317,7 @@ class AgentOrchestrator:
         self._env_sync_task = asyncio.create_task(self._env_sync_loop())
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
         self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
-        self._roadmap_engine_task = asyncio.create_task(self._roadmap_engine_loop())
-        self._x_feature_spotlight_task = asyncio.create_task(
-            self._x_feature_spotlight_loop()
-        )
+        self._board_program_task = asyncio.create_task(self._board_program_loop())
         self._video_render_task = asyncio.create_task(self._video_render_loop())
         self._vault_intake_task = asyncio.create_task(self._vault_intake_loop())
         self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
@@ -1436,8 +1432,7 @@ class AgentOrchestrator:
             self._env_sync_task,
             self._release_manager_task,
             self._x_mentions_task,
-            self._roadmap_engine_task,
-            self._x_feature_spotlight_task,
+            self._board_program_task,
             self._video_render_task,
             self._vault_intake_task,
             self._vault_janitor_task,
@@ -9073,37 +9068,53 @@ Start by:
             await get_x_engine(db).run_cycle()
             await db.commit()
 
-    async def _roadmap_engine_loop(self) -> None:
-        """Board roadmap engine: on an interval, open ONE held exploration cycle.
+    async def _board_program_loop(self) -> None:
+        """Board Program engine: on an interval, originate a cycle for every
+        enabled, due program (roadmap, x_feature, and every later registry
+        entry) — replaces the old bespoke ``_roadmap_engine_loop`` /
+        ``_x_feature_spotlight_loop``.
 
-        Dormant by default — returns immediately unless ``roadmap_engine_enabled``,
-        so a standard deployment originates nothing. The engine itself only opens
-        the held exploration task; the Product Owner authors the themed cycle
-        (``propose_roadmap``) once the board dispatcher spawns it, and approved
-        items land in BACKLOG only via the CEO's per-item approve — this loop
-        never starts anything.
+        Unlike those, this loop carries no single static disablement gate:
+        each program's own enablement (legacy flag or settings-store
+        override) is checked per-tick inside ``BoardProgramEngine``, so the
+        loop always ticks and simply originates nothing when every program
+        is off. The tick interval is a fixed floor, not a live setting — it
+        only bounds how promptly a newly-due program is noticed; the actual
+        due-check inside the engine still reads the live per-program
+        interval override.
         """
-        if not settings.roadmap_engine_enabled:
-            return
-        interval = settings.roadmap_interval_seconds
-        self._record_loop_heartbeat("roadmap_engine", interval)
+        interval = self._board_program_interval_seconds()
+        self._record_loop_heartbeat("board_program", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                await self._run_roadmap_engine_cycle()
-                self._record_loop_heartbeat("roadmap_engine", interval)
+                await self._run_board_program_cycle()
+                self._record_loop_heartbeat("board_program", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.exception("roadmap-engine cycle failed")
+                logger.exception("board-program cycle failed")
 
-    async def _run_roadmap_engine_cycle(self) -> None:
-        """One roadmap-engine pass: run the engine, commit. Testable w/o the sleep."""
+    def _board_program_interval_seconds(self) -> int:
+        """Loop wake-up floor: the shortest registered program cadence,
+        floored at 300s (so an idle deployment doesn't busy-poll) and capped
+        at 3600s — due-ness staleness is bounded at 1h; ticks are cheap
+        settings reads, so a slower program cadence never needs a slower
+        tick."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        shortest = min(
+            (p.default_interval_seconds for p in PROGRAMS.values()), default=300
+        )
+        return min(3600, max(300, shortest))
+
+    async def _run_board_program_cycle(self) -> None:
+        """One board-program pass: run the engine, commit. Testable w/o the sleep."""
         from roboco.db import get_db_context
-        from roboco.services.roadmap_engine import get_roadmap_engine
+        from roboco.services.board_programs import get_board_program_engine
 
         async with get_db_context() as db:
-            await get_roadmap_engine(db).run_cycle()
+            await get_board_program_engine(db).run_due_programs()
             await db.commit()
 
     async def _vault_intake_loop(self) -> None:
@@ -9230,37 +9241,6 @@ Start by:
 
         async with get_db_context() as db:
             await get_telegram_inbound_engine(db).run_cycle()
-            await db.commit()
-
-    async def _x_feature_spotlight_loop(self) -> None:
-        """X engine: on an interval, open ONE held feature-spotlight exploration
-        for the Head of Marketing.
-
-        Dormant by default — returns immediately unless BOTH x_engine_enabled and
-        x_feature_spotlight_enabled, so a standard deployment (or one running only
-        release posts / mention replies) never spawns HoM for this.
-        """
-        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
-            return
-        interval = settings.x_feature_spotlight_interval_seconds
-        self._record_loop_heartbeat("x_feature_spotlight", interval)
-        while self._running:
-            try:
-                await asyncio.sleep(interval)
-                await self._run_x_feature_spotlight_cycle()
-                self._record_loop_heartbeat("x_feature_spotlight", interval)
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("x-feature-spotlight cycle failed")
-
-    async def _run_x_feature_spotlight_cycle(self) -> None:
-        """One feature-spotlight pass: run the engine, commit. Testable w/o sleep."""
-        from roboco.db import get_db_context
-        from roboco.services.x_engine import get_x_engine
-
-        async with get_db_context() as db:
-            await get_x_engine(db).open_feature_spotlight_exploration()
             await db.commit()
 
     async def _video_render_loop(self) -> None:
@@ -12762,13 +12742,34 @@ Start now: evidence(task_id="{task_id}")
             return
         self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("roadmap")
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
-            initial_prompt=self._build_roadmap_prompt(task),
+            initial_prompt=self._build_roadmap_prompt(task, prior_context),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_roadmap_exploration",
         )
+
+    async def _board_program_prior_context(self, program_key: str) -> str:
+        """Best-effort LEARN read for prompt injection — mirrors
+        ``_pm_respawn_should_gate``'s tracing-gap audit lookup's best-effort
+        DB posture: a read failure here must never block a spawn, only drop
+        the '## Prior cycles' section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.board_programs import get_board_program_engine
+
+            async with get_db_context() as db:
+                return await get_board_program_engine(db).prior_cycle_context(
+                    program_key
+                )
+        except Exception:
+            logger.warning(
+                "board-program: prior-cycle-context read failed (best-effort)",
+                program=program_key,
+            )
+            return ""
 
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
@@ -12797,10 +12798,11 @@ Start now: evidence(task_id="{task_id}")
             "Spawning Head of Marketing for feature-spotlight exploration",
             task_id=task_id,
         )
+        prior_context = await self._board_program_prior_context("x_feature")
         await self.spawn_agent(
             agent_id=hom_slug,
             task_id=task["id"],
-            initial_prompt=self._build_feature_spotlight_prompt(task),
+            initial_prompt=self._build_feature_spotlight_prompt(task, prior_context),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_feature_spotlight_exploration",
         )
@@ -15646,16 +15648,21 @@ Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
 those, and a substantive recorded note IS your job here.
 """
 
-    def _build_roadmap_prompt(self, task: dict[str, Any]) -> str:
+    def _build_roadmap_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
         """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
 
         Unlike the two-reviewer board-review prompt, this is PO-solo (v1 —
         see the roadmap spec's non-goals): explore, author ONE themed cycle,
         then idle. No claim/plan/delegate/complete — those verbs aren't the
-        Product Owner's."""
+        Product Owner's. ``prior_context`` is the LEARN rendering of the last
+        closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
+        when none exist yet."""
         task_id = task.get("id", "unknown")
         min_items = settings.roadmap_min_items_per_cycle
         max_items = settings.roadmap_max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
         return f"""\
 You are the Product Owner. It's time for your periodic roadmap exploration.
 
@@ -15664,7 +15671,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-
+{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -15686,13 +15693,20 @@ Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
 that is not your job here, and the gateway will reject those verbs.
 """
 
-    def _build_feature_spotlight_prompt(self, task: dict[str, Any]) -> str:
-        """Prompt for the Head of Marketing's one-shot feature-spotlight cycle."""
+    def _build_feature_spotlight_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot feature-spotlight cycle.
+
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
         task_id = task.get("id", "unknown")
         markers_dict = task.get("orchestration_markers") or {}
         seen_line = _format_seen_features(markers_dict)
         shipped_line = _format_shipped_since(markers_dict)
         rejected_line = _format_rejected_spotlights(markers_dict)
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
         return f"""\
 You are the Head of Marketing. It's time for your periodic feature-spotlight cycle.
 
@@ -15709,7 +15723,7 @@ ALREADY COVERED — do not repeat: {seen_line}
 SHIPPED SINCE THE LAST CYCLE (CHANGELOG.md): {shipped_line}
 
 RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
-
+{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.

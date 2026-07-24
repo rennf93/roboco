@@ -65,6 +65,7 @@ class ProjectResponse(BaseModel):
     monthly_spend_usd: float | None = None
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
+    board_programs: list[str] | None = None
 
     # Runtime state
     workspace_path: str | None = None
@@ -221,6 +222,7 @@ class ProjectUpdateRequest(BaseModel):
     monthly_budget_usd: float | None = Field(default=None, gt=0)
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
+    board_programs: list[str] | None = None
 
     # State
     is_active: bool | None = None
@@ -314,6 +316,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         monthly_budget_usd=getattr(project, "monthly_budget_usd", None),
         sandbox_services=project.sandbox_services,
         sandbox_extensions=project.sandbox_extensions,
+        board_programs=project.board_programs,
         workspace_path=project.workspace_path,
         last_synced_at=project.last_synced_at,
         head_commit=project.head_commit,

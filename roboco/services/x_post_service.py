@@ -209,6 +209,7 @@ class XPostService(BaseService):
         await self.session.commit()
         if task.source == X_FEATURE_SOURCE:
             await self._open_spotlight_video(task, body)
+            await self._record_learn(task, "approved")
         return XPostExecuteResult(
             status="posted", tweet_id=result.tweet_id, detail=result.detail
         )
@@ -252,6 +253,27 @@ class XPostService(BaseService):
             )
         except Exception as exc:
             logger.warning("spotlight video draft failed (best-effort): %s", exc)
+
+    async def _record_learn(
+        self, task: TaskTable, verdict: str, reason: str | None = None
+    ) -> None:
+        """Best-effort LEARN for the x_feature Board Program — never allowed
+        to affect the already-decided approve/reject, mirrors
+        ``_open_spotlight_video``'s posture. ``item_ref`` is the feature slug
+        (stamped on ``x_feature_ref`` at draft-materialization time), falling
+        back to the task id when the marker is somehow missing."""
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            ref = markers.get_x_feature_ref(task) or {}
+            item_ref = str(ref.get("slug") or task.id)
+            await get_board_program_engine(self.session).record_decision(
+                "x_feature", item_ref, verdict, reason
+            )
+        except Exception as exc:
+            logger.warning(
+                "x-post: LEARN record_decision failed (best-effort): %s", exc
+            )
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
         """Record the CEO's reason, cancel the draft (never posted), and — for
@@ -305,8 +327,12 @@ class XPostService(BaseService):
             await self.session.flush()
         finally:
             await self._release_lock(lock_key, token)
-        # Outside the lock, after the cancel is flushed: a non-blank reason
-        # schedules the redraft. Never inline here (see _schedule_redraft).
+        # Outside the lock, after the cancel is flushed: LEARN records the
+        # rejection (x_feature source only — mirrors _post's approve-side
+        # hook), then a non-blank reason schedules the redraft. Never inline
+        # in the critical section above (see _schedule_redraft).
+        if locked.source == X_FEATURE_SOURCE:
+            await self._record_learn(locked, "rejected", reason)
         if reason.strip():
             self._schedule_redraft(task_id, reason)
         return locked

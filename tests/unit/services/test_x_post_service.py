@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, BoardProgramCycleTable, ProjectTable, TaskTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -28,6 +29,7 @@ from roboco.models.base import (
 from roboco.models.base import TaskNature as TN
 from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
+from roboco.services import board_programs as bp_module
 from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
@@ -44,7 +46,7 @@ from roboco.services.x_post_service import (
     XPostService,
     get_x_post_service,
 )
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -660,6 +662,136 @@ async def test_approve_does_not_flush_edited_body_before_lock(
     assert result.status == "already_posted"
     await db_session.refresh(task)
     assert markers.get_x_draft_body(task) == original_body
+
+
+# --------------------------------------------------------------------------- #
+# LEARN wiring (Task 5): approve/reject of an X_FEATURE_SOURCE draft best-
+# effort records onto the open board_program_cycles row for "x_feature" —
+# other X sources (x_post/x_reply) are not board-program-backed and must
+# never record. See test_board_program_engine.py for record_decision's own
+# counter/close-on-terminal coverage.
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_cycle_ledger_row(session: AsyncSession, task: TaskTable) -> None:
+    session.add(
+        BoardProgramCycleTable(
+            program_key="x_feature",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+
+
+async def _cycle_row_for_task(
+    session: AsyncSession, task_id: UUID
+) -> BoardProgramCycleTable:
+    """The board_program_cycles row THIS task's approve/reject decided —
+    scoped by exploration_task_id rather than a bare program_key filter, since
+    ``_post()``'s real ``session.commit()`` durably leaks rows from earlier
+    tests into this file's shared session-scoped test DB (documented above
+    `_delete_tasks`); a global program_key query would collide across tests."""
+    return (
+        await session.execute(
+            select(BoardProgramCycleTable).where(
+                BoardProgramCycleTable.exploration_task_id == task_id
+            )
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_records_learn_decision(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_feature_draft(db_session)
+    await _seed_cycle_ledger_row(db_session, task)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_approved == ONE
+    assert {
+        "item_ref": _FEATURE_SLUG,
+        "verdict": "approved",
+        "reason": None,
+    } in row.decisions
+
+
+@pytest.mark.asyncio
+async def test_reject_feature_spotlight_records_learn_decision_with_reason(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_feature_draft(db_session)
+    await _seed_cycle_ledger_row(db_session, task)
+    with _lock_free():
+        await _svc(db_session).reject(_id(task), "not on-brand")
+
+    row = await _cycle_row_for_task(db_session, _id(task))
+    assert row.items_rejected == ONE
+    assert {
+        "item_ref": _FEATURE_SLUG,
+        "verdict": "rejected",
+        "reason": "not on-brand",
+    } in row.decisions
+
+
+@pytest.mark.asyncio
+async def test_approve_plain_x_post_does_not_record_learn(
+    db_session: AsyncSession,
+) -> None:
+    """x_post/x_reply drafts are not board-program-backed — approving one
+    must never touch the board_program_cycles ledger."""
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+
+    rows = (
+        (
+            await db_session.execute(
+                select(BoardProgramCycleTable).where(
+                    BoardProgramCycleTable.exploration_task_id == task.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_approve_feature_spotlight_survives_learn_recording_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record_decision blow-up must never break the already-succeeded post."""
+    task = await _seed_feature_draft(db_session)
+    await _seed_cycle_ledger_row(db_session, task)
+    client = _StubClient()
+
+    async def _boom(_self: object, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("learn boom")
+
+    monkeypatch.setattr(bp_module.BoardProgramEngine, "record_decision", _boom)
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
 
 
 async def _fresh_session(url: str) -> tuple[AsyncSession, AsyncEngine]:

@@ -588,6 +588,15 @@ class ProjectTable(Base):
         JSONB, nullable=True
     )
 
+    # Board Program per-project scoping (migration 088). A project-scoped
+    # program key ("pest_control") opts this project INTO that program's
+    # cycles; an org-scoped key prefixed "!" ("!roadmap") opts this project
+    # OUT of that program's output. Null = participates in no project-scoped
+    # program and is excluded from no org-scoped program's output (parity
+    # default). Validated by the Project pydantic model
+    # (validate_board_programs_field).
+    board_programs: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
     # Access Control
     assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
     allowed_agents: Mapped[list[PyUUID] | None] = mapped_column(
@@ -2544,6 +2553,48 @@ class VaultSeenNoteTable(Base):
         UniqueConstraint(
             "note_path", "content_hash", name="uq_vault_seen_notes_path_hash"
         ),
+    )
+
+
+# =============================================================================
+# BOARD PROGRAMS
+# =============================================================================
+
+
+class BoardProgramCycleTable(Base):
+    """LEARN ledger — one row per Board Program cycle (roadmap, x_feature, ...).
+
+    ``BoardProgramEngine.run_due_programs`` opens a row when a program's
+    originate callable (``RoadmapEngine.run_cycle`` / ``XEngine.
+    open_feature_spotlight_exploration``) returns a task; an open row
+    (``closed_at IS NULL``) is the one-cycle-at-a-time dedup gate. ``decisions``
+    is append-only: one entry per CEO approve/reject, ``{item_ref, verdict,
+    reason?}``. ``exploration_task_id`` is nullable so a deleted task doesn't
+    take cycle history with it.
+    """
+
+    __tablename__ = "board_program_cycles"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    program_key: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    exploration_task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    items_proposed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_approved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_rejected: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    decisions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
     )
 
 

@@ -7,11 +7,18 @@ Mirrors the X-post-service / release-proposal-service tests.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    AuditLogTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -23,6 +30,7 @@ from roboco.models.base import (
 from roboco.models.base import TaskNature as TN
 from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
+from roboco.services import board_programs as bp_module
 from roboco.services.roadmap_service import RoadmapService, get_roadmap_service
 from roboco.services.task import ROADMAP_ITEM_SOURCE, ROADMAP_SOURCE
 from sqlalchemy import select
@@ -261,6 +269,25 @@ async def test_approve_unknown_project_slug_is_invalid_state(
 
 
 @pytest.mark.asyncio
+async def test_approve_excluded_project_is_invalid_state(
+    db_session: AsyncSession,
+) -> None:
+    """Task 6b: a project carrying '!roadmap' refuses materialize-side, even
+    if propose_roadmap's own point-in-time check somehow let the item
+    through (e.g. the project was excluded AFTER the PO proposed it)."""
+    project = await _seed_project(db_session, "excluded-svc")
+    project.board_programs = ["!roadmap"]
+    await db_session.flush()
+    task = await _seed_cycle(db_session, project_slug="excluded-svc")
+    result = await _svc(db_session).approve_item(
+        _id(task), "item-0", created_by=CEO_UUID
+    )
+    assert result is not None
+    assert result.status == "invalid_state"
+    assert "excluded" in result.detail
+
+
+@pytest.mark.asyncio
 async def test_unknown_task_returns_none(db_session: AsyncSession) -> None:
     result = await _svc(db_session).approve_item(uuid4(), "item-0", created_by=CEO_UUID)
     assert result is None
@@ -321,3 +348,87 @@ async def test_maybe_complete_cycle_emits_audit(db_session: AsyncSession) -> Non
     assert audit, (
         "expected a task.completed audit row for the PENDING -> COMPLETED transition"
     )
+
+
+# --------------------------------------------------------------------------- #
+# LEARN wiring (Task 5): approve/reject best-effort record onto the open
+# board_program_cycles row for "roadmap" — see test_board_program_engine.py
+# for record_decision's own counter/close-on-terminal coverage.
+# --------------------------------------------------------------------------- #
+
+
+async def _seed_cycle_ledger_row(session: AsyncSession, task: TaskTable) -> None:
+    session.add(
+        BoardProgramCycleTable(
+            program_key="roadmap",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_approve_records_learn_decision(db_session: AsyncSession) -> None:
+    await _seed_project(db_session, "backend-svc")
+    task = await _seed_cycle(db_session, project_slug="backend-svc")
+    await _seed_cycle_ledger_row(db_session, task)
+    await _svc(db_session).approve_item(_id(task), "item-0", created_by=CEO_UUID)
+
+    row = (
+        await db_session.execute(
+            select(BoardProgramCycleTable).where(
+                BoardProgramCycleTable.program_key == "roadmap"
+            )
+        )
+    ).scalar_one()
+    assert row.items_approved == ONE
+    assert {
+        "item_ref": "item-0",
+        "verdict": "approved",
+        "reason": None,
+    } in row.decisions
+
+
+@pytest.mark.asyncio
+async def test_reject_records_learn_decision_with_reason(
+    db_session: AsyncSession,
+) -> None:
+    await _seed_project(db_session, "backend-svc")
+    task = await _seed_cycle(db_session, project_slug="backend-svc")
+    await _seed_cycle_ledger_row(db_session, task)
+    await _svc(db_session).reject_item(_id(task), "item-0", "not a priority")
+
+    row = (
+        await db_session.execute(
+            select(BoardProgramCycleTable).where(
+                BoardProgramCycleTable.program_key == "roadmap"
+            )
+        )
+    ).scalar_one()
+    assert row.items_rejected == ONE
+    assert {
+        "item_ref": "item-0",
+        "verdict": "rejected",
+        "reason": "not a priority",
+    } in row.decisions
+
+
+@pytest.mark.asyncio
+async def test_approve_survives_learn_recording_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record_decision blow-up must never break the CEO's approve."""
+    await _seed_project(db_session, "backend-svc")
+    task = await _seed_cycle(db_session, project_slug="backend-svc")
+    await _seed_cycle_ledger_row(db_session, task)
+
+    async def _boom(_self: object, *_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("learn boom")
+
+    monkeypatch.setattr(bp_module.BoardProgramEngine, "record_decision", _boom)
+    result = await _svc(db_session).approve_item(
+        _id(task), "item-0", created_by=CEO_UUID
+    )
+    assert result is not None
+    assert result.status == "approved"

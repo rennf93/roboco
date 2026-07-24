@@ -21,6 +21,7 @@ from roboco.db.tables import (
     AgentTable,
     NotificationTable,
     ProjectTable,
+    SystemSettingTable,
     TaskTable,
     XSeenFeatureTable,
     XSeenMentionTable,
@@ -743,6 +744,39 @@ async def test_feature_spotlight_subswitch_off_creates_no_exploration(
     the engine still drafts release posts/mention replies via the other paths."""
     await _seed(db_session)
     _enable(monkeypatch, x_feature_spotlight_enabled=False)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_settings_store_true_overrides_legacy_false(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double-flag regression this guards: a settings-store True must
+    win over a False legacy flag pair, not be silently overridden by it."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.x_feature.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_settings_store_false_overrides_legacy_true(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    db_session.add(
+        SystemSettingTable(key="board_program.x_feature.enabled", value="false")
+    )
+    await db_session.flush()
     engine = x_engine_module.XEngine(db_session, client=_FakeClient())
     task = await engine.open_feature_spotlight_exploration()
     assert task is None

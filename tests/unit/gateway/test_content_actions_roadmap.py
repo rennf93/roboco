@@ -62,6 +62,20 @@ def _valid_items(n: int) -> list[dict[str, Any]]:
     return [_valid_item(i) for i in range(n)]
 
 
+@pytest.fixture(autouse=True)
+def _default_project_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Task 6b's exclusion check (``_reject_excluded_roadmap_project``) looks
+    up ``project_slug`` on every propose_roadmap call. Every test predating
+    that check builds its ``ContentActions`` with a bare ``MagicMock``
+    session, so default the lookup to "unresolvable" (None -> not rejected,
+    same as an unknown slug always behaved) instead of making every one of
+    them mock a project service it isn't testing. Tests exercising the
+    exclusion check override this target explicitly."""
+    stub = MagicMock()
+    stub.get_by_slug = AsyncMock(return_value=None)
+    monkeypatch.setattr("roboco.services.project.get_project_service", lambda _s: stub)
+
+
 @pytest.mark.asyncio
 async def test_propose_roadmap_forbidden_for_non_po() -> None:
     env = await _actions("head_marketing").propose_roadmap(
@@ -249,6 +263,67 @@ async def test_propose_roadmap_ignores_cycle_assigned_to_another_agent(
         agent_id=uuid4(), cycle_goal="Close onboarding friction", items=_valid_items(3)
     )
     assert env.error == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_propose_roadmap_rejects_item_targeting_excluded_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 6b: an item targeting a project carrying '!roadmap' is refused
+    at propose time, naming the excluded project — before the PO even
+    finishes authoring the cycle, not just at the CEO's later approve."""
+    monkeypatch.setattr(cfg, "roadmap_min_items_per_cycle", 1)
+    monkeypatch.setattr(cfg, "roadmap_max_items_per_cycle", 7)
+    agent_id = uuid4()
+    cycle_task = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_roadmap_cycles = AsyncMock(return_value=[cycle_task])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+
+    excluded_project = MagicMock(board_programs=["!roadmap"])
+    project_svc = MagicMock()
+    project_svc.get_by_slug = AsyncMock(return_value=excluded_project)
+    monkeypatch.setattr(
+        "roboco.services.project.get_project_service", lambda _s: project_svc
+    )
+
+    bad = _valid_item(0)
+    bad["project_slug"] = "excluded-proj"
+    env = await _actions("product_owner").propose_roadmap(
+        agent_id=agent_id, cycle_goal="Close onboarding friction", items=[bad]
+    )
+    assert env.error == "invalid_state"
+    assert "excluded-proj" in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_propose_roadmap_allows_unresolvable_project_slug_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unknown project_slug is not this check's job — it surfaces
+    downstream at approve/materialize time, unchanged from before Task 6b."""
+    monkeypatch.setattr(cfg, "roadmap_min_items_per_cycle", 1)
+    monkeypatch.setattr(cfg, "roadmap_max_items_per_cycle", 7)
+    agent_id = uuid4()
+    cycle_task = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_roadmap_cycles = AsyncMock(return_value=[cycle_task])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+
+    project_svc = MagicMock()
+    project_svc.get_by_slug = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "roboco.services.project.get_project_service", lambda _s: project_svc
+    )
+
+    actions = _actions("product_owner")
+    actions.task.session.flush = AsyncMock()
+    bad = _valid_item(0)
+    bad["project_slug"] = "no-such-project"
+    env = await actions.propose_roadmap(
+        agent_id=agent_id, cycle_goal="Close onboarding friction", items=[bad]
+    )
+    assert env.error is None
 
 
 @pytest.mark.asyncio

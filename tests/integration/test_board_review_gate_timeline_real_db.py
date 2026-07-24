@@ -76,15 +76,23 @@ async def board_gate_setup(
     db_session: AsyncSession, _test_database_url: str
 ) -> AsyncIterator[dict]:
     """Seed agents + a board/coordination task and point the global DB holder
-    at the test database so the orchestrator's own session writes land here."""
-    db_session.add_all(
-        [
-            _agent(_SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
-            _agent(_CEO_UUID, "ceo", AgentRole.CEO, None),
-            _agent(_PO_UUID, _PO_SLUG, AgentRole.PRODUCT_OWNER, Team.BOARD),
-            _agent(_HOM_UUID, _HOM_SLUG, AgentRole.HEAD_MARKETING, Team.BOARD),
-        ]
-    )
+    at the test database so the orchestrator's own session writes land here.
+
+    Existence-checked per row (mirrors ``test_roadmap_routes.py``'s
+    ``_seed_ceo`` / ``test_feature_spotlight.py``'s
+    ``_seed_system_and_secretary``): ``db_session`` is a real,
+    cross-test-persistent database within one pytest run, and these are the
+    same fixed foundation UUIDs another integration suite may have already
+    committed (a write-route test that explicitly commits, e.g. the Board
+    Programs API's run-now) — an unconditional insert would collide."""
+    for uuid, slug, role, team in (
+        (_SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
+        (_CEO_UUID, "ceo", AgentRole.CEO, None),
+        (_PO_UUID, _PO_SLUG, AgentRole.PRODUCT_OWNER, Team.BOARD),
+        (_HOM_UUID, _HOM_SLUG, AgentRole.HEAD_MARKETING, Team.BOARD),
+    ):
+        if await db_session.get(AgentTable, UUID(uuid)) is None:
+            db_session.add(_agent(uuid, slug, role, team))
     await db_session.flush()
 
     # A board/coordination task: project_id NULL (git-exempt), team=board,

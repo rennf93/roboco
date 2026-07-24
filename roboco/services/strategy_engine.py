@@ -90,7 +90,15 @@ class StrategyEngine(BaseService):
         return observations
 
     async def run_cycle(self) -> list[StrategyObservation]:
-        """Assess and notify the CEO. No-op unless the engine is enabled."""
+        """Assess and notify the CEO. No-op unless the engine is enabled.
+
+        An ``idle`` observation additionally triggers a roadmap Board Program
+        cycle (``BoardProgramEngine.open_program_cycle`` — enabled+dedup
+        checked there, so a still-open cycle makes this a no-op); the nudge
+        text reflects the outcome instead of only describing the drift.
+        ``stranded_blocked`` stays notify-only (Coroner is Phase 2 — its
+        event hook lands then).
+        """
         if not settings.strategy_engine_enabled:
             return []
         observations = await self.assess()
@@ -98,12 +106,39 @@ class StrategyEngine(BaseService):
             return []
         notifier = NotificationService()
         for obs in observations:
+            body = f"[strategy engine] {obs.summary}\n\n{obs.detail}"
+            if obs.kind == "idle":
+                body = f"{body}\n\n{await self._trigger_roadmap_cycle()}"
             await notifier.send_ack_notification(
                 from_agent="system",
                 to_agent="ceo",
-                body=f"[strategy engine] {obs.summary}\n\n{obs.detail}",
+                body=body,
             )
         return observations
+
+    async def _trigger_roadmap_cycle(self) -> str:
+        """Best-effort: open a roadmap cycle via the Board Program engine.
+
+        A DB/engine failure here must never break the idle notification —
+        degrades to a plain "attempted" line rather than raising.
+        """
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            task = await get_board_program_engine(self.session).open_program_cycle(
+                "roadmap"
+            )
+        except Exception:
+            self.log.warning(
+                "strategy-engine: roadmap-cycle trigger failed (best-effort)"
+            )
+            return "Attempted to open a roadmap exploration cycle (failed; see logs)."
+        if task is not None:
+            return "A roadmap exploration cycle was opened for the Product Owner."
+        return (
+            "A roadmap exploration cycle is already open (or the roadmap "
+            "program is disabled)."
+        )
 
 
 def get_strategy_engine(session: AsyncSession) -> StrategyEngine:

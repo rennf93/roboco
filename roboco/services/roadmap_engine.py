@@ -4,8 +4,10 @@ Mirrors the ReleaseManagerEngine "detect -> originate a CEO-gated artifact ->
 hold" shape, but the artifact here is a themed cycle the Product Owner
 AUTHORS rather than a report the engine assembles itself:
 
-* **Default OFF.** ``roadmap_engine_enabled`` is False, so the loop never
-  runs and nothing is originated.
+* **Default OFF.** Armed via ``roboco.services.board_programs.program_armed``
+  (the settings-store ``board_program.roadmap.enabled`` override, else the
+  legacy ``roadmap_engine_enabled`` flag) — off either way by default, so
+  the loop never runs and nothing is originated.
 * **One open cycle at a time.** Dedup by ``source=board_roadmap`` non-terminal
   tasks — a new cycle is never originated while one is still awaiting the
   Product Owner's authoring or the CEO's per-item decisions.
@@ -25,6 +27,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
+from roboco.services.board_programs import program_armed
 from roboco.services.project import get_project_service
 from roboco.services.task import ROADMAP_SOURCE, TaskCreateRequest, get_task_service
 
@@ -54,12 +57,13 @@ class RoadmapEngine(BaseService):
     async def run_cycle(self) -> TaskTable | None:
         """Originate one held exploration task, or None (no-op).
 
-        No-ops when the flag is off, a cycle is already open, or the RoboCo
-        project isn't resolvable. Never authors content itself — the Product
-        Owner does, via ``propose_roadmap`` once spawned by the board
+        No-ops when the program isn't armed (``program_armed`` — settings-store
+        override, else the legacy flag), a cycle is already open, or the
+        RoboCo project isn't resolvable. Never authors content itself — the
+        Product Owner does, via ``propose_roadmap`` once spawned by the board
         dispatcher.
         """
-        if not settings.roadmap_engine_enabled:
+        if not await program_armed(self.session, "roadmap"):
             return None
         task_svc = get_task_service(self.session)
         if await task_svc.list_open_roadmap_cycles():

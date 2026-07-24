@@ -19,6 +19,7 @@ from roboco.api.middleware import setup_middleware
 from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
+from roboco.api.routes.board_programs import router as board_programs_router
 from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.dashboard import router as dashboard_router
@@ -462,6 +463,14 @@ def create_app() -> FastAPI:
         roadmap_router,
         prefix=f"{api_prefix}/roadmap",
         tags=["Roadmap"],
+    )
+
+    # Board Programs — the generic registry status + off-schedule "run now"
+    # (roadmap + x_feature today; every later program rides the same route).
+    app.include_router(
+        board_programs_router,
+        prefix=f"{api_prefix}/board-programs",
+        tags=["Board Programs"],
     )
 
     # Video engine — the CEO requests an on-demand marketing video; the

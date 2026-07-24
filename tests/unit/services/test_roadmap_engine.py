@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import AgentTable, ProjectTable, SystemSettingTable
 from roboco.foundation import identity as _foundation
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskStatus as TS
@@ -114,6 +114,38 @@ async def test_dedupe_one_open_cycle(
     second = await RoadmapEngine(db_session).run_cycle()
     assert second is None
     assert len(await get_task_service(db_session).list_open_roadmap_cycles()) == ONE
+
+
+@pytest.mark.asyncio
+async def test_settings_store_true_overrides_legacy_false(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double-flag regression this guards: a settings-store True must
+    win over a False legacy flag, not be silently overridden by it."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "roadmap_engine_enabled", False)
+    monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.roadmap.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = RoadmapEngine(db_session)
+    assert await engine.run_cycle() is not None
+
+
+@pytest.mark.asyncio
+async def test_settings_store_false_overrides_legacy_true(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    db_session.add(
+        SystemSettingTable(key="board_program.roadmap.enabled", value="false")
+    )
+    await db_session.flush()
+    engine = RoadmapEngine(db_session)
+    assert await engine.run_cycle() is None
+    assert await get_task_service(db_session).list_open_roadmap_cycles() == []
 
 
 @pytest.mark.asyncio
