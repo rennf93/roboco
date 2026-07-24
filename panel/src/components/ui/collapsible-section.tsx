@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { exceedsReadabilityThreshold } from "@/lib/content-readability";
@@ -19,7 +20,7 @@ import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 interface CollapsibleSectionProps {
   /** Card title content (icon + text + badges as needed) */
   title: ReactNode;
-  /** Right-aligned header controls (edit/preview toggles, buttons) — always visible */
+  /** Right-aligned header controls (edit/preview toggles, buttons) — always visible. "button" variant ignores this. */
   actions?: ReactNode;
   /** Controlled open state (e.g. force-open while a section is mid-edit). Omit for uncontrolled. */
   open?: boolean;
@@ -39,6 +40,15 @@ interface CollapsibleSectionProps {
   className?: string;
   headerClassName?: string;
   children: ReactNode;
+  /**
+   * "card" (default): the existing Card/CardHeader/CardContent chrome used
+   * across task-detail tabs. "button": no Card, no hover tooltip — a
+   * full-width ghost-button trigger (title left, chevron right), for a
+   * dialog's inline "Advanced Options" disclosure.
+   */
+  variant?: "card" | "button";
+  /** "button" variant only: CollapsibleContent wrapper classes (default "space-y-4 pt-4"). */
+  contentClassName?: string;
 }
 
 /**
@@ -66,6 +76,8 @@ export function CollapsibleSection({
   className,
   headerClassName,
   children,
+  variant = "card",
+  contentClassName,
 }: CollapsibleSectionProps) {
   // Resolve the starting state: explicit defaultOpen > content-derived > default to true
   const resolvedDefaultOpen =
@@ -77,6 +89,40 @@ export function CollapsibleSection({
     onOpenChange?.(next);
     if (openProp === undefined) setInternalOpen(next);
   };
+
+  const motionClassName = cn(
+    "duration-200 data-[state=closed]:animate-out data-[state=open]:animate-in",
+    "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+    "data-[state=closed]:slide-out-to-top-1 data-[state=open]:slide-in-from-top-1",
+  );
+
+  if (variant === "button") {
+    return (
+      <Collapsible open={open} onOpenChange={setOpen} className={className}>
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            type="button"
+            className={cn("w-full justify-between", headerClassName)}
+          >
+            {title}
+            <ChevronDown
+              aria-hidden="true"
+              className={cn(
+                "h-4 w-4 shrink-0 transition-transform duration-200",
+                !open && "-rotate-90",
+              )}
+            />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent
+          className={cn(motionClassName, contentClassName ?? "space-y-4 pt-4")}
+        >
+          {children}
+        </CollapsibleContent>
+      </Collapsible>
+    );
+  }
 
   return (
     <Card className={className}>
@@ -113,13 +159,7 @@ export function CollapsibleSection({
             )}
           </div>
         </CardHeader>
-        <CollapsibleContent
-          className={cn(
-            "duration-200 data-[state=closed]:animate-out data-[state=open]:animate-in",
-            "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
-            "data-[state=closed]:slide-out-to-top-1 data-[state=open]:slide-in-from-top-1",
-          )}
-        >
+        <CollapsibleContent className={motionClassName}>
           <CardContent>{children}</CardContent>
         </CollapsibleContent>
       </Collapsible>

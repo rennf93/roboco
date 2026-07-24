@@ -6,6 +6,21 @@ import { XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+// Three width buckets collapsing 10+ ad-hoc DialogContent max-w overrides
+// audited across panel/src. Chosen to minimize visual drift from what was
+// already shipped: sm covers the compact single-purpose dialogs (previously
+// max-w-sm/max-w-md/~425px); md equals DialogContent's own unstyled default
+// (sm:max-w-lg) and covers the common ~480-525px form dialogs (project/
+// product create-edit, PR/repo pickers); lg covers the wider edit-task
+// dialog (max-w-2xl). A dialog whose width is load-bearing and far from any
+// bucket (a wide multi-column form, a custom-positioned command palette)
+// keeps its own explicit class with a one-line comment instead.
+export const DIALOG_SIZES = {
+  sm: "sm:max-w-md",
+  md: "sm:max-w-lg",
+  lg: "max-w-2xl",
+} as const;
+
 function Dialog({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {

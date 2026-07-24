@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
 import { HelpTip } from "@/components/ui/help-tip";
-import { CollapsibleSection } from "./collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Edit3, Eye, Check, X, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 

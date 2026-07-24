@@ -13,9 +13,11 @@ import { AgentSelector } from "@/components/agents/agent-selector";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import {
   Select,
@@ -96,7 +98,7 @@ export function CreateFlagDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className={DIALOG_SIZES.md}>
         <DialogHeader>
           <DialogTitle>Create Quality Flag</DialogTitle>
           <DialogDescription>
@@ -194,7 +196,7 @@ export function CreateFlagDialog({
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 pt-4">
+          <DialogFooter className="pt-4">
             <HelpTip label="Discards this draft and closes the dialog">
               <Button
                 type="button"
@@ -214,7 +216,7 @@ export function CreateFlagDialog({
                 </Button>
               </span>
             </HelpTip>
-          </div>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

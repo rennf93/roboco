@@ -12,7 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
-import { CollapsibleSection } from "./collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import {
   Select,
   SelectContent,
@@ -312,7 +312,11 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
           </span>
           {!isAdding && (
             <HelpTip label="Add a new sub-task to this plan">
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
                 <Plus className="h-4 w-4 mr-1" />
                 Add
               </Button>

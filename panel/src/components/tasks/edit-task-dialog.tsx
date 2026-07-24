@@ -9,9 +9,11 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import {
   Select,
@@ -20,12 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { MarkdownEditor } from "./markdown-editor";
 import { AcceptanceCriteriaEditor } from "./acceptance-criteria-editor";
@@ -202,7 +200,9 @@ function EditTaskDialogInner({
 
   return (
     <Dialog open={true} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className={`${DIALOG_SIZES.lg} max-h-[90vh] overflow-y-auto`}
+      >
         <DialogHeader>
           <DialogTitle>Edit Task</DialogTitle>
           <DialogDescription>
@@ -321,149 +321,140 @@ function EditTaskDialogInner({
           />
 
           {/* Advanced Options */}
-          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-            <CollapsibleTrigger asChild>
-              <Button
-                variant="ghost"
-                type="button"
-                className="w-full justify-between"
-              >
-                <HelpTip label="Agent assignment, target date, task type, and repo routing.">
-                  <span>Advanced Options</span>
-                </HelpTip>
-                {advancedOpen ? (
-                  <ChevronDown className="h-4 w-4" />
-                ) : (
-                  <ChevronRight className="h-4 w-4" />
-                )}
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-4 pt-4">
-              {/* Assigned To */}
-              <div className="space-y-2">
-                <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
-                  <Label>Assigned To</Label>
-                </HelpTip>
-                <AgentSelector
-                  value={assignedTo}
-                  onChange={setAssignedTo}
-                  placeholder="Unassigned"
-                  filterByTeam={team}
-                />
-              </div>
+          <CollapsibleSection
+            variant="button"
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            title={
+              <HelpTip label="Agent assignment, target date, task type, and repo routing.">
+                <span>Advanced Options</span>
+              </HelpTip>
+            }
+          >
+            {/* Assigned To */}
+            <div className="space-y-2">
+              <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
+                <Label>Assigned To</Label>
+              </HelpTip>
+              <AgentSelector
+                value={assignedTo}
+                onChange={setAssignedTo}
+                placeholder="Unassigned"
+                filterByTeam={team}
+              />
+            </div>
 
-              {/* Target Date */}
-              <div className="space-y-2">
-                <HelpTip label="Informational deadline only — nothing in the lifecycle enforces or auto-escalates on it.">
-                  <Label>Target Date</Label>
-                </HelpTip>
-                <Input
-                  type="datetime-local"
-                  value={targetDate}
-                  onChange={(e) => setTargetDate(e.target.value)}
-                />
-              </div>
+            {/* Target Date */}
+            <div className="space-y-2">
+              <HelpTip label="Informational deadline only — nothing in the lifecycle enforces or auto-escalates on it.">
+                <Label>Target Date</Label>
+              </HelpTip>
+              <Input
+                type="datetime-local"
+                value={targetDate}
+                onChange={(e) => setTargetDate(e.target.value)}
+              />
+            </div>
 
-              {/* Sequence */}
-              <div className="space-y-2">
-                <HelpTip label="Order within siblings under the same parent — lower runs first. A sibling with a lower sequence must reach a terminal state before this one is claimable; ties run in parallel.">
-                  <Label htmlFor="edit-sequence">Sequence</Label>
-                </HelpTip>
-                <Input
-                  id="edit-sequence"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={sequence}
-                  onChange={(e) => setSequence(e.target.value)}
-                />
-              </div>
+            {/* Sequence */}
+            <div className="space-y-2">
+              <HelpTip label="Order within siblings under the same parent — lower runs first. A sibling with a lower sequence must reach a terminal state before this one is claimable; ties run in parallel.">
+                <Label htmlFor="edit-sequence">Sequence</Label>
+              </HelpTip>
+              <Input
+                id="edit-sequence"
+                type="number"
+                min="0"
+                step="1"
+                value={sequence}
+                onChange={(e) => setSequence(e.target.value)}
+              />
+            </div>
 
-              {/* Budget (USD) */}
-              <div className="space-y-2">
-                <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = no cap.">
-                  <Label>Budget (USD)</Label>
-                </HelpTip>
-                <Input
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  placeholder="No cap"
-                  value={budgetUsd}
-                  onChange={(e) => setBudgetUsd(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Must be greater than 0 — a 0 budget would block the task
-                  before it spends a cent. Leave blank for no cap: budgets
-                  enforce only when explicitly set.
+            {/* Budget (USD) */}
+            <div className="space-y-2">
+              <HelpTip label="Caps this task's own agent-spawn spend; only enforced when the task-budgets feature flag is on. Empty = no cap.">
+                <Label>Budget (USD)</Label>
+              </HelpTip>
+              <Input
+                type="number"
+                min="0.01"
+                step="0.01"
+                placeholder="No cap"
+                value={budgetUsd}
+                onChange={(e) => setBudgetUsd(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Must be greater than 0 — a 0 budget would block the task before
+                it spends a cent. Leave blank for no cap: budgets enforce only
+                when explicitly set.
+              </p>
+              {spendUsd != null && (
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="task-spend"
+                >
+                  Spent: ${spendUsd.toFixed(2)}
+                  {budgetUsd.trim() && !Number.isNaN(Number(budgetUsd))
+                    ? ` / $${Number(budgetUsd).toFixed(2)}`
+                    : ""}
                 </p>
-                {spendUsd != null && (
-                  <p
-                    className="text-xs text-muted-foreground"
-                    data-testid="task-spend"
-                  >
-                    Spent: ${spendUsd.toFixed(2)}
-                    {budgetUsd.trim() && !Number.isNaN(Number(budgetUsd))
-                      ? ` / $${Number(budgetUsd).toFixed(2)}`
-                      : ""}
+              )}
+            </div>
+
+            {/* Git Configuration Section */}
+            <div className="space-y-4 pt-4 border-t">
+              <div className="flex items-center gap-2 mb-2">
+                <GitBranch className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium text-sm">
+                  Git & Work Configuration
+                </span>
+              </div>
+
+              {/* Task Type */}
+              <div className="space-y-2">
+                <HelpTip label={TASK_TYPE_DESCRIPTIONS[taskType]}>
+                  <Label>Task Type</Label>
+                </HelpTip>
+                <Select
+                  value={taskType}
+                  onValueChange={(v) => setTaskType(v as TaskType)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TASK_TYPE_OPTIONS.map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Project Selector (required - all tasks follow git workflow) */}
+              <div className="space-y-2">
+                <HelpTip label="The repo the branch/PR are opened against. Locked once a branch exists — see below.">
+                  <Label>Project</Label>
+                </HelpTip>
+                <ProjectSelector
+                  value={projectId || null}
+                  onChange={(value) => setProjectId(value || "")}
+                  placeholder="Select project..."
+                  disabled={!!task.branch_name}
+                />
+                {task.branch_name && (
+                  <p className="text-xs text-muted-foreground">
+                    Project cannot be changed after work has started
                   </p>
                 )}
               </div>
-
-              {/* Git Configuration Section */}
-              <div className="space-y-4 pt-4 border-t">
-                <div className="flex items-center gap-2 mb-2">
-                  <GitBranch className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium text-sm">
-                    Git & Work Configuration
-                  </span>
-                </div>
-
-                {/* Task Type */}
-                <div className="space-y-2">
-                  <HelpTip label={TASK_TYPE_DESCRIPTIONS[taskType]}>
-                    <Label>Task Type</Label>
-                  </HelpTip>
-                  <Select
-                    value={taskType}
-                    onValueChange={(v) => setTaskType(v as TaskType)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TASK_TYPE_OPTIONS.map((t) => (
-                        <SelectItem key={t.value} value={t.value}>
-                          {t.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Project Selector (required - all tasks follow git workflow) */}
-                <div className="space-y-2">
-                  <HelpTip label="The repo the branch/PR are opened against. Locked once a branch exists — see below.">
-                    <Label>Project</Label>
-                  </HelpTip>
-                  <ProjectSelector
-                    value={projectId || null}
-                    onChange={(value) => setProjectId(value || "")}
-                    placeholder="Select project..."
-                    disabled={!!task.branch_name}
-                  />
-                  {task.branch_name && (
-                    <p className="text-xs text-muted-foreground">
-                      Project cannot be changed after work has started
-                    </p>
-                  )}
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+            </div>
+          </CollapsibleSection>
 
           {/* Actions */}
-          <div className="flex justify-end gap-2 pt-4 border-t">
+          <DialogFooter className="border-t pt-4">
             <HelpTip label="Discards any edits made above and closes without saving.">
               <Button
                 type="button"
@@ -483,7 +474,7 @@ function EditTaskDialogInner({
                 </Button>
               </span>
             </HelpTip>
-          </div>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

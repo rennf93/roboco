@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -22,12 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { Plus, ChevronDown, ChevronRight, GitBranch } from "lucide-react";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { Plus, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { AcceptanceCriteriaEditor } from "./acceptance-criteria-editor";
 import { MarkdownEditor } from "./markdown-editor";
@@ -72,7 +69,8 @@ const TASK_TYPE_OPTIONS = [
 // (branch, commits, PR) — this only classifies the kind of artifact.
 const TASK_TYPE_DESCRIPTIONS: Record<TaskType, string> = {
   [TaskType.CODE]: "Source code changes. Follows the full git workflow.",
-  [TaskType.DOCUMENTATION]: "Documentation updates. Follows the full git workflow.",
+  [TaskType.DOCUMENTATION]:
+    "Documentation updates. Follows the full git workflow.",
   [TaskType.RESEARCH]:
     "Research findings, committed as notes. Follows the full git workflow.",
   [TaskType.PLANNING]:
@@ -157,7 +155,8 @@ export function CreateTaskDialog() {
     const trimmedSequence = sequence.trim();
     if (
       trimmedSequence &&
-      (!Number.isInteger(Number(trimmedSequence)) || Number(trimmedSequence) < 0)
+      (!Number.isInteger(Number(trimmedSequence)) ||
+        Number(trimmedSequence) < 0)
     ) {
       newErrors.sequence = "Sequence must be a non-negative whole number";
     }
@@ -235,6 +234,9 @@ export function CreateTaskDialog() {
           New Task
         </Button>
       </DialogTrigger>
+      {/* Outlier: kept explicit — the lg:grid-cols-5 team/priority/complexity/
+          status/nature row needs real width; DIALOG_SIZES.lg (max-w-2xl)
+          would cramp it into a single column. */}
       <DialogContent className="w-full max-w-[95vw] sm:max-w-xl md:max-w-3xl lg:max-w-5xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Task</DialogTitle>
@@ -390,169 +392,158 @@ export function CreateTaskDialog() {
           />
 
           {/* Advanced Options */}
-          <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-            <CollapsibleTrigger asChild>
-              <Button
-                variant="ghost"
-                type="button"
-                className="w-full justify-between"
-              >
-                <HelpTip label="Parent task, agent assignment, task type, and repo/product routing.">
-                  <span>Advanced Options</span>
+          <CollapsibleSection
+            variant="button"
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            title={
+              <HelpTip label="Parent task, agent assignment, task type, and repo/product routing.">
+                <span>Advanced Options</span>
+              </HelpTip>
+            }
+          >
+            {/* Parent Task */}
+            <div className="space-y-2">
+              <HelpTip label="Nests this task under another — its claim order is then gated by sequence relative to siblings under the same parent.">
+                <Label>Parent Task (for subtasks)</Label>
+              </HelpTip>
+              <TaskSelector
+                value={parentTaskId}
+                onChange={setParentTaskId}
+                placeholder="Select parent task (optional)..."
+                filterByTeam={team}
+              />
+              <p className="text-xs text-muted-foreground">
+                Make this task a subtask of an existing task
+              </p>
+            </div>
+
+            {/* Sequence */}
+            <div className="space-y-2">
+              <HelpTip label="Order within siblings under the same parent — lower runs first, ties run in parallel. Leave blank to default to 0.">
+                <Label htmlFor="sequence">Sequence</Label>
+              </HelpTip>
+              <Input
+                id="sequence"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0"
+                value={sequence}
+                onChange={(e) => setSequence(e.target.value)}
+                className={errors.sequence ? "border-destructive" : ""}
+              />
+              {errors.sequence && (
+                <p className="text-xs text-destructive">{errors.sequence}</p>
+              )}
+            </div>
+
+            {/* Assign To */}
+            <div className="space-y-2">
+              <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
+                <Label>Assign To</Label>
+              </HelpTip>
+              <AgentSelector
+                value={assignedTo}
+                onChange={setAssignedTo}
+                placeholder="Unassigned (orchestrator will route)"
+                filterByTeam={team}
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave unassigned to let the orchestrator route automatically, or
+                manually assign to a specific agent
+              </p>
+            </div>
+
+            {/* Git Configuration Section */}
+            <div className="space-y-4 pt-4 border-t">
+              <div className="flex items-center gap-2 mb-2">
+                <GitBranch className="h-4 w-4 text-muted-foreground" />
+                <HelpTip label="Every task type follows the same branch → commits → PR workflow; these fields just route it.">
+                  <span className="font-medium text-sm">
+                    Git & Work Configuration
+                  </span>
                 </HelpTip>
-                {advancedOpen ? (
-                  <ChevronDown className="h-4 w-4" />
-                ) : (
-                  <ChevronRight className="h-4 w-4" />
-                )}
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-4 pt-4">
-              {/* Parent Task */}
-              <div className="space-y-2">
-                <HelpTip label="Nests this task under another — its claim order is then gated by sequence relative to siblings under the same parent.">
-                  <Label>Parent Task (for subtasks)</Label>
-                </HelpTip>
-                <TaskSelector
-                  value={parentTaskId}
-                  onChange={setParentTaskId}
-                  placeholder="Select parent task (optional)..."
-                  filterByTeam={team}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Make this task a subtask of an existing task
-                </p>
               </div>
 
-              {/* Sequence */}
+              {/* Task Type */}
               <div className="space-y-2">
-                <HelpTip label="Order within siblings under the same parent — lower runs first, ties run in parallel. Leave blank to default to 0.">
-                  <Label htmlFor="sequence">Sequence</Label>
+                <HelpTip label={TASK_TYPE_DESCRIPTIONS[taskType]}>
+                  <Label>Task Type</Label>
                 </HelpTip>
-                <Input
-                  id="sequence"
-                  type="number"
-                  min="0"
-                  step="1"
-                  placeholder="0"
-                  value={sequence}
-                  onChange={(e) => setSequence(e.target.value)}
-                  className={errors.sequence ? "border-destructive" : ""}
-                />
-                {errors.sequence && (
-                  <p className="text-xs text-destructive">{errors.sequence}</p>
-                )}
-              </div>
-
-              {/* Assign To */}
-              <div className="space-y-2">
-                <HelpTip label="Pin a specific agent; leave unassigned to let the orchestrator route by role, team, and availability.">
-                  <Label>Assign To</Label>
-                </HelpTip>
-                <AgentSelector
-                  value={assignedTo}
-                  onChange={setAssignedTo}
-                  placeholder="Unassigned (orchestrator will route)"
-                  filterByTeam={team}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Leave unassigned to let the orchestrator route automatically,
-                  or manually assign to a specific agent
-                </p>
-              </div>
-
-              {/* Git Configuration Section */}
-              <div className="space-y-4 pt-4 border-t">
-                <div className="flex items-center gap-2 mb-2">
-                  <GitBranch className="h-4 w-4 text-muted-foreground" />
-                  <HelpTip label="Every task type follows the same branch → commits → PR workflow; these fields just route it.">
-                    <span className="font-medium text-sm">
-                      Git & Work Configuration
-                    </span>
-                  </HelpTip>
-                </div>
-
-                {/* Task Type */}
-                <div className="space-y-2">
-                  <HelpTip label={TASK_TYPE_DESCRIPTIONS[taskType]}>
-                    <Label>Task Type</Label>
-                  </HelpTip>
-                  <Select
-                    value={taskType}
-                    onValueChange={(v) => setTaskType(v as TaskType)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TASK_TYPE_OPTIONS.map((t) => (
-                        <SelectItem key={t.value} value={t.value}>
-                          {t.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Type of work: code, documentation, research, etc.
-                  </p>
-                </div>
-
-                {/* Project — required UNLESS a Product is picked (fan-out task) */}
-                <div className="space-y-2">
-                  <HelpTip label="The repo the branch/PR are opened against once this task is claimed.">
-                    <Label>Project</Label>
-                  </HelpTip>
-                  <ProjectSelector
-                    value={projectId || null}
-                    onChange={(value) => setProjectId(value || "")}
-                    placeholder="Select project..."
-                  />
-                  {errors.project_id && (
-                    <p className="text-xs text-destructive">
-                      {errors.project_id}
-                    </p>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    The repo this task targets. Optional if you pick a Product
-                    below — a fan-out task routes each cell&apos;s subtask via
-                    the Product instead.
-                  </p>
-                </div>
-
-                {/* Product (optional) — drives per-cell project routing of subtasks */}
-                <div className="space-y-2">
-                  <HelpTip label="Fan-out: each delegated subtask routes to that cell's own mapped project instead of one repo.">
-                    <Label>Product</Label>
-                  </HelpTip>
-                  <Select
-                    value={productId || "none"}
-                    onValueChange={(v) => setProductId(v === "none" ? "" : v)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="None" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">
-                        None (single project)
+                <Select
+                  value={taskType}
+                  onValueChange={(v) => setTaskType(v as TaskType)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TASK_TYPE_OPTIONS.map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
                       </SelectItem>
-                      {products.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Optional. When set, delegated subtasks route to each
-                    cell&apos;s mapped project (manage these in Products).
-                  </p>
-                </div>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Type of work: code, documentation, research, etc.
+                </p>
               </div>
-            </CollapsibleContent>
-          </Collapsible>
+
+              {/* Project — required UNLESS a Product is picked (fan-out task) */}
+              <div className="space-y-2">
+                <HelpTip label="The repo the branch/PR are opened against once this task is claimed.">
+                  <Label>Project</Label>
+                </HelpTip>
+                <ProjectSelector
+                  value={projectId || null}
+                  onChange={(value) => setProjectId(value || "")}
+                  placeholder="Select project..."
+                />
+                {errors.project_id && (
+                  <p className="text-xs text-destructive">
+                    {errors.project_id}
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  The repo this task targets. Optional if you pick a Product
+                  below — a fan-out task routes each cell&apos;s subtask via the
+                  Product instead.
+                </p>
+              </div>
+
+              {/* Product (optional) — drives per-cell project routing of subtasks */}
+              <div className="space-y-2">
+                <HelpTip label="Fan-out: each delegated subtask routes to that cell's own mapped project instead of one repo.">
+                  <Label>Product</Label>
+                </HelpTip>
+                <Select
+                  value={productId || "none"}
+                  onValueChange={(v) => setProductId(v === "none" ? "" : v)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None (single project)</SelectItem>
+                    {products.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Optional. When set, delegated subtasks route to each
+                  cell&apos;s mapped project (manage these in Products).
+                </p>
+              </div>
+            </div>
+          </CollapsibleSection>
 
           {/* Actions */}
-          <div className="flex justify-end gap-2 pt-4 border-t">
+          <DialogFooter className="border-t pt-4">
             <HelpTip label="Discards everything entered above without creating a task.">
               <Button
                 type="button"
@@ -575,7 +566,7 @@ export function CreateTaskDialog() {
                 </Button>
               </span>
             </HelpTip>
-          </div>
+          </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

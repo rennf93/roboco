@@ -14,6 +14,7 @@ import {
   DialogTitle,
   DialogFooter,
   DialogTrigger,
+  DIALOG_SIZES,
 } from "@/components/ui/dialog";
 import {
   AlertDialog,
@@ -306,7 +307,7 @@ export function GitActionsPanel({
               </DialogTrigger>
             </span>
           </HelpTip>
-          <DialogContent className="max-w-lg">
+          <DialogContent className={DIALOG_SIZES.md}>
             <DialogHeader>
               <DialogTitle>Create Pull Request</DialogTitle>
             </DialogHeader>
@@ -378,7 +379,7 @@ export function GitActionsPanel({
               </DialogTrigger>
             </span>
           </HelpTip>
-          <DialogContent className="max-w-sm">
+          <DialogContent className={DIALOG_SIZES.sm}>
             <DialogHeader>
               <DialogTitle>Merge Pull Request</DialogTitle>
             </DialogHeader>

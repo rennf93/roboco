@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
-import { CollapsibleSection } from "./collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { exceedsReadabilityThreshold } from "@/lib/content-readability";
 import {
   FileText,
@@ -42,9 +42,7 @@ type NoteField =
 function prReviewBadge(task: Task): React.ReactNode {
   const verdict = (
     task.notes_structured as
-      | { pr_review?: { verdict?: string } }
-      | null
-      | undefined
+      { pr_review?: { verdict?: string } } | null | undefined
   )?.pr_review?.verdict;
   if (!verdict) {
     return (
@@ -80,9 +78,7 @@ function prReviewBadge(task: Task): React.ReactNode {
 function prReviewCardBg(task: Task): string {
   const verdict = (
     task.notes_structured as
-      | { pr_review?: { verdict?: string } }
-      | null
-      | undefined
+      { pr_review?: { verdict?: string } } | null | undefined
   )?.pr_review?.verdict;
   const map: Record<string, string> = {
     approved:
@@ -116,9 +112,7 @@ const FIELD_TO_SECTION: Record<NoteField, string> = {
 // populated field never renders with no timestamp at all.
 function writtenAt(task: Task, field: NoteField): string | null {
   const sections = task.notes_structured as
-    | Record<string, { written_at?: string }>
-    | null
-    | undefined;
+    Record<string, { written_at?: string }> | null | undefined;
   const stamp =
     sections?.[FIELD_TO_SECTION[field]]?.written_at ?? task.created_at;
   if (!stamp) return null;
@@ -168,8 +162,8 @@ function EditableNoteCard({
   const [localEditValue, setLocalEditValue] = useState("");
   const [editMode, setEditMode] = useState<"write" | "preview">("write");
   // Long content starts collapsed; short content starts expanded.
-  const [sectionOpen, setSectionOpen] = useState(() =>
-    !exceedsReadabilityThreshold(currentValue ?? ""),
+  const [sectionOpen, setSectionOpen] = useState(
+    () => !exceedsReadabilityThreshold(currentValue ?? ""),
   );
 
   // Display prop value when not editing, local value when editing

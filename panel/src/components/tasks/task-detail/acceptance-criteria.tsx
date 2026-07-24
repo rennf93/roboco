@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, Trash2, Edit3, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { HelpTip } from "@/components/ui/help-tip";
-import { CollapsibleSection } from "./collapsible-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 
 interface AcceptanceCriteriaProps {
   task: Task;
@@ -196,7 +196,11 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
           </HelpTip>
           {!isAdding && (
             <HelpTip label="Adds a new empty criterion to this list">
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
                 <Plus className="h-4 w-4 mr-1" />
                 Add
               </Button>
