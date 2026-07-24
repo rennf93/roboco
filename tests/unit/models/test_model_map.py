@@ -23,9 +23,12 @@ def test_sonnet_5_is_priced() -> None:
     assert cost > 0.0
 
 
-def test_qa_role_routes_to_haiku() -> None:
-    # Phase 2: QA is mechanical gate work → cheapest tier.
-    assert ROLE_MODEL_MAP["qa"] == "haiku"
+def test_no_lifecycle_role_routes_below_the_structured_verb_floor() -> None:
+    # Retired haiku from lifecycle roles (2026-07-24): a haiku QA/documenter
+    # can't emit the structured review envelopes (criteria_verified, findings)
+    # and loops without passing. No role's default may be a haiku-class tier.
+    for role, model in ROLE_MODEL_MAP.items():
+        assert "haiku" not in model.lower(), f"{role} routes to a below-floor {model}"
 
 
 def test_main_pm_role_routes_to_sonnet() -> None:
