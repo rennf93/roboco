@@ -157,7 +157,7 @@
         animation: pk-enter-rise-scale 0.55s var(--pk-ease) forwards;
       }
       .r27-stats__line--accent { color: var(--pk-accent); }
-      .r27-stats { animation: r27-stats-out 0.5s var(--pk-ease) 32.0s forwards; }
+      .r27-stats { animation: r27-stats-out 0.5s var(--pk-ease) 33.0s forwards; }
       @keyframes r27-stats-out { to { opacity: 0; } }
 
       .pk-toast { --pk-toast-bottom: 140px; }
@@ -202,13 +202,13 @@
            the receipt, ease onto the toast, settle for the lockup. -->
       <div class="pk-camera"
            data-shots="2.6 0 14 1.025; 4.8 0 8 1.03;
-                       6.4 34 96 1.055; 9.2 30 88 1.05;
-                       10.4 30 30 1.06; 13.6 26 24 1.055;
-                       15.4 32 -52 1.065; 18.6 28 -58 1.06;
-                       20.4 30 -150 1.065; 22.6 26 -156 1.06;
-                       25.0 0 0 1.0; 29.2 0 0 1.0;
-                       30.8 -26 -120 1.035; 33.4 -22 -116 1.03;
-                       37.0 0 0 1.0; 39.6 0 6 1.005">
+                       6.5 34 96 1.055; 9.6 30 88 1.05;
+                       11.0 30 30 1.06; 15.1 26 24 1.055;
+                       17.3 32 -52 1.065; 20.7 28 -58 1.06;
+                       22.6 30 -150 1.065; 24.5 26 -156 1.06;
+                       26.6 0 0 1.0; 30.3 0 0 1.0;
+                       31.7 -26 -120 1.035; 34.0 -22 -116 1.03;
+                       37.2 0 0 1.0; 39.6 0 6 1.005">
       <div class="pk-frame clip" data-start="0" data-duration="40" data-track-index="1">
         <aside class="pk-frame__sidebar">
           <div class="r27-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
@@ -240,7 +240,9 @@
             <div class="pk-intake__field"><span id="typeIntro">Four brains, zero bans</span><span class="pk-caret"></span></div>
           </div>
 
-          <!-- Beat 4: four feature cards, one per ~5s scene, each fully visible before the next enters. -->
+          <!-- Beat 4: four feature cards on varied beat spacing (5.5s/6.4s/5.3s
+               gaps, not the metronomic identical 5.0s the craft bar bans),
+               each fully visible before the next enters. -->
           <div class="pk-column">
             <div class="pk-column__header">Shipped in v0.27.0</div>
 
@@ -256,39 +258,39 @@
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 10.0s;">
+            <div class="pk-card" style="animation-delay: 10.5s;">
               <div class="pk-card__title">Telegram Mini App V6</div>
               <div class="r27-sub">Real chat scopes, wallet-style metrics.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">telegram</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.0s; --pk-pill-exit-delay: 11.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 11.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.5s; --pk-pill-exit-delay: 11.9s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.1s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 15.0s;">
+            <div class="pk-card" style="animation-delay: 16.9s;">
               <div class="pk-card__title">Codex and Gemini join</div>
               <div class="r27-sub">Four model providers, one gateway now.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">providers</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 15.0s; --pk-pill-exit-delay: 16.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 16.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 16.9s; --pk-pill-exit-delay: 18.3s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 18.5s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 20.0s;">
+            <div class="pk-card" style="animation-delay: 22.2s;">
               <div class="pk-card__title">Cost-tiered routing</div>
               <div class="r27-sub">Save a routing mix, restore it anytime.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">routing</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 20.0s; --pk-pill-exit-delay: 21.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 21.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 22.2s; --pk-pill-exit-delay: 23.6s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 23.8s;">completed</span>
               </div>
             </div>
           </div>
@@ -300,25 +302,25 @@
                toast, and leave the frame; never freeze, never blink out. -->
           <div class="pk-cursor"
                data-waypoints="4.0 640 210; 4.5 552 152; 4.8 545 148 click;
-                               5.6 300 330; 6.4 160 405; 7.6 178 420;
-                               9.6 260 520; 10.4 190 628; 12.0 172 642;
-                               14.6 250 760; 15.4 162 848; 17.0 180 862;
-                               19.6 255 985; 20.4 190 1068; 22.0 174 1082;
-                               23.6 420 1180; 24.8 560 1250; 28.6 585 1268;
-                               29.6 615 1420; 30.8 612 1462 click;
-                               33.2 700 1520; 35.0 940 1660">
+                               5.7 300 330; 6.5 160 405; 7.9 178 420;
+                               10.1 260 520; 11.0 190 628; 13.1 172 642;
+                               16.4 250 760; 17.3 162 848; 19.0 180 862;
+                               21.8 255 985; 22.6 190 1068; 24.0 174 1082;
+                               25.4 420 1180; 26.4 560 1250; 29.8 585 1268;
+                               30.7 615 1420; 31.7 612 1462 click;
+                               33.8 700 1520; 35.4 940 1660">
             <div class="pk-cursor__glyph"></div>
           </div>
 
           <!-- Beat 5: receipt stats. -->
           <div class="r27-stats">
-            <div class="r27-stats__line" style="animation-delay: 24.0s;">1 release</div>
-            <div class="r27-stats__line r27-stats__line--accent" style="animation-delay: 24.3s;">4 providers</div>
-            <div class="r27-stats__line" style="animation-delay: 24.6s;">0 bans</div>
+            <div class="r27-stats__line" style="animation-delay: 25.7s;">1 release</div>
+            <div class="r27-stats__line r27-stats__line--accent" style="animation-delay: 26.0s;">4 providers</div>
+            <div class="r27-stats__line" style="animation-delay: 26.3s;">0 bans</div>
           </div>
 
           <!-- Beat 6: confirmation toast, then lockup. -->
-          <div class="pk-toast" style="animation-delay: 30.0s;">
+          <div class="pk-toast" style="animation-delay: 31.0s;">
             <div class="pk-toast__icon"></div>
             <div class="pk-toast__body">
               <div class="pk-toast__title" id="toastTitle">v0.27.0 shipped</div>
@@ -326,7 +328,7 @@
             </div>
           </div>
 
-          <div class="pk-outro" style="animation-delay: 36.0s;">
+          <div class="pk-outro" style="animation-delay: 36.3s;">
             <span class="r27-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
             <span>roboco.tech</span>
           </div>

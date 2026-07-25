@@ -95,6 +95,16 @@ describe("release-0.27.0 composition", () => {
     // metadata (matches release-0.25.0's precedent) — it never renders.
     const body = html.slice(html.indexOf("<body"));
     expect(body).not.toMatch(/—/);
+
+    // Card-beat gaps must be genuinely varied, not the metronomic identical
+    // 5.0s/5.0s/5.0s spacing the craft bar bans (a real prior revision cycle
+    // on this composition).
+    const cardDelays = [...html.matchAll(/class="pk-card" style="animation-delay: ([\d.]+)s;"/g)].map((m) =>
+      parseFloat(m[1]),
+    );
+    expect(cardDelays.length).toBe(4);
+    const gaps = cardDelays.slice(1).map((t, i) => Math.round((t - cardDelays[i]) * 100) / 100);
+    expect(new Set(gaps).size).toBeGreaterThan(1);
   });
 
   it("ships captions.json within X and TikTok platform limits", () => {

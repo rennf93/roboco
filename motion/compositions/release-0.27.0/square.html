@@ -136,7 +136,7 @@
         z-index: 20;
         font-family: var(--pk-font-display);
         opacity: 0;
-        animation: r27-stats-in 0.4s var(--pk-ease) 24.0s forwards, r27-stats-out 0.5s var(--pk-ease) 32.0s forwards;
+        animation: r27-stats-in 0.4s var(--pk-ease) 25.7s forwards, r27-stats-out 0.5s var(--pk-ease) 33.0s forwards;
       }
       @keyframes r27-stats-in { to { opacity: 1; } }
       .r27-stats__line {
@@ -184,13 +184,13 @@
            full-screen stats overlay, gentle push for the toast, settle. -->
       <div class="pk-camera"
            data-shots="2.6 0 10 1.03; 4.8 0 6 1.035;
-                       6.4 30 62 1.055; 9.2 26 56 1.05;
-                       10.4 28 8 1.06; 13.6 24 4 1.055;
-                       15.4 30 -46 1.06; 18.6 26 -50 1.055;
-                       20.4 28 -96 1.06; 22.4 22 -98 1.05;
-                       23.8 0 0 1.0; 32.6 0 0 1.0;
-                       33.8 -20 -60 1.03; 35.6 -18 -58 1.028;
-                       37.4 0 0 1.0; 39.6 0 4 1.004">
+                       6.5 30 62 1.055; 9.6 26 56 1.05;
+                       11.0 28 8 1.06; 15.1 24 4 1.055;
+                       17.3 30 -46 1.06; 20.7 26 -50 1.055;
+                       22.5 28 -96 1.06; 24.3 22 -98 1.05;
+                       25.5 0 0 1.0; 33.3 0 0 1.0;
+                       34.4 -20 -60 1.03; 35.9 -18 -58 1.028;
+                       37.6 0 0 1.0; 39.6 0 4 1.004">
       <div class="pk-frame clip" data-start="0" data-duration="40" data-track-index="1">
         <aside class="pk-frame__sidebar">
           <div class="r27-side__logo"><img src="../../public/roboco-logo.png" alt="" /></div>
@@ -224,6 +224,8 @@
           <div class="pk-column">
             <div class="pk-column__header">Shipped in v0.27.0</div>
 
+            <!-- Varied beat spacing (5.5s/6.4s/5.3s gaps), not the
+                 metronomic identical 5.0s the craft bar bans. -->
             <div class="pk-card" style="animation-delay: 5.0s;">
               <div class="pk-card__title">WAF knows the real IP</div>
               <div class="r27-sub">Tailscale hops don't get banned anymore.</div>
@@ -236,39 +238,39 @@
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 10.0s;">
+            <div class="pk-card" style="animation-delay: 10.5s;">
               <div class="pk-card__title">Telegram Mini App V6</div>
               <div class="r27-sub">Real chat scopes, wallet-style metrics.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">telegram</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.0s; --pk-pill-exit-delay: 11.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 11.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.5s; --pk-pill-exit-delay: 11.9s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.1s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 15.0s;">
+            <div class="pk-card" style="animation-delay: 16.9s;">
               <div class="pk-card__title">Codex and Gemini join</div>
               <div class="r27-sub">Four model providers, one gateway now.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">providers</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 15.0s; --pk-pill-exit-delay: 16.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 16.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 16.9s; --pk-pill-exit-delay: 18.3s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 18.5s;">completed</span>
               </div>
             </div>
 
-            <div class="pk-card" style="animation-delay: 20.0s;">
+            <div class="pk-card" style="animation-delay: 22.2s;">
               <div class="pk-card__title">Cost-tiered routing</div>
               <div class="r27-sub">Save a routing mix, restore it anytime.</div>
               <div class="pk-card__meta">
                 <span class="pk-chip pk-chip--gray">routing</span>
               </div>
               <div class="pk-card__status">
-                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 20.0s; --pk-pill-exit-delay: 21.4s;">in progress</span>
-                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 21.6s;">completed</span>
+                <span class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 22.2s; --pk-pill-exit-delay: 23.6s;">in progress</span>
+                <span class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 23.8s;">completed</span>
               </div>
             </div>
           </div>
@@ -278,21 +280,21 @@
                at 24s (the cursor sits under its backdrop). -->
           <div class="pk-cursor"
                data-waypoints="4.0 520 130; 4.5 452 80; 4.8 445 76 click;
-                               5.6 250 185; 6.4 138 250; 7.6 152 262;
-                               9.6 220 340; 10.4 148 412; 12.0 134 424;
-                               14.6 215 505; 15.4 140 576; 17.0 155 588;
-                               19.6 220 668; 20.4 150 740; 22.0 136 752;
-                               23.0 480 780; 23.9 920 820">
+                               5.7 250 185; 6.5 138 250; 7.9 152 262;
+                               10.1 220 340; 11.0 148 412; 13.1 134 424;
+                               16.4 215 505; 17.3 140 576; 19.0 155 588;
+                               21.8 220 668; 22.5 150 740; 23.9 136 752;
+                               24.8 480 780; 25.6 920 820">
             <div class="pk-cursor__glyph"></div>
           </div>
 
           <div class="r27-stats">
-            <div class="r27-stats__line" style="animation-delay: 24.0s;">1 release</div>
-            <div class="r27-stats__line r27-stats__line--accent" style="animation-delay: 24.3s;">4 providers</div>
-            <div class="r27-stats__line" style="animation-delay: 24.6s;">0 bans</div>
+            <div class="r27-stats__line" style="animation-delay: 25.7s;">1 release</div>
+            <div class="r27-stats__line r27-stats__line--accent" style="animation-delay: 26.0s;">4 providers</div>
+            <div class="r27-stats__line" style="animation-delay: 26.3s;">0 bans</div>
           </div>
 
-          <div class="pk-toast" style="animation-delay: 30.0s;">
+          <div class="pk-toast" style="animation-delay: 31.0s;">
             <div class="pk-toast__icon"></div>
             <div class="pk-toast__body">
               <div class="pk-toast__title" id="toastTitle">v0.27.0 shipped</div>
@@ -300,7 +302,7 @@
             </div>
           </div>
 
-          <div class="pk-outro" style="animation-delay: 36.0s;">
+          <div class="pk-outro" style="animation-delay: 36.3s;">
             <span class="r27-outro__logo"><img src="../../public/roboco-logo.png" alt="" /></span>
             <span>roboco.tech</span>
           </div>
