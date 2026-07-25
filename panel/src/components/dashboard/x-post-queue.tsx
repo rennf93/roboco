@@ -27,6 +27,7 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { ProjectBadge } from "@/components/dashboard/project-badge";
 import {
   AtSign,
+  CalendarClock,
   CheckCircle2,
   Megaphone,
   Rocket,
@@ -57,11 +58,26 @@ function sourceMeta(source: XPost["source"]) {
       icon: Megaphone,
       hint: "Drafted periodically by the Head of Marketing's Megaphone editorial cycle",
     };
+  if (source === "x_campaign")
+    return {
+      label: "War Room campaign",
+      icon: CalendarClock,
+      hint: "One ordered post in a Head of Marketing campaign — approve each independently",
+    };
   return {
     label: "Mention reply",
     icon: AtSign,
     hint: "Drafted automatically in reply to a meaningful mention on X",
   };
+}
+
+// War Room's publish_after is V1 GUIDANCE only (spec, 2026-07-24) — never a
+// schedule anything acts on. Renders as a small line on the card so the CEO
+// sees the recommended moment without it looking like a live countdown.
+function campaignGuidance(post: XPost): string | null {
+  if (!post.campaign) return null;
+  const when = new Date(post.campaign.publish_after).toLocaleString();
+  return `${post.campaign.stage_label} · #${post.campaign.sequence} of "${post.campaign.campaign_name}" · recommended ${when}`;
 }
 
 // Explains what Approve does, or why it's disabled — surfaced on the button
@@ -151,6 +167,14 @@ function XPostRow({
           </HelpTip>
         )}
       </div>
+
+      {campaignGuidance(post) && (
+        <HelpTip label="Recommended publish moment — guidance only, you approve each post individually and nothing here auto-posts">
+          <p className="mb-2 text-xs text-muted-foreground">
+            {campaignGuidance(post)}
+          </p>
+        </HelpTip>
+      )}
 
       <Textarea
         value={body}

@@ -18,9 +18,19 @@ export interface XFeatureRef {
   title: string;
 }
 
+// One post's context within a War Room (Board Program) campaign —
+// publish_after is V1 GUIDANCE only, rendered in the queue, never a
+// schedule anything acts on.
+export interface XCampaignRef {
+  campaign_name: string;
+  stage_label: string;
+  publish_after: string;
+  sequence: number;
+}
+
 export interface XPost {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature" | "x_editorial";
+  source: "x_post" | "x_reply" | "x_feature" | "x_editorial" | "x_campaign";
   title: string;
   status: string;
   body: string;
@@ -28,6 +38,7 @@ export interface XPost {
   release_version?: string | null;
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
+  campaign?: XCampaignRef | null;
   reject_reason?: string | null;
   project_slug?: string | null;
   project_name?: string | null;
@@ -42,7 +53,7 @@ export interface XPostExecuteResult {
 // One acted-on draft (posted or rejected) — the CEO's history view.
 export interface XPostHistoryEntry {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature" | "x_editorial";
+  source: "x_post" | "x_reply" | "x_feature" | "x_editorial" | "x_campaign";
   title: string;
   status: string; // "completed" | "cancelled"
   body: string;
@@ -50,6 +61,7 @@ export interface XPostHistoryEntry {
   release_version?: string | null;
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
+  campaign?: XCampaignRef | null;
   tweet_id?: string | null;
   reject_reason?: string | null;
   acted_at: string;
