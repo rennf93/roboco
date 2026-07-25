@@ -1,0 +1,123 @@
+"""Mirror (Board Program) engine API — the CEO approves/rejects items
+within a held messaging-fixes cycle. CEO-only throughout. Approving an item
+materializes it as a BACKLOG docs task; nothing here starts it — normal PM
+activation takes it from there. Mirrors ``roboco.api.routes.spackle``.
+"""
+
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, status
+
+from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
+from roboco.api.schemas.mirror import (
+    MessagingFixItemActionResponse,
+    MessagingFixItemResponse,
+    MessagingFixRejectRequest,
+    MirrorCycleResponse,
+)
+from roboco.foundation.policy.content import markers
+from roboco.security import guard_deco
+from roboco.services.mirror_service import get_mirror_service
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
+
+router = APIRouter()
+
+
+def _require_ceo(agent: CurrentAgentContext) -> None:
+    require_ceo_role(agent.role, action="view or act on the mirror queue")
+
+
+def _status_value(task: "TaskTable") -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def _to_response(task: "TaskTable") -> MirrorCycleResponse:
+    payload = markers.get_messaging_fixes(task) or {}
+    items = [MessagingFixItemResponse(**item) for item in payload.get("items", [])]
+    return MirrorCycleResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=_status_value(task),
+        items=items,
+    )
+
+
+@router.get("/cycles", response_model=list[MirrorCycleResponse])
+async def list_mirror_cycles(
+    db: DbSession, agent: CurrentAgentContext
+) -> list[MirrorCycleResponse]:
+    """Every open mirror cycle already authored by the Head of Marketing.
+
+    A cycle the HoM hasn't authored yet (no items drafted) is omitted — there
+    is nothing for the CEO to review until ``propose_messaging_fixes`` lands.
+    """
+    _require_ceo(agent)
+    tasks = await get_mirror_service(db).list_open_cycles()
+    return [_to_response(t) for t in tasks if markers.get_messaging_fixes(t)]
+
+
+@router.post(
+    "/cycles/{task_id}/items/{item_id}/approve",
+    response_model=MessagingFixItemActionResponse,
+)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.block_clouds()
+async def approve_messaging_fix_item(
+    task_id: UUID,
+    item_id: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> MessagingFixItemActionResponse:
+    """Materialize one proposed item as a BACKLOG docs task (idempotent)."""
+    _require_ceo(agent)
+    result = await get_mirror_service(db).approve_item(
+        task_id, item_id, created_by=agent.agent_id
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such open mirror item",
+        )
+    await db.commit()
+    return MessagingFixItemActionResponse(
+        status=result.status,
+        item_id=result.item_id,
+        materialized_task_id=result.materialized_task_id,
+        detail=result.detail,
+    )
+
+
+@router.post(
+    "/cycles/{task_id}/items/{item_id}/reject",
+    response_model=MessagingFixItemActionResponse,
+)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+async def reject_messaging_fix_item(
+    task_id: UUID,
+    item_id: str,
+    data: MessagingFixRejectRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> MessagingFixItemActionResponse:
+    """Reject one proposed item with a reason (idempotent)."""
+    _require_ceo(agent)
+    result = await get_mirror_service(db).reject_item(task_id, item_id, data.reason)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such open mirror item",
+        )
+    await db.commit()
+    return MessagingFixItemActionResponse(
+        status=result.status,
+        item_id=result.item_id,
+        materialized_task_id=result.materialized_task_id,
+        detail=result.detail,
+    )

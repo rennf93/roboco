@@ -112,6 +112,20 @@ def test_registry_carries_spackle() -> None:
     assert sp.default_interval_seconds == 2 * WEEK_SECONDS
 
 
+_MIRROR_MAX_ITEMS_PER_CYCLE = 5
+_QUARTER_SECONDS = 90 * 24 * 3600
+
+
+def test_registry_carries_mirror() -> None:
+    m = PROGRAMS["mirror"]
+    assert m.role == "head_marketing"
+    assert m.source == "board_mirror"
+    assert m.trigger is TriggerKind.CRON
+    assert m.scope == "project"
+    assert m.max_items_per_cycle == _MIRROR_MAX_ITEMS_PER_CYCLE
+    assert m.default_interval_seconds == _QUARTER_SECONDS
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

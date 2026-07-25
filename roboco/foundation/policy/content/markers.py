@@ -52,6 +52,7 @@ CORONER_INCIDENT = "coroner_incident"
 CORONER_POSTMORTEM = "coroner_postmortem"
 QUALITY_REPORT = "quality_report"
 GAP_FILL = "gap_fill"
+MESSAGING_FIXES = "messaging_fixes"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -307,6 +308,23 @@ def get_gap_fill(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_gap_fill(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, GAP_FILL, payload)
+
+
+# --- board mirror messaging-fixes audit -------------------------------------
+# The evidence-backed messaging-fix item drafts the Head of Marketing authors
+# via ``propose_messaging_fixes`` onto the exploration task the mirror engine
+# opened. Mirrors GAP_FILL exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject.
+
+
+def get_messaging_fixes(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, MESSAGING_FIXES)
+    return val if isinstance(val, dict) else None
+
+
+def set_messaging_fixes(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, MESSAGING_FIXES, payload)
 
 
 # --- Periscope market brief --------------------------------------------------

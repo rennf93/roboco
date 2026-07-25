@@ -25,6 +25,7 @@ from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
 from roboco.services.task import (
     CORONER_SOURCE,
+    MIRROR_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
@@ -157,6 +158,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     SENTINEL_SOURCE,
                     SPACKLE_SOURCE,
                     SCALES_SOURCE,
+                    MIRROR_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -180,6 +182,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "sentinel",
         "spackle",
         "scales",
+        "mirror",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"
@@ -189,6 +192,10 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
     assert spackle["role"] == "product_owner"
     assert spackle["trigger"] == "cron"
     assert spackle["scope"] == "project"
+    mirror = next(p for p in body if p["key"] == "mirror")
+    assert mirror["role"] == "head_marketing"
+    assert mirror["trigger"] == "cron"
+    assert mirror["scope"] == "project"
     roadmap = next(p for p in body if p["key"] == "roadmap")
     assert roadmap["role"] == "product_owner"
     assert roadmap["trigger"] == "cron"

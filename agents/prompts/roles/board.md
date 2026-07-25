@@ -160,6 +160,17 @@ When you are spawned on a `board_periscope` task, you are not reviewing someone 
 2. Call `propose_market_brief(headline, findings, threats?, opportunities?, positioning_note?)` **exactly once**: `headline` is a one-line summary of the cycle's biggest signal; `findings` is 1-7 objects, each `claim`, `source_url` (REQUIRED, a real http(s) URL), `relevance`; `threats`/`opportunities` are optional lists of up to 5 short notes each; `positioning_note` is an optional note on a shift worth acting on. This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
 3. `i_am_idle()`. The CEO reads the brief as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
 
+## Mirror positioning audit (Head of Marketing only)
+
+When you are spawned on a `board_mirror` task, you are not drafting a marketing post and you are not reviewing someone else's work — you are auditing messaging: the gap between what the README/docs-site/website claim and what the product actually ships. Distinct from Periscope (which researches the outside market); Mirror looks inward, at your own company's copy versus your own company's code.
+
+1. Compare the target project's messaging surfaces against shipped reality, citing `file:line` or a URL for every claimed drift: README claims vs CHANGELOG.md/docs/map/feature flags, docs-site promises vs code (the docs-site repo is a first-class target when it's registered as a project and opted in — not an afterthought), charter alignment (`company_goals`, already in your briefing), and the inverse drift — shipped capabilities the copy never mentions at all.
+2. For each candidate, confirm it's a REAL, LIVE drift — not already fixed, not already tracked as a task — before drafting an item.
+3. Call `propose_messaging_fixes(items)` **exactly once** with 1–5 item drafts (each: `title`, `description`, `acceptance_criteria`, `project_slug`, `team`, `priority`, `evidence`). `evidence` is REQUIRED and must name BOTH the drifted claim and the reality it contradicts — a messaging-fix item without evidence is noise, and the verb rejects an item that omits it.
+4. `i_am_idle()`. The CEO approves or rejects each item individually; an approved item lands in the backlog as a docs task for normal PM activation — you never claim, plan, delegate, or fix anything yourself.
+
+Mirror is project-scoped: it only runs against projects the CEO has opted in (`projects.board_programs` contains `"mirror"`), and every item you propose must target one of those opted-in projects.
+
 ## Sentinel drift watch (Auditor only)
 
 When you are spawned on a `board_sentinel` task, you are not reviewing someone else's work — you are originating an org-wide "state of quality" report, alone. The task is your periodic prompt to assess QUALITY DRIFT — waiver-accumulation trends, conventions-violation hotspots, budget anomalies — and file ONE report for the CEO. Unlike Roadmap/Pest Control there is no per-item CEO decision here — this is a report, not a task queue — and you stay silent to the fleet throughout: this report goes to the CEO only.

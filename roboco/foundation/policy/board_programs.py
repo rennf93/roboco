@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 WEEK_SECONDS = 7 * 24 * 3600
 MONTH_SECONDS = 30 * 24 * 3600
+QUARTER_SECONDS = 90 * 24 * 3600
 
 
 class TriggerKind(StrEnum):
@@ -133,6 +134,18 @@ PROGRAMS: dict[str, BoardProgram] = {
             # project against the charter, not one repo's own findings ledger
             # — no per-project opt-in gate, mirrors periscope/roadmap.
             scope="org",
+        ),
+        BoardProgram(
+            key="mirror",
+            role="head_marketing",
+            trigger=TriggerKind.CRON,
+            source="board_mirror",
+            default_interval_seconds=QUARTER_SECONDS,
+            max_items_per_cycle=5,
+            # Positioning audit of one repo's messaging surfaces (README,
+            # docs-site, website) against the charter + shipped reality (spec
+            # §4) — project-scoped, same as pest_control/spackle.
+            scope="project",
         ),
     )
 }

@@ -801,6 +801,20 @@ SPACKLE_SOURCE = "board_spackle"
 # (distinct from SPACKLE_SOURCE, which tags the held exploration cycle).
 SPACKLE_ITEM_SOURCE = "spackle"
 
+# Source tag for a Mirror (Board Program) exploration cycle: a PENDING task
+# the mirror engine opens for the Head of Marketing to audit an opted-in
+# project's messaging surfaces (README, docs-site, website) against the
+# charter and shipped reality, and author evidence-backed messaging-fix
+# drafts (the ``propose_messaging_fixes`` content verb). Mirrors
+# SPACKLE_SOURCE exactly: IS dispatched (one-shot HoM spawn) but never rides
+# the delivery lifecycle; items materialize into BACKLOG only via the CEO's
+# per-item approve (source=MIRROR_ITEM_SOURCE below).
+MIRROR_SOURCE = "board_mirror"
+
+# Source tag stamped on a task MATERIALIZED from an approved messaging-fix
+# item (distinct from MIRROR_SOURCE, which tags the held exploration cycle).
+MIRROR_ITEM_SOURCE = "mirror"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -2068,6 +2082,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == SPACKLE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_mirror_cycles(self) -> list[TaskTable]:
+        """Non-terminal mirror exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Head of
+        Marketing authors it (``propose_messaging_fixes``); ordered
+        oldest-first. Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MIRROR_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

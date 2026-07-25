@@ -189,6 +189,27 @@ class ProposeRebalanceRequest(BaseModel):
     items: list[RebalanceItemInput] = Field(..., min_length=1)
 
 
+class MessagingFixItemInput(BaseModel):
+    """One evidence-backed messaging-fix item draft within a Head of
+    Marketing's Mirror audit. Mirrors ``GapFillItemInput`` — ``evidence``
+    must name the drifted claim and the reality it contradicts."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeMessagingFixesRequest(BaseModel):
+    """Head of Marketing's Mirror positioning audit: 1-N evidence-backed
+    item drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[MessagingFixItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a

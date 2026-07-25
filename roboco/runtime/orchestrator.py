@@ -76,6 +76,7 @@ from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     CORONER_SOURCE,
+    MIRROR_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     PR_REVIEW_SOURCES,
@@ -914,9 +915,10 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
-    ``board_sentinel`` / ``board_spackle`` / ``board_scales``) that
-    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out of
-    a long per-source ``if`` chain (xenon budget)."""
+    ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
+    ``board_mirror``) that ``_dispatch_pm_work`` owns. One flat call keeps
+    the dev loop's skip out of a long per-source ``if`` chain (xenon
+    budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -928,6 +930,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         SENTINEL_SOURCE,
         SPACKLE_SOURCE,
         SCALES_SOURCE,
+        MIRROR_SOURCE,
     )
 
 
@@ -958,6 +961,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         SENTINEL_SOURCE: orch._dispatch_sentinel_exploration,
         SPACKLE_SOURCE: orch._dispatch_spackle_exploration,
         SCALES_SOURCE: orch._dispatch_scales_exploration,
+        MIRROR_SOURCE: orch._dispatch_mirror_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -13044,6 +13048,44 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_spackle_exploration",
         )
 
+    async def _dispatch_mirror_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to author a Mirror positioning
+        audit.
+
+        Mirrors ``_dispatch_spackle_exploration`` exactly (HoM-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_messaging_fixes``
+        marks it via the ``messaging_fixes`` marker, not this dispatcher).
+        Like Spackle there is no server-assembled evidence context — the
+        messaging audit (README claims vs shipped features, docs-site
+        promises vs code, charter alignment) is the HoM's own read-tool
+        work, ordered explicitly by ``_build_mirror_prompt``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.MESSAGING_FIXES) is not None:
+            return  # already authored — the CEO mirror queue owns the rest
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for mirror exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("mirror")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_mirror_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_mirror_exploration",
+        )
+
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
     ) -> None:
@@ -16303,6 +16345,68 @@ the CEO to review; you author this alone.
 5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
    item individually in the spackle queue; an approved item lands in
    BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
+"""
+
+    def _build_mirror_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Mirror exploration.
+
+        Unlike Periscope/Sentinel there is no server-assembled evidence
+        context (spec: Mirror carries no heavy server-side inventory engine,
+        same posture as Spackle) — the messaging audit (README claims vs
+        shipped features, docs-site promises vs code, charter alignment) is
+        the HoM's own read-tool work, ordered explicitly below.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["mirror"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Mirror exploration.
+
+TASK: {task_id}
+
+Audit the target project's messaging surfaces against the company charter
+and shipped reality — the gaps between what the copy claims and what the
+product actually does. Propose evidence-backed docs tasks for the CEO to
+review; you author this alone.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context (carries the company charter).
+2. Compare the messaging surfaces against shipped reality, citing `file:line`
+   or a URL for every claimed drift:
+   a. README claims vs what the codebase actually ships (CHANGELOG.md,
+      docs/map/, feature flags).
+   b. The docs site / docs-site repo's promises vs the code — when that repo
+      is registered as a project and opted into mirror, treat it as a
+      first-class target, not an afterthought.
+   c. Charter alignment — does the messaging still match the CEO's stated
+      objectives and positioning (`company_goals`, already in your
+      briefing)?
+   d. Shipped capabilities the copy doesn't mention at all — the inverse
+      drift, not just overclaiming.
+3. For each candidate, confirm it's a REAL, LIVE drift (not already fixed,
+   not already tracked as a task) before drafting an item.
+4. propose_messaging_fixes(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — must name BOTH the drifted
+       claim and the reality it contradicts; no evidence, no item).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the mirror queue; an approved item lands in BACKLOG
+   as a docs task for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those

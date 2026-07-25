@@ -106,12 +106,18 @@ async def _originate_spackle(session: AsyncSession) -> TaskTable | None:
     return await get_spackle_engine(session).run_cycle()
 
 
+async def _originate_mirror(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.mirror_engine import get_mirror_engine
+
+    return await get_mirror_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
 # PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE,
-# SCALES_SOURCE) so the two can't drift.
+# SCALES_SOURCE, MIRROR_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
@@ -121,6 +127,7 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "sentinel": _originate_sentinel,
     "spackle": _originate_spackle,
     "scales": _originate_scales,
+    "mirror": _originate_mirror,
 }
 
 
@@ -140,7 +147,7 @@ async def pick_rotation_target(
     program's own exploration-task source tag (e.g. ``PEST_CONTROL_SOURCE``),
     read via ``_last_explored_at`` rather than the LEARN ledger — see that
     function's docstring. Shared by every project-scoped program's rotation
-    (Pest Control, Spackle) so they rotate identically."""
+    (Pest Control, Spackle, Mirror) so they rotate identically."""
     if len(projects) == 1:
         return projects[0]
     last_explored = await _last_explored_at(session, source)

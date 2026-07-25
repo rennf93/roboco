@@ -30,6 +30,7 @@ from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
+from roboco.api.routes.mirror import router as mirror_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
@@ -376,6 +377,10 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     # portfolio-rebalance cycle. Approving EXECUTES the item against the live
     # target task (reprioritize or cancel); nothing here creates a task.
     app.include_router(scales_router, prefix=f"{api_prefix}/scales", tags=["Scales"])
+    # Mirror (Board Program) — the CEO approves/rejects items within a held
+    # messaging-fixes cycle. Approving materializes a BACKLOG docs task;
+    # nothing auto-starts.
+    app.include_router(mirror_router, prefix=f"{api_prefix}/mirror", tags=["Mirror"])
 
 
 def create_app() -> FastAPI:

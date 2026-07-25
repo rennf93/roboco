@@ -649,6 +649,27 @@ def propose_rebalance(items: list[dict[str, Any]]) -> dict[str, Any]:
     return _post("/api/v1/do/propose_rebalance", {"items": items})
 
 
+def propose_messaging_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: propose a Mirror positioning audit (1-5
+    evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after auditing the target
+    project's messaging surfaces (README, docs-site, website) against the
+    charter and shipped reality: claims the copy makes that the code doesn't
+    back, and shipped capabilities the copy doesn't mention. The CEO reviews
+    and approves/rejects each item individually; approved items land in the
+    backlog as docs tasks (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — must name the drifted claim AND the reality
+            it contradicts; no evidence, no item).
+    """
+    return _post("/api/v1/do/propose_messaging_fixes", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -1174,6 +1195,7 @@ _TOOLS: dict[str, Any] = {
     "propose_bug_hunt": propose_bug_hunt,
     "propose_gap_fill": propose_gap_fill,
     "propose_rebalance": propose_rebalance,
+    "propose_messaging_fixes": propose_messaging_fixes,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_postmortem": propose_postmortem,

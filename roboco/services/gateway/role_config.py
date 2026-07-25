@@ -139,10 +139,13 @@ _PRODUCT_OWNER_DO = (
 
 # Head of Marketing only (mirrors _PRODUCT_OWNER_DO's propose_roadmap grant).
 # ``propose_market_brief`` (Periscope) is likewise Head-of-Marketing-only.
+# ``propose_messaging_fixes`` (Mirror) is likewise Head-of-Marketing-only —
+# the mirror image of the Product Owner's ``propose_gap_fill`` (Spackle).
 _HEAD_MARKETING_DO = (
     *_BOARD_DO,
     "propose_feature_spotlight",
     "propose_market_brief",
+    "propose_messaging_fixes",
 )
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
