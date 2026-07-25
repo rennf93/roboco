@@ -303,6 +303,25 @@ class ProposeQualityReportRequest(BaseModel):
     overall_assessment: str = Field(..., min_length=1)
 
 
+class PlaybookDraftInput(BaseModel):
+    """One playbook draft within an Auditor's Librarian mining cycle.
+    ``pattern_evidence`` is REQUIRED — a draft with no cited repeated
+    pattern is noise."""
+
+    title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    pattern_evidence: str = Field(..., min_length=1)
+
+
+class ProposePlaybookDraftsRequest(BaseModel):
+    """Auditor's Librarian playbook-mining cycle: 1-3 playbook drafts, each
+    created directly as a DRAFT playbook riding the normal pending-playbook
+    curation queue. Delivered as a held mining report — no per-item CEO
+    queue (the drafts themselves ARE the queue item, via playbook curation)."""
+
+    drafts: list[PlaybookDraftInput] = Field(..., min_length=1)
+
+
 class ProposeVideoRequest(BaseModel):
     """UX/UI dev's video metadata draft: a composition ref + per-platform
     captions. Metadata only — no render."""

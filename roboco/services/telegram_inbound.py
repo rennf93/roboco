@@ -180,6 +180,11 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     # joins _VALID_KINDS/_DEEP_LINK_PATH: a quality report is a report, not
     # an approve/reject queue item, so no callback/button ever exists for it.
     "sentinel": ("🛡️", "Quality report"),
+    # "librarian" is display-only too — the drafts it mines ride the EXISTING
+    # pending-playbook curation queue (approve_playbook/reject_playbook),
+    # never a callback/button of their own, so it never joins
+    # _VALID_KINDS/_DEEP_LINK_PATH either.
+    "librarian": ("📚", "Playbook drafts"),
 }
 
 # The bot's command menu — single source for /help AND the Bot API

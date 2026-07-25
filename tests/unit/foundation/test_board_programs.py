@@ -126,6 +126,47 @@ def test_registry_carries_mirror() -> None:
     assert m.default_interval_seconds == _QUARTER_SECONDS
 
 
+def test_registry_carries_megaphone() -> None:
+    mg = PROGRAMS["megaphone"]
+    assert mg.role == "head_marketing"
+    assert mg.source == "board_megaphone"
+    assert mg.trigger is TriggerKind.CRON
+    assert mg.scope == "org"
+    assert mg.default_interval_seconds == 3 * 24 * 3600
+
+
+_LIBRARIAN_MAX_ITEMS_PER_CYCLE = 3
+
+
+def test_registry_carries_librarian() -> None:
+    p = PROGRAMS["librarian"]
+    assert p.role == "auditor"
+    assert p.source == "board_librarian"
+    assert p.trigger is TriggerKind.CRON
+    assert p.scope == "org"
+    assert p.max_items_per_cycle == _LIBRARIAN_MAX_ITEMS_PER_CYCLE
+    assert p.default_interval_seconds == 2 * WEEK_SECONDS
+
+
+def test_registry_carries_eleven_programs() -> None:
+    """Locks the union so a future addition/removal is deliberate — matches
+    the count-whatever-your-base-has-plus-librarian shape the other
+    registry-parity tests already exercise per-key."""
+    assert set(PROGRAMS) == {
+        "roadmap",
+        "x_feature",
+        "pest_control",
+        "periscope",
+        "coroner",
+        "sentinel",
+        "spackle",
+        "scales",
+        "mirror",
+        "megaphone",
+        "librarian",
+    }
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

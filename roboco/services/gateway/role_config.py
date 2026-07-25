@@ -163,8 +163,12 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # ``draft_playbook`` — a coroner-authored playbook-kind process change is
 # drafted by calling PlaybookService directly inside propose_postmortem
 # (content_actions.py), never through this do-verb; "auditor curates but
-# does not draft" stays an invariant (test_playbook_verbs.py) reserved for a
-# future Librarian program to deliberately revisit, not this one.
+# does not draft" stays an invariant (test_playbook_verbs.py). Librarian
+# (below) is the program the spec flagged as the one that would deliberately
+# revisit that invariant — it does NOT: propose_playbook_drafts follows the
+# exact same precedent, drafting directly via PlaybookService inside the
+# verb (content_actions.py), so draft_playbook itself still never appears
+# here.
 _AUDITOR_DO = (
     "note",
     "evidence",
@@ -181,6 +185,10 @@ _AUDITOR_DO = (
     # a bounded expansion mirroring _PRODUCT_OWNER_DO's propose_roadmap /
     # _HEAD_MARKETING_DO's propose_market_brief grants.
     "propose_quality_report",
+    # Librarian (Board Program): proactive playbook mining — drafts 1-3
+    # playbooks directly via PlaybookService (see the comment above), never
+    # via draft_playbook.
+    "propose_playbook_drafts",
 )
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come

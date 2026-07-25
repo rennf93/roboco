@@ -43,6 +43,7 @@ from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
     CORONER_SOURCE,
+    LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
@@ -94,6 +95,7 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     SENTINEL_SOURCE,
                     SCALES_SOURCE,
                     MEGAPHONE_SOURCE,
+                    LIBRARIAN_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -472,6 +474,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["sentinel"].source == SENTINEL_SOURCE
     assert PROGRAMS["scales"].source == SCALES_SOURCE
     assert PROGRAMS["megaphone"].source == MEGAPHONE_SOURCE
+    assert PROGRAMS["librarian"].source == LIBRARIAN_SOURCE
 
 
 @pytest.mark.asyncio

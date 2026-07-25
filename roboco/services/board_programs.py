@@ -118,12 +118,19 @@ async def _originate_megaphone(session: AsyncSession) -> TaskTable | None:
     return await get_megaphone_engine(session).run_cycle()
 
 
+async def _originate_librarian(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.librarian_engine import get_librarian_engine
+
+    return await get_librarian_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
 # PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE,
-# SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE) so the two can't drift.
+# SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE, LIBRARIAN_SOURCE) so the
+# two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
@@ -135,6 +142,7 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "scales": _originate_scales,
     "mirror": _originate_mirror,
     "megaphone": _originate_megaphone,
+    "librarian": _originate_librarian,
 }
 
 

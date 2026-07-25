@@ -159,6 +159,17 @@ PROGRAMS: dict[str, BoardProgram] = {
             # on a schedule. Org scope, same as periscope/x_feature.
             scope="org",
         ),
+        BoardProgram(
+            key="librarian",
+            role="auditor",
+            trigger=TriggerKind.CRON,
+            source="board_librarian",
+            default_interval_seconds=2 * WEEK_SECONDS,
+            max_items_per_cycle=3,
+            # Org-scoped (spec §4): it mines journals/learnings org-wide, not
+            # one repo — no per-project opt-in gate, mirrors sentinel/periscope.
+            scope="org",
+        ),
     )
 }
 

@@ -61,6 +61,7 @@ VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
 VAULT_NOTE_REF = "vault_note_ref"
 DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
 REBALANCE_PLAN = "rebalance_plan"
+PLAYBOOK_DRAFTS = "playbook_drafts"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -419,6 +420,23 @@ def get_rebalance_plan(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_rebalance_plan(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, REBALANCE_PLAN, payload)
+
+
+# --- Librarian playbook drafts ------------------------------------------------
+# The playbooks the Auditor mined and drafted via ``propose_playbook_drafts``
+# onto the exploration task the Librarian engine opened: {drafts: [{id, title},
+# ...]}. Mirrors QUALITY_REPORT/MARKET_BRIEF — no per-item CEO decision (each
+# draft is already a real PlaybookTable row riding the normal pending-playbook
+# curation queue), so this marker is set exactly once (complete-at-propose).
+
+
+def get_playbook_drafts(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, PLAYBOOK_DRAFTS)
+    return val if isinstance(val, dict) else None
+
+
+def set_playbook_drafts(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, PLAYBOOK_DRAFTS, payload)
 
 
 # --- video draft ------------------------------------------------------------

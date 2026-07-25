@@ -27,3 +27,4 @@
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `propose_quality_report` | `propose_quality_report(headline: str, items: list[QualityReportItemInput], overall_assessment: str)` |
+| `propose_playbook_drafts` | `propose_playbook_drafts(drafts: list[PlaybookDraftInput])` |

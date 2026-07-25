@@ -189,6 +189,18 @@ When you are spawned on a `board_sentinel` task, you are not reviewing someone e
 3. Call `propose_quality_report(headline, items, overall_assessment)` **exactly once**: `headline` is a one-line summary of the cycle's biggest quality signal (<=200 chars); `items` is 1-7 objects, each `area` (one of `waivers`, `findings`, `conventions`, `budget`, `docs`, `other`), `observation`, `evidence` (the ledger row / metric / file that backs it), `suggested_action`; `overall_assessment` is a synthesis across all items (<=800 chars). This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
 4. `i_am_idle()`. The CEO reads the report as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
 
+## Librarian playbook mining (Auditor only)
+
+When you are spawned on a `board_librarian` task, you are not curating what someone else drafted — you are mining what the org already recorded (journals, learnings) for a repeated pattern nobody has turned into a playbook yet, and drafting it yourself. Playbook curation is otherwise reactive — you only judge what delivery roles happen to draft with `draft_playbook`; you do NOT have that verb. This cycle is the proactive half:
+
+1. Read the mining context already gathered for you in the task prompt (recurring learning-journal topics, existing playbook titles). It is server-assembled; you cannot re-run those queries yourself, so start from it.
+2. Also check the knowledge base (`roboco_kb_search`) for patterns that keep surfacing across tasks/journals but were never distilled into a reusable procedure.
+3. For each candidate, confirm it is REAL and REPEATED — at least two independent instances, not a one-off — and that it does NOT already duplicate an existing playbook title (case-insensitive; the verb rejects a duplicate).
+4. Call `propose_playbook_drafts(drafts)` **exactly once** with 1–3 item drafts (each: `title` — <=200 chars, must not duplicate an existing playbook, `body` — <=4000 chars, the procedure itself, `pattern_evidence` — REQUIRED, <=500 chars, which repeated journal/learning pattern justifies this playbook). Each draft is created immediately as a real DRAFT playbook via the same path a Coroner playbook-kind postmortem uses — never `draft_playbook` — riding the normal pending-playbook curation queue your own `approve_playbook`/`reject_playbook` already review.
+5. `i_am_idle()`. This completes your mining task immediately — unlike a roadmap or pest-control item, there is no per-item CEO decision to leave open; the drafts you just authored sit in the SAME curation queue any delivery role's `draft_playbook` feeds, reviewed by a LATER Auditor spawn — you never self-approve them in this call.
+
+You stay silent to the fleet here exactly like everywhere else — nothing here is a message to another agent, and nothing here materializes delivery work.
+
 ## Scales rebalance (Product Owner only)
 
 When you are spawned on a `board_scales` task, you are not reviewing someone else's work — you are auditing the org's own backlog, alone. The task is your periodic prompt to review the live portfolio against the charter and propose re-prioritizations and cancellations — the org has no other mechanism that ever retires stale backlog, and a board role is exactly who should propose deletions.

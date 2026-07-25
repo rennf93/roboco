@@ -392,6 +392,15 @@ _QUALITY_REPORT_AREAS: frozenset[str] = frozenset(
     {"waivers", "findings", "conventions", "budget", "docs", "other"}
 )
 
+# Librarian (Board Program) playbook drafts are Auditor-authored, mirroring
+# _SENTINEL_ROLES. Each draft is created directly via PlaybookService (the
+# Coroner _draft_coroner_playbook precedent) — the Auditor does NOT also gain
+# draft_playbook (see _DRAFT_PLAYBOOK_ROLES above / role_config.py).
+_LIBRARIAN_ROLES: frozenset[str] = frozenset({"auditor"})
+_PLAYBOOK_DRAFT_TITLE_MAX_CHARS = 200  # matches PlaybookCreate.title's own cap
+_PLAYBOOK_DRAFT_BODY_MAX_CHARS = 4000
+_PLAYBOOK_DRAFT_PATTERN_EVIDENCE_MAX_CHARS = 500
+
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("title", 5),
@@ -3798,6 +3807,249 @@ class ContentActions:
                 context_briefing={},
             )
         return str(drafted.id), None
+
+    @classmethod
+    def _reject_playbook_draft_item(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw playbook-draft dict; None when clean. Mirrors
+        ``_reject_quality_report_item_text_fields``'s loop-over-fields shape."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"draft {idx} is not an object",
+                remediate="each draft needs title/body/pattern_evidence",
+                context_briefing={},
+            )
+        for field, min_chars, max_chars in (
+            ("title", 5, _PLAYBOOK_DRAFT_TITLE_MAX_CHARS),
+            ("body", 20, _PLAYBOOK_DRAFT_BODY_MAX_CHARS),
+            ("pattern_evidence", 15, _PLAYBOOK_DRAFT_PATTERN_EVIDENCE_MAX_CHARS),
+        ):
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"draft {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for draft {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"draft {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+            if len(value) > max_chars:
+                return Envelope.invalid_state(
+                    message=(
+                        f"draft {idx} {field} is {len(value)} chars, over the "
+                        f"{max_chars}-char cap"
+                    ),
+                    remediate=f"shorten draft {idx}'s {field}",
+                    context_briefing={},
+                )
+        return None
+
+    @staticmethod
+    def _reject_playbook_draft_duplicate_titles(
+        drafts: list[dict[str, Any]],
+    ) -> Envelope | None:
+        """Case-insensitive dedup WITHIN this batch — split out so the
+        title-conflict message is distinct from the per-item field check."""
+        seen: set[str] = set()
+        for idx, raw in enumerate(drafts):
+            title = str(raw.get("title", "")).strip().lower()
+            if title in seen:
+                return Envelope.invalid_state(
+                    message=f"draft {idx} title duplicates another draft in this batch",
+                    remediate="give each draft a distinct title",
+                    context_briefing={},
+                )
+            seen.add(title)
+        return None
+
+    @classmethod
+    def _reject_playbook_drafts_batch(
+        cls, drafts: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-draft validation + in-batch dedup, split out
+        of ``propose_playbook_drafts`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_drafts = PROGRAMS["librarian"].max_items_per_cycle
+        if not (1 <= len(drafts) <= max_drafts):
+            return Envelope.invalid_state(
+                message=f"propose 1-{max_drafts} playbook drafts, got {len(drafts)}",
+                remediate=f"propose between 1 and {max_drafts} drafts",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(drafts):
+            if rej := cls._reject_playbook_draft_item(raw, idx):
+                return rej
+        return cls._reject_playbook_draft_duplicate_titles(drafts)
+
+    async def _reject_playbook_drafts_existing_titles(
+        self, drafts: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """Live, unbounded case-insensitive dedup against every non-archived
+        playbook already in the store — the mining prompt only shows the
+        most-recent 20 as a hint, so this re-checks fresh at propose time
+        rather than trusting what the Auditor read minutes ago."""
+        from roboco.services.librarian_engine import get_librarian_engine
+
+        existing = await get_librarian_engine(
+            self.task.session
+        ).existing_playbook_titles_lower()
+        for idx, raw in enumerate(drafts):
+            title = str(raw["title"]).strip()
+            if title.lower() in existing:
+                return Envelope.invalid_state(
+                    message=(
+                        f"draft {idx} title {title!r} duplicates an existing playbook"
+                    ),
+                    remediate=(
+                        "give this draft a distinct title, or drop it — a playbook "
+                        "for this pattern may already exist"
+                    ),
+                    context_briefing={},
+                )
+        return None
+
+    async def _draft_librarian_playbooks(
+        self, agent_id: UUID, drafts: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, str]], Envelope | None]:
+        """Create each validated draft as a real DRAFT playbook via
+        ``PlaybookService.draft()`` directly — the Coroner precedent
+        (``_draft_coroner_playbook`` above), never the ``draft_playbook``
+        do-verb, so "auditor curates but does not draft" stays true at the
+        do-verb surface even though the Auditor originates these drafts.
+
+        A per-item ``ConflictError`` (a genuine same-tick race — the live
+        pre-check in ``_reject_playbook_drafts_existing_titles`` already
+        closed the realistic window) aborts the rest of the batch with a
+        clean rejection.
+        ponytail: no rollback of earlier successes in this loop — any draft
+        already created before the conflict stays a real, independently
+        valid playbook riding the normal curation queue (just not
+        cross-referenced on this particular report); this is the same
+        residual race Coroner already accepts, and Librarian's own
+        single-open-cycle dedup makes a same-cycle collision vanishingly
+        rare in practice.
+        """
+        from roboco.models.playbook import PlaybookCreate
+        from roboco.services.base import ConflictError
+        from roboco.services.playbook import get_playbook_service
+
+        svc = get_playbook_service(self.task.session)
+        created: list[dict[str, str]] = []
+        for idx, raw in enumerate(drafts):
+            try:
+                drafted = await svc.draft(
+                    PlaybookCreate(
+                        title=str(raw["title"]).strip(),
+                        problem=str(raw["pattern_evidence"]).strip(),
+                        procedure=str(raw["body"]).strip(),
+                        tags=["librarian", "auto-authored"],
+                    ),
+                    created_by=agent_id,
+                )
+            except ConflictError as exc:
+                return created, Envelope.invalid_state(
+                    message=f"draft {idx}: {exc}",
+                    remediate="use a more distinct title (slug must be unique)",
+                    context_briefing={"drafted_before_conflict": len(created)},
+                )
+            created.append({"id": str(drafted.id), "title": drafted.title})
+        return created, None
+
+    async def propose_playbook_drafts(
+        self, *, agent_id: UUID, drafts: list[dict[str, Any]]
+    ) -> Envelope:
+        """Auditor mines journals/learnings for repeated patterns and drafts
+        1-3 playbooks on its open Librarian cycle task, completing it in the
+        same call (mirrors ``propose_market_brief``/``propose_quality_report``'s
+        complete-at-propose asymmetry — a mining cycle has no per-item CEO
+        decision to wait on).
+
+        Each draft is created via ``PlaybookService.draft()`` DIRECTLY — the
+        same Coroner precedent ``_draft_coroner_playbook`` established: the
+        Auditor does NOT also carry ``draft_playbook`` on its manifest
+        (``role_config.py``, ``test_playbook_verbs.py``'s "auditor curates
+        but does not draft" invariant), so a Librarian-authored draft reaches
+        the pending-playbook curation queue through this direct service
+        call, never the do-verb every delivery role uses. A LATER Auditor
+        spawn curates them — a deliberate, documented self-curation
+        asymmetry (see ``agents/prompts/identities/auditor.md``).
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _LIBRARIAN_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose playbook drafts; only the "
+                    "Auditor mines for patterns"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_playbook_drafts_batch(drafts):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_librarian_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_playbook_drafts(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open Librarian mining task assigned to you",
+                remediate=(
+                    "propose_playbook_drafts only runs against an active mining "
+                    "cycle spawned by the librarian engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        if rej := await self._reject_playbook_drafts_existing_titles(drafts):
+            return rej
+
+        created, rej = await self._draft_librarian_playbooks(agent_id, drafts)
+        if rej is not None:
+            return rej
+
+        markers.set_playbook_drafts(task, {"drafts": created})
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        await self._notify_librarian_drafts(task, created)
+        return Envelope.ok(
+            status="playbook_drafts_proposed",
+            task_id=str(task.id),
+            next=(
+                "i_am_idle() — the drafts ride the normal pending-playbook "
+                "curation queue"
+            ),
+            context_briefing={"draft_count": len(created)},
+        )
+
+    async def _notify_librarian_drafts(
+        self, task: Any, created: list[dict[str, str]]
+    ) -> None:
+        """Best-effort CEO nudge the moment Librarian mines its drafts —
+        mirrors ``_notify_postmortem``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
+                task=task,
+                task_id=task.id,
+                titles=[d["title"] for d in created],
+            )
+        except Exception as exc:
+            logger.warning(
+                "librarian telegram notify failed (best-effort)", error=str(exc)
+            )
 
     async def propose_postmortem(
         self,

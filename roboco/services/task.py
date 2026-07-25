@@ -833,6 +833,16 @@ MIRROR_ITEM_SOURCE = "mirror"
 # is no separate per-item CEO decision to leave the exploration task open for.
 MEGAPHONE_SOURCE = "board_megaphone"
 
+# Source tag for a Librarian (Board Program) exploration cycle: a PENDING
+# task the librarian engine opens for the Auditor to mine journals/learnings
+# for repeated patterns nobody has turned into a playbook yet and draft 1-3
+# of them via the ``propose_playbook_drafts`` content verb. Org-scoped (spec
+# §4: it mines org-wide journal/learning data, not one repo) and, like
+# PERISCOPE_SOURCE/SENTINEL_SOURCE, complete-at-propose: each draft is
+# already a real PlaybookTable row riding the normal pending-playbook
+# curation queue, so there is no separate materialized-item source.
+LIBRARIAN_SOURCE = "board_librarian"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -2252,6 +2262,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == SCALES_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_librarian_cycles(self) -> list[TaskTable]:
+        """Non-terminal Librarian exploration tasks — the one-open-cycle
+        dedup + ``propose_playbook_drafts``'s task lookup. Mirrors
+        ``list_open_sentinel_cycles``: complete-at-propose, so a task found
+        here is always pre-drafts (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == LIBRARIAN_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

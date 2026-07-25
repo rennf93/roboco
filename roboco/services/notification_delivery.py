@@ -1290,6 +1290,54 @@ class NotificationDeliveryService(BaseService):
             text=text, reply_markup=None, disable_link_preview=True
         )
 
+    async def notify_ceo_of_librarian_drafts(
+        self, *, task: TaskTable, task_id: UUID, titles: list[str]
+    ) -> None:
+        """Best-effort CEO nudge the moment Librarian mines 1-3 playbook
+        drafts.
+
+        Mirrors ``notify_ceo_of_sentinel_report``/``_periscope_brief``
+        exactly: display only — no approve/reject verb exists for THIS
+        notification (the drafts themselves ride the EXISTING
+        pending-playbook curation queue an Auditor's own
+        ``approve_playbook``/``reject_playbook`` already reviews, never a new
+        queue of their own) — "librarian" is a display-only ``_KIND_DISPLAY``
+        entry, never added to ``_VALID_KINDS``/the approve-reject callback
+        surface. A normal ALERT, not an APPROVAL — nothing here needs a CEO
+        decision through a queue. The Auditor stays silent to agents
+        throughout (spec §4's "Auditor boundary").
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        title_list = ", ".join(titles)
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Playbook drafts mined: {title_list[:100]}",
+            body=(
+                "The Auditor mined recurring patterns and drafted "
+                f"{len(titles)} playbook(s): {title_list}\n\n"
+                "Review them in the panel's pending-playbook curation queue "
+                "(Overview page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("librarian", str(task_id)[:8], "", title_list)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/overview"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
     async def notify_ceo_of_budget_breach(
         self,
         *,

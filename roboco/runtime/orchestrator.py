@@ -76,6 +76,7 @@ from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     CORONER_SOURCE,
+    LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
     PERISCOPE_SOURCE,
@@ -917,9 +918,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
     ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
-    ``board_mirror`` / ``board_megaphone``) that ``_dispatch_pm_work`` owns.
-    One flat call keeps the dev loop's skip out of a long per-source ``if``
-    chain (xenon budget)."""
+    ``board_mirror`` / ``board_megaphone`` / ``board_librarian``) that
+    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
+    of a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -933,6 +934,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         SCALES_SOURCE,
         MIRROR_SOURCE,
         MEGAPHONE_SOURCE,
+        LIBRARIAN_SOURCE,
     )
 
 
@@ -940,8 +942,8 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     """Route an assigned pending task to its Board Program's one-shot
     exploration dispatcher, keyed by ``task['source']``. Every registered
     program (roadmap / x_feature / pest_control / periscope / coroner /
-    sentinel / spackle / scales / mirror / megaphone) is solo-authored
-    (PO/HoM/Auditor alone) — this bypasses the
+    sentinel / spackle / scales / mirror / megaphone / librarian) is
+    solo-authored (PO/HoM/Auditor alone) — this bypasses the
     two-reviewer board-review gate; none of these ever ride
     ``_handle_board_assigned_task`` (that would also spawn a second board
     role and fire the Approve & Start handoff, both wrong for a cycle with
@@ -967,6 +969,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         SCALES_SOURCE: orch._dispatch_scales_exploration,
         MIRROR_SOURCE: orch._dispatch_mirror_exploration,
         MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
+        LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -13284,6 +13287,59 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("megaphone: digest-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to mine journals/learnings and draft
+        playbooks (Librarian, Board Program).
+
+        Mirrors ``_dispatch_sentinel_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_playbook_drafts`` completes
+        this task atomically (the x_feature/periscope/sentinel complete-at-
+        propose asymmetry), so it stops matching the PENDING fetch on the
+        next tick. Reuses the same one-shot ``_board_dispatched`` tracker +
+        respawn breaker every other board dispatch uses. The extra step is
+        the server-assembled mining context (recurring learning-journal
+        topics + existing playbook titles) the Auditor cannot gather itself
+        — mirrors ``_dispatch_sentinel_exploration``'s evidence-context
+        shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("librarian")
+        mining_context = await self._librarian_mining_context()
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_librarian_prompt(
+                task, prior_context, mining_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_librarian_exploration",
+        )
+
+    async def _librarian_mining_context(self) -> str:
+        """Best-effort mining-context read for prompt injection — mirrors
+        ``_sentinel_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the mining
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.librarian_engine import get_librarian_engine
+
+            async with get_db_context() as db:
+                return await get_librarian_engine(db).mining_context()
+        except Exception:
+            logger.warning("librarian: mining-context read failed (best-effort)")
+            return ""
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -13547,7 +13603,8 @@ Start now: evidence(task_id="{task_id}")
             if assigned_to:
                 # Every registered Board Program (roadmap / x_feature /
                 # pest_control / periscope / coroner / sentinel / spackle /
-                # scales) is solo-authored and bypasses the two-reviewer
+                # scales / mirror / megaphone / librarian) is solo-authored
+                # and bypasses the two-reviewer
                 # board-review gate — routed via the module-level dict
                 # dispatch table so this chain stays flat as new programs
                 # register (xenon budget). Falls through to the generic
@@ -16707,6 +16764,78 @@ there is no separate approval surface.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
+"""
+
+    def _build_librarian_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        mining_context: str = "",
+    ) -> str:
+        """Prompt for the Auditor's one-shot Librarian playbook-mining cycle.
+
+        Auditor-solo, complete-at-propose (mirrors the sentinel prompt's
+        shape): mine journals/learnings for repeated patterns, draft 1-3
+        playbooks, then idle. ``prior_context`` is the LEARN rendering of the
+        last closed cycles (``BoardProgramEngine.prior_cycle_context``);
+        ``mining_context`` is the server-assembled recurring-learning-topic +
+        existing-playbook-title evidence (``LibrarianEngine.
+        mining_context``) — both empty when none exist yet. The Auditor
+        stays silent to agents throughout — the drafts ride the normal
+        pending-playbook curation queue, never a fleet notification."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_drafts = PROGRAMS["librarian"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        mining_block = (
+            f"\n## Mining context gathered for you\n{mining_context}\n"
+            if mining_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. It's time for your periodic Librarian playbook-mining
+cycle.
+
+TASK: {task_id}
+
+Playbook curation today is reactive — you only judge what delivery roles
+happen to draft via draft_playbook. This cycle is the proactive half: mine
+what the org already recorded (journals, learnings) for a repeated pattern
+nobody has turned into a playbook yet, and draft it yourself. This is a
+mining pass, not a task queue: nothing you file here materializes work
+for anyone else, and there is no per-item CEO decision to wait on — each
+draft you author lands directly in the SAME pending-playbook curation
+queue your own approve_playbook/reject_playbook already review (a later
+cycle curates them, never this same call).
+{mining_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the mining context gathered for you above (recurring learning-
+   journal topics, existing playbook titles). It is server-assembled — you
+   cannot re-run those queries yourself, so start from it.
+3. Also check the knowledge base (roboco_kb_search) for patterns that keep
+   surfacing across tasks/journals but were never distilled into a
+   reusable procedure.
+4. For each candidate pattern, confirm it is REAL and REPEATED (at least
+   two independent instances) — a one-off is not a pattern — and that it
+   does NOT already duplicate an existing playbook title (listed above,
+   case-insensitive; the verb rejects a duplicate).
+5. propose_playbook_drafts(drafts=[...]) — call this EXACTLY ONCE with
+   1-{max_drafts} drafts. Each draft is an object with: title (<=200 chars,
+   must not duplicate an existing playbook), body (<=4000 chars — the
+   procedure itself: when to use it, the steps), pattern_evidence
+   (REQUIRED, <=500 chars — which repeated journal/learning pattern
+   justifies this playbook; a draft without it is noise, and the verb
+   rejects it).
+6. i_am_idle() — once filed. The drafts sit in the normal pending-playbook
+   curation queue; nothing here needs your further attention this cycle.
+
+Do NOT claim, plan, delegate, fix anything yourself, message any other
+agent, or call draft_playbook (you don't have it — use
+propose_playbook_drafts instead) — that is not your job here, and the
+gateway will reject those verbs.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

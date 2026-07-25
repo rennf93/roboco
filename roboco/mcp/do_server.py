@@ -855,6 +855,27 @@ def propose_quality_report(
     )
 
 
+def propose_playbook_drafts(drafts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Auditor: mine journals/learnings for repeated patterns and draft 1-3
+    playbooks for your open Librarian mining task.
+
+    Call this exactly ONCE per mining cycle, after reading the recurring-
+    learning-topics + existing-playbook-titles evidence server-assembled
+    into your task prompt. Each draft is created immediately as a real DRAFT
+    playbook riding the normal pending-playbook curation queue (the same one
+    your own approve_playbook/reject_playbook curate) — a LATER cycle
+    curates them, never this same call.
+
+    Args:
+        drafts: 1-3 dicts, each with: title (<=200 chars, must not duplicate
+            an existing playbook title — case-insensitive), body (<=4000
+            chars — the procedure itself), pattern_evidence (REQUIRED,
+            <=500 chars — which repeated journal/learning pattern justifies
+            this playbook).
+    """
+    return _post("/api/v1/do/propose_playbook_drafts", {"drafts": drafts})
+
+
 def propose_video(
     composition_id: str,
     x_caption: str,
@@ -1224,6 +1245,7 @@ _TOOLS: dict[str, Any] = {
     "propose_editorial_post": propose_editorial_post,
     "propose_postmortem": propose_postmortem,
     "propose_quality_report": propose_quality_report,
+    "propose_playbook_drafts": propose_playbook_drafts,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,
