@@ -71,6 +71,12 @@ export type {
   GapFillItemActionResult,
   SpackleCycle,
 } from "./spackle";
+export { mirrorApi } from "./mirror";
+export type {
+  MessagingFixItem,
+  MessagingFixItemActionResult,
+  MirrorCycle,
+} from "./mirror";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,
