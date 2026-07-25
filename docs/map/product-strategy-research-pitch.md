@@ -26,6 +26,21 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/x_credentials.py` | Singleton Fernet-encrypted OAuth 1.0a credential CRUD; decrypts server-side only | 140 |
 | `roboco/api/routes/x.py` | CEO-only routes: list open X posts, approve/reject one draft | 164 |
 | `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 73 |
+| `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 295 |
+| `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 566 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now` | 103 |
+| `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
+| `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
+| `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
+| `roboco/services/dogfood_engine.py` | `DogfoodEngine` — event-only, project-scoped; real `_ORIGINATORS` binding (unlike Coroner's stub) | 152 |
+| `roboco/services/periscope_engine.py` | `PeriscopeEngine` — weekly cron, org-scoped market-research brief; `latest_brief_context` feeds Printer | 157 |
+| `roboco/services/megaphone_engine.py` | `MegaphoneEngine` — 3-day cron, org-scoped editorial calendar; shipped-this-week digest + Unreleased changelog | 191 |
+| `roboco/services/mirror_engine.py` | `MirrorEngine` — quarterly cron, project-scoped messaging-drift audit | 143 |
+| `roboco/services/barfly_engine.py` | `BarflyEngine` — 2-day cron, org-scoped; screens X search candidates through `injection_guard`, marks seen | 223 |
+| `roboco/services/war_room_engine.py` | `WarRoomEngine` — event-triggered (`open_for_release` release hook + CEO run-now); campaign posts w/ `publish_after` | 231 |
+| `roboco/services/coroner_engine.py` | `CoronerEngine` — event-only (`open_for_incident`, no `run_cycle`/cron path); incident + transition-history context | 237 |
+| `roboco/services/sentinel_engine.py` | `SentinelEngine` — weekly cron, org-scoped drift report (waivers/findings/conventions/spend) | 261 |
+| `roboco/services/librarian_engine.py` | `LibrarianEngine` — biweekly cron, org-scoped proactive playbook mining | 232 |
 
 ## Key Symbols
 
@@ -111,6 +126,30 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `get_x_engine` | factory | x_engine.py:869 | Session-bound constructor (optional injected `XClient` for tests) |
 | `CompanyGoalsService.resolve_product_name` | method | company_goals.py:79 | The shared product-name fallback chain: `project.name` if set, else the charter's `company_name`, else the "RoboCo" literal — single source so `XEngine`/`VideoEngine` can't drift apart on branding |
 | `task_project_fields` | func | api/schemas/project_fields.py:19 | `(project_slug, project_name)` or `(None, None)` for a task response — `sa_inspect(task).unloaded` guard before touching `task.project` (a freshly-created task can have an unloaded relationship); shared by the X and video queue response builders so a multi-project CEO can tell drafts apart via the panel's `ProjectBadge` |
+| `BoardProgram` | dataclass | foundation/policy/board_programs.py:31 | Frozen registry entry: `key`/`role`/`trigger`/`source`/`default_interval_seconds`/`max_items_per_cycle`/`scope` |
+| `PROGRAMS` | dict | foundation/policy/board_programs.py:45 | All 14 registered programs, keyed by `key` |
+| `program_due` | func | foundation/policy/board_programs.py:225 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
+| `project_participates` | func | foundation/policy/board_programs.py:241 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
+| `validate_board_programs_field` | func | foundation/policy/board_programs.py:258 | Rejects an unknown key or a polarity mismatched to the program's own scope |
+| `BoardProgramEngine` | class | services/board_programs.py:293 | Trigger/dedup/originate/LEARN over every registered program |
+| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:302 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
+| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:373 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
+| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:422 / 466 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
+| `program_armed` | func | services/board_programs.py:274 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
+| `pick_rotation_target` | func | services/board_programs.py:191 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
+| `PestControlEngine.run_cycle` / `evidence_context` | method | pest_control_engine.py:79 / 152 | Weekly+metric cron; server-assembles rework-hotspot/recurring/waived-finding evidence for the PO's prompt |
+| `SpackleEngine.run_cycle` | method | spackle_engine.py:71 | Biweekly cron, project-scoped gap-fill audit |
+| `ScalesEngine.run_cycle` / `_stale_backlog_snapshot` | method | scales_engine.py:70 / 140 | Monthly cron; snapshots BACKLOG/PENDING tasks older than 30 days for the rebalance prompt |
+| `DogfoodEngine.run_cycle` | method | dogfood_engine.py:78 | Event-only; real originator (unlike Coroner's stub) — needs no external incident id, picks the next opted-in project via `pick_rotation_target` |
+| `PeriscopeEngine.run_cycle` / `latest_brief_context` | method | periscope_engine.py:71 / 126 | Weekly cron; the latest closed brief is injected into Printer's own exploration prompt |
+| `MegaphoneEngine.run_cycle` / `digest_context` | method | megaphone_engine.py:74 / 133 | 3-day cron; server-assembles the shipped-this-week digest + Unreleased CHANGELOG section |
+| `MirrorEngine.run_cycle` | method | mirror_engine.py:71 | Quarterly cron, project-scoped messaging-drift audit |
+| `BarflyEngine.run_cycle` / `_screen_and_mark` | method | barfly_engine.py:88 / 145 | 2-day cron; screens each X search candidate through `injection_guard.screen_external_text` before it reaches the HoM's prompt |
+| `WarRoomEngine.run_cycle` / `open_for_release` | method | war_room_engine.py:111 / 120 | `run_cycle` is the CEO on-demand blank-brief path (reachable via `open_program_cycle`); `open_for_release` bypasses `_ORIGINATORS` entirely, called from the release-publish hook with pre-curated highlights |
+| `CoronerEngine.open_for_incident` / `incident_context` | method | coroner_engine.py:75 / 195 | The ONLY way a Coroner cycle opens — called directly from three chokepoints (bounce>=3, cancel-after-work, budget-block), never the cron loop; `_ORIGINATORS["coroner"]` is an always-`None` stub that only exists so the dict covers the registry 1:1 |
+| `SentinelEngine.run_cycle` / `evidence_context` | method | sentinel_engine.py:79 / 131 | Weekly cron; server-assembles waiver-trend/open-findings/conventions-hotspot/spend evidence |
+| `LibrarianEngine.run_cycle` / `mining_context` | method | librarian_engine.py:89 / 140 | Biweekly cron; server-assembles recurring learning-journal topics + existing playbook titles to mine against |
+| `get_pest_control_engine` / `get_spackle_engine` / `get_scales_engine` / `get_dogfood_engine` / `get_periscope_engine` / `get_megaphone_engine` / `get_mirror_engine` / `get_barfly_engine` / `get_war_room_engine` / `get_coroner_engine` / `get_sentinel_engine` / `get_librarian_engine` / `get_board_program_engine` | factory | each engine's own file | Session-bound constructors, one per engine |
 
 ## Data Flow
 
@@ -127,6 +166,12 @@ Two distinct flows originate work into the delivery lifecycle:
 **Roadmap flow (dormant weekly originator, default off).** `Orchestrator._roadmap_engine_loop` returns immediately unless `roadmap_engine_enabled`; otherwise each `roadmap_interval_seconds` (default weekly) it opens a DB context and calls `RoadmapEngine.run_cycle`, which no-ops if a roadmap-source task is already open or the RoboCo project isn't resolvable, else opens ONE held PENDING exploration task (`source=board_roadmap`, `confirmed_by_human=False`) assigned to the Product Owner. The normal board one-shot dispatch (`_dispatch_roadmap_exploration`) spawns the PO, who explores the charter/releases/metrics/projects and calls the `propose_roadmap` do-tool exactly once with a themed goal + 3-7 item drafts (persisted as an `orchestration_markers` payload). The CEO reviews the cycle in the panel's Roadmap Review Queue and approves/rejects each item individually via `/api/roadmap/cycles/{id}/items/{id}/{approve,reject}` → `RoadmapService`; an approved item materializes as a BACKLOG task (`source=roadmap`) through `PrompterService.create_task_from_draft` — nothing auto-starts, normal PM activation takes it from BACKLOG. Once every item is terminal, the exploration task itself completes.
 
 **X (Twitter) flow (three originators, one held queue, default off).** Unlike every other engine on this page, `XEngine` never spawns an agent for release posts or mention replies — `draft_release_post` (event hook off `ReleaseProposalService.approve`'s publish-success branch) and `run_cycle` (periodic mentions poll, `Orchestrator._x_mentions_poll_loop`) both draft via a raw local-model chat completion, never a cloud LLM. The feature-spotlight half is the exception: `Orchestrator._x_feature_spotlight_loop` (dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`) opens a DB context each `x_feature_spotlight_interval_seconds` and calls `XEngine.open_feature_spotlight_exploration`, which no-ops on the usual guards (creds, one-open-cycle dedup, the shared `x_max_open_posts` cap, project resolvability) or else opens ONE held PENDING exploration task (`source=x_feature_exploration`) assigned to the Head of Marketing, carrying a snapshot of already-covered feature slugs (`x_seen_features` marker). The board dispatcher's `_dispatch_pm_work` special-cases this source (mirroring `ROADMAP_SOURCE`) to call `_dispatch_feature_spotlight_exploration`, a one-shot spawn of the real Head-of-Marketing agent (full read tools) who investigates CHANGELOG.md/feature-flags/docs/map/charter/KB and calls the `propose_feature_spotlight` do-tool exactly once; that verb materializes a brand-new held draft task (`source=x_feature`) and completes the exploration task as a side effect — a deliberate asymmetry from `propose_roadmap`, which instead writes a marker onto the SAME task and leaves it open. Every draft from all three paths — release, reply, spotlight — lands in the identical held-task shape (`TaskTable`, `confirmed_by_human=False`, `assigned_to=secretary-1`, body in `orchestration_markers.x_draft_body`) rendered by the panel's X Post Queue and acted on only by `XPostService.approve`/`.reject`; nothing here ever calls `x_client.post_tweet` itself. `XEngine._voice_guide` (a live `CompanyGoalsService.get()` read, never hardcoded) feeds a baseline house-voice constant plus the CEO's optional `brand_voice` charter sample into every one of the two local-model prompts, and the Head of Marketing's own identity prompt points it at the same charter field for its cloud-LLM-authored spotlight body.
+
+**Board Program flow (registry, no master flag, default off per program).** The orchestrator's `_board_program_loop` ticks `BoardProgramEngine.run_due_programs` on a floor interval (shortest registered cadence, clamped 300s-3600s). Per CRON program: `program_armed` (settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature`) → `_scope_gate` (a `scope="project"` program needs at least one project with the key in `projects.board_programs`) → dedup against `board_program_cycles` (migration `087`, one open row per program, auto-closed once its exploration task goes terminal) → `program_due` → `_ORIGINATORS[key]` calls that program's own `run_cycle`, which opens ONE held PENDING exploration task assigned to the program's role (Product Owner: Pest Control/Spackle/Scales/Dogfood; Head of Marketing: Periscope/Megaphone/Mirror/Barfly/War Room; Auditor: Sentinel/Librarian) and records a fresh `board_program_cycles` row. `run_due_programs` separately evaluates every registered metric predicate (`_METRIC_PREDICATES`, today only Pest Control's 7-day rework-rate check against `ROBOCO_PEST_REWORK_THRESHOLD`) after the same scope/dedup gates, so an off-schedule accelerator never re-pays a multi-query metric check on a tick that was always going to be rejected. `open_program_cycle(key)` is the same path minus cron-due — used by the CEO panel's "run now" (`POST /api/board-programs/{key}/run-now`), the Strategy Engine's `idle` observation (Printer only — the design's `stranded_blocked` → Coroner fold was never wired), and Dogfood's release-publish hook. Coroner is the exception to the whole loop: its `trigger=event` means `program_due` always refuses it, and its ONLY real entry point is `CoronerEngine.open_for_incident`, called directly from three chokepoints — `TaskService`'s bounce-past-`revision_count>=3` transition, `TaskService`'s cancel-after-work path, and the orchestrator's budget-block path — never the cron loop. War Room's release cycle similarly bypasses `_ORIGINATORS` via `open_for_release`, called from the same release-publish hook as `draft_release_post`/Dogfood, carrying pre-curated highlights so campaign posts never invent a feature.
+
+Every exploration task dispatches through `_dispatch_board_program_exploration` — a dict-dispatch table (not an `if`/`elif` chain, xenon budget) keyed by `task['source']`, routing to a dedicated one-shot spawner (`_dispatch_pest_control_exploration`, etc.) that bypasses `_handle_board_assigned_task`'s two-reviewer board-review gate entirely; every dispatcher shares the `_board_dispatched` one-shot tracker + respawn breaker. The agent calls its program's ONE proposal verb (`propose_bug_hunt`/`propose_gap_fill`/`propose_rebalance`/`propose_friction_fixes` for the PO; `propose_market_brief`/`propose_editorial_post`/`propose_messaging_fixes`/`propose_campaign`/`propose_conversation_replies` for the HoM; `propose_postmortem`/`propose_playbook_drafts`/`propose_quality_report` for the Auditor — all in `roboco/services/gateway/content_actions.py`) exactly once. Materialization varies by program: most (Pest Control/Spackle/Mirror/roadmap) create BACKLOG tasks with a per-item CEO decision identical to the roadmap flow; Scales instead MUTATES a live task in place on approval (reprioritize or cancel — never creates one); Periscope/Sentinel complete their exploration task in the same call as a held report with no per-item queue; Megaphone/Barfly/War Room/spotlight land in the existing X held-draft queue; Coroner materializes a held process-change item or drafts straight into the pending-playbook queue (`kind='playbook'`); Librarian drafts 1-3 real DRAFT playbooks directly via `PlaybookService`, bypassing `draft_playbook` entirely (an explicit invariant: the Auditor curates but does not draft, except here). LEARN closes the loop: `BoardProgramEngine.record_decision` accrues each CEO verdict onto the cycle row's `decisions` jsonb, and `prior_cycle_context` renders the last two closed cycles back into the NEXT cycle's exploration prompt.
+
+Project-scoped programs (Pest Control/Spackle/Mirror/Dogfood) additionally use `pick_rotation_target` to round-robin across their opted-in projects — never-explored beats explored, else oldest `last_opened_at` wins, read from the programs' own exploration tasks (not the LEARN ledger, since a project-scoped engine's `run_cycle` can be called directly, outside the loop). `projects.board_programs` (migration `088`) governs opt-in/opt-out with dual polarity per `project_participates` — a plain key for a `scope="project"` program, `"!key"` to exclude a project from a `scope="org"` program's default-eligible output.
 
 **Read-only views.** `KanbanService` builds role-specific boards from `TaskTable` queries on demand for the kanban API; `CompanyGoalsService.get` is read by the briefing injector into every agent's `context_briefing`.
 
@@ -185,6 +230,30 @@ flowchart TD
         XRunCycle --> XQueue
         CEO -->|approve/reject /api/x/posts| XSvc[XPostService]
         XSvc -->|approve, single-flight lock| Tweet[(x_client.post_tweet)]
+    end
+
+    subgraph BoardProgramLoop["Board Program registry — 14 entries, per-program settings-store arming"]
+        BPLoop[Orchestrator._board_program_loop] -->|floor interval| RunDue[BoardProgramEngine.run_due_programs]
+        RunDue --> Armed{program_armed settings-store}
+        Armed -->|CRON, scope+dedup+due| Origin[program._ORIGINATORS run_cycle]
+        RunDue --> MetricCheck[_run_due_metric_predicates: pest_control rework-spike]
+        MetricCheck --> Origin
+        CoronerHook["TaskService bounce/cancel + budget-block hook"] --> CoronerOpen[CoronerEngine.open_for_incident]
+        ReleaseHook[ReleaseProposalService.approve publish] --> WarRoomOpen[WarRoomEngine.open_for_release]
+        ReleaseHook --> DogfoodRun[DogfoodEngine.run_cycle]
+        Origin -->|held PENDING task| Explorer["PO / HoM / Auditor spawn (solo, board-review gate bypassed)"]
+        CoronerOpen -->|held PENDING task| Explorer
+        WarRoomOpen -->|held PENDING task| Explorer
+        Explorer -->|ONE propose_* verb| ProposeVerb[ContentActions.propose_*]
+        ProposeVerb --> Materialize{materializer}
+        Materialize -->|backlog tasks, per-item decision| Backlog[(BACKLOG task)]
+        Materialize -->|held report, no queue| Report[(CEO report)]
+        Materialize -->|held X draft| XQueue2[(X post queue)]
+        Materialize -->|mutate live task| LiveTask[(reprioritize / cancel)]
+        Materialize -->|playbook draft| PlaybookQ[(pending-playbook queue)]
+        CEO -->|approve/reject per item| Learn[BoardProgramEngine.record_decision]
+        Learn -->|LEARN| Ledger[(board_program_cycles.decisions)]
+        Ledger -->|prior_cycle_context| Origin
     end
 ```
 
@@ -254,9 +323,29 @@ product-strategy-research-pitch
 │   └── reject (record reason, cancel draft)
 ├── x_client.py — XClient ABC / NullXClient / LiveXClient
 │   └── build_x_client (creds present → LiveXClient, else NullXClient)
-└── x_credentials.py — XCredentialsService (singleton, Fernet-encrypted)
-    ├── set_credentials (all-or-nothing)
-    └── get_decrypted (server-side only)
+├── x_credentials.py — XCredentialsService (singleton, Fernet-encrypted)
+│   ├── set_credentials (all-or-nothing)
+│   └── get_decrypted (server-side only)
+├── foundation/policy/board_programs.py — pure registry (no IO)
+│   ├── BoardProgram (frozen dataclass) + PROGRAMS (14 entries)
+│   ├── program_due (cron-due check)
+│   ├── project_participates (dual-polarity scope predicate)
+│   └── validate_board_programs_field
+├── services/board_programs.py — BoardProgramEngine
+│   ├── run_due_programs / _run_due_metric_predicates (cron + metric pass)
+│   ├── open_program_cycle (enabled+scope+dedup, no cron-due — "run now"/idle-trigger seam)
+│   ├── _scope_gate / opted_in_projects
+│   ├── _dedup_state / _maybe_close / _latest_cycle (board_program_cycles ledger)
+│   ├── record_decision / prior_cycle_context (LEARN)
+│   ├── program_armed (settings-store arming chokepoint)
+│   └── pick_rotation_target (shared project-scoped round-robin)
+├── pest_control_engine.py / spackle_engine.py / scales_engine.py / dogfood_engine.py — Product Owner programs
+│   └── each: run_cycle (CRON) + a program-specific evidence/context builder; dogfood_engine also binds a real _ORIGINATORS entry despite being event-only
+├── periscope_engine.py / megaphone_engine.py / mirror_engine.py / barfly_engine.py / war_room_engine.py — Head of Marketing programs
+│   └── each: run_cycle + context builder; war_room_engine also exposes open_for_release (release-hook bypass of _ORIGINATORS); barfly_engine screens candidates through injection_guard
+├── coroner_engine.py / sentinel_engine.py / librarian_engine.py — Auditor programs
+│   └── coroner_engine: open_for_incident is the ONLY real entry point (event-only, no run_cycle path through the loop); sentinel_engine/librarian_engine: run_cycle (CRON) + context builder
+└── api/routes/board_programs.py — CEO-only status + run-now routes
 ```
 
 ## Dependencies
@@ -280,7 +369,11 @@ product-strategy-research-pitch
 - `roboco.services.notification` — `StrategyEngine.run_cycle`.
 - `roboco.services.github_provisioning` — `PitchService.approve`.
 - `roboco.services.project` / `product` — `PitchService`.
-- `roboco.runtime.orchestrator` — runs `_strategy_engine_loop` + `_roadmap_engine_loop`/`_dispatch_roadmap_exploration`; mounts `roboco-search` MCP when `research_enabled`.
+- `roboco.runtime.orchestrator` — runs `_strategy_engine_loop` + `_roadmap_engine_loop`/`_dispatch_roadmap_exploration` + `_board_program_loop`/`_dispatch_board_program_exploration`; mounts `roboco-search` MCP when `research_enabled`, `playwright` MCP task-scoped for Dogfood.
+- `roboco.services.gateway.content_actions.ContentActions` — the fourteen `propose_*` do-verbs (one per program) that author each program's proposal; `roboco.api.schemas.v1.do` — the matching `*Input`/`Propose*Request` pydantic schemas.
+- `roboco.services.metrics.MetricsService.get_rework_metrics` — Pest Control's off-schedule metric predicate.
+- `roboco.foundation.policy.injection_guard.screen_external_text` — Barfly screens every candidate conversation through it before the HoM's prompt sees it.
+- `roboco.services.playbook.PlaybookService` — Coroner (`kind='playbook'`) and Librarian both draft directly into it, never through the `draft_playbook` do-tool.
 
 **External:**
 - `sqlalchemy` (async ext) — all DB-backed services.
@@ -302,9 +395,11 @@ product-strategy-research-pitch
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
   - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
   - `x.py` — `GET /api/x/posts`, `POST /posts/{id}/{approve,reject}` (CEO-only) → `get_x_post_service`.
-- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task. `_x_mentions_poll_loop` (orchestrator.py:7509) ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_x_feature_spotlight_loop` (orchestrator.py:7571) — same lifecycle shape, dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`, ticks every `x_feature_spotlight_interval_seconds` (default 3 days), calls `XEngine.open_feature_spotlight_exploration`; `_dispatch_feature_spotlight_exploration` (orchestrator.py:10424) spawns the Head of Marketing once per open exploration task — `_dispatch_pm_work` routes `source=x_feature_exploration` to it BEFORE the generic `_BOARD_AGENTS` check (mirroring the roadmap source's own early branch), so it never falls into the two-reviewer board-review gate.
-- **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes.
-- **Service-to-service:** `ProjectService` called by `WorkspaceService`, `GitService`, `PitchService`, `task`, `docs`, `cockpit`, `secretary`, gateway choreographer; `ProductService.project_for` called from gateway delegate path; `CompanyGoalsService.get` called by briefing injector.
+  - `board_programs.py` — `GET /api/board-programs` (list all 14 with live status), `POST /api/board-programs/{key}/run-now` (CEO-only) → `get_board_program_engine`.
+- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task. `_x_mentions_poll_loop` (orchestrator.py:7509) ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_x_feature_spotlight_loop` (orchestrator.py:7571) — same lifecycle shape, dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`, ticks every `x_feature_spotlight_interval_seconds` (default 3 days), calls `XEngine.open_feature_spotlight_exploration`; `_dispatch_feature_spotlight_exploration` (orchestrator.py:10424) spawns the Head of Marketing once per open exploration task — `_dispatch_pm_work` routes `source=x_feature_exploration` to it BEFORE the generic `_BOARD_AGENTS` check (mirroring the roadmap source's own early branch), so it never falls into the two-reviewer board-review gate. `_board_program_loop` (orchestrator.py:9224) — same lifecycle shape, ticks on a floor interval (`_board_program_interval_seconds`: shortest registered program cadence, clamped 300s-3600s), calls `BoardProgramEngine.run_due_programs`; `_dispatch_board_program_exploration` (a module-level dict-dispatch function, not a method — orchestrator.py:948) routes each program's held exploration task to its own one-shot dispatcher (`_dispatch_pest_control_exploration`, `_dispatch_periscope_exploration`, etc.), each spawning its program's role solo, bypassing the two-reviewer board-review gate exactly like the roadmap/spotlight dispatchers already did.
+- **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes. `playwright` MCP mounted task-scoped (not role-blanket) for a `board_dogfood` spawn only, via `_is_dogfood_spawn` (orchestrator.py:3834).
+- **Event hooks (bypass the loop entirely):** `TaskService`'s bounce-into-`needs_revision` transition and cancel-after-work path both call `CoronerEngine.open_for_incident` directly (`services/task.py:812` / `:1392`); the orchestrator's budget-block path calls it too (`orchestrator.py:8311`); `ReleaseProposalService.approve`'s publish-success branch calls `WarRoomEngine.open_for_release` (`services/release_proposal.py:330`) alongside the pre-existing `XEngine.draft_release_post` hook.
+- **Service-to-service:** `ProjectService` called by `WorkspaceService`, `GitService`, `PitchService`, `task`, `docs`, `cockpit`, `secretary`, gateway choreographer; `ProductService.project_for` called from gateway delegate path; `CompanyGoalsService.get` called by briefing injector; `BoardProgramEngine` called by every program's own engine (dedup/record) and by `StrategyEngine.run_cycle` (Printer's `idle` trigger).
 - **No CLI / lifespan entry points** for this slice.
 
 ## Config Flags
@@ -336,6 +431,7 @@ product-strategy-research-pitch
 | `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:875 | Seconds between roadmap-exploration cycles (default weekly) |
 | `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:880 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
 | `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:885 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1432 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 
@@ -351,6 +447,7 @@ product-strategy-research-pitch
 - **`build_provider` returns `NullProvider` for an unknown provider name (research.py:326- 328).** A typo in `ROBOCO_RESEARCH_PROVIDER` (validated by pydantic pattern, so unlikely) would silently degrade to empty results rather than erroring.
 - **`GitHubProvisioningService.enabled` requires master + token + org (github_provisioning.py:64).** `provisioning_enabled` defaults `True`, so the flag alone is not enough — an operator who toggles the flag without setting token/org still gets `enabled=False` and `approve` raises `ProvisioningDisabledError`.
 - **`PitchService._seed_main_pm_task` requires a `main-pm` agent row (pitch.py:241-243).** If the agent slug is missing it raises `ValidationError` after provisioning has already happened — another partial-failure window (repos + Product created, no seed task).
+- **The Strategy Engine's `stranded_blocked` → Coroner fold was designed but never wired.** The internal design spec (`docs/internal/specs/2026-07-24-board-programs-design.md` §3) proposed both `StrategyEngine` signals becoming Board Program triggers — `idle` → Printer (roadmap) and `stranded_blocked` → Coroner. Only the `idle`→roadmap half shipped (`strategy_engine.py:95-101`'s own docstring: "`stranded_blocked` stays notify-only (Coroner is Phase 2 — its event hook lands then)"). Coroner is reachable only through its own three chokepoints (bounce/cancel/budget-block); a long-stranded blocked task never triggers an autopsy on its own. Not a bug — a deliberately scoped-down Phase 1, but a real gap between the design doc and the shipped code worth knowing before assuming the fold is complete.
 - **`XPostService.approve` did NOT check for a CANCELLED (already-rejected) task before Wave 5 (`11915f36`, PR #551).** Before the fix, approving a draft the CEO had already rejected would proceed straight to posting it — reachable via the Telegram inbound bridge's inline Approve button (targets a draft by id regardless of its current status) and equally via a replayed HTTP `POST /api/x/posts/{id}/approve`. The guard now returns `already_rejected` both before acquiring the lock and again after re-reading the task under lock.
 
 ## Drift from CLAUDE.md
@@ -362,6 +459,7 @@ product-strategy-research-pitch
 - **CLAUDE.md does not mention `ROBOCO_PROTECTED_GIT_URLS`** (the project denylist, config.py:770, project.py:40). Doc omission.
 - **CLAUDE.md's service table does not list `KanbanService`, `CompanyGoalsService`, `StrategyEngine`, `ResearchService`, `PitchService`, `GitHubProvisioningService`.** The CLAUDE.md "Services" table is explicitly a non-exhaustive "Core services" list, so this is an acknowledged omission rather than drift.
 - **No contradictions between CLAUDE.md claims and actual code were found in this slice.** All documented flags, defaults, and behaviors (default-off strategy engine, server-side- only keys, notify-only engine, pitch→provision→normal-lifecycle, CEO-only approve) match the code.
+- **CLAUDE.md's "Board Program registry" entry documents the shipped scope accurately, including the `stranded_blocked`→Coroner gap.** Code matches: `program_armed` has no master flag (services/board_programs.py:274), the strategy-engine fold is `idle`-only (strategy_engine.py:95-101). No drift.
 
 ## Changes Since Baseline
 
@@ -381,6 +479,7 @@ product-strategy-research-pitch
 > - `7e01c0ce` (PR #570, "project-branded drafts + project badges", 2026-07-18): migration 075 adds `company_goals.company_name`; `CompanyGoalsService.resolve_product_name` (company_goals.py:79) is the new single fallback chain (project name → charter `company_name` → "RoboCo") consumed by both `XEngine._voice_guide`/`draft_release_post` and `VideoEngine` (see `docs/map/video-engine.md`) so their prompt builders stop hardcoding "RoboCo". New `roboco/api/schemas/project_fields.py`'s `task_project_fields` helper adds `project_slug`/`project_name` to the X and video post-queue API responses (`api/routes/x.py`, `api/routes/video.py`); the panel renders them via a shared `ProjectBadge` — see `docs/map/panel.md`.
 > - `461a6e1a`+`96401f4c`+`5f32d876` (Phases 1/2-3/4, 2026-07-18/19, #571/#575/#581) — Phase 4 makes `GitHubProvisioningService` provider-aware: `_build_provider` (github_provisioning.py:68) dispatches to `GitHubProvider`/`GiteaProvider`/`GitLabProvider` by `ROBOCO_PROVISIONING_PROVIDER`, `.enabled` additionally requires `ROBOCO_PROVISIONING_HOST` for gitlab/gitea, and `_is_already_exists` (github_provisioning.py:61) matches the "already exists" idempotency signal across all three forges' differing status codes/phrasing. The forge transport package itself (`GitProvider`/`ForgeRouter`/provider implementations) is documented in `docs/map/worksession-git.md` — this slice only covers the provisioning consumer.
 > - `a0baf94b` ("agnosticism-residue", agnosticism audit items B6/B8): `x_engine.py`'s remaining hardcoded `"RoboCo"` literals (the reply-prompt builder and the feature-spotlight exploration description — `draft_release_post`/`_voice_guide` were already fixed by `7e01c0ce` above) are threaded out: `_reply_prompt` gains a `product_name` param, `_FEATURE_EXPLORATION_DESCRIPTION` (a module constant) becomes `_feature_exploration_description(product_name)` (a function), and `run_cycle`/`open_feature_spotlight_exploration` each resolve `product_name` once via `resolve_product_name` and thread it through.
+> - **Board Program registry (2026-07-24, #689/#699 + the Phase 2/3 program train).** The single largest addition to this slice since the baseline: `foundation/policy/board_programs.py` (`BoardProgram`/`PROGRAMS`/`program_due`/`project_participates`) + `services/board_programs.py` (`BoardProgramEngine`) + `api/routes/board_programs.py` generalize the roadmap/spotlight shape into one registry-driven engine (migrations `087` `board_program_cycles` LEARN ledger, `088` `projects.board_programs` scoping column), migrating `roadmap` and `x_feature` onto it byte-for-byte (Phase 1) before adding twelve new programs across all three Board roles (Phase 2/3): Pest Control/Spackle/Scales/Dogfood (`pest_control_engine.py`/`spackle_engine.py`/`scales_engine.py`/`dogfood_engine.py`, Product Owner), Periscope/Megaphone/Mirror/Barfly/War Room (`periscope_engine.py`/`megaphone_engine.py`/`mirror_engine.py`/`barfly_engine.py`/`war_room_engine.py`, Head of Marketing), and Coroner/Sentinel/Librarian (`coroner_engine.py`/`sentinel_engine.py`/`librarian_engine.py`, Auditor). Arming has no master flag — `program_armed` reads a per-program settings-store row exclusively, except `roadmap`/`x_feature`'s legacy env-flag fallback. `StrategyEngine.run_cycle`'s `idle` observation now also triggers a Printer cycle via `BoardProgramEngine.open_program_cycle("roadmap")` (the `stranded_blocked`→Coroner half of the same design was NOT built — see Gotchas). Fourteen new `propose_*` do-verbs land in `content_actions.py` + `api/schemas/v1/do.py`; the Playwright MCP grant is task-scoped to Dogfood only, not a role-wide product_owner grant.
 
 ## Regression Risks
 
