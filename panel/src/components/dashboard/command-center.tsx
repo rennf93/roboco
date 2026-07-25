@@ -22,6 +22,7 @@ import { PlaybookReviewQueue } from "./playbook-review-queue";
 import { SocialSummaryCard } from "./social-summary-card";
 import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { PestControlReviewQueue } from "./pest-control-review-queue";
+import { SpackleReviewQueue } from "./spackle-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -210,6 +211,9 @@ export function CommandCenter() {
 
       {/* Pest Control bug-hunt queue (hidden when no cycle authored) */}
       <PestControlReviewQueue />
+
+      {/* Spackle gap-fill queue (hidden when no cycle authored) */}
+      <SpackleReviewQueue />
 
       {/* Blockers and Activity Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

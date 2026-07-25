@@ -59,6 +59,12 @@ export { coronerApi } from "./coroner";
 export type { Postmortem } from "./coroner";
 export { sentinelApi } from "./sentinel";
 export type { QualityReport, QualityReportItem } from "./sentinel";
+export { spackleApi } from "./spackle";
+export type {
+  GapFillItem,
+  GapFillItemActionResult,
+  SpackleCycle,
+} from "./spackle";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,
