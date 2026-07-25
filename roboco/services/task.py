@@ -669,7 +669,15 @@ X_FEATURE_EXPLORATION_SOURCE = "x_feature_exploration"
 # free.
 X_FEATURE_SOURCE = "x_feature"
 
-X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
+# Source tag for a materialized Megaphone editorial post — the HoM-authored
+# standing-editorial-calendar draft (dev-log threads, behind-the-scenes posts,
+# changelog highlights — spec §4). Added to X_SOURCES so it inherits every
+# existing consumer (XPostService, list_open_x_posts, the PM-dispatcher's
+# held-source skip) for free, mirroring X_FEATURE_SOURCE exactly — the
+# materializer IS the existing X held-draft queue, zero new approval surface.
+X_EDITORIAL_SOURCE = "x_editorial"
+
+X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE, X_EDITORIAL_SOURCE)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
@@ -814,6 +822,16 @@ MIRROR_SOURCE = "board_mirror"
 # Source tag stamped on a task MATERIALIZED from an approved messaging-fix
 # item (distinct from MIRROR_SOURCE, which tags the held exploration cycle).
 MIRROR_ITEM_SOURCE = "mirror"
+
+# Source tag for a Megaphone (Board Program) exploration cycle: a PENDING task
+# the megaphone engine opens for the Head of Marketing to pick ONE angle off
+# the server-assembled shipped-this-week digest and author a post via the
+# ``propose_editorial_post`` content verb. Org-scoped (no project targeting —
+# it reads the org's own shipped-task/changelog history, not a repo) and,
+# like X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: the materializer IS
+# the existing X held-draft queue (source=X_EDITORIAL_SOURCE above), so there
+# is no separate per-item CEO decision to leave the exploration task open for.
+MEGAPHONE_SOURCE = "board_megaphone"
 
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
@@ -2160,6 +2178,21 @@ class TaskService(BaseService):
             )
             .order_by(TaskTable.updated_at.desc())
             .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
+        """Non-terminal Megaphone exploration tasks — the one-open-cycle dedup
+        + ``propose_editorial_post``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-draft (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MEGAPHONE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
 

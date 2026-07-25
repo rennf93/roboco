@@ -42,6 +42,7 @@ X_MENTION_REF = "x_mention_ref"
 X_REJECT_REASON = "x_reject_reason"
 X_POSTED_TWEET_ID = "x_posted_tweet_id"
 X_FEATURE_REF = "x_feature_ref"
+X_EDITORIAL_REF = "x_editorial_ref"
 X_SEEN_FEATURES = "x_seen_features"
 X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
 X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
@@ -231,6 +232,15 @@ def get_x_feature_ref(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_x_feature_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
     set_marker(task, X_FEATURE_REF, ref)
+
+
+def get_x_editorial_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_EDITORIAL_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_editorial_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_EDITORIAL_REF, ref)
 
 
 def get_x_seen_features(task: HasMarkers) -> list[str]:

@@ -239,6 +239,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `propose_feature_spotlight` | `propose_feature_spotlight(feature_slug: str = '', feature_title: str = '', body: str = '', wants_video: bool = False, video_script: str = '', skip: bool = False, skip_reason: str = '')` |
 | `propose_market_brief` | `propose_market_brief(headline: str, findings: list[MarketBriefFindingInput], threats: list[str] | None = None, opportunities: list[str] | None = None, positioning_note: str = '')` |
 | `propose_messaging_fixes` | `propose_messaging_fixes(items: list[MessagingFixItemInput])` |
+| `propose_editorial_post` | `propose_editorial_post(angle: str, body: str, rationale: str)` |
 
 ## auditor
 

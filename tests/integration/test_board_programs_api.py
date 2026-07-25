@@ -25,6 +25,7 @@ from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
 from roboco.services.task import (
     CORONER_SOURCE,
+    MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
@@ -159,6 +160,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     SPACKLE_SOURCE,
                     SCALES_SOURCE,
                     MIRROR_SOURCE,
+                    MEGAPHONE_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -183,6 +185,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "spackle",
         "scales",
         "mirror",
+        "megaphone",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"

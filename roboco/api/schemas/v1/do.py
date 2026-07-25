@@ -227,6 +227,16 @@ class ProposeFeatureSpotlightRequest(BaseModel):
     skip_reason: str = ""
 
 
+class ProposeEditorialPostRequest(BaseModel):
+    """Head of Marketing's Megaphone editorial-calendar post: an angle + a
+    ready-to-post body + a rationale. Materializes into the same X held-draft
+    queue ``propose_feature_spotlight`` uses — no separate approval surface."""
+
+    angle: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    rationale: str = Field(..., min_length=1)
+
+
 class MarketBriefFindingInput(BaseModel):
     """One cited market finding within a Head of Marketing's Periscope brief.
     ``source_url`` is REQUIRED — an uncited market claim is noise."""

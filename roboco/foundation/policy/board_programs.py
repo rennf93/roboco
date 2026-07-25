@@ -147,6 +147,18 @@ PROGRAMS: dict[str, BoardProgram] = {
             # §4) — project-scoped, same as pest_control/spackle.
             scope="project",
         ),
+        BoardProgram(
+            key="megaphone",
+            role="head_marketing",
+            trigger=TriggerKind.CRON,
+            source="board_megaphone",
+            default_interval_seconds=3 * 24 * 3600,  # 3 days
+            # The standing editorial calendar (spec §4): dev-log threads,
+            # behind-the-scenes posts, changelog highlights — it reads the
+            # org's own shipped-task/changelog history, not a repo it audits
+            # on a schedule. Org scope, same as periscope/x_feature.
+            scope="org",
+        ),
     )
 }
 

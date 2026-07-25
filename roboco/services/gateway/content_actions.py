@@ -350,6 +350,13 @@ _FEATURE_SPOTLIGHT_ROLES: frozenset[str] = frozenset({"head_marketing"})
 # Periscope market briefs are HoM-authored, mirroring _FEATURE_SPOTLIGHT_ROLES.
 _PERISCOPE_ROLES: frozenset[str] = frozenset({"head_marketing"})
 
+# Megaphone editorial posts are HoM-authored, mirroring _PERISCOPE_ROLES.
+_MEGAPHONE_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_EDITORIAL_ANGLES: frozenset[str] = frozenset(
+    {"dev_log", "behind_scenes", "changelog_highlight", "other"}
+)
+_EDITORIAL_RATIONALE_MAX_CHARS = 300
+
 # Market-brief free-text caps (spec §4 / Task 2). ``source_url`` is validated
 # separately (a URL, not soup-checked prose) — see _reject_market_brief_url.
 _MARKET_BRIEF_HEADLINE_MAX_CHARS = 200
@@ -2757,6 +2764,105 @@ class ContentActions:
                 "feature_slug": feature_slug,
                 "feature_title": feature_title,
             },
+        )
+
+    @classmethod
+    def _reject_editorial_post_fields(
+        cls, angle: str, body: str, rationale: str
+    ) -> Envelope | None:
+        """Angle vocabulary + soup + 280-char validation for a Megaphone
+        draft's fields, collapsed into one caller-side check (keeps
+        propose_editorial_post's return-statement count under the
+        xenon/PLR0911 budget) — mirrors
+        ``_reject_feature_spotlight_fields``."""
+        if angle not in _EDITORIAL_ANGLES:
+            return Envelope.invalid_state(
+                message=f"angle {angle!r} is not a recognized editorial angle",
+                remediate=(
+                    "angle must be one of: " + ", ".join(sorted(_EDITORIAL_ANGLES))
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(body, field="body", min_chars=8):
+            return rej
+        if len(body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"body is {len(body)} chars, over the {MAX_TWEET_CHARS}-char "
+                    "tweet limit"
+                ),
+                remediate="shorten the post to 280 characters or fewer",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(rationale, field="rationale", min_chars=8):
+            return rej
+        if len(rationale) > _EDITORIAL_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"rationale is {len(rationale)} chars, over the "
+                    f"{_EDITORIAL_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the rationale",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_editorial_post(
+        self,
+        *,
+        agent_id: UUID,
+        angle: str = "",
+        body: str = "",
+        rationale: str = "",
+    ) -> Envelope:
+        """Head of Marketing authors ONE Megaphone editorial-calendar post.
+
+        Validates role, the angle vocabulary, the 280-char tweet limit, and
+        the rationale, then materializes the SAME held X-queue draft
+        ``propose_feature_spotlight`` uses (via ``XEngine.
+        materialize_editorial_post``, source=x_editorial) and completes the
+        caller's exploration task in the same call — a Megaphone post has no
+        per-item CEO decision to leave the exploration open for, mirroring
+        the x_feature complete-at-propose asymmetry. One call per cycle.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _MEGAPHONE_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose an editorial post; only "
+                    "the Head of Marketing does"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_editorial_post_fields(angle, body, rationale):
+            return rej
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_megaphone_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open megaphone exploration task assigned to you",
+                remediate=(
+                    "propose_editorial_post only runs against an active "
+                    "exploration spawned by the megaphone engine; wait for "
+                    "the next cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        new_task = await engine.materialize_editorial_post(
+            exploration_task=task, angle=angle, body=body, rationale=rationale
+        )
+        return Envelope.ok(
+            status="editorial_post_proposed",
+            task_id=str(new_task.id),
+            next="i_am_idle() — the CEO reviews the draft in the X post queue",
+            context_briefing={"angle": angle, "rationale": rationale},
         )
 
     @staticmethod

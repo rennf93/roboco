@@ -55,6 +55,7 @@ from roboco.services.notification_delivery import get_notification_delivery_serv
 from roboco.services.project import get_project_service
 from roboco.services.settings import get_settings_service
 from roboco.services.task import (
+    X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
@@ -1086,6 +1087,33 @@ class XEngine(BaseService):
         self.log.info(
             "x-engine: feature spotlight drafted (held for CEO)",
             feature_slug=feature_slug,
+        )
+        return task
+
+    async def materialize_editorial_post(
+        self,
+        *,
+        exploration_task: TaskTable,
+        angle: str,
+        body: str,
+        rationale: str,
+    ) -> TaskTable:
+        """Complete a HoM-authored Megaphone draft: create the held draft
+        (identical shape to ``_originate_post`` — the SAME path
+        ``materialize_feature_spotlight`` uses), complete the exploration
+        task. Called only from the ``propose_editorial_post`` content verb."""
+        task = await self._originate_post(
+            title=f"X post: {angle} — editorial",
+            body=_clamp_tweet(body),
+            source=X_EDITORIAL_SOURCE,
+            project_id=cast("UUID", exploration_task.project_id),
+        )
+        markers.set_x_editorial_ref(task, {"angle": angle, "rationale": rationale})
+        exploration_task.status = TaskStatus.COMPLETED
+        await self.session.flush()
+        self.log.info(
+            "x-engine: editorial post drafted (held for CEO)",
+            angle=angle,
         )
         return task
 

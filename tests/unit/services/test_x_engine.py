@@ -31,6 +31,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
+    Complexity,
     TaskNature,
     TaskType,
     Team,
@@ -39,10 +40,13 @@ from roboco.models.base import TaskStatus as TS
 from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
+    MEGAPHONE_SOURCE,
+    X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
     X_REPLY_SOURCE,
+    TaskCreateRequest,
     get_task_service,
 )
 from roboco.services.x_client import MAX_TWEET_CHARS, XClient, XMention, XPostResult
@@ -1035,6 +1039,120 @@ async def test_materialize_feature_spotlight_enforces_280_chars(
     body = markers.get_x_draft_body(draft)
     assert body is not None
     assert len(body) <= MAX_TWEET_CHARS
+
+
+# --------------------------------------------------------------------------- #
+# materialize_editorial_post — Megaphone (Board Program). XEngine has no
+# "open" method for this exploration source (that's MegaphoneEngine's job,
+# a different service); build the held exploration task directly, mirroring
+# test_board_program_engine.py's ``_make_exploration`` helper.
+# --------------------------------------------------------------------------- #
+
+
+async def _make_megaphone_exploration(session: AsyncSession) -> TaskTable:
+    project = (
+        await session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    return await get_task_service(session).create(
+        TaskCreateRequest(
+            title="Megaphone editorial cycle",
+            description="x",
+            acceptance_criteria=["propose once"],
+            team=Team.BOARD,
+            assigned_to=HOM_UUID,
+            created_by=SYSTEM_UUID,
+            task_type=TaskType.ADMINISTRATIVE,
+            nature=TaskNature.NON_TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            project_id=cast("UUID", project.id),
+            status=TS.PENDING,
+            source=MEGAPHONE_SOURCE,
+            confirmed_by_human=False,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_materialize_editorial_post_holds_draft_and_completes_exploration(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    exploration = await _make_megaphone_exploration(db_session)
+
+    draft = await x_engine_module.XEngine(db_session).materialize_editorial_post(
+        exploration_task=exploration,
+        angle="dev_log",
+        body="This week the fleet shipped MegaTask waves and a PR-review gate.",
+        rationale="Dev-log cadence keeps the audience close to real shipping.",
+    )
+
+    assert draft.source == X_EDITORIAL_SOURCE
+    assert draft.assigned_to == SECRETARY_UUID
+    assert draft.confirmed_by_human is False
+    assert draft.status == TS.PENDING
+    ref = markers.get_x_editorial_ref(draft)
+    assert ref is not None
+    assert ref["angle"] == "dev_log"
+    assert (
+        ref["rationale"] == "Dev-log cadence keeps the audience close to real shipping."
+    )
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert "MegaTask" in body
+
+    # The exploration task itself is completed as a side effect...
+    assert exploration.status == TS.COMPLETED
+    # ...and therefore excluded from the open-cycle list on the next query.
+    still_open = await get_task_service(db_session).list_open_megaphone_cycles()
+    assert still_open == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_editorial_post_enforces_280_chars(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    exploration = await _make_megaphone_exploration(db_session)
+
+    draft = await x_engine_module.XEngine(db_session).materialize_editorial_post(
+        exploration_task=exploration,
+        angle="other",
+        body="z" * 500,  # a runaway HoM-authored draft
+        rationale="testing the clamp",
+    )
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert len(body) <= MAX_TWEET_CHARS
+
+
+@pytest.mark.asyncio
+async def test_materialize_editorial_post_reuses_the_same_notify_path_as_x_post(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero new approval surface (spec): an editorial draft fires the exact
+    SAME ``notify_ceo_of_queue_item(kind='xpost', ...)`` chokepoint a release
+    post does — mirrors ``test_originate_post_sends_telegram_push``."""
+    await _seed(db_session)
+    exploration = await _make_megaphone_exploration(db_session)
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.NotificationDeliveryService."
+        "notify_ceo_of_queue_item",
+        notify,
+    )
+
+    draft = await x_engine_module.XEngine(db_session).materialize_editorial_post(
+        exploration_task=exploration,
+        angle="behind_scenes",
+        body="Here's how the fleet actually plans a release week.",
+        rationale="Process transparency builds trust.",
+    )
+
+    notify.assert_awaited_once()
+    assert notify.await_args is not None
+    _args, kwargs = notify.await_args
+    assert kwargs["kind"] == "xpost"
+    assert kwargs["id8"] == str(draft.id)[:8]
 
 
 # --------------------------------------------------------------------------- #

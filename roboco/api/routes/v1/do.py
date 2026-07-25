@@ -27,6 +27,7 @@ from roboco.api.schemas.v1.do import (
     PitchRequest,
     ProgressRequest,
     ProposeBugHuntRequest,
+    ProposeEditorialPostRequest,
     ProposeFeatureSpotlightRequest,
     ProposeGapFillRequest,
     ProposeMarketBriefRequest,
@@ -286,6 +287,27 @@ async def do_propose_market_brief(
         threats=body.threats,
         opportunities=body.opportunities,
         positioning_note=body.positioning_note,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_editorial_post")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_editorial_post(
+    request: Request,
+    body: ProposeEditorialPostRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_editorial_post(
+        agent_id=x_agent_id,
+        angle=body.angle,
+        body=body.body,
+        rationale=body.rationale,
     )
     return envelope_to_response(env, request)
 

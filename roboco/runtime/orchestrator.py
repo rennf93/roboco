@@ -76,6 +76,7 @@ from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     CORONER_SOURCE,
+    MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
@@ -916,9 +917,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
     ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
-    ``board_mirror``) that ``_dispatch_pm_work`` owns. One flat call keeps
-    the dev loop's skip out of a long per-source ``if`` chain (xenon
-    budget)."""
+    ``board_mirror`` / ``board_megaphone``) that ``_dispatch_pm_work`` owns.
+    One flat call keeps the dev loop's skip out of a long per-source ``if``
+    chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -931,13 +932,16 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         SPACKLE_SOURCE,
         SCALES_SOURCE,
         MIRROR_SOURCE,
+        MEGAPHONE_SOURCE,
     )
 
 
 async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -> bool:
     """Route an assigned pending task to its Board Program's one-shot
     exploration dispatcher, keyed by ``task['source']``. Every registered
-    program is solo-authored (PO/HoM/Auditor alone) — this bypasses the
+    program (roadmap / x_feature / pest_control / periscope / coroner /
+    sentinel / spackle / scales / mirror / megaphone) is solo-authored
+    (PO/HoM/Auditor alone) — this bypasses the
     two-reviewer board-review gate; none of these ever ride
     ``_handle_board_assigned_task`` (that would also spawn a second board
     role and fire the Approve & Start handoff, both wrong for a cycle with
@@ -962,6 +966,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         SPACKLE_SOURCE: orch._dispatch_spackle_exploration,
         SCALES_SOURCE: orch._dispatch_scales_exploration,
         MIRROR_SOURCE: orch._dispatch_mirror_exploration,
+        MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -13224,6 +13229,61 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("sentinel: evidence-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_megaphone_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to pick ONE editorial angle and
+        file a Megaphone post.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_editorial_post`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses. The extra step is the
+        server-assembled shipped-this-week digest (completed tasks +
+        CHANGELOG Unreleased bullets) the Head of Marketing cannot gather
+        itself — mirrors ``_dispatch_pest_control_exploration``'s
+        evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for megaphone exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("megaphone")
+        digest_context = await self._megaphone_digest_context()
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_megaphone_prompt(
+                task, prior_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_megaphone_exploration",
+        )
+
+    async def _megaphone_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for prompt injection —
+        mirrors ``_sentinel_evidence_context``'s degrade-to-empty-string
+        posture: a read failure here must never block the spawn, only drop
+        the digest section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.megaphone_engine import get_megaphone_engine
+
+            async with get_db_context() as db:
+                return await get_megaphone_engine(db).digest_context()
+        except Exception:
+            logger.warning("megaphone: digest-context read failed (best-effort)")
+            return ""
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -16590,6 +16650,63 @@ You stay silent to the fleet throughout — this report goes to the CEO only.
 Do NOT claim, plan, delegate, fix anything yourself, message any other
 agent, or attempt to act on anything you find — that is not your job here,
 and the gateway will reject those verbs.
+"""
+
+    def _build_megaphone_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        digest_context: str = "",
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Megaphone editorial
+        cycle.
+
+        HoM-solo, complete-at-propose (mirrors the periscope/feature-
+        spotlight prompts' shape): pick ONE angle, write ONE post, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``digest_context`` is
+        the server-assembled shipped-this-week digest (``MegaphoneEngine.
+        digest_context``) — both empty when none exist yet."""
+        task_id = task.get("id", "unknown")
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        digest_block = (
+            f"\n## Shipped-this-week digest\n{digest_context}\n"
+            if digest_context
+            else ""
+        )
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Megaphone
+editorial cycle.
+
+TASK: {task_id}
+
+This is the standing editorial calendar — beyond release posts and feature
+spotlights: dev-log threads on what the fleet shipped this week,
+behind-the-scenes posts, changelog highlights. Pick ONE angle and file ONE
+post; the draft lands in the SAME X post queue release/spotlight drafts do —
+there is no separate approval surface.
+{digest_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the shipped-this-week digest above (completed tasks + the
+   CHANGELOG.md Unreleased section, when available). It is server-assembled —
+   you cannot re-run those queries yourself, so start from it.
+3. Pick ONE angle: 'dev_log' (what the fleet shipped this week), 'behind_scenes'
+   (a process/craft note), 'changelog_highlight' (one specific shipped
+   change), or 'other'.
+4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
+   text, no markdown, no thread, max 280 characters, and never invent a
+   capability that doesn't exist.
+5. propose_editorial_post(angle="<one of the four above>", body="<the post>",
+   rationale="<why this angle, this cycle>")
+     — call this EXACTLY ONCE.
+6. i_am_idle() — once proposed. The CEO reviews, edits, approves, or rejects
+   the draft in the X post queue; nothing posts without that explicit
+   approval.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

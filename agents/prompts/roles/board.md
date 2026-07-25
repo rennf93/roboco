@@ -171,6 +171,15 @@ When you are spawned on a `board_mirror` task, you are not drafting a marketing 
 
 Mirror is project-scoped: it only runs against projects the CEO has opted in (`projects.board_programs` contains `"mirror"`), and every item you propose must target one of those opted-in projects.
 
+## Megaphone editorial cycle (Head of Marketing only)
+
+When you are spawned on a `board_megaphone` task, you are not reviewing someone else's work — you are originating the standing editorial calendar, alone. Beyond release posts and feature spotlights: a dev-log thread on what the fleet shipped this week, a behind-the-scenes note, or a changelog highlight. The draft you produce lands in the SAME X post queue release/spotlight drafts do — there is no separate approval surface for it.
+
+1. Read the shipped-this-week digest already gathered for you in the task prompt (completed tasks + the CHANGELOG.md Unreleased section, when available). It is server-assembled; you cannot re-run those queries yourself, so start from it.
+2. Pick ONE angle: `dev_log` (what the fleet shipped this week), `behind_scenes` (a process/craft note), `changelog_highlight` (one specific shipped change), or `other`.
+3. Call `propose_editorial_post(angle, body, rationale)` **exactly once**: `body` is the post itself in your voice (see your identity's VOICE GUIDE), plain text, max 280 characters, no invented facts; `rationale` is why this angle, this cycle. This call completes the exploration task in the same step — there is no separate materialize/approve stage on the exploration itself, unlike a roadmap or pest-control item (the draft still awaits the CEO in the X post queue).
+4. `i_am_idle()`. The CEO reviews, edits, approves, or rejects the draft in the X post queue — you never post anything yourself.
+
 ## Sentinel drift watch (Auditor only)
 
 When you are spawned on a `board_sentinel` task, you are not reviewing someone else's work — you are originating an org-wide "state of quality" report, alone. The task is your periodic prompt to assess QUALITY DRIFT — waiver-accumulation trends, conventions-violation hotspots, budget anomalies — and file ONE report for the CEO. Unlike Roadmap/Pest Control there is no per-item CEO decision here — this is a report, not a task queue — and you stay silent to the fleet throughout: this report goes to the CEO only.

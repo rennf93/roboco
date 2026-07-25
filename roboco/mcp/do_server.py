@@ -761,6 +761,29 @@ def propose_market_brief(
     )
 
 
+def propose_editorial_post(
+    angle: str,
+    body: str,
+    rationale: str,
+) -> dict[str, Any]:
+    """Head of Marketing: draft ONE Megaphone editorial-calendar post.
+
+    Call this exactly ONCE per exploration cycle, after picking ONE angle off
+    the shipped-this-week digest in your briefing. The draft is held in the
+    SAME X post queue propose_feature_spotlight uses — nothing auto-posts.
+
+    Args:
+        angle: One of 'dev_log', 'behind_scenes', 'changelog_highlight',
+            'other'.
+        body: The tweet text (plain, <=280 chars, no invented facts).
+        rationale: Why this angle, this cycle (<=300 chars).
+    """
+    return _post(
+        "/api/v1/do/propose_editorial_post",
+        {"angle": angle, "body": body, "rationale": rationale},
+    )
+
+
 def propose_postmortem(
     incident_summary: str,
     root_cause: str,
@@ -1198,6 +1221,7 @@ _TOOLS: dict[str, Any] = {
     "propose_messaging_fixes": propose_messaging_fixes,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
+    "propose_editorial_post": propose_editorial_post,
     "propose_postmortem": propose_postmortem,
     "propose_quality_report": propose_quality_report,
     "propose_video": propose_video,
