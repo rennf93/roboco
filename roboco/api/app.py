@@ -44,6 +44,7 @@ from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.release import router as release_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
+from roboco.api.routes.scales import router as scales_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
 from roboco.api.routes.sentinel import router as sentinel_router
@@ -371,6 +372,10 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     # gap-fill cycle. Approving materializes a BACKLOG task; nothing
     # auto-starts.
     app.include_router(spackle_router, prefix=f"{api_prefix}/spackle", tags=["Spackle"])
+    # Scales (Board Program) — the CEO approves/rejects items within a held
+    # portfolio-rebalance cycle. Approving EXECUTES the item against the live
+    # target task (reprioritize or cancel); nothing here creates a task.
+    app.include_router(scales_router, prefix=f"{api_prefix}/scales", tags=["Scales"])
 
 
 def create_app() -> FastAPI:
@@ -508,9 +513,9 @@ def create_app() -> FastAPI:
 
     # Board Programs — the generic registry route + each program's own
     # per-item / read-only surface (roadmap, board-programs, pest control,
-    # periscope, coroner, sentinel, spackle). Grouped into one helper to keep
-    # this function's own statement count from growing unbounded as programs
-    # are added (mirrors ``_mount_v1_routers`` below).
+    # periscope, coroner, sentinel, spackle, scales). Grouped into one helper
+    # to keep this function's own statement count from growing unbounded as
+    # programs are added (mirrors ``_mount_v1_routers`` below).
     _mount_board_program_routers(app, api_prefix)
 
     # Video engine — the CEO requests an on-demand marketing video; the

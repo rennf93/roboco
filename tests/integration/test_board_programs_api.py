@@ -28,6 +28,7 @@ from roboco.services.task import (
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
+    SCALES_SOURCE,
     SENTINEL_SOURCE,
     SPACKLE_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -155,6 +156,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     CORONER_SOURCE,
                     SENTINEL_SOURCE,
                     SPACKLE_SOURCE,
+                    SCALES_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -177,6 +179,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "coroner",
         "sentinel",
         "spackle",
+        "scales",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"

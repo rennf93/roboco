@@ -58,6 +58,7 @@ RENDER_PREVIEW = "render_preview"
 VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
 VAULT_NOTE_REF = "vault_note_ref"
 DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
+REBALANCE_PLAN = "rebalance_plan"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -370,6 +371,26 @@ def get_quality_report(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_quality_report(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, QUALITY_REPORT, payload)
+
+
+# --- Scales rebalance plan ---------------------------------------------------
+# The re-priority / cancellation items the Product Owner authors via
+# ``propose_rebalance`` onto the exploration task the Scales engine opened.
+# Mirrors PEST_HUNT exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject. Unlike PEST_HUNT an item never drafts a NEW task: it
+# references a LIVE backlog task (``target_task_id``, resolved from the
+# agent's ``task_ref`` at propose time) that approval MUTATES in place
+# (reprioritize) or cancels — never creates.
+
+
+def get_rebalance_plan(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, REBALANCE_PLAN)
+    return val if isinstance(val, dict) else None
+
+
+def set_rebalance_plan(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, REBALANCE_PLAN, payload)
 
 
 # --- video draft ------------------------------------------------------------

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 WEEK_SECONDS = 7 * 24 * 3600
+MONTH_SECONDS = 30 * 24 * 3600
 
 
 class TriggerKind(StrEnum):
@@ -120,6 +121,18 @@ PROGRAMS: dict[str, BoardProgram] = {
             # Gap-fill audit of one repo's half-shipped surface area (spec
             # §4) — project-scoped, same as pest_control.
             scope="project",
+        ),
+        BoardProgram(
+            key="scales",
+            role="product_owner",
+            trigger=TriggerKind.CRON,
+            source="board_scales",
+            default_interval_seconds=MONTH_SECONDS,
+            max_items_per_cycle=7,
+            # Org-scoped (spec §4): it reviews the LIVE portfolio across every
+            # project against the charter, not one repo's own findings ledger
+            # — no per-project opt-in gate, mirrors periscope/roadmap.
+            scope="org",
         ),
     )
 }

@@ -170,6 +170,25 @@ class ProposeGapFillRequest(BaseModel):
     items: list[GapFillItemInput] = Field(..., min_length=1)
 
 
+class RebalanceItemInput(BaseModel):
+    """One re-priority/cancellation item within a Product Owner's Scales
+    portfolio-rebalance plan. Unlike a roadmap/pest-control item draft, this
+    references a LIVE task (``task_ref``) rather than describing a new one."""
+
+    task_ref: str = Field(..., min_length=1)
+    action: str = Field(..., min_length=1)
+    new_priority: int | None = None
+    rationale: str = Field(..., min_length=1)
+
+
+class ProposeRebalanceRequest(BaseModel):
+    """Product Owner's Scales portfolio-rebalance plan: 1-N re-priority/
+    cancellation item drafts against the live backlog (no top-level theme,
+    mirroring the pest-control bug hunt's shape)."""
+
+    items: list[RebalanceItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a

@@ -141,6 +141,7 @@ _VALIDATORS = {
     "board_program.coroner.enabled": _validate_bool,
     "board_program.sentinel.enabled": _validate_bool,
     "board_program.spackle.enabled": _validate_bool,
+    "board_program.scales.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

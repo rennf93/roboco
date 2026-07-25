@@ -81,6 +81,7 @@ from roboco.services.task import (
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
+    SCALES_SOURCE,
     SELF_HEAL_SOURCE,
     SENTINEL_SOURCE,
     SPACKLE_SOURCE,
@@ -913,9 +914,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
-    ``board_sentinel`` / ``board_spackle``) that ``_dispatch_pm_work`` owns.
-    One flat call keeps the dev loop's skip out of a long per-source ``if``
-    chain (xenon budget)."""
+    ``board_sentinel`` / ``board_spackle`` / ``board_scales``) that
+    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out of
+    a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -926,6 +927,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         CORONER_SOURCE,
         SENTINEL_SOURCE,
         SPACKLE_SOURCE,
+        SCALES_SOURCE,
     )
 
 
@@ -955,6 +957,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         CORONER_SOURCE: orch._dispatch_coroner_exploration,
         SENTINEL_SOURCE: orch._dispatch_sentinel_exploration,
         SPACKLE_SOURCE: orch._dispatch_spackle_exploration,
+        SCALES_SOURCE: orch._dispatch_scales_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -12899,6 +12902,57 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("pest-control: evidence-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_scales_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Scales rebalance plan.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        same "already authored" marker pre-check — ``propose_rebalance``
+        marks it via the ``rebalance_plan`` marker, not this dispatcher). The
+        extra step is the server-assembled stale-backlog snapshot the PO
+        cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.REBALANCE_PLAN) is not None:
+            return  # already authored — the CEO Scales queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("scales")
+        evidence_context = await self._scales_evidence_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_scales_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_scales_exploration",
+        )
+
+    async def _scales_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the stale-
+        backlog snapshot from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.scales_engine import get_scales_engine
+
+            async with get_db_context() as db:
+                return await get_scales_engine(db).evidence_context()
+        except Exception:
+            logger.warning("scales: evidence-context read failed (best-effort)")
+            return ""
+
     async def _dispatch_coroner_exploration(self, task: dict[str, Any]) -> None:
         """One-shot Auditor spawn to autopsy an incident and author ONE
         postmortem via ``propose_postmortem``.
@@ -13390,12 +13444,12 @@ Start now: evidence(task_id="{task_id}")
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 # Every registered Board Program (roadmap / x_feature /
-                # pest_control / periscope / coroner / sentinel / spackle) is
-                # solo-authored and bypasses the two-reviewer board-review
-                # gate — routed via the module-level dict dispatch table so
-                # this chain stays flat as new programs register (xenon
-                # budget). Falls through to the generic board/PM-assigned
-                # handlers only for a non-program task.
+                # pest_control / periscope / coroner / sentinel / spackle /
+                # scales) is solo-authored and bypasses the two-reviewer
+                # board-review gate — routed via the module-level dict
+                # dispatch table so this chain stays flat as new programs
+                # register (xenon budget). Falls through to the generic
+                # board/PM-assigned handlers only for a non-program task.
                 if not await _dispatch_board_program_exploration(self, task):
                     if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                         await self._handle_board_assigned_task(task, assigned_to)
@@ -16079,6 +16133,67 @@ author this alone.
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
 verbs.
+"""
+
+    def _build_scales_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Scales exploration.
+
+        PO-solo: review the injected stale-backlog snapshot against the
+        charter, propose up to 7 re-priority/cancellation drafts, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled stale-backlog snapshot (``ScalesEngine.
+        evidence_context``) — both empty when none exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["scales"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Product Owner. It's time for your periodic Scales
+portfolio-rebalance exploration.
+
+TASK: {task_id}
+
+Review the LIVE backlog against the company charter and propose
+re-prioritizations and cancellations — the org has no other mechanism that
+ever retires stale backlog, and a board role is exactly who should propose
+deletions. You author this alone.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context, including the company charter.
+2. Read the stale-backlog snapshot gathered for you above (BACKLOG/PENDING
+   tasks older than 30 days). It is server-assembled — you cannot re-run
+   that query yourself, so start from it, don't second-guess it.
+3. Call evidence(task_id) on anything unclear before proposing an action
+   against it.
+4. For each candidate, decide: reprioritize (it's still worth doing, just at
+   the wrong priority) or cancel (it no longer serves the charter and should
+   be retired) — never both.
+5. propose_rebalance(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: task_ref (the id8 or exact title of the live task),
+       action ('reprioritize' or 'cancel'), new_priority (int 0-3, REQUIRED
+       iff action is 'reprioritize' — 0 is P0/highest, 3 is P3/lowest),
+       rationale (REQUIRED — why this task should change).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the Scales queue; approval MUTATES the live task in
+   place — nothing here changes anything itself.
+
+Do NOT cancel, reprioritize, claim, plan, or delegate anything yourself —
+that is not your job here, and the gateway will reject those verbs. You only
+ever propose.
 """
 
     def _build_coroner_prompt(

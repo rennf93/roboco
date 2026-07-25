@@ -629,6 +629,26 @@ def propose_gap_fill(items: list[dict[str, Any]]) -> dict[str, Any]:
     return _post("/api/v1/do/propose_gap_fill", {"items": items})
 
 
+def propose_rebalance(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Scales portfolio-rebalance plan (1-7 items).
+
+    Call this exactly ONCE per exploration cycle, after reviewing the
+    server-assembled stale-backlog snapshot against the company charter.
+    Each item re-prioritizes or cancels ONE live BACKLOG/PENDING task — this
+    never drafts a new task. The CEO reviews and approves/rejects each item
+    individually; approval MUTATES the target task in place (nothing here
+    changes anything itself).
+
+    Args:
+        items: 1-7 dicts, each with: task_ref (the id8 or exact title of the
+            live task this item targets), action ('reprioritize' or
+            'cancel'), new_priority (int 0-3, REQUIRED iff action is
+            'reprioritize' — 0 is P0/highest, 3 is P3/lowest), rationale
+            (REQUIRED — why this task should be re-prioritized or cancelled).
+    """
+    return _post("/api/v1/do/propose_rebalance", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -1153,6 +1173,7 @@ _TOOLS: dict[str, Any] = {
     "propose_roadmap": propose_roadmap,
     "propose_bug_hunt": propose_bug_hunt,
     "propose_gap_fill": propose_gap_fill,
+    "propose_rebalance": propose_rebalance,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_postmortem": propose_postmortem,

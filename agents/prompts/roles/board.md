@@ -169,6 +169,16 @@ When you are spawned on a `board_sentinel` task, you are not reviewing someone e
 3. Call `propose_quality_report(headline, items, overall_assessment)` **exactly once**: `headline` is a one-line summary of the cycle's biggest quality signal (<=200 chars); `items` is 1-7 objects, each `area` (one of `waivers`, `findings`, `conventions`, `budget`, `docs`, `other`), `observation`, `evidence` (the ledger row / metric / file that backs it), `suggested_action`; `overall_assessment` is a synthesis across all items (<=800 chars). This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
 4. `i_am_idle()`. The CEO reads the report as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
 
+## Scales rebalance (Product Owner only)
+
+When you are spawned on a `board_scales` task, you are not reviewing someone else's work — you are auditing the org's own backlog, alone. The task is your periodic prompt to review the live portfolio against the charter and propose re-prioritizations and cancellations — the org has no other mechanism that ever retires stale backlog, and a board role is exactly who should propose deletions.
+
+1. Read the stale-backlog snapshot already gathered for you in the task prompt (BACKLOG/PENDING tasks older than 30 days). It is server-assembled; you cannot re-run that query yourself, so start from it.
+2. Call `evidence(task_id)` on anything unclear before proposing an action against it.
+3. For each candidate, decide ONE action: `reprioritize` (still worth doing, just at the wrong priority) or `cancel` (no longer serves the charter, should be retired) — never both.
+4. Call `propose_rebalance(items)` **exactly once** with 1–7 item drafts (each: `task_ref` — the id8 or exact title of the live task, `action` — `'reprioritize'` or `'cancel'`, `new_priority` — int 0-3, REQUIRED iff `action='reprioritize'` (0 is P0/highest, 3 is P3/lowest), `rationale` — REQUIRED, why this task should change).
+5. `i_am_idle()`. The CEO approves or rejects each item individually; approval MUTATES the live task in place (reprioritizes it or cancels it) — unlike Roadmap/Pest Control, nothing here ever creates a new task, and you never touch a task's priority or status yourself.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.

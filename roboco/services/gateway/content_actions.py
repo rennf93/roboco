@@ -416,6 +416,16 @@ _GAP_FILL_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
 )
 _GAP_FILL_EVIDENCE_MAX_CHARS = 2000
 
+# Scales (Board Program) rebalance plans are Product-Owner-only, mirroring
+# _PEST_ROLES. Unlike a roadmap/pest-control item, a rebalance item never
+# drafts a NEW task — it references a LIVE one (``task_ref``) that approval
+# mutates (reprioritize) or cancels, so there is no team/project-slug/
+# acceptance-criteria shape to validate here, just the action + rationale.
+_SCALES_ROLES: frozenset[str] = frozenset({"product_owner"})
+_SCALES_ACTIONS: frozenset[str] = frozenset({"reprioritize", "cancel"})
+_SCALES_VALID_PRIORITIES: frozenset[int] = frozenset({0, 1, 2, 3})
+_SCALES_RATIONALE_MAX_CHARS = 500
+
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 # The Auditor is deliberately NOT in this set — "auditor curates but does not
 # draft" is an enforced invariant (test_playbook_verbs.py). A Coroner
@@ -531,6 +541,29 @@ def _normalize_gap_fill_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
         "status": "proposed",
         "reject_reason": None,
         "materialized_task_id": None,
+    }
+
+
+def _normalize_scales_item(
+    idx: int, raw: dict[str, Any], target: Any
+) -> dict[str, Any]:
+    """Coerce a validated raw rebalance item dict + its resolved target task
+    into the stored marker shape. Mirrors ``_normalize_pest_hunt_item`` —
+    ``id`` is server-assigned. Unlike a pest-hunt item there is no draft to
+    normalize: ``target`` (resolved by ``TaskService.resolve_scales_task_ref``
+    before this is called) supplies the id/title actually acted on."""
+    action = str(raw["action"]).strip()
+    return {
+        "id": f"item-{idx}",
+        "task_ref": str(raw["task_ref"]).strip(),
+        "target_task_id": str(target.id),
+        "target_task_title": target.title,
+        "action": action,
+        "new_priority": raw.get("new_priority") if action == "reprioritize" else None,
+        "rationale": str(raw["rationale"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "executed_detail": None,
     }
 
 
@@ -1836,6 +1869,232 @@ class ContentActions:
                 logger.warning(
                     "pest-control telegram notify failed (best-effort)",
                     error=str(exc),
+                )
+
+    @staticmethod
+    def _reject_scales_item_action_and_priority(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate ``action`` + the conditional ``new_priority`` requirement
+        of one raw rebalance item dict — split out to keep
+        ``_reject_scales_item_shape`` under the xenon/PLR0911 budget."""
+        action = raw.get("action")
+        if action not in _SCALES_ACTIONS:
+            return Envelope.invalid_state(
+                message=f"item {idx} has an invalid action {action!r}",
+                remediate="action must be 'reprioritize' or 'cancel'",
+                context_briefing={},
+            )
+        if action != "reprioritize":
+            return None
+        new_priority = raw.get("new_priority")
+        if (
+            not isinstance(new_priority, int)
+            or isinstance(new_priority, bool)
+            or new_priority not in _SCALES_VALID_PRIORITIES
+        ):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} is 'reprioritize' but new_priority is {new_priority!r}"
+                ),
+                remediate=(
+                    "new_priority is required for a reprioritize item and must "
+                    "be one of 0 (P0/highest) .. 3 (P3/lowest)"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_scales_item_rationale(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the required ``rationale`` field — split out of
+        ``_reject_scales_item_shape`` to keep its own return-statement count
+        under the xenon/PLR0911 budget."""
+        rationale = raw.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'rationale'",
+                remediate=f"provide a substantive rationale for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            rationale, field=f"item {idx} rationale", min_chars=8
+        ):
+            return rej
+        if len(rationale) > _SCALES_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} rationale is {len(rationale)} chars, over the "
+                    f"{_SCALES_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s rationale to "
+                    f"{_SCALES_RATIONALE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_scales_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw rebalance item dict's shape/fields; None when
+        clean (before ``task_ref`` resolution, which needs the DB)."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with task_ref/action/"
+                    "new_priority/rationale"
+                ),
+                context_briefing={},
+            )
+        task_ref = raw.get("task_ref")
+        if not isinstance(task_ref, str) or not task_ref.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'task_ref'",
+                remediate=(
+                    f"provide the id8 or exact title of the live task item "
+                    f"{idx} targets"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_scales_item_action_and_priority(raw, idx):
+            return rej
+        return cls._reject_scales_item_rationale(raw, idx)
+
+    async def _reject_scales_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> tuple[Envelope | None, Any]:
+        """Validate one raw rebalance item, then resolve its ``task_ref``.
+
+        Returns ``(None, target_task)`` when clean, ``(rejection, None)``
+        otherwise. Resolution happens here (not a separate pass) since a
+        ``task_ref`` only makes sense checked against a real live task.
+        """
+        if rej := self._reject_scales_item_shape(raw, idx):
+            return rej, None
+        from roboco.services.task import get_task_service
+
+        target = await get_task_service(self.task.session).resolve_scales_task_ref(
+            str(raw["task_ref"]).strip()
+        )
+        if target is None:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"item {idx} task_ref {raw['task_ref']!r} does not "
+                        "resolve to a live BACKLOG/PENDING task"
+                    ),
+                    remediate=(
+                        f"item {idx}'s task_ref must be the id8 or exact title "
+                        "of a live BACKLOG/PENDING task"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        return None, target
+
+    async def propose_rebalance(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Scales portfolio-rebalance plan (1-N
+        re-priority/cancellation items against the LIVE backlog, N = the
+        registry's ``max_items_per_cycle``).
+
+        Persists the plan onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the Scales queue. One call per cycle: the exploration task
+        stays open (and this verb keeps refusing) until every item is
+        terminal. Unlike ``propose_roadmap``/``propose_bug_hunt`` an item
+        never drafts a NEW task — it references a LIVE one (``task_ref``,
+        resolved to a real BACKLOG/PENDING task here) that approval MUTATES
+        (reprioritize) or cancels, never creates.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _SCALES_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a rebalance plan; only the "
+                    "Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["scales"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a rebalance plan needs 1-{max_items} item drafts, got "
+                    f"{len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            rejection, target = await self._reject_scales_item(raw, idx)
+            if rejection is not None:
+                return rejection
+            normalized.append(_normalize_scales_item(idx, raw, target))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_scales_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_rebalance_plan(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open scales exploration task assigned to you",
+                remediate=(
+                    "propose_rebalance only runs against an active exploration "
+                    "cycle spawned by the scales engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_rebalance_plan(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_rebalance_items(task, normalized)
+        return Envelope.ok(
+            status="rebalance_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the Scales queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_rebalance_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="scales",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("target_task_title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scales telegram notify failed (best-effort)", error=str(exc)
                 )
 
     @classmethod

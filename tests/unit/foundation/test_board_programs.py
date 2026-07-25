@@ -57,6 +57,19 @@ def test_registry_carries_periscope() -> None:
     assert p.default_interval_seconds == WEEK_SECONDS
 
 
+_SCALES_MAX_ITEMS_PER_CYCLE = 7
+
+
+def test_registry_carries_scales() -> None:
+    s = PROGRAMS["scales"]
+    assert s.role == "product_owner"
+    assert s.source == "board_scales"
+    assert s.trigger is TriggerKind.CRON
+    assert s.scope == "org"
+    assert s.max_items_per_cycle == _SCALES_MAX_ITEMS_PER_CYCLE
+    assert s.default_interval_seconds == 30 * 24 * 3600
+
+
 def test_registry_carries_coroner() -> None:
     c = PROGRAMS["coroner"]
     assert c.role == "auditor"

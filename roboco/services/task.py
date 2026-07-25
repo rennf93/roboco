@@ -731,6 +731,18 @@ PERISCOPE_SOURCE = "board_periscope"
 # stays-open-for-per-item-decisions roadmap/pest-control shape).
 CORONER_SOURCE = "board_coroner"
 
+# Source tag for a Scales (Board Program) portfolio-rebalance exploration
+# cycle: a PENDING task the scales engine opens for the Product Owner to
+# review the live backlog against the charter and author re-priority /
+# cancellation drafts (the ``propose_rebalance`` content verb). Org-scoped
+# (spec §4: it reads the portfolio, not one repo) but IS dispatched
+# (one-shot PO spawn) and never rides the delivery lifecycle. Mirrors
+# ROADMAP_SOURCE/PEST_CONTROL_SOURCE's stays-open-for-per-item-decisions
+# shape — unlike them, an approved item never materializes a NEW task: it
+# MUTATES a live one (reprioritize) or cancels it, so there is no separate
+# "materialized item" source.
+SCALES_SOURCE = "board_scales"
+
 # Coroner's bounce trigger (spec §4): a task that has bounced this many times
 # into needs_revision gets one autopsy attempt.
 _CORONER_BOUNCE_THRESHOLD = 3
@@ -2168,6 +2180,52 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
+
+    async def list_open_scales_cycles(self) -> list[TaskTable]:
+        """Non-terminal Scales exploration tasks — the one-open-cycle dedup +
+        panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_rebalance``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SCALES_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def resolve_scales_task_ref(self, ref: str) -> TaskTable | None:
+        """Resolve a Scales rebalance item's ``task_ref`` — an id8 prefix or
+        an exact task title — to a live BACKLOG/PENDING task.
+
+        Mirrors the revision-findings ledger's "by id or exact text" match
+        (``unmatched_criteria``), applied to tasks instead of acceptance
+        criteria: an id8 prefix is tried first (the ``search_tasks`` id-cast
+        idiom), then an exact title match. None when nothing live matches —
+        the caller (``propose_rebalance``) rejects the item naming the ref.
+        """
+        ref = ref.strip()
+        if not ref:
+            return None
+        live = TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
+        by_id = await self.session.execute(
+            select(TaskTable)
+            .where(live, cast("Any", TaskTable.id).cast(String).ilike(f"{ref}%"))
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        task = by_id.scalar_one_or_none()
+        if task is not None:
+            return task
+        by_title = await self.session.execute(
+            select(TaskTable)
+            .where(live, TaskTable.title == ref)
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        return by_title.scalar_one_or_none()
 
     async def list_open_vault_note_drafts(self) -> list[TaskTable]:
         """Vault-note drafts still awaiting board review / CEO approval — the
