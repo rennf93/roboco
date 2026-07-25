@@ -15,6 +15,7 @@ import { SecretaryTab } from "@/components/business/secretary-tab";
 import { PitchesTab } from "@/components/business/pitches-tab";
 import { BoardProgramsCard } from "@/components/business/board-programs-card";
 import { MarketBriefsTab } from "@/components/business/market-briefs-tab";
+import { CoronerPostmortemsCard } from "@/components/business/coroner-postmortems-card";
 
 // ---------------------------------------------------------------------------
 // Valid tab values
@@ -137,8 +138,9 @@ function BusinessPageContent() {
           <PitchesTab />
         </TabsContent>
 
-        <TabsContent value="programs" className="mt-4">
+        <TabsContent value="programs" className="mt-4 space-y-4">
           <BoardProgramsCard />
+          <CoronerPostmortemsCard />
         </TabsContent>
 
         <TabsContent value="market-briefs" className="mt-4">
