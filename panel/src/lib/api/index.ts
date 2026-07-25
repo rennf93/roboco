@@ -53,6 +53,8 @@ export type {
 } from "./pest-control";
 export { boardProgramsApi } from "./board-programs";
 export type { BoardProgram } from "./board-programs";
+export { periscopeApi } from "./periscope";
+export type { MarketBrief, MarketBriefFinding } from "./periscope";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,

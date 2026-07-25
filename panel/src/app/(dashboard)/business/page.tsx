@@ -14,13 +14,20 @@ import { CompanyScorecardCard } from "@/components/business/company-scorecard-ca
 import { SecretaryTab } from "@/components/business/secretary-tab";
 import { PitchesTab } from "@/components/business/pitches-tab";
 import { BoardProgramsCard } from "@/components/business/board-programs-card";
+import { MarketBriefsTab } from "@/components/business/market-briefs-tab";
 
 // ---------------------------------------------------------------------------
 // Valid tab values
 // ---------------------------------------------------------------------------
 
 interface TabDef {
-  value: "goals" | "scorecard" | "secretary" | "pitches" | "programs";
+  value:
+    | "goals"
+    | "scorecard"
+    | "secretary"
+    | "pitches"
+    | "programs"
+    | "market-briefs";
   label: string;
   hint: string;
 }
@@ -50,6 +57,11 @@ const TAB_DEFS: TabDef[] = [
     value: "programs",
     label: "Programs",
     hint: "Board roles' periodic exploration cycles — enable, monitor, and run off-schedule",
+  },
+  {
+    value: "market-briefs",
+    label: "Market Briefs",
+    hint: "The Head of Marketing's weekly market-research reports (Periscope) — read-only",
   },
 ];
 
@@ -127,6 +139,10 @@ function BusinessPageContent() {
 
         <TabsContent value="programs" className="mt-4">
           <BoardProgramsCard />
+        </TabsContent>
+
+        <TabsContent value="market-briefs" className="mt-4">
+          <MarketBriefsTab />
         </TabsContent>
       </Tabs>
     </div>
