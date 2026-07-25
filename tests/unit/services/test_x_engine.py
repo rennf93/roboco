@@ -1696,11 +1696,13 @@ def test_changelog_highlights_extracts_feature_headlines() -> None:
         "- **Forge program: GitHub, Gitea, and GitLab (#575, #581).** One API.\n"
     )
     hl = x_engine_module.changelog_highlights(entry)
-    # A GHSA advisory ref is stripped exactly like a PR ref — neither belongs
-    # in a caption prompt's feature headline.
-    assert hl[0] == "Orchestrator API is off the public internet"
-    assert hl[1] == "Telegram Mini App V5 — brand voice and an operations ring"
-    assert hl[2] == "Forge program: GitHub, Gitea, and GitLab"
+    # Marketing order: Added feature headlines precede the Security plumbing
+    # even though Security comes first in the document — the drafting model
+    # anchors on highlight #1. A GHSA advisory ref is stripped exactly like a
+    # PR ref — neither belongs in a caption prompt's feature headline.
+    assert hl[0] == "Telegram Mini App V5 — brand voice and an operations ring"
+    assert hl[1] == "Forge program: GitHub, Gitea, and GitLab"
+    assert hl[2] == "Orchestrator API is off the public internet"
     # No raw commit-subject noise, no trailing PR/GHSA refs or periods.
     assert all("#" not in h and "GHSA" not in h for h in hl)
 

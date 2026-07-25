@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **release-post drafts stop parroting changelog bullets.** The X announcement drafter fed the changelog's bold leads to the local model in document order — Security first, so the WAF plumbing line became the tweeted headline — and its deterministic fallback template quoted the first raw bullet verbatim. Highlights now reorder to marketing order (Added/Changed features before Fixed/Security plumbing), the prompt bans verbatim highlight copying and internal jargon, and the fallback is a generic ships-announcement that can never quote a bullet.
+
+## [0.27.0] - 2026-07-25
+
 ### Security
 
 - **The WAF now resolves the real client behind host-proxy hops instead of banning the hop (#646, #650).** With Tailscale terminating on the host, every panel request reached the guard as the host-gateway IP, so one bad signature banned the operator's whole path. A dedicated `ClientIpResolutionMiddleware` stamps guard-core's pre-resolution seam with the true tailnet client — but only for the exact operator-declared chain shape (`ROBOCO_GUARD_TRUSTED_CHAIN_PEERS`, now actually wired through the compose files); every other chain abstains to the baseline depth-1 X-Forwarded-For posture, so nothing becomes spoofable that wasn't. The live-incident follow-up (#650) deliberately whitelists the tailnet CGNAT range after the honest resolution got the CEO's own device banned ("IP not allowed"), and the internal-mesh WAF exemption (#605) is scoped down to loopback + the docker bridge (scope the internal-mesh whitelist to loopback + docker bridge) rather than all of RFC1918.

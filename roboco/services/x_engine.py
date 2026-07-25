@@ -169,11 +169,13 @@ def _clamp_tweet(text: str) -> str:
     return collapsed[: MAX_TWEET_CHARS - 1].rstrip() + "…"
 
 
-def _fallback_release_body(
-    version: str, highlights: list[str], product_name: str
-) -> str:
-    lead = highlights[0] if highlights else "assorted improvements"
-    return f"{product_name} v{version} is out: {lead}"
+def _fallback_release_body(version: str, product_name: str) -> str:
+    # Deliberately generic: the deterministic fallback must never quote a raw
+    # changelog bullet — internal plumbing jargon read as the release headline.
+    return (
+        f"{product_name} v{version} just shipped — new features, fixes, and "
+        "performance work across the board. Full release notes on GitHub."
+    )
 
 
 # Bold feature leads in a Keep-a-Changelog release body: "- **Headline (#N).**"
@@ -186,6 +188,13 @@ _CHANGELOG_REF_RE = re.compile(
 )
 
 
+# Marketing order for the announcement prompt. The drafting model anchors on
+# highlight #1, and a Keep-a-Changelog body opens with Security — document
+# order once tweeted a WAF internals bullet as the release headline.
+_SECTION_ORDER = ("added", "changed", "performance", "fixed", "security")
+_SECTION_SPLIT_RE = re.compile(r"^### +(?P<name>[A-Za-z ]+?)\s*$", re.MULTILINE)
+
+
 def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
     """Human-readable feature headlines from a curated CHANGELOG release body.
 
@@ -193,17 +202,33 @@ def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
     ("docs: curate the full 0.26.0 Unreleased body (#601)") — feeding those to
     the announcement model produces a lame parroted caption. The curated
     changelog's bold leads ARE the feature story ("Telegram Mini App V5 — brand
-    voice…"), so use those instead. Pure + best-effort: a body with no bold
-    leads yields an empty list and the caller falls back to change_summary.
+    voice…"), so use those instead — reordered so Added/Changed feature
+    headlines precede Fixed/Security plumbing. Pure + best-effort: a body with
+    no bold leads yields an empty list and the caller falls back to
+    change_summary.
     """
-    out: list[str] = []
-    for m in _CHANGELOG_LEAD_RE.finditer(entry):
-        lead = _CHANGELOG_REF_RE.sub("", m.group("lead")).strip().rstrip(".").strip()
-        if lead:
-            out.append(lead)
-        if len(out) >= limit:
-            break
-    return out
+
+    def leads(chunk: str) -> list[str]:
+        found: list[str] = []
+        for m in _CHANGELOG_LEAD_RE.finditer(chunk):
+            lead = (
+                _CHANGELOG_REF_RE.sub("", m.group("lead")).strip().rstrip(".").strip()
+            )
+            if lead:
+                found.append(lead)
+        return found
+
+    parts = _SECTION_SPLIT_RE.split(entry)
+    if len(parts) == 1:  # no section headings — keep document order
+        return leads(entry)[:limit]
+    rank = {name: i for i, name in enumerate(_SECTION_ORDER)}
+    sections = [
+        (rank.get(parts[i].strip().lower(), len(rank)), leads(parts[i + 1]))
+        for i in range(1, len(parts) - 1, 2)
+    ]
+    sections.sort(key=lambda s: s[0])  # stable: unknown sections keep doc order
+    ordered = leads(parts[0]) + [lead for _, chunk in sections for lead in chunk]
+    return ordered[:limit]
 
 
 def _release_prompt(
@@ -214,11 +239,14 @@ def _release_prompt(
         f"{voice}\n\n"
         f"Draft ONE tweet (max 280 characters) announcing that {product_name} "
         f"v{version} just shipped. Lead with the single most user-visible "
-        f"change: name both it and {product_name} in the first sentence. One "
-        "concrete detail (a real feature name, a real number) beats three "
-        "vague adjectives. Aim well under 240 characters so the 280 clamp "
-        "never has to truncate mid-sentence. End on substance, not a "
-        "slogan.\n\n"
+        f"change: name both it and {product_name} in the first sentence. "
+        "Rewrite highlights in plain language a non-engineer follows — NEVER "
+        "copy a highlight's wording verbatim, and skip internal plumbing "
+        "jargon (middleware, proxy hops, branch mechanics, CI) unless it IS "
+        "the user-facing story. One concrete detail (a real feature name, a "
+        "real number) beats three vague adjectives. Aim well under 240 "
+        "characters so the 280 clamp never has to truncate mid-sentence. End "
+        "on substance, not a slogan.\n\n"
         f"Highlights:\n{bullets}\n"
     )
 
@@ -496,9 +524,7 @@ class XEngine(BaseService):
                 error=str(exc),
             )
             draft = None
-        body = (draft or "").strip() or _fallback_release_body(
-            version, highlights, product_name
-        )
+        body = (draft or "").strip() or _fallback_release_body(version, product_name)
         return _clamp_tweet(body)
 
     # ---- mentions (periodic poll) ------------------------------------------
