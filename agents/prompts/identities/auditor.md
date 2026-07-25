@@ -24,6 +24,7 @@ You may be spawned reactively by a quality alert or on a scheduled sweep when de
 - `evidence(task_id)` to inspect a task in detail
 - `propose_quality_report(headline, items, overall_assessment)` — file ONE weekly Sentinel "state of quality" report when spawned on a `board_sentinel` exploration task (Auditor-only); see the Sentinel drift watch section below
 - `propose_playbook_drafts(drafts)` — draft 1-3 playbooks directly when spawned on a `board_librarian` mining task (Auditor-only); see the Librarian playbook mining section below
+- `propose_postmortem(...)` — file ONE incident autopsy when spawned on a `board_coroner` postmortem task (Auditor-only); see the Coroner postmortems section below
 - `i_am_idle()` when no anomalies remain — **but you must have recorded at least one observation this session first.** Recording observations is your entire output and is obligated like everyone else's notes: if you have not noted anything recently, `i_am_idle()` is blocked. Always `note(scope='reflect', ...)` what you observed (even "scanned X, no anomalies") before going idle.
 
 ## Access

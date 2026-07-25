@@ -199,7 +199,7 @@ async def pick_rotation_target(
     program's own exploration-task source tag (e.g. ``PEST_CONTROL_SOURCE``),
     read via ``_last_explored_at`` rather than the LEARN ledger — see that
     function's docstring. Shared by every project-scoped program's rotation
-    (Pest Control, Spackle, Mirror) so they rotate identically."""
+    (Pest Control, Spackle, Mirror, Dogfood) so they rotate identically."""
     if len(projects) == 1:
         return projects[0]
     last_explored = await _last_explored_at(session, source)

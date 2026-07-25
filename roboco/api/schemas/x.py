@@ -46,7 +46,7 @@ class XPostResponse(BaseModel):
     Room campaign post, or Barfly conversation reply) awaiting the CEO."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign" | "x_barfly"
+    source: str  # x_post | x_reply | x_feature | x_editorial | x_campaign | x_barfly
     title: str
     status: str
     body: str
@@ -85,7 +85,7 @@ class XPostHistoryResponse(BaseModel):
     """One acted-on X draft (posted or rejected) — the CEO's history view."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign" | "x_barfly"
+    source: str  # x_post | x_reply | x_feature | x_editorial | x_campaign | x_barfly
     title: str
     status: str  # "completed" | "cancelled"
     body: str

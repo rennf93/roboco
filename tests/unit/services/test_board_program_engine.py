@@ -482,7 +482,9 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["periscope"].source == PERISCOPE_SOURCE
     assert PROGRAMS["coroner"].source == CORONER_SOURCE
     assert PROGRAMS["sentinel"].source == SENTINEL_SOURCE
+    assert PROGRAMS["spackle"].source == SPACKLE_SOURCE
     assert PROGRAMS["scales"].source == SCALES_SOURCE
+    assert PROGRAMS["mirror"].source == MIRROR_SOURCE
     assert PROGRAMS["megaphone"].source == MEGAPHONE_SOURCE
     assert PROGRAMS["librarian"].source == LIBRARIAN_SOURCE
     assert PROGRAMS["war_room"].source == WAR_ROOM_SOURCE

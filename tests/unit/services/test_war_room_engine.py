@@ -42,8 +42,10 @@ class _FakeClient(XClient):
     def configured(self) -> bool:
         return True
 
-    async def post_tweet(self, text: str) -> XPostResult:
-        _ = text
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = (text, in_reply_to_tweet_id)
         return XPostResult(posted=True, tweet_id="1", detail="ok")
 
     async def fetch_mentions(
@@ -62,8 +64,10 @@ class _NullClient(XClient):
     def configured(self) -> bool:
         return False
 
-    async def post_tweet(self, text: str) -> XPostResult:
-        _ = text
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = (text, in_reply_to_tweet_id)
         return XPostResult(posted=False, tweet_id=None, detail="no creds")
 
     async def fetch_mentions(
