@@ -77,6 +77,15 @@ def test_coroner_is_never_cron_due() -> None:
     )
 
 
+def test_registry_carries_sentinel() -> None:
+    s = PROGRAMS["sentinel"]
+    assert s.role == "auditor"
+    assert s.source == "board_sentinel"
+    assert s.trigger is TriggerKind.CRON
+    assert s.scope == "org"
+    assert s.default_interval_seconds == WEEK_SECONDS
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

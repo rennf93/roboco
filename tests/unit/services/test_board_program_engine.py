@@ -46,6 +46,7 @@ from roboco.services.task import (
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
+    SENTINEL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     TaskCreateRequest,
     get_task_service,
@@ -88,6 +89,7 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     PEST_CONTROL_SOURCE,
                     PERISCOPE_SOURCE,
                     CORONER_SOURCE,
+                    SENTINEL_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -463,6 +465,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["pest_control"].source == PEST_CONTROL_SOURCE
     assert PROGRAMS["periscope"].source == PERISCOPE_SOURCE
     assert PROGRAMS["coroner"].source == CORONER_SOURCE
+    assert PROGRAMS["sentinel"].source == SENTINEL_SOURCE
 
 
 @pytest.mark.asyncio

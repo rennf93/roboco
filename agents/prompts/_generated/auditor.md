@@ -26,3 +26,4 @@
 | `propose_postmortem` | `propose_postmortem(incident_summary: str, root_cause: str, failed_stage: str, process_change: ProcessChangeInput, playbook: PostmortemPlaybookInput | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
+| `propose_quality_report` | `propose_quality_report(headline: str, items: list[QualityReportItemInput], overall_assessment: str)` |

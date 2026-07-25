@@ -363,6 +363,20 @@ _CORONER_INCIDENT_SUMMARY_MAX_CHARS = 500
 _CORONER_ROOT_CAUSE_MAX_CHARS = 800
 _CORONER_PROCESS_CHANGE_DESC_MAX_CHARS = 800
 
+# Sentinel (Board Program) quality reports are Auditor-authored — a bounded
+# expansion mirroring _PEST_ROLES/_PERISCOPE_ROLES.
+_SENTINEL_ROLES: frozenset[str] = frozenset({"auditor"})
+
+# Quality-report free-text caps (spec §4).
+_QUALITY_REPORT_HEADLINE_MAX_CHARS = 200
+_QUALITY_REPORT_ITEM_OBSERVATION_MAX_CHARS = 500
+_QUALITY_REPORT_ITEM_EVIDENCE_MAX_CHARS = 500
+_QUALITY_REPORT_ITEM_SUGGESTED_ACTION_MAX_CHARS = 300
+_QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS = 800
+_QUALITY_REPORT_AREAS: frozenset[str] = frozenset(
+    {"waivers", "findings", "conventions", "budget", "docs", "other"}
+)
+
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("title", 5),
@@ -487,6 +501,19 @@ def _normalize_market_brief_finding(idx: int, raw: dict[str, Any]) -> dict[str, 
         "claim": str(raw["claim"]).strip(),
         "source_url": str(raw["source_url"]).strip(),
         "relevance": str(raw["relevance"]).strip(),
+    }
+
+
+def _normalize_quality_report_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw quality-report item into the stored marker
+    shape. Mirrors ``_normalize_market_brief_finding`` — ``id`` is
+    server-assigned."""
+    return {
+        "id": f"item-{idx}",
+        "area": str(raw["area"]).strip(),
+        "observation": str(raw["observation"]).strip(),
+        "evidence": str(raw["evidence"]).strip(),
+        "suggested_action": str(raw["suggested_action"]).strip(),
     }
 
 
@@ -2328,6 +2355,248 @@ class ContentActions:
         except Exception as exc:
             logger.warning(
                 "periscope telegram notify failed (best-effort)", error=str(exc)
+            )
+
+    @staticmethod
+    def _reject_quality_report_item_area(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        area = raw.get("area")
+        if not isinstance(area, str) or area.strip() not in _QUALITY_REPORT_AREAS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} area {area!r} must be one of "
+                    f"{sorted(_QUALITY_REPORT_AREAS)}"
+                ),
+                remediate=(
+                    f"set item {idx}'s area to one of {sorted(_QUALITY_REPORT_AREAS)}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_quality_report_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate observation/evidence/suggested_action of one quality-
+        report item dict — split from ``_reject_quality_report_item`` to
+        keep its own xenon complexity budget."""
+        for field, max_chars in (
+            ("observation", _QUALITY_REPORT_ITEM_OBSERVATION_MAX_CHARS),
+            ("evidence", _QUALITY_REPORT_ITEM_EVIDENCE_MAX_CHARS),
+            ("suggested_action", _QUALITY_REPORT_ITEM_SUGGESTED_ACTION_MAX_CHARS),
+        ):
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(value, field=f"item {idx} {field}", min_chars=8):
+                return rej
+            if len(value) > max_chars:
+                return Envelope.invalid_state(
+                    message=(
+                        f"item {idx} {field} is {len(value)} chars, over the "
+                        f"{max_chars}-char cap"
+                    ),
+                    remediate=f"shorten item {idx}'s {field}",
+                    context_briefing={},
+                )
+        return None
+
+    @classmethod
+    def _reject_quality_report_item(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw quality-report item dict; None when clean.
+        Mirrors ``_reject_market_brief_finding``."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item needs area/observation/evidence/suggested_action"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_quality_report_item_area(raw, idx):
+            return rej
+        return cls._reject_quality_report_item_text_fields(raw, idx)
+
+    @classmethod
+    def _reject_quality_report_items(
+        cls, items: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-item validation loop, split out of
+        ``_reject_quality_report_fields`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_items = PROGRAMS["sentinel"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a quality report needs 1-{max_items} items, got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(items):
+            if rej := cls._reject_quality_report_item(raw, idx):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_quality_report_fields(
+        cls, headline: str, items: list[dict[str, Any]], overall_assessment: str
+    ) -> Envelope | None:
+        """Full field validation for ``propose_quality_report``, split out to
+        keep the verb's own return-statement count under the xenon/PLR0911
+        budget."""
+        if rej := cls._reject_soup(headline, field="headline", min_chars=8):
+            return rej
+        if len(headline) > _QUALITY_REPORT_HEADLINE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"headline is {len(headline)} chars, over the "
+                    f"{_QUALITY_REPORT_HEADLINE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the headline",
+                context_briefing={},
+            )
+        if rej := cls._reject_quality_report_items(items):
+            return rej
+        if rej := cls._reject_soup(
+            overall_assessment, field="overall_assessment", min_chars=8
+        ):
+            return rej
+        if len(overall_assessment) > _QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"overall_assessment is {len(overall_assessment)} chars, "
+                    "over the "
+                    f"{_QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten overall_assessment",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_quality_report(
+        self,
+        *,
+        agent_id: UUID,
+        headline: str,
+        items: list[dict[str, Any]],
+        overall_assessment: str,
+    ) -> Envelope:
+        """Auditor files ONE Sentinel weekly "state of quality" report —
+        waiver-accumulation trends, conventions-violation hotspots, budget
+        anomalies — delivered as a held REPORT to the CEO.
+
+        Mirrors ``propose_market_brief``'s complete-at-propose asymmetry: a
+        report has no per-item CEO decision, so the exploration task
+        completes in this same call. Unlike ``propose_market_brief`` this is
+        deliberately NOT screened through
+        ``injection_guard.screen_external_text`` — every input here is
+        internal org data (the findings ledger, the conventions table, the
+        spend tables, the Auditor's own read of the codebase), never
+        untrusted web/external text, so there is nothing to screen.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _SENTINEL_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a quality report; only "
+                    "the Auditor authors one"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_quality_report_fields(
+            headline, items, overall_assessment
+        ):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_sentinel_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_quality_report(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open sentinel exploration task assigned to you",
+                remediate=(
+                    "propose_quality_report only runs against an active "
+                    "exploration cycle spawned by the sentinel engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        await self._persist_quality_report(
+            task,
+            headline=headline,
+            items=items,
+            overall_assessment=overall_assessment,
+        )
+        await self._notify_quality_report(task, headline.strip())
+        return Envelope.ok(
+            status="quality_report_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reads the report in the panel",
+            context_briefing={
+                "headline": headline.strip(),
+                "item_count": len(items),
+            },
+        )
+
+    async def _persist_quality_report(
+        self,
+        task: Any,
+        *,
+        headline: str,
+        items: list[dict[str, Any]],
+        overall_assessment: str,
+    ) -> None:
+        """Normalize, persist, and complete — split out of
+        ``propose_quality_report`` to keep its own cyclomatic complexity
+        under the xenon budget. Complete-at-propose: mirrors
+        ``_persist_market_brief``."""
+        normalized_items = [
+            _normalize_quality_report_item(idx, raw) for idx, raw in enumerate(items)
+        ]
+        markers.set_quality_report(
+            task,
+            {
+                "headline": headline.strip(),
+                "items": normalized_items,
+                "overall_assessment": overall_assessment.strip(),
+            },
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+
+    async def _notify_quality_report(self, task: Any, headline: str) -> None:
+        """Best-effort CEO nudge the moment a quality report lands — ONE call
+        per cycle (a report, not N queue items), mirrors
+        ``_notify_periscope_brief``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
+                task=task, task_id=task.id, headline=headline
+            )
+        except Exception as exc:
+            logger.warning(
+                "sentinel telegram notify failed (best-effort)", error=str(exc)
             )
 
     @classmethod

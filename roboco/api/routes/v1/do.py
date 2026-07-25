@@ -30,6 +30,7 @@ from roboco.api.schemas.v1.do import (
     ProposeFeatureSpotlightRequest,
     ProposeMarketBriefRequest,
     ProposePostmortemRequest,
+    ProposeQualityReportRequest,
     ProposeRoadmapRequest,
     ProposeVideoRequest,
     PRUpdateRequest,
@@ -248,6 +249,27 @@ async def do_propose_postmortem(
         failed_stage=body.failed_stage,
         process_change=body.process_change.model_dump(),
         playbook=body.playbook.model_dump() if body.playbook is not None else None,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_quality_report")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_quality_report(
+    request: Request,
+    body: ProposeQualityReportRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_quality_report(
+        agent_id=x_agent_id,
+        headline=body.headline,
+        items=[item.model_dump() for item in body.items],
+        overall_assessment=body.overall_assessment,
     )
     return envelope_to_response(env, request)
 

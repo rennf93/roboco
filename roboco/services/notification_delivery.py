@@ -1244,6 +1244,52 @@ class NotificationDeliveryService(BaseService):
             text=text, reply_markup=None, disable_link_preview=True
         )
 
+    async def notify_ceo_of_sentinel_report(
+        self, *, task: TaskTable, task_id: UUID, headline: str
+    ) -> None:
+        """Best-effort CEO nudge the moment a Sentinel quality report lands.
+
+        Mirrors ``notify_ceo_of_periscope_brief`` exactly: a report, not a
+        queue item — no approve/reject verb exists for it, so this reuses
+        ``render_queue_item_text``'s styled-text SHAPE ("sentinel" is a
+        display-only ``_KIND_DISPLAY`` entry, never added to
+        ``_VALID_KINDS``/the approve-reject callback surface) but skips
+        ``build_action_keyboard`` entirely — no callback exists for a kind
+        ``parse_callback`` never accepts. A normal ALERT, not an APPROVAL —
+        nothing here needs a CEO decision through a queue. The Auditor stays
+        silent to agents throughout (spec §4's "Auditor boundary") — this
+        notification goes to the CEO only.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Quality report: {headline[:100]}",
+            body=(
+                "The Auditor filed this week's state-of-quality report.\n\n"
+                f"{headline}\n\n"
+                "Read the full report in the panel's Quality Reports tab "
+                "(Business page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("sentinel", str(task_id)[:8], "", headline)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/business?tab=quality-reports"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
     async def notify_ceo_of_budget_breach(
         self,
         *,

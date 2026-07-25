@@ -99,6 +99,17 @@ PROGRAMS: dict[str, BoardProgram] = {
             # schedule — no per-project opt-in gate.
             scope="org",
         ),
+        BoardProgram(
+            key="sentinel",
+            role="auditor",
+            trigger=TriggerKind.CRON,
+            source="board_sentinel",
+            default_interval_seconds=WEEK_SECONDS,
+            # It reads org-wide drift signals (waivers, findings ledger,
+            # conventions violations, budget), not one repo (spec §4) — org
+            # scope, same as periscope.
+            scope="org",
+        ),
     )
 }
 

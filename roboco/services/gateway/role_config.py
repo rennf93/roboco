@@ -168,6 +168,10 @@ _AUDITOR_DO = (
     "propose_postmortem",
     "notify_list",
     "notify_get",
+    # Sentinel (Board Program): the Auditor's weekly org-wide drift report,
+    # a bounded expansion mirroring _PRODUCT_OWNER_DO's propose_roadmap /
+    # _HEAD_MARKETING_DO's propose_market_brief grants.
+    "propose_quality_report",
 )
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come

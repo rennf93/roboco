@@ -737,6 +737,39 @@ def propose_postmortem(
     )
 
 
+def propose_quality_report(
+    headline: str,
+    items: list[dict[str, Any]],
+    overall_assessment: str,
+) -> dict[str, Any]:
+    """Auditor: file the Sentinel weekly "state of quality" report.
+
+    Call this exactly ONCE per exploration cycle, after assessing org-wide
+    drift: waiver-accumulation trends, conventions-violation hotspots, and
+    budget anomalies (the evidence is server-assembled for you in the task
+    prompt). This is a REPORT, not a task queue: the CEO reads it in the
+    panel — nothing materializes, and there is no per-item approve/reject.
+
+    Args:
+        headline: One-line summary of the cycle's biggest quality signal
+            (<=200 chars).
+        items: 1-7 dicts, each with: area (one of 'waivers', 'findings',
+            'conventions', 'budget', 'docs', 'other'), observation (<=500
+            chars — what you found), evidence (<=500 chars — the ledger row
+            / metric / file that backs it), suggested_action (<=300 chars —
+            what should happen next).
+        overall_assessment: A synthesis across all items (<=800 chars).
+    """
+    return _post(
+        "/api/v1/do/propose_quality_report",
+        {
+            "headline": headline,
+            "items": items,
+            "overall_assessment": overall_assessment,
+        },
+    )
+
+
 def propose_video(
     composition_id: str,
     x_caption: str,
@@ -1101,6 +1134,7 @@ _TOOLS: dict[str, Any] = {
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_postmortem": propose_postmortem,
+    "propose_quality_report": propose_quality_report,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,

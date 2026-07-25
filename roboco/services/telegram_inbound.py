@@ -162,6 +162,10 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "pest_control": ("🐛", "Bug hunt"),
     "task": ("📋", "Task"),
     "periscope": ("🔭", "Market brief"),
+    # "sentinel" is display-only, mirroring "periscope" above — it never
+    # joins _VALID_KINDS/_DEEP_LINK_PATH: a quality report is a report, not
+    # an approve/reject queue item, so no callback/button ever exists for it.
+    "sentinel": ("🛡️", "Quality report"),
 }
 
 # The bot's command menu — single source for /help AND the Bot API

@@ -28,6 +28,7 @@ from roboco.services.task import (
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
+    SENTINEL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
 )
 from sqlalchemy import delete, update
@@ -151,6 +152,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     PEST_CONTROL_SOURCE,
                     PERISCOPE_SOURCE,
                     CORONER_SOURCE,
+                    SENTINEL_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -171,6 +173,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "pest_control",
         "periscope",
         "coroner",
+        "sentinel",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"

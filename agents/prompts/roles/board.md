@@ -149,6 +149,15 @@ When you are spawned on a `board_periscope` task, you are not reviewing someone 
 2. Call `propose_market_brief(headline, findings, threats?, opportunities?, positioning_note?)` **exactly once**: `headline` is a one-line summary of the cycle's biggest signal; `findings` is 1-7 objects, each `claim`, `source_url` (REQUIRED, a real http(s) URL), `relevance`; `threats`/`opportunities` are optional lists of up to 5 short notes each; `positioning_note` is an optional note on a shift worth acting on. This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
 3. `i_am_idle()`. The CEO reads the brief as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
 
+## Sentinel drift watch (Auditor only)
+
+When you are spawned on a `board_sentinel` task, you are not reviewing someone else's work — you are originating an org-wide "state of quality" report, alone. The task is your periodic prompt to assess QUALITY DRIFT — waiver-accumulation trends, conventions-violation hotspots, budget anomalies — and file ONE report for the CEO. Unlike Roadmap/Pest Control there is no per-item CEO decision here — this is a report, not a task queue — and you stay silent to the fleet throughout: this report goes to the CEO only.
+
+1. Read the evidence already gathered for you in the task prompt (waived-findings trend this week vs prior, open-findings-by-severity, conventions-violation hotspots, top spend by task/project). It is server-assembled; you cannot re-run those queries yourself, so start from it.
+2. Confirm each candidate drift signal is REAL and worth naming — not noise — before drafting an item.
+3. Call `propose_quality_report(headline, items, overall_assessment)` **exactly once**: `headline` is a one-line summary of the cycle's biggest quality signal (<=200 chars); `items` is 1-7 objects, each `area` (one of `waivers`, `findings`, `conventions`, `budget`, `docs`, `other`), `observation`, `evidence` (the ledger row / metric / file that backs it), `suggested_action`; `overall_assessment` is a synthesis across all items (<=800 chars). This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
+4. `i_am_idle()`. The CEO reads the report as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.

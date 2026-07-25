@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +82,7 @@ from roboco.services.task import (
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
+    SENTINEL_SOURCE,
     VIDEO_HELD_SOURCES,
     VIDEO_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -910,9 +911,9 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
-    / ``board_pest_control`` / ``board_periscope`` / ``board_coroner``) that
-    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out of
-    a long per-source ``if`` chain (xenon budget)."""
+    / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
+    ``board_sentinel``) that ``_dispatch_pm_work`` owns. One flat call keeps
+    the dev loop's skip out of a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -921,7 +922,42 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         PEST_CONTROL_SOURCE,
         PERISCOPE_SOURCE,
         CORONER_SOURCE,
+        SENTINEL_SOURCE,
     )
+
+
+async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -> bool:
+    """Route an assigned pending task to its Board Program's one-shot
+    exploration dispatcher, keyed by ``task['source']``. Every registered
+    program is solo-authored (PO/HoM/Auditor alone) — this bypasses the
+    two-reviewer board-review gate; none of these ever ride
+    ``_handle_board_assigned_task`` (that would also spawn a second board
+    role and fire the Approve & Start handoff, both wrong for a cycle with
+    one author). Module-level (not a method, so it always dispatches to the
+    REAL per-source method — a stub that mocks only the individual
+    ``_dispatch_*_exploration`` attributes, as every board-program dispatch
+    test does, is unaffected), mirroring ``_is_non_dev_dispatch_source``. A
+    dict dispatch table, not an ``if``/``elif`` chain, keeps
+    ``_dispatch_pm_work``'s own cyclomatic complexity bounded as new
+    programs register (xenon budget).
+
+    Returns True when handled — the caller must not fall through to the
+    board-review / PM-assigned paths — False for a normal PM/board task.
+    """
+    dispatch: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
+        ROADMAP_SOURCE: orch._dispatch_roadmap_exploration,
+        X_FEATURE_EXPLORATION_SOURCE: orch._dispatch_feature_spotlight_exploration,
+        PEST_CONTROL_SOURCE: orch._dispatch_pest_control_exploration,
+        PERISCOPE_SOURCE: orch._dispatch_periscope_exploration,
+        CORONER_SOURCE: orch._dispatch_coroner_exploration,
+        SENTINEL_SOURCE: orch._dispatch_sentinel_exploration,
+    }
+    source = task.get("source")
+    handler = dispatch.get(source) if isinstance(source, str) else None
+    if handler is None:
+        return False
+    await handler(task)
+    return True
 
 
 # Cap on findings rendered inline in a dispatch prompt (REVISION_REQUIRED /
@@ -13000,6 +13036,59 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("periscope: latest-brief read failed (best-effort)")
             return ""
 
+    async def _dispatch_sentinel_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to assess org-wide quality drift and file a
+        Sentinel report.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_quality_report`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses. The extra step is the
+        server-assembled drift evidence (waived-findings trend, open-
+        findings-by-severity, conventions hotspots, budget snapshot) the
+        Auditor cannot gather itself — mirrors
+        ``_dispatch_pest_control_exploration``'s evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("sentinel")
+        evidence_context = await self._sentinel_evidence_context()
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_sentinel_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_sentinel_exploration",
+        )
+
+    async def _sentinel_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.sentinel_engine import get_sentinel_engine
+
+            async with get_db_context() as db:
+                return await get_sentinel_engine(db).evidence_context()
+        except Exception:
+            logger.warning("sentinel: evidence-context read failed (best-effort)")
+            return ""
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -13261,39 +13350,18 @@ Start now: evidence(task_id="{task_id}")
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
-                if task.get("source") == ROADMAP_SOURCE:
-                    # PO-solo (v1) — bypasses the two-reviewer board-review gate;
-                    # never rides _handle_board_assigned_task (that would also
-                    # spawn Head of Marketing and fire the Approve & Start
-                    # handoff, both wrong for a roadmap cycle).
-                    await self._dispatch_roadmap_exploration(task)
-                elif task.get("source") == X_FEATURE_EXPLORATION_SOURCE:
-                    # HoM-solo (mirrors the ROADMAP_SOURCE branch above) —
-                    # bypasses the two-reviewer board-review gate; never rides
-                    # _handle_board_assigned_task (that would also spawn the
-                    # Product Owner and fire the Approve & Start handoff, both
-                    # wrong for a feature-spotlight cycle).
-                    await self._dispatch_feature_spotlight_exploration(task)
-                elif task.get("source") == PEST_CONTROL_SOURCE:
-                    # PO-solo (mirrors the ROADMAP_SOURCE branch above) —
-                    # bypasses the two-reviewer board-review gate; never rides
-                    # _handle_board_assigned_task.
-                    await self._dispatch_pest_control_exploration(task)
-                elif task.get("source") == PERISCOPE_SOURCE:
-                    # HoM-solo (mirrors the X_FEATURE_EXPLORATION_SOURCE
-                    # branch above) — bypasses the two-reviewer board-review
-                    # gate; never rides _handle_board_assigned_task.
-                    await self._dispatch_periscope_exploration(task)
-                elif task.get("source") == CORONER_SOURCE:
-                    # Auditor-solo, EVENT-triggered (spec §4) — the Auditor
-                    # isn't in _BOARD_AGENTS at all, so without this branch a
-                    # coroner task would fall to the generic PM-assigned
-                    # handler below, which is wrong for a board role.
-                    await self._dispatch_coroner_exploration(task)
-                elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
-                    await self._handle_board_assigned_task(task, assigned_to)
-                else:
-                    await self._handle_pm_assigned_task(task, assigned_to)
+                # Every registered Board Program (roadmap / x_feature /
+                # pest_control / periscope / coroner / sentinel) is
+                # solo-authored and bypasses the two-reviewer board-review
+                # gate — routed via the module-level dict dispatch table so
+                # this chain stays flat as new programs register (xenon
+                # budget). Falls through to the generic board/PM-assigned
+                # handlers only for a non-program task.
+                if not await _dispatch_board_program_exploration(self, task):
+                    if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                        await self._handle_board_assigned_task(task, assigned_to)
+                    else:
+                        await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
             await self._route_unassigned_pm_task(client, task)
@@ -16140,6 +16208,70 @@ claim in a real source.
 
 Do NOT claim, plan, delegate, or attempt to act on anything you find
 yourself — that is not your job here, and the gateway will reject those.
+"""
+
+    def _build_sentinel_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Auditor's one-shot Sentinel drift-watch cycle.
+
+        Auditor-solo, complete-at-propose (mirrors the periscope prompt's
+        shape): assess drift, file ONE report, then idle. ``prior_context``
+        is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled waiver/findings/conventions/budget evidence
+        (``SentinelEngine.evidence_context``) — both empty when none exist
+        yet. The Auditor stays silent to agents throughout — this report goes
+        to the CEO only, never a fleet notification."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["sentinel"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. It's time for your periodic Sentinel drift-watch cycle.
+
+TASK: {task_id}
+
+Assess org-wide QUALITY DRIFT — waiver-accumulation trends, conventions-
+violation hotspots, budget anomalies — and file ONE "state of quality"
+report for the CEO. This is a REPORT, not a task queue: nothing you file
+here materializes work, and there is no per-item CEO decision to wait on.
+You stay silent to the fleet throughout — this report goes to the CEO only.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the evidence gathered for you above (waived-findings trend, open-
+   findings-by-severity, conventions-violation hotspots, top spend by task/
+   project). It is server-assembled — you cannot re-run those queries
+   yourself, so start from it, don't second-guess it.
+3. Also check docs/map/ (the exhaustive codebase map) for staleness against
+   what you know has actually shipped, if that would sharpen a finding.
+4. For each candidate drift signal, confirm it's REAL and worth naming (not
+   noise) before drafting an item.
+5. propose_quality_report(headline="<one-line summary>", items=[...],
+   overall_assessment="<synthesis across all items>")
+     — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
+       object with: area (one of 'waivers', 'findings', 'conventions',
+       'budget', 'docs', 'other'), observation (what you found), evidence
+       (the ledger row / metric / file that backs it), suggested_action
+       (what should happen next — a later "convert to task" step, not
+       something you do yourself).
+6. i_am_idle() — once filed. The CEO reads the report in the panel; nothing
+   here needs your further attention.
+
+Do NOT claim, plan, delegate, fix anything yourself, message any other
+agent, or attempt to act on anything you find — that is not your job here,
+and the gateway will reject those verbs.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

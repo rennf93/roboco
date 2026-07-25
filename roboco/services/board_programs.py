@@ -89,17 +89,24 @@ async def _originate_coroner(_session: AsyncSession) -> TaskTable | None:
     return None
 
 
+async def _originate_sentinel(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.sentinel_engine import get_sentinel_engine
+
+    return await get_sentinel_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
-# PERISCOPE_SOURCE, CORONER_SOURCE) so the two can't drift.
+# PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
     "pest_control": _originate_pest_control,
     "periscope": _originate_periscope,
     "coroner": _originate_coroner,
+    "sentinel": _originate_sentinel,
 }
 
 

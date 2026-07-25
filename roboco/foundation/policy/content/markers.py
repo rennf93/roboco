@@ -50,6 +50,7 @@ PEST_HUNT = "pest_hunt"
 MARKET_BRIEF = "market_brief"
 CORONER_INCIDENT = "coroner_incident"
 CORONER_POSTMORTEM = "coroner_postmortem"
+QUALITY_REPORT = "quality_report"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -333,6 +334,24 @@ def get_coroner_postmortem(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_coroner_postmortem(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, CORONER_POSTMORTEM, payload)
+
+
+# --- Sentinel quality report --------------------------------------------------
+# The Auditor's weekly org-wide drift report, authored via
+# ``propose_quality_report`` onto the exploration task the sentinel engine
+# opened: {headline, items (list of {id, area, observation, evidence,
+# suggested_action}), overall_assessment}. Mirrors MARKET_BRIEF exactly — no
+# per-item CEO decision, so this marker is set exactly once (complete-at-
+# propose).
+
+
+def get_quality_report(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, QUALITY_REPORT)
+    return val if isinstance(val, dict) else None
+
+
+def set_quality_report(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, QUALITY_REPORT, payload)
 
 
 # --- video draft ------------------------------------------------------------

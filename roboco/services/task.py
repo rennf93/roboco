@@ -765,6 +765,15 @@ async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
         )
 
 
+# Source tag for a Sentinel (Board Program) exploration cycle: a PENDING task
+# the sentinel engine opens for the Auditor to assess org-wide quality drift
+# (waiver-accumulation trends, conventions-violation hotspots, docs/map
+# staleness, budget anomalies) and file ONE "state of quality" report via the
+# ``propose_quality_report`` content verb. Org-scoped (no project targeting)
+# and, like PERISCOPE_SOURCE, complete-at-propose: a report has no per-item
+# CEO decision, so no separate materialized-item source exists for it.
+SENTINEL_SOURCE = "board_sentinel"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -2076,6 +2085,36 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
+        """Non-terminal Sentinel exploration tasks — the one-open-cycle dedup
+        + ``propose_quality_report``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-report (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_sentinel_reports(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Sentinel exploration tasks (each carries a
+        ``quality_report`` marker) — the panel's Quality Reports list basis.
+        Newest-first, bounded by ``limit``. Mirrors ``list_periscope_briefs``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
                 TaskTable.status == TaskStatus.COMPLETED,
             )
             .order_by(TaskTable.updated_at.desc())

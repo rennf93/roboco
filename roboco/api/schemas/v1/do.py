@@ -212,6 +212,25 @@ class ProposePostmortemRequest(BaseModel):
     playbook: PostmortemPlaybookInput | None = None
 
 
+class QualityReportItemInput(BaseModel):
+    """One drift item within an Auditor's Sentinel quality report."""
+
+    area: str = Field(..., min_length=1)
+    observation: str = Field(..., min_length=1)
+    evidence: str = Field(..., min_length=1)
+    suggested_action: str = Field(..., min_length=1)
+
+
+class ProposeQualityReportRequest(BaseModel):
+    """Auditor's Sentinel weekly "state of quality" report: a headline +
+    1-7 evidence-backed drift items + an overall assessment. Delivered as a
+    held report — no per-item CEO queue."""
+
+    headline: str = Field(..., min_length=1)
+    items: list[QualityReportItemInput] = Field(..., min_length=1)
+    overall_assessment: str = Field(..., min_length=1)
+
+
 class ProposeVideoRequest(BaseModel):
     """UX/UI dev's video metadata draft: a composition ref + per-platform
     captions. Metadata only — no render."""

@@ -46,6 +46,7 @@ from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
+from roboco.api.routes.sentinel import router as sentinel_router
 from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
@@ -327,6 +328,46 @@ def _mount_v1_routers(app: FastAPI) -> None:
     app.include_router(do_module.router)
 
 
+def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
+    """Mount every Board Program route — the generic registry route plus each
+    program's own per-item / read-only surface. Grouped into one helper
+    (mirrors ``_mount_v1_routers``) to keep ``create_app``'s own statement
+    count from growing unbounded as programs are added."""
+    # Board roadmap engine — the CEO approves/rejects items within a held
+    # roadmap cycle. Approving materializes a BACKLOG task; nothing auto-starts.
+    app.include_router(roadmap_router, prefix=f"{api_prefix}/roadmap", tags=["Roadmap"])
+    # Board Programs — the generic registry status + off-schedule "run now"
+    # (roadmap + x_feature today; every later program rides the same route).
+    app.include_router(
+        board_programs_router,
+        prefix=f"{api_prefix}/board-programs",
+        tags=["Board Programs"],
+    )
+    # Pest Control (Board Program) — the CEO approves/rejects items within a
+    # held bug-hunt cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(
+        pest_control_router,
+        prefix=f"{api_prefix}/pest-control",
+        tags=["Pest Control"],
+    )
+    # Periscope (Board Program) — the CEO reads filed market-research briefs.
+    # Read-only: a brief is a report, not a queue item; nothing to approve.
+    app.include_router(
+        periscope_router, prefix=f"{api_prefix}/periscope", tags=["Periscope"]
+    )
+    # Coroner (Board Program) — read-only Postmortems list. A postmortem
+    # completes atomically at propose_postmortem time; there is nothing here
+    # for the CEO to approve/reject.
+    app.include_router(coroner_router, prefix=f"{api_prefix}/coroner", tags=["Coroner"])
+    # Sentinel (Board Program) — the CEO reads filed org-wide quality-drift
+    # reports. Read-only: a report is a report, not a queue item; nothing to
+    # approve.
+    app.include_router(
+        sentinel_router, prefix=f"{api_prefix}/sentinel", tags=["Sentinel"]
+    )
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -460,47 +501,12 @@ def create_app() -> FastAPI:
         tags=["X"],
     )
 
-    # Board roadmap engine — the CEO approves/rejects items within a held
-    # roadmap cycle. Approving materializes a BACKLOG task; nothing auto-starts.
-    app.include_router(
-        roadmap_router,
-        prefix=f"{api_prefix}/roadmap",
-        tags=["Roadmap"],
-    )
-
-    # Board Programs — the generic registry status + off-schedule "run now"
-    # (roadmap + x_feature today; every later program rides the same route).
-    app.include_router(
-        board_programs_router,
-        prefix=f"{api_prefix}/board-programs",
-        tags=["Board Programs"],
-    )
-
-    # Pest Control (Board Program) — the CEO approves/rejects items within a
-    # held bug-hunt cycle. Approving materializes a BACKLOG task; nothing
-    # auto-starts.
-    app.include_router(
-        pest_control_router,
-        prefix=f"{api_prefix}/pest-control",
-        tags=["Pest Control"],
-    )
-
-    # Periscope (Board Program) — the CEO reads filed market-research briefs.
-    # Read-only: a brief is a report, not a queue item; nothing to approve.
-    app.include_router(
-        periscope_router,
-        prefix=f"{api_prefix}/periscope",
-        tags=["Periscope"],
-    )
-
-    # Coroner (Board Program) — read-only Postmortems list. A postmortem
-    # completes atomically at propose_postmortem time; there is nothing here
-    # for the CEO to approve/reject.
-    app.include_router(
-        coroner_router,
-        prefix=f"{api_prefix}/coroner",
-        tags=["Coroner"],
-    )
+    # Board Programs — the generic registry route + each program's own
+    # per-item / read-only surface (roadmap, board-programs, pest control,
+    # periscope, coroner, sentinel). Grouped into one helper to keep this
+    # function's own statement count from growing unbounded as programs are
+    # added (mirrors ``_mount_v1_routers`` below).
+    _mount_board_program_routers(app, api_prefix)
 
     # Video engine — the CEO requests an on-demand marketing video; the
     # release/spotlight triggers open the same UX/UI authoring task via their
