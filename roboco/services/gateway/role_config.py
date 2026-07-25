@@ -149,6 +149,13 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # agents_config.can_a2a_direct, not by omitting the tool.
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
 # its surface (approve/reject/archive are KB curation actions, not agent comms).
+# ``propose_postmortem`` is the Coroner (Board Program) grant (spec §4): the
+# ONE program the Auditor originates content for. It does NOT also carry
+# ``draft_playbook`` — a coroner-authored playbook-kind process change is
+# drafted by calling PlaybookService directly inside propose_postmortem
+# (content_actions.py), never through this do-verb; "auditor curates but
+# does not draft" stays an invariant (test_playbook_verbs.py) reserved for a
+# future Librarian program to deliberately revisit, not this one.
 _AUDITOR_DO = (
     "note",
     "evidence",
@@ -158,6 +165,7 @@ _AUDITOR_DO = (
     "reject_playbook",
     "archive_playbook",
     "curate_vault",
+    "propose_postmortem",
     "notify_list",
     "notify_get",
 )

@@ -57,6 +57,26 @@ def test_registry_carries_periscope() -> None:
     assert p.default_interval_seconds == WEEK_SECONDS
 
 
+def test_registry_carries_coroner() -> None:
+    c = PROGRAMS["coroner"]
+    assert c.role == "auditor"
+    assert c.source == "board_coroner"
+    assert c.trigger is TriggerKind.EVENT
+    assert c.scope == "org"
+
+
+def test_coroner_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_program_due_event_never_cron_
+    fires but against the real registered entry."""
+    assert not program_due(
+        PROGRAMS["coroner"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

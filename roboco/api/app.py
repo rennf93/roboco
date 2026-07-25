@@ -22,6 +22,7 @@ from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.board_programs import router as board_programs_router
 from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
+from roboco.api.routes.coroner import router as coroner_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
@@ -490,6 +491,15 @@ def create_app() -> FastAPI:
         periscope_router,
         prefix=f"{api_prefix}/periscope",
         tags=["Periscope"],
+    )
+
+    # Coroner (Board Program) — read-only Postmortems list. A postmortem
+    # completes atomically at propose_postmortem time; there is nothing here
+    # for the CEO to approve/reject.
+    app.include_router(
+        coroner_router,
+        prefix=f"{api_prefix}/coroner",
+        tags=["Coroner"],
     )
 
     # Video engine — the CEO requests an on-demand marketing video; the

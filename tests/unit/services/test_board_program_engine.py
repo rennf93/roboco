@@ -42,6 +42,7 @@ from roboco.models.base import (
 from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
+    CORONER_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
@@ -86,6 +87,7 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     X_FEATURE_EXPLORATION_SOURCE,
                     PEST_CONTROL_SOURCE,
                     PERISCOPE_SOURCE,
+                    CORONER_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -460,6 +462,36 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["x_feature"].source == X_FEATURE_EXPLORATION_SOURCE
     assert PROGRAMS["pest_control"].source == PEST_CONTROL_SOURCE
     assert PROGRAMS["periscope"].source == PERISCOPE_SOURCE
+    assert PROGRAMS["coroner"].source == CORONER_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_coroner_originator_is_a_never_originating_stub(
+    db_session: AsyncSession,
+) -> None:
+    """EVENT programs are never cron/metric-originated — the registered
+    ``_ORIGINATORS["coroner"]`` callable exists only so the parity test above
+    holds; it must always return None (a real cycle opens via
+    ``CoronerEngine.open_for_incident``, bypassing this dict — see
+    ``_originate_coroner``'s docstring)."""
+    assert await bp_module._ORIGINATORS["coroner"](db_session) is None
+
+
+@pytest.mark.asyncio
+async def test_run_due_programs_never_opens_coroner_even_when_armed(
+    db_session: AsyncSession,
+) -> None:
+    """EVENT programs are opened only by their own hooks, never the loop —
+    ``run_due_programs`` must skip ``coroner`` entirely regardless of
+    arming, mirroring ``test_program_due_event_never_cron_fires`` at the
+    foundation layer."""
+    db_session.add(
+        SystemSettingTable(key="board_program.coroner.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert "coroner" not in opened
 
 
 # ---------------------------------------------------------------------------

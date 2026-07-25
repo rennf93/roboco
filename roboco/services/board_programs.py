@@ -77,16 +77,29 @@ async def _originate_periscope(session: AsyncSession) -> TaskTable | None:
     return await get_periscope_engine(session).run_cycle()
 
 
+async def _originate_coroner(_session: AsyncSession) -> TaskTable | None:
+    """Coroner is EVENT-triggered (spec §4) — ``run_due_programs`` skips every
+    non-CRON program before it would ever call this (see ``program_due``), so
+    this always-None stub only exists to keep ``_ORIGINATORS`` covering the
+    registry 1:1 (asserted by tests). A real cycle opens through
+    ``CoronerEngine.open_for_incident``, called directly from the bounce/
+    cancel/budget-block hooks — it bypasses this dict entirely, building its
+    own ``BoardProgramCycleTable`` row the same way ``_originate_and_record``
+    does below, since there is no loop tick to route it through."""
+    return None
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
-# PERISCOPE_SOURCE) so the two can't drift.
+# PERISCOPE_SOURCE, CORONER_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
     "pest_control": _originate_pest_control,
     "periscope": _originate_periscope,
+    "coroner": _originate_coroner,
 }
 
 

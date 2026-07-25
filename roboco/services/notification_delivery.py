@@ -1326,6 +1326,47 @@ class NotificationDeliveryService(BaseService):
         await self._persist_and_deliver(notification)
         await self._notify_telegram(task_id=task_id, subject=notification.subject)
 
+    async def notify_ceo_of_postmortem(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        incident_summary: str,
+        process_change_kind: str,
+    ) -> None:
+        """CEO-facing Coroner postmortem notification (spec §4).
+
+        Shaped like ``notify_ceo_of_completion`` (INFO, non-actionable — no
+        precedent for a dedicated report-notification type exists yet in this
+        service): unlike ``notify_ceo_of_queue_item``, a postmortem has no
+        per-item approve/reject decision to make, so this is display + a
+        panel deep-link only, never an actionable Telegram keyboard, and
+        never touches ``telegram_inbound``'s ``_VALID_KINDS`` approve/reject
+        codec. Best-effort: a delivery failure must never block the
+        postmortem it's reporting on.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        title = task.title or "Untitled task"
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Postmortem: {title[:40]}",
+            body=(
+                f"The Auditor completed a Coroner postmortem.\n\n"
+                f"{incident_summary}\n\n"
+                f"Proposed process change: {process_change_kind}."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        await self._notify_telegram(task_id=task_id, subject=notification.subject)
+
     async def notify_ceo_of_brand_voice_unset(self) -> None:
         """One-time nudge (see ``XEngine._maybe_nudge_brand_voice``): no
         ``company_goals.brand_voice`` sample is set, so X/video drafts are

@@ -186,6 +186,32 @@ class ProposeMarketBriefRequest(BaseModel):
     positioning_note: str = ""
 
 
+class ProcessChangeInput(BaseModel):
+    """The ONE process change a Coroner postmortem proposes."""
+
+    kind: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+
+
+class PostmortemPlaybookInput(BaseModel):
+    """Required iff ``process_change.kind == 'playbook'``."""
+
+    title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+
+
+class ProposePostmortemRequest(BaseModel):
+    """Auditor's Coroner postmortem: incident summary + root cause + ONE
+    process change, drafted after autopsying an incident task the Coroner
+    engine's event hooks opened an autopsy for."""
+
+    incident_summary: str = Field(..., min_length=1)
+    root_cause: str = Field(..., min_length=1)
+    failed_stage: str = Field(..., min_length=1)
+    process_change: ProcessChangeInput
+    playbook: PostmortemPlaybookInput | None = None
+
+
 class ProposeVideoRequest(BaseModel):
     """UX/UI dev's video metadata draft: a composition ref + per-platform
     captions. Metadata only — no render."""

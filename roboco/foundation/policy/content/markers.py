@@ -48,6 +48,8 @@ X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
 PEST_HUNT = "pest_hunt"
 MARKET_BRIEF = "market_brief"
+CORONER_INCIDENT = "coroner_incident"
+CORONER_POSTMORTEM = "coroner_postmortem"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -304,6 +306,33 @@ def get_market_brief(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_market_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, MARKET_BRIEF, payload)
+
+
+# --- coroner postmortem ------------------------------------------------------
+# The incident ref the CoronerEngine stamps on the postmortem-exploration task
+# it opens ({incident_task_id, kind, revision_count, title}), and the
+# Auditor-authored postmortem ({incident_summary, root_cause, failed_stage,
+# process_change, playbook_id?}) it writes via ``propose_postmortem``. Unlike
+# ROADMAP_CYCLE/PEST_HUNT there is no per-item status — a single call
+# completes the task, so this is set-once, read-only after that.
+
+
+def get_coroner_incident(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, CORONER_INCIDENT)
+    return val if isinstance(val, dict) else None
+
+
+def set_coroner_incident(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, CORONER_INCIDENT, ref)
+
+
+def get_coroner_postmortem(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, CORONER_POSTMORTEM)
+    return val if isinstance(val, dict) else None
+
+
+def set_coroner_postmortem(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, CORONER_POSTMORTEM, payload)
 
 
 # --- video draft ------------------------------------------------------------

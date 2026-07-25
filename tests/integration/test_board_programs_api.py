@@ -24,6 +24,7 @@ from roboco.foundation import identity as _foundation
 from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
 from roboco.services.task import (
+    CORONER_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
@@ -149,6 +150,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     X_FEATURE_EXPLORATION_SOURCE,
                     PEST_CONTROL_SOURCE,
                     PERISCOPE_SOURCE,
+                    CORONER_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -168,6 +170,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "x_feature",
         "pest_control",
         "periscope",
+        "coroner",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"
@@ -177,6 +180,10 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
     assert roadmap["role"] == "product_owner"
     assert roadmap["trigger"] == "cron"
     assert roadmap["scope"] == "org"
+    coroner = next(p for p in body if p["key"] == "coroner")
+    assert coroner["role"] == "auditor"
+    assert coroner["trigger"] == "event"
+    assert coroner["scope"] == "org"
     assert roadmap["open_cycle"] is False
     assert roadmap["last_opened_at"] is None
     # Not asserted == [] — org-scoped "eligible" means every active project

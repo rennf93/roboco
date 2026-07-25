@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
+import structlog
 from sqlalchemy import String, and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -720,6 +721,50 @@ PEST_CONTROL_ITEM_SOURCE = "pest_control"
 # decision, so no separate materialized-item source exists for it.
 PERISCOPE_SOURCE = "board_periscope"
 
+# Source tag for a Coroner (Board Program) postmortem-exploration task: the
+# EVENT-triggered autopsy the Auditor authors (spec §4) when an incident task
+# bounces >=3x, is cancelled after work started, or is budget-blocked.
+# Dispatched (one-shot Auditor spawn), never rides the delivery lifecycle, and
+# — unlike ROADMAP_SOURCE/PEST_CONTROL_SOURCE — has no separate materialized-
+# item source: a single ``propose_postmortem`` call completes it in place
+# (mirrors X_FEATURE_EXPLORATION_SOURCE's atomic-complete shape, not the
+# stays-open-for-per-item-decisions roadmap/pest-control shape).
+CORONER_SOURCE = "board_coroner"
+
+# Coroner's bounce trigger (spec §4): a task that has bounced this many times
+# into needs_revision gets one autopsy attempt.
+_CORONER_BOUNCE_THRESHOLD = 3
+
+
+_module_log = structlog.get_logger()
+
+
+async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
+    """Best-effort Coroner autopsy trigger for a task's 3rd bounce.
+
+    Scheduled via ``asyncio.create_task`` from the SYNC
+    ``_emit_status_transition_audit`` chokepoint, so this opens its OWN fresh
+    DB session rather than reusing the caller's mid-transaction one — the
+    caller's transaction may still roll back after this fires (the same
+    accepted small race every other fire-and-forget hook in this module
+    carries, e.g. the lifecycle-event indexer), which would rarely misfire an
+    autopsy on a bounce that never really landed. ``CoronerEngine.
+    open_for_incident`` itself is armed+dedup-gated, so a misfire is at worst
+    a wasted, no-op autopsy spawn, never a duplicate/live one.
+    """
+    from roboco.db.base import get_db_context
+    from roboco.services.coroner_engine import get_coroner_engine
+
+    try:
+        async with get_db_context() as db:
+            await get_coroner_engine(db).open_for_incident(task_id, kind="bounced")
+            await db.commit()
+    except Exception:
+        _module_log.warning(
+            "coroner: bounce hook failed (best-effort)", task_id=str(task_id)
+        )
+
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -979,6 +1024,7 @@ class TaskService(BaseService):
             and from_status != TaskStatus.NEEDS_REVISION.value
         ):
             task.revision_count = (task.revision_count or 0) + 1
+            self._maybe_schedule_coroner_bounce_hook(task)
 
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
@@ -1014,6 +1060,35 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
+        ONCE, at the 3rd bounce — not on every later re-bounce, which would
+        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
+        Best-effort, fire-and-forget on a FRESH DB session (this method is
+        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
+        docstring for the accepted small race this implies) so a hook
+        failure — or the enclosing transaction later rolling back — can
+        never fail the transition that got us here. Split out of
+        ``_emit_status_transition_audit`` to keep its own complexity down
+        (xenon budget)."""
+        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            # Scheduling itself failing (e.g. no running event loop) must
+            # never break the transition already recorded above —
+            # _fire_coroner_bounce_hook's own body is already try/excepted
+            # for everything past this point.
+            _module_log.warning(
+                "coroner: bounce hook scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
 
     def _touch_vault_frontmatter(
         self, task: TaskTable, *, to_status: str, team: str
@@ -1155,6 +1230,33 @@ class TaskService(BaseService):
         except Exception as e:
             self.log.warning(
                 "Auditor rework alert failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
+        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
+
+        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
+        bounce hook, ``cancel`` is already async) right after the transition
+        flushes, for the top-level task the caller asked to cancel — not each
+        cascade-cancelled descendant, so a big-subtree cancel opens at most
+        one autopsy attempt. "Work started" is commits or a work session ever
+        having existed on this task; ``CoronerEngine.open_for_incident`` does
+        its own armed+dedup gating, so a false-positive call here is a cheap
+        no-op. Best-effort: never lets a hook failure break the cancel.
+        """
+        if not (task.commits or task.work_session_id is not None):
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                require_uuid(task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
                 task_id=str(task.id),
                 error=str(e),
             )
@@ -1902,6 +2004,38 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_coroner_cycles(self) -> list[TaskTable]:
+        """Non-terminal Coroner postmortem-exploration tasks — the one-open-
+        autopsy-at-a-time dedup basis. Mirrors ``list_open_pest_control_cycles``;
+        unlike it there is no separate authored-vs-not split (``propose_
+        postmortem`` completes the task atomically), so this is purely the
+        dedup gate, not also a panel-queue basis."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_coroner_postmortems(
+        self, limit: int = 50
+    ) -> list[TaskTable]:
+        """Completed Coroner postmortem tasks, newest first — backs the
+        panel's read-only Postmortems list."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -7599,6 +7733,7 @@ class TaskService(BaseService):
         await self._close_task_pr_best_effort(task)
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
+        await self._alert_coroner_of_cancel(task)
 
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate

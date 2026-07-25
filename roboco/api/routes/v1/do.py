@@ -29,6 +29,7 @@ from roboco.api.schemas.v1.do import (
     ProposeBugHuntRequest,
     ProposeFeatureSpotlightRequest,
     ProposeMarketBriefRequest,
+    ProposePostmortemRequest,
     ProposeRoadmapRequest,
     ProposeVideoRequest,
     PRUpdateRequest,
@@ -224,6 +225,29 @@ async def do_propose_market_brief(
         threats=body.threats,
         opportunities=body.opportunities,
         positioning_note=body.positioning_note,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_postmortem")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_postmortem(
+    request: Request,
+    body: ProposePostmortemRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_postmortem(
+        agent_id=x_agent_id,
+        incident_summary=body.incident_summary,
+        root_cause=body.root_cause,
+        failed_stage=body.failed_stage,
+        process_change=body.process_change.model_dump(),
+        playbook=body.playbook.model_dump() if body.playbook is not None else None,
     )
     return envelope_to_response(env, request)
 

@@ -27,6 +27,7 @@ from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
 from roboco.services.pest_control_engine import PestControlEngine
 from roboco.services.task import (
+    CORONER_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -56,7 +57,12 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
         update(TaskTable)
         .where(
             TaskTable.source.in_(
-                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+                [
+                    ROADMAP_SOURCE,
+                    X_FEATURE_EXPLORATION_SOURCE,
+                    PEST_CONTROL_SOURCE,
+                    CORONER_SOURCE,
+                ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
         )

@@ -352,6 +352,17 @@ _MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS = 500
 _MARKET_BRIEF_LIST_MAX_ITEMS = 5  # threats / opportunities cap
 _MARKET_BRIEF_LIST_ITEM_MAX_CHARS = 300
 
+# Coroner postmortems are Auditor-authored — the one program the Auditor
+# originates content for (spec §4), distinct from its curation-only
+# approve/reject_playbook verbs.
+_CORONER_ROLES: frozenset[str] = frozenset({"auditor"})
+_CORONER_PROCESS_CHANGE_KINDS: frozenset[str] = frozenset(
+    {"playbook", "prompt_fix", "conventions_rule", "other"}
+)
+_CORONER_INCIDENT_SUMMARY_MAX_CHARS = 500
+_CORONER_ROOT_CAUSE_MAX_CHARS = 800
+_CORONER_PROCESS_CHANGE_DESC_MAX_CHARS = 800
+
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("title", 5),
@@ -374,6 +385,15 @@ _PEST_HUNT_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
 _PEST_HUNT_EVIDENCE_MAX_CHARS = 2000
 
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
+# The Auditor is deliberately NOT in this set — "auditor curates but does not
+# draft" is an enforced invariant (test_playbook_verbs.py). A Coroner
+# postmortem's playbook-kind process change is drafted through a DIFFERENT
+# path — directly via PlaybookService inside propose_postmortem, never this
+# do-verb (see _draft_coroner_playbook below) — so the invariant holds even
+# though the Auditor now originates playbook drafts by another route; that
+# draft rides the SAME pending-playbook curation queue every delivery-role
+# draft does, curated by the Auditor same as any other, never self-approved
+# inline.
 _DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter", "cell_pm", "main_pm"}
 )
@@ -2452,6 +2472,263 @@ class ContentActions:
                 "platforms": platforms,
             },
         )
+
+    @classmethod
+    def _reject_postmortem_text_fields(
+        cls, incident_summary: str, root_cause: str
+    ) -> Envelope | None:
+        """Soup + length caps on the postmortem's two free-text narrative
+        fields, folded into one caller-side check (xenon/PLR0911 budget —
+        mirrors ``_reject_feature_spotlight_fields``)."""
+        if rej := cls._reject_soup(
+            incident_summary, field="incident_summary", min_chars=20
+        ):
+            return rej
+        if len(incident_summary) > _CORONER_INCIDENT_SUMMARY_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"incident_summary is {len(incident_summary)} chars, over "
+                    f"the {_CORONER_INCIDENT_SUMMARY_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten incident_summary",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(root_cause, field="root_cause", min_chars=20):
+            return rej
+        if len(root_cause) > _CORONER_ROOT_CAUSE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"root_cause is {len(root_cause)} chars, over the "
+                    f"{_CORONER_ROOT_CAUSE_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten root_cause",
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_postmortem_failed_stage(failed_stage: str) -> Envelope | None:
+        """``failed_stage`` must be a real lifecycle status — never a made-up
+        label — so it stays comparable across postmortems."""
+        from roboco.models.base import TaskStatus
+
+        valid = {s.value for s in TaskStatus}
+        if failed_stage not in valid:
+            return Envelope.invalid_state(
+                message=f"failed_stage {failed_stage!r} is not a real task status",
+                remediate=f"pass one of: {sorted(valid)}",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_postmortem_process_change(cls, process_change: Any) -> Envelope | None:
+        if not isinstance(process_change, dict):
+            return Envelope.invalid_state(
+                message="process_change must be an object",
+                remediate="pass process_change={'kind': ..., 'description': ...}",
+                context_briefing={},
+            )
+        kind = process_change.get("kind")
+        if kind not in _CORONER_PROCESS_CHANGE_KINDS:
+            return Envelope.invalid_state(
+                message=f"process_change.kind {kind!r} is invalid",
+                remediate=(
+                    f"kind must be one of {sorted(_CORONER_PROCESS_CHANGE_KINDS)}"
+                ),
+                context_briefing={},
+            )
+        description = str(process_change.get("description", ""))
+        if rej := cls._reject_soup(
+            description, field="process_change.description", min_chars=15
+        ):
+            return rej
+        if len(description) > _CORONER_PROCESS_CHANGE_DESC_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"process_change.description is {len(description)} chars, "
+                    f"over the {_CORONER_PROCESS_CHANGE_DESC_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten process_change.description",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_postmortem_playbook(
+        cls, process_change: dict[str, Any], playbook: dict[str, Any] | None
+    ) -> Envelope | None:
+        """``playbook`` is required iff ``process_change.kind == 'playbook'``
+        (spec §4) — never optional-but-ignored on that kind, never demanded
+        on any other."""
+        if process_change.get("kind") != "playbook":
+            return None
+        if not isinstance(playbook, dict):
+            return Envelope.invalid_state(
+                message="process_change.kind='playbook' requires a playbook",
+                remediate="pass playbook={'title': ..., 'body': ...}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            str(playbook.get("title", "")), field="playbook.title", min_chars=5
+        ):
+            return rej
+        return cls._reject_soup(
+            str(playbook.get("body", "")), field="playbook.body", min_chars=20
+        )
+
+    @classmethod
+    def _reject_postmortem(
+        cls,
+        incident_summary: str,
+        root_cause: str,
+        failed_stage: str,
+        process_change: Any,
+        playbook: dict[str, Any] | None,
+    ) -> Envelope | None:
+        if rej := cls._reject_postmortem_text_fields(incident_summary, root_cause):
+            return rej
+        if rej := cls._reject_postmortem_failed_stage(failed_stage):
+            return rej
+        if rej := cls._reject_postmortem_process_change(process_change):
+            return rej
+        return cls._reject_postmortem_playbook(process_change, playbook)
+
+    async def _draft_coroner_playbook(
+        self, agent_id: UUID, incident_summary: str, playbook: dict[str, Any]
+    ) -> tuple[str | None, Envelope | None]:
+        """Create the process-change playbook DRAFT directly via
+        ``PlaybookService`` — not the ``draft_playbook`` do-verb, since this
+        call already runs inside the Auditor-only ``propose_postmortem`` gate.
+        The Auditor also carries ``draft_playbook`` on its manifest
+        (role_config.py) so a coroner-authored draft is indistinguishable
+        from any other in the pending-playbook curation queue — reviewed and
+        approved/rejected there same as any delivery-role draft, never
+        self-approved in this same call. Returns (playbook_id, None) on
+        success or (None, rejection_envelope) on a title conflict — checked
+        BEFORE any postmortem-task mutation so a conflict is a clean,
+        retryable rejection, not a half-completed autopsy."""
+        from roboco.models.playbook import PlaybookCreate
+        from roboco.services.base import ConflictError
+        from roboco.services.playbook import get_playbook_service
+
+        try:
+            drafted = await get_playbook_service(self.task.session).draft(
+                PlaybookCreate(
+                    title=str(playbook["title"]).strip(),
+                    problem=incident_summary.strip(),
+                    procedure=str(playbook["body"]).strip(),
+                    tags=["coroner", "postmortem"],
+                ),
+                created_by=agent_id,
+            )
+        except ConflictError as exc:
+            return None, Envelope.invalid_state(
+                message=str(exc),
+                remediate="use a more distinct playbook title (slug must be unique)",
+                context_briefing={},
+            )
+        return str(drafted.id), None
+
+    async def propose_postmortem(
+        self,
+        *,
+        agent_id: UUID,
+        incident_summary: str,
+        root_cause: str,
+        failed_stage: str,
+        process_change: dict[str, Any],
+        playbook: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Auditor authors ONE Coroner postmortem on its open autopsy task,
+        completing it in the same call — no per-item CEO queue (spec §4:
+        a report, not a list of items the CEO decides one by one). Call
+        exactly once per autopsy cycle.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _CORONER_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a postmortem; only the "
+                    "Auditor authors one"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_postmortem(
+            incident_summary, root_cause, failed_stage, process_change, playbook
+        ):
+            return rej
+
+        from roboco.services.coroner_engine import get_coroner_engine
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_coroner_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open Coroner autopsy task assigned to you",
+                remediate=(
+                    "propose_postmortem only runs against an active autopsy "
+                    "spawned by the coroner engine; wait for the next incident"
+                ),
+                context_briefing={},
+            )
+
+        playbook_id: str | None = None
+        if process_change["kind"] == "playbook":
+            playbook_id, rej = await self._draft_coroner_playbook(
+                agent_id, incident_summary, playbook or {}
+            )
+            if rej is not None:
+                return rej
+
+        engine = get_coroner_engine(self.task.session)
+        await engine.complete_with_postmortem(
+            task,
+            {
+                "incident_summary": incident_summary.strip(),
+                "root_cause": root_cause.strip(),
+                "failed_stage": failed_stage,
+                "process_change": {
+                    "kind": process_change["kind"],
+                    "description": str(process_change["description"]).strip(),
+                },
+                "playbook_id": playbook_id,
+            },
+        )
+        await self._notify_postmortem(task, incident_summary, process_change["kind"])
+        return Envelope.ok(
+            status="postmortem_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO is notified; no per-item decision needed",
+            context_briefing={
+                "failed_stage": failed_stage,
+                "process_change_kind": process_change["kind"],
+                "playbook_id": playbook_id,
+            },
+        )
+
+    async def _notify_postmortem(
+        self, task: Any, incident_summary: str, process_change_kind: str
+    ) -> None:
+        """Best-effort push notification the moment a postmortem lands —
+        mirrors ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_postmortem(
+                task=task,
+                task_id=task.id,
+                incident_summary=incident_summary,
+                process_change_kind=process_change_kind,
+            )
+        except Exception as exc:
+            logger.warning(
+                "coroner postmortem telegram notify failed (best-effort)",
+                error=str(exc),
+            )
 
     async def dm(
         self,

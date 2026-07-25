@@ -40,6 +40,7 @@ from roboco.services.pest_control_service import (
     get_pest_control_service,
 )
 from roboco.services.task import (
+    CORONER_SOURCE,
     PEST_CONTROL_ITEM_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
@@ -70,7 +71,12 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
         update(TaskTable)
         .where(
             TaskTable.source.in_(
-                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+                [
+                    ROADMAP_SOURCE,
+                    X_FEATURE_EXPLORATION_SOURCE,
+                    PEST_CONTROL_SOURCE,
+                    CORONER_SOURCE,
+                ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
         )

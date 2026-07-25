@@ -75,6 +75,7 @@ from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
+    CORONER_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     PR_REVIEW_SOURCES,
@@ -909,9 +910,9 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
-    / ``board_pest_control`` / ``board_periscope``) that ``_dispatch_pm_work``
-    owns. One flat call keeps the dev loop's skip out of a long per-source
-    ``if`` chain (xenon budget)."""
+    / ``board_pest_control`` / ``board_periscope`` / ``board_coroner``) that
+    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out of
+    a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -919,6 +920,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         X_FEATURE_EXPLORATION_SOURCE,
         PEST_CONTROL_SOURCE,
         PERISCOPE_SOURCE,
+        CORONER_SOURCE,
     )
 
 
@@ -8164,10 +8166,32 @@ Start by:
                     cap_usd=cap_usd,
                     spend_usd=spend_usd,
                 )
+                await self._fire_coroner_budget_hook(db, task_id)
         except Exception as exc:
             logger.warning(
                 "task budget-breach block/notify failed",
                 task_id=task_id_str,
+                error=str(exc),
+            )
+
+    @staticmethod
+    async def _fire_coroner_budget_hook(db: Any, task_id: "UUID") -> None:
+        """Coroner (Board Program) budget-blocked trigger (spec §4).
+
+        Runs on the SAME already-open session as the rest of
+        ``_handle_task_budget_breach`` — ``get_db_context()`` commits on clean
+        ``async with`` exit and ROLLS BACK on any exception, so this catches
+        its OWN failures internally rather than letting them propagate and
+        undo the block/notify that already succeeded this call.
+        """
+        from roboco.services.coroner_engine import get_coroner_engine
+
+        try:
+            await get_coroner_engine(db).open_for_incident(task_id, kind="budget")
+        except Exception as exc:
+            logger.warning(
+                "coroner: budget hook failed (best-effort)",
+                task_id=str(task_id),
                 error=str(exc),
             )
 
@@ -12835,6 +12859,62 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("pest-control: evidence-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_coroner_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to autopsy an incident and author ONE
+        postmortem via ``propose_postmortem``.
+
+        Like ``_dispatch_feature_spotlight_exploration`` (not the roadmap/
+        pest-control "already authored" marker shape): no pre-check is
+        needed — ``propose_postmortem`` completes this task atomically, so a
+        successful call stops it matching the PENDING fetch on the next
+        tick. Reuses the same one-shot ``_board_dispatched`` tracker +
+        respawn breaker every other board dispatch uses. EVENT-triggered
+        (spec §4): this task only ever exists because
+        ``CoronerEngine.open_for_incident`` opened it — there is no LEARN
+        "prior cycles" injection here (no cron cadence to have learned from).
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
+        incident_context = await self._coroner_incident_context(task)
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_coroner_prompt(task, incident_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_coroner_exploration",
+        )
+
+    async def _coroner_incident_context(self, task: dict[str, Any]) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture."""
+        markers_dict = task.get("orchestration_markers") or {}
+        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
+        incident_task_id = incident_ref.get("incident_task_id")
+        if not incident_task_id:
+            return ""
+        try:
+            from uuid import UUID as _UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            async with get_db_context() as db:
+                return await get_coroner_engine(db).incident_context(
+                    _UUID(str(incident_task_id))
+                )
+        except Exception:
+            logger.warning("coroner: incident-context read failed (best-effort)")
+            return ""
+
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
     ) -> None:
@@ -13204,6 +13284,12 @@ Start now: evidence(task_id="{task_id}")
                     # branch above) — bypasses the two-reviewer board-review
                     # gate; never rides _handle_board_assigned_task.
                     await self._dispatch_periscope_exploration(task)
+                elif task.get("source") == CORONER_SOURCE:
+                    # Auditor-solo, EVENT-triggered (spec §4) — the Auditor
+                    # isn't in _BOARD_AGENTS at all, so without this branch a
+                    # coroner task would fall to the generic PM-assigned
+                    # handler below, which is wrong for a board role.
+                    await self._dispatch_coroner_exploration(task)
                 elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
@@ -15886,6 +15972,59 @@ author this alone.
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
 verbs.
+"""
+
+    def _build_coroner_prompt(
+        self, task: dict[str, Any], incident_context: str = ""
+    ) -> str:
+        """Prompt for the Auditor's one-shot Coroner postmortem.
+
+        ``incident_context`` is the server-assembled findings-ledger +
+        transition-history evidence (``CoronerEngine.incident_context``) for
+        the incident named on this task's ``coroner_incident`` marker — empty
+        when the marker or the read failed (degrade, never block the spawn).
+        """
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
+        incident_task_id = incident_ref.get("incident_task_id", "unknown")
+        kind = incident_ref.get("kind", "unknown")
+        title = incident_ref.get("title", "unknown")
+        context_block = (
+            f"\n## Evidence gathered for you\n{incident_context}\n"
+            if incident_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. An incident just triggered your Coroner postmortem.
+
+TASK: {task_id}
+
+INCIDENT: {title!r} ({incident_task_id}) — {kind}
+{context_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. evidence({incident_task_id!r}) — read the incident's full journey: PR,
+   commits, dev/QA/PM journal trail, decisions.
+3. Read the evidence gathered for you above (findings ledger, transition
+   history). It is server-assembled — you cannot re-run those queries
+   yourself, so start from it.
+4. Determine: what actually failed, at which lifecycle stage, and the
+   SYSTEMIC cause (not just this one incident's symptom — what about the
+   process let it happen).
+5. propose_postmortem(incident_summary=..., root_cause=..., failed_stage=...,
+   process_change={{...}}, playbook=...)
+     — call this EXACTLY ONCE. process_change.kind is one of 'playbook'
+       (also pass playbook={{'title':..., 'body':...}} — drafted immediately
+       into the pending-playbook curation queue), 'prompt_fix',
+       'conventions_rule', or 'other'. Propose ONE change — the smallest
+       thing that would have caught or prevented this.
+6. i_am_idle() — once proposed. This completes the autopsy immediately and
+   notifies the CEO; there is no per-item queue to leave open.
+
+Do NOT message the fleet about this — you stay silent to other agents; your
+output is this postmortem and your journal, both CEO-facing.
 """
 
     def _build_feature_spotlight_prompt(

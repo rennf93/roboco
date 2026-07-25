@@ -83,6 +83,22 @@ PROGRAMS: dict[str, BoardProgram] = {
             # opt-in to fire.
             scope="org",
         ),
+        BoardProgram(
+            key="coroner",
+            role="auditor",
+            trigger=TriggerKind.EVENT,
+            source="board_coroner",
+            # EVENT programs are never cron-due (see program_due below) — this
+            # is a harmless placeholder, not a live cadence. Coroner's cycles
+            # open only via its event hooks (bounce >= 3 / cancel-after-work /
+            # budget-block), never the loop.
+            default_interval_seconds=WEEK_SECONDS,
+            max_items_per_cycle=1,
+            # Org-scoped (spec §4): it autopsies one incident task from
+            # whichever project it landed in, not a repo it reads on a
+            # schedule — no per-project opt-in gate.
+            scope="org",
+        ),
     )
 }
 

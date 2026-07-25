@@ -699,6 +699,44 @@ def propose_market_brief(
     )
 
 
+def propose_postmortem(
+    incident_summary: str,
+    root_cause: str,
+    failed_stage: str,
+    process_change: dict[str, Any],
+    playbook: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Auditor: author ONE Coroner postmortem for your open autopsy task.
+
+    Call this exactly ONCE per autopsy — after reading the incident task's
+    full journey (evidence(), the findings ledger, journal trail) — then
+    call i_am_idle(). It completes the autopsy task immediately: there is no
+    per-item CEO queue like roadmap/pest control, this is a single report.
+
+    Args:
+        incident_summary: What happened, <=500 chars.
+        root_cause: The systemic cause (not just the symptom), <=800 chars.
+        failed_stage: The task status where it actually broke down (a real
+            lifecycle status, e.g. 'awaiting_qa', 'in_progress').
+        process_change: {kind, description} — kind is one of
+            'playbook'|'prompt_fix'|'conventions_rule'|'other'; description
+            (<=800 chars) is the ONE process change you propose.
+        playbook: Required iff process_change.kind == 'playbook':
+            {title, body} — drafted immediately as a DRAFT playbook that
+            rides the normal pending-playbook curation queue.
+    """
+    return _post(
+        "/api/v1/do/propose_postmortem",
+        {
+            "incident_summary": incident_summary,
+            "root_cause": root_cause,
+            "failed_stage": failed_stage,
+            "process_change": process_change,
+            "playbook": playbook,
+        },
+    )
+
+
 def propose_video(
     composition_id: str,
     x_caption: str,
@@ -1062,6 +1100,7 @@ _TOOLS: dict[str, Any] = {
     "propose_bug_hunt": propose_bug_hunt,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
+    "propose_postmortem": propose_postmortem,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,
