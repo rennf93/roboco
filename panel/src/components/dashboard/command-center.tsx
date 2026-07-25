@@ -25,6 +25,7 @@ import { PestControlReviewQueue } from "./pest-control-review-queue";
 import { SpackleReviewQueue } from "./spackle-review-queue";
 import { ScalesReviewQueue } from "./scales-review-queue";
 import { MirrorReviewQueue } from "./mirror-review-queue";
+import { DogfoodReviewQueue } from "./dogfood-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -222,6 +223,9 @@ export function CommandCenter() {
 
       {/* Mirror messaging-fix queue (hidden when no cycle authored) */}
       <MirrorReviewQueue />
+
+      {/* Dogfood friction-fix queue (hidden when no cycle authored) */}
+      <DogfoodReviewQueue />
 
       {/* Blockers and Activity Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

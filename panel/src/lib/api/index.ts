@@ -77,6 +77,12 @@ export type {
   MessagingFixItemActionResult,
   MirrorCycle,
 } from "./mirror";
+export { dogfoodApi } from "./dogfood";
+export type {
+  FrictionFixItem,
+  FrictionFixItemActionResult,
+  DogfoodCycle,
+} from "./dogfood";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,
