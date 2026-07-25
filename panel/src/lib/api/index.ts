@@ -57,6 +57,8 @@ export { periscopeApi } from "./periscope";
 export type { MarketBrief, MarketBriefFinding } from "./periscope";
 export { coronerApi } from "./coroner";
 export type { Postmortem } from "./coroner";
+export { sentinelApi } from "./sentinel";
+export type { QualityReport, QualityReportItem } from "./sentinel";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,

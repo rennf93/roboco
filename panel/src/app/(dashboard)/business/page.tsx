@@ -16,6 +16,7 @@ import { PitchesTab } from "@/components/business/pitches-tab";
 import { BoardProgramsCard } from "@/components/business/board-programs-card";
 import { MarketBriefsTab } from "@/components/business/market-briefs-tab";
 import { CoronerPostmortemsCard } from "@/components/business/coroner-postmortems-card";
+import { QualityReportsTab } from "@/components/business/quality-reports-tab";
 
 // ---------------------------------------------------------------------------
 // Valid tab values
@@ -28,7 +29,8 @@ interface TabDef {
     | "secretary"
     | "pitches"
     | "programs"
-    | "market-briefs";
+    | "market-briefs"
+    | "quality-reports";
   label: string;
   hint: string;
 }
@@ -63,6 +65,11 @@ const TAB_DEFS: TabDef[] = [
     value: "market-briefs",
     label: "Market Briefs",
     hint: "The Head of Marketing's weekly market-research reports (Periscope) — read-only",
+  },
+  {
+    value: "quality-reports",
+    label: "Quality Reports",
+    hint: "The Auditor's weekly state-of-quality drift reports (Sentinel) — read-only",
   },
 ];
 
@@ -145,6 +152,10 @@ function BusinessPageContent() {
 
         <TabsContent value="market-briefs" className="mt-4">
           <MarketBriefsTab />
+        </TabsContent>
+
+        <TabsContent value="quality-reports" className="mt-4">
+          <QualityReportsTab />
         </TabsContent>
       </Tabs>
     </div>
