@@ -28,9 +28,22 @@ export interface XCampaignRef {
   sequence: number;
 }
 
+export interface XBarflyRef {
+  tweet_id: string;
+  author_handle: string;
+  text: string;
+  rationale: string;
+}
+
 export interface XPost {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature" | "x_editorial" | "x_campaign";
+  source:
+    | "x_post"
+    | "x_reply"
+    | "x_feature"
+    | "x_editorial"
+    | "x_campaign"
+    | "x_barfly";
   title: string;
   status: string;
   body: string;
@@ -39,6 +52,7 @@ export interface XPost {
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
   campaign?: XCampaignRef | null;
+  barfly?: XBarflyRef | null;
   reject_reason?: string | null;
   project_slug?: string | null;
   project_name?: string | null;
@@ -53,7 +67,13 @@ export interface XPostExecuteResult {
 // One acted-on draft (posted or rejected) — the CEO's history view.
 export interface XPostHistoryEntry {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature" | "x_editorial" | "x_campaign";
+  source:
+    | "x_post"
+    | "x_reply"
+    | "x_feature"
+    | "x_editorial"
+    | "x_campaign"
+    | "x_barfly";
   title: string;
   status: string; // "completed" | "cancelled"
   body: string;
@@ -62,6 +82,7 @@ export interface XPostHistoryEntry {
   mention?: XMentionRef | null;
   feature?: XFeatureRef | null;
   campaign?: XCampaignRef | null;
+  barfly?: XBarflyRef | null;
   tweet_id?: string | null;
   reject_reason?: string | null;
   acted_at: string;

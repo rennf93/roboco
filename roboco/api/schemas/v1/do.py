@@ -258,6 +258,24 @@ class ProposeMarketBriefRequest(BaseModel):
     positioning_note: str = ""
 
 
+class ConversationReplyItemInput(BaseModel):
+    """One drafted reply within a Head of Marketing's Barfly conversation-
+    reply cycle. ``tweet_id`` must name one of the exploration task's real
+    screened candidates — enforced server-side, not by this schema."""
+
+    tweet_id: str = Field(..., min_length=1)
+    reply_body: str = Field(..., min_length=1)
+    rationale: str = Field(..., min_length=1)
+
+
+class ProposeConversationRepliesRequest(BaseModel):
+    """Head of Marketing's Barfly conversation replies: 1-N drafted replies
+    to screened candidate X conversations (no top-level theme, mirrors the
+    pest-control/gap-fill/rebalance item-only shape)."""
+
+    items: list[ConversationReplyItemInput] = Field(..., min_length=1)
+
+
 class ProcessChangeInput(BaseModel):
     """The ONE process change a Coroner postmortem proposes."""
 

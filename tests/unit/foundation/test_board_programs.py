@@ -174,7 +174,20 @@ def test_war_room_is_never_cron_due() -> None:
     )
 
 
-def test_registry_carries_twelve_programs() -> None:
+_BARFLY_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_barfly() -> None:
+    b = PROGRAMS["barfly"]
+    assert b.role == "head_marketing"
+    assert b.source == "board_barfly"
+    assert b.trigger is TriggerKind.CRON
+    assert b.scope == "org"
+    assert b.max_items_per_cycle == _BARFLY_MAX_ITEMS_PER_CYCLE
+    assert b.default_interval_seconds == 2 * 24 * 3600
+
+
+def test_registry_carries_thirteen_programs() -> None:
     """Locks the union so a future addition/removal is deliberate — matches
     the count-whatever-your-base-has-plus-war_room shape the other
     registry-parity tests already exercise per-key."""
@@ -191,6 +204,7 @@ def test_registry_carries_twelve_programs() -> None:
         "megaphone",
         "librarian",
         "war_room",
+        "barfly",
     }
 
 

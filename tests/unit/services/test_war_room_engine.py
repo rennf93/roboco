@@ -52,6 +52,10 @@ class _FakeClient(XClient):
         _ = (since_id, max_results)
         return []
 
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
+        return []
+
 
 class _NullClient(XClient):
     @property
@@ -66,6 +70,10 @@ class _NullClient(XClient):
         self, since_id: str | None, max_results: int
     ) -> list[XMention]:
         _ = (since_id, max_results)
+        return []
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
         return []
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -78,7 +78,10 @@ class _FakeClient(XClient):
     def configured(self) -> bool:
         return True
 
-    async def post_tweet(self, text: str) -> XPostResult:
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = in_reply_to_tweet_id
         self.posted.append(text)
         return XPostResult(posted=True, tweet_id="1", detail="ok")
 
@@ -88,20 +91,30 @@ class _FakeClient(XClient):
         _ = (since_id, max_results)
         return self._mentions
 
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
+        return []
+
 
 class _NullClient(XClient):
     @property
     def configured(self) -> bool:
         return False
 
-    async def post_tweet(self, text: str) -> XPostResult:
-        _ = text
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = (text, in_reply_to_tweet_id)
         return XPostResult(posted=False, tweet_id=None, detail="no creds")
 
     async def fetch_mentions(
         self, since_id: str | None, max_results: int
     ) -> list[XMention]:
         _ = (since_id, max_results)
+        return []
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
         return []
 
 
@@ -1156,6 +1169,111 @@ async def test_materialize_editorial_post_reuses_the_same_notify_path_as_x_post(
 
 
 # --------------------------------------------------------------------------- #
+# materialize_barfly_reply — the propose_conversation_replies chokepoint call
+# (spec: "materializes a held X draft through the same _originate_post
+# chokepoint"). Unlike materialize_feature_spotlight this never touches the
+# exploration task's own status — the verb completes it once, after every
+# item in the batch has materialized.
+# --------------------------------------------------------------------------- #
+
+_BARFLY_CANDIDATE = {
+    "id": "111",
+    "author_handle": "someone",
+    "text": "we should build a multi-agent coding org",
+    "engagement_note": "3 combined likes/replies/retweets",
+}
+
+
+@pytest.mark.asyncio
+async def test_materialize_barfly_reply_holds_draft_through_originate_post(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+
+    class _Exploration:
+        project_id = project.id
+
+    draft = await engine.materialize_barfly_reply(
+        exploration_task=cast("TaskTable", _Exploration()),
+        candidate=_BARFLY_CANDIDATE,
+        reply_body="That's exactly what request_sandbox() gives you.",
+        rationale="Directly answers their question.",
+    )
+
+    assert draft.source == "x_barfly"
+    assert draft.assigned_to == SECRETARY_UUID
+    assert draft.confirmed_by_human is False
+    assert draft.status == TS.PENDING
+    ref = markers.get_barfly_reply_ref(draft)
+    assert ref is not None
+    assert ref["tweet_id"] == "111"
+    assert ref["author_handle"] == "someone"
+    assert ref["rationale"] == "Directly answers their question."
+    body = markers.get_x_draft_body(draft)
+    assert body == "That's exactly what request_sandbox() gives you."
+
+
+@pytest.mark.asyncio
+async def test_materialize_barfly_reply_enforces_280_chars(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+
+    class _Exploration:
+        project_id = project.id
+
+    draft = await engine.materialize_barfly_reply(
+        exploration_task=cast("TaskTable", _Exploration()),
+        candidate=_BARFLY_CANDIDATE,
+        reply_body="z" * 500,
+        rationale="whatever",
+    )
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert len(body) <= MAX_TWEET_CHARS
+
+
+@pytest.mark.asyncio
+async def test_materialize_barfly_reply_sends_telegram_push(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Proves the shared _originate_post chokepoint's Telegram push fires
+    for the barfly source too — same seam every other X draft rides."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.x_engine.get_notification_delivery_service",
+        lambda _s: MagicMock(notify_ceo_of_queue_item=notify),
+    )
+
+    class _Exploration:
+        project_id = project.id
+
+    await engine.materialize_barfly_reply(
+        exploration_task=cast("TaskTable", _Exploration()),
+        candidate=_BARFLY_CANDIDATE,
+        reply_body="A real reply.",
+        rationale="whatever",
+    )
+    notify.assert_awaited_once()
+    call = notify.await_args
+    assert call is not None
+    assert call.kwargs["kind"] == "xpost"
+
+
+# --------------------------------------------------------------------------- #
 # redraft_from_rejection — CEO reject feedback loop (mirrors VideoEngine.
 # reauthor_from_rejection). ``post_task.status = TS.CANCELLED`` below mirrors
 # XPostService.reject: by the time redraft_from_rejection runs, the rejected
@@ -1273,6 +1391,42 @@ async def test_redraft_from_rejection_feature_carries_feature_ref(
     assert ref["slug"] == "org-memory"
     # No duplicate seen-slug insert — the original materialize already marked it.
     assert await engine.is_feature_seen("org-memory") is True
+
+
+@pytest.mark.asyncio
+async def test_redraft_from_rejection_barfly_carries_reply_ref(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected x_barfly draft's redraft keeps replying to the SAME
+    tweet — losing barfly_reply_ref would silently turn a threaded reply
+    into a standalone tweet on the next approve."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+
+    class _Exploration:
+        project_id = project.id
+
+    post_task = await engine.materialize_barfly_reply(
+        exploration_task=cast("TaskTable", _Exploration()),
+        candidate=_BARFLY_CANDIDATE,
+        reply_body="Original reply.",
+        rationale="whatever",
+    )
+    post_task.status = TS.CANCELLED
+    await db_session.flush()
+
+    _mock_local_model(monkeypatch, "A sharper reply.")
+    with _redraft_lock_free():
+        redraft = await engine.redraft_from_rejection(post_task, "Too generic")
+    assert redraft is not None
+    assert redraft.source == "x_barfly"
+    ref = markers.get_barfly_reply_ref(redraft)
+    assert ref is not None
+    assert ref["tweet_id"] == "111"
+    assert markers.get_x_draft_body(redraft) == "A sharper reply."
 
 
 @pytest.mark.asyncio

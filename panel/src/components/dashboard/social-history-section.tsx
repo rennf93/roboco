@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Film,
   History,
+  MessageCircle,
   Rocket,
   Sparkles,
 } from "lucide-react";
@@ -50,6 +51,12 @@ function xKindMeta(source: XPostHistoryEntry["source"]) {
       label: "Feature spotlight",
       icon: Sparkles,
       hint: "Drafted periodically by the Head of Marketing's feature-spotlight sweep",
+    };
+  if (source === "x_barfly")
+    return {
+      label: "Conversation reply",
+      icon: MessageCircle,
+      hint: "Drafted by the Head of Marketing's Barfly search sweep — a conversation where RoboCo is relevant but unmentioned",
     };
   return {
     label: "X reply",
@@ -185,12 +192,10 @@ export function SocialHistorySection({ className }: { className?: string }) {
   const isLoading = open && (xLoading || videoLoading);
   const rows: UnifiedRow[] = [
     ...(xHistory ?? []).map((entry): UnifiedRow => ({ kind: "x", entry })),
-    ...(videoHistory ?? []).map(
-      (entry): UnifiedRow => ({
-        kind: "video",
-        entry,
-      }),
-    ),
+    ...(videoHistory ?? []).map((entry): UnifiedRow => ({
+      kind: "video",
+      entry,
+    })),
   ].sort(
     (a, b) =>
       new Date(b.entry.acted_at).getTime() -

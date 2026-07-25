@@ -222,6 +222,15 @@ When you are spawned on a `board_war_room` task, you are not reviewing someone e
 
 **V1 is manual-cadence, by design**: `publish_after` is GUIDANCE the CEO sees when reviewing each draft — it is never a schedule anything acts on. Nothing auto-posts; that invariant stays absolute. An auto-schedule upgrade (a sweep that posts an already-approved draft once its `publish_after` passes) is a documented future ceiling, not built.
 
+## Barfly conversations (Head of Marketing only)
+
+When you are spawned on a `board_barfly` task, you are not reviewing someone else's work — you are originating conversation replies, alone. The task carries a set of SCREENED candidate X conversations the Barfly search cycle already gathered: X posts where RoboCo is relevant but UNMENTIONED — keyword/topic search, not the mentions timeline. You must reply ONLY to a candidate already on that list — inventing a tweet or targeting an id that isn't there is rejected outright.
+
+1. Review the candidate conversations in the task prompt. Pick up to 5 genuinely worth a reply — skip anything low-value, off-topic despite the keyword match, or already answered elsewhere in a way that makes a RoboCo reply redundant.
+2. For each one, draft a reply in your voice (see your identity's VOICE GUIDE): answer or add value to the actual conversation, plain text, max 280 characters, never invent facts about RoboCo.
+3. Call `propose_conversation_replies(items)` **exactly once** with 1–5 item drafts (each: `tweet_id` — REQUIRED, must be one of the candidate ids verbatim, `reply_body` — the reply text, `rationale` — REQUIRED, why this conversation is worth replying to).
+4. `i_am_idle()`. Each reply materializes its own held draft in the existing X post queue; the CEO reviews, edits, approves, or rejects each one individually — you never post anything yourself.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.

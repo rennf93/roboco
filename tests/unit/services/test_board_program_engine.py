@@ -42,14 +42,17 @@ from roboco.models.base import (
 from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
+    BARFLY_SOURCE,
     CORONER_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
+    MIRROR_SOURCE,
     PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     SCALES_SOURCE,
     SENTINEL_SOURCE,
+    SPACKLE_SOURCE,
     WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     TaskCreateRequest,
@@ -95,9 +98,12 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     CORONER_SOURCE,
                     SENTINEL_SOURCE,
                     SCALES_SOURCE,
+                    SPACKLE_SOURCE,
+                    MIRROR_SOURCE,
                     MEGAPHONE_SOURCE,
                     LIBRARIAN_SOURCE,
                     WAR_ROOM_SOURCE,
+                    BARFLY_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -478,6 +484,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["megaphone"].source == MEGAPHONE_SOURCE
     assert PROGRAMS["librarian"].source == LIBRARIAN_SOURCE
     assert PROGRAMS["war_room"].source == WAR_ROOM_SOURCE
+    assert PROGRAMS["barfly"].source == BARFLY_SOURCE
 
 
 @pytest.mark.asyncio

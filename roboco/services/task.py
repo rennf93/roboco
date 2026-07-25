@@ -684,12 +684,20 @@ X_EDITORIAL_SOURCE = "x_editorial"
 # PM-dispatcher's held-source skip) for free, mirroring X_FEATURE_SOURCE.
 X_CAMPAIGN_SOURCE = "x_campaign"
 
+# Source tag for a materialized Barfly (Board Program) reply draft — a
+# HoM-authored reply to a screened X conversation the search cycle found.
+# Added to X_SOURCES so it inherits XPostService (approve/reject),
+# list_open_x_posts/list_x_post_history, and the PM-dispatcher's held-source
+# skip for free, exactly like X_FEATURE_SOURCE.
+X_BARFLY_SOURCE = "x_barfly"
+
 X_SOURCES = (
     X_POST_SOURCE,
     X_REPLY_SOURCE,
     X_FEATURE_SOURCE,
     X_EDITORIAL_SOURCE,
     X_CAMPAIGN_SOURCE,
+    X_BARFLY_SOURCE,
 )
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
@@ -866,6 +874,18 @@ MEGAPHONE_SOURCE = "board_megaphone"
 # already a real PlaybookTable row riding the normal pending-playbook
 # curation queue, so there is no separate materialized-item source.
 LIBRARIAN_SOURCE = "board_librarian"
+
+# Source tag for a Barfly (Board Program) conversation-reply exploration
+# cycle: a PENDING task the barfly engine opens for the Head of Marketing,
+# carrying screened candidate X conversations (search results — RoboCo is
+# relevant but unmentioned) for the ``propose_conversation_replies`` content
+# verb. Org-scoped (spec §4: it searches X, not a repo) and, like
+# PERISCOPE_SOURCE/X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: each
+# approved-shape reply materializes its OWN held draft (source=X_BARFLY_SOURCE
+# above) in the same call, so there is no per-item CEO decision on THIS task
+# — the CEO instead decides each materialized draft in the existing X post
+# queue.
+BARFLY_SOURCE = "board_barfly"
 
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
@@ -2318,6 +2338,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == WAR_ROOM_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_barfly_cycles(self) -> list[TaskTable]:
+        """Non-terminal Barfly exploration tasks — the one-open-cycle dedup +
+        ``propose_conversation_replies``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-authored."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == BARFLY_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

@@ -357,6 +357,11 @@ _EDITORIAL_ANGLES: frozenset[str] = frozenset(
 )
 _EDITORIAL_RATIONALE_MAX_CHARS = 300
 
+# Barfly (Board Program) conversation replies are HoM-authored, mirroring
+# _PERISCOPE_ROLES.
+_BARFLY_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_BARFLY_RATIONALE_MAX_CHARS = 300
+
 # Market-brief free-text caps (spec §4 / Task 2). ``source_url`` is validated
 # separately (a URL, not soup-checked prose) — see _reject_market_brief_url.
 _MARKET_BRIEF_HEADLINE_MAX_CHARS = 200
@@ -2882,6 +2887,246 @@ class ContentActions:
             task_id=str(new_task.id),
             next="i_am_idle() — the CEO reviews the draft in the X post queue",
             context_briefing={"angle": angle, "rationale": rationale},
+        )
+
+    @classmethod
+    def _reject_barfly_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw conversation-reply item dict's shape; None when
+        clean (before ``tweet_id`` resolution against the task's real
+        candidates, which needs the task in hand)."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with tweet_id/reply_body/rationale"
+                ),
+                context_briefing={},
+            )
+        tweet_id = raw.get("tweet_id")
+        if not isinstance(tweet_id, str) or not tweet_id.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'tweet_id'",
+                remediate=(
+                    f"item {idx}'s tweet_id must name one of the candidate "
+                    "conversations already on this task"
+                ),
+                context_briefing={},
+            )
+        reply_body = raw.get("reply_body")
+        if not isinstance(reply_body, str) or not reply_body.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'reply_body'",
+                remediate=f"provide a substantive reply_body for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            reply_body, field=f"item {idx} reply_body", min_chars=8
+        ):
+            return rej
+        if len(reply_body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} reply_body is {len(reply_body)} chars, over "
+                    f"the {MAX_TWEET_CHARS}-char tweet limit"
+                ),
+                remediate=f"shorten item {idx}'s reply_body to {MAX_TWEET_CHARS} chars",
+                context_briefing={},
+            )
+        return cls._reject_barfly_item_rationale(raw, idx)
+
+    @classmethod
+    def _reject_barfly_item_rationale(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the required ``rationale`` field — split out of
+        ``_reject_barfly_item_shape`` to keep its own return-statement count
+        under the xenon/PLR0911 budget."""
+        rationale = raw.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'rationale'",
+                remediate=f"provide a substantive rationale for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            rationale, field=f"item {idx} rationale", min_chars=8
+        ):
+            return rej
+        if len(rationale) > _BARFLY_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} rationale is {len(rationale)} chars, over "
+                    f"the {_BARFLY_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten item {idx}'s rationale",
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_barfly_item_candidate(
+        raw: dict[str, Any], idx: int, candidates_by_id: dict[str, dict[str, Any]]
+    ) -> Envelope | None:
+        """Reject a ``tweet_id`` that doesn't name one of THIS cycle's real
+        screened candidates — the agent must reply to what was actually
+        found, never invent a tweet. Split out so
+        ``_reject_barfly_item``'s xenon budget stays flat."""
+        tweet_id = str(raw["tweet_id"]).strip()
+        if tweet_id in candidates_by_id:
+            return None
+        valid = ", ".join(sorted(candidates_by_id)) or "(none)"
+        return Envelope.invalid_state(
+            message=(
+                f"item {idx} tweet_id {tweet_id!r} does not match any "
+                "candidate conversation on this task"
+            ),
+            remediate=f"item {idx}'s tweet_id must be one of: {valid}",
+            context_briefing={},
+        )
+
+    def _reject_barfly_caller_and_bounds(
+        self, role: str, items: list[dict[str, Any]], max_items: int
+    ) -> Envelope | None:
+        """Role gate + item-count bounds — split out so the main verb's own
+        branch count stays flat (xenon budget)."""
+        if role not in _BARFLY_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose conversation replies; only "
+                    "the Head of Marketing authors them"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"conversation replies need 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} drafted replies",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_barfly_item_shapes(cls, items: list[dict[str, Any]]) -> Envelope | None:
+        """Pure, DB-free pass over every item's shape — split out so the
+        main verb's own branch count stays flat (xenon budget)."""
+        for idx, raw in enumerate(items):
+            if rej := cls._reject_barfly_item_shape(raw, idx):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_barfly_item_candidates(
+        items: list[dict[str, Any]], candidates_by_id: dict[str, dict[str, Any]]
+    ) -> Envelope | None:
+        """Second pass, once the exploration task (and so its real
+        candidates) is in hand — split out so the main verb's own branch
+        count stays flat (xenon budget)."""
+        for idx, raw in enumerate(items):
+            if rej := ContentActions._reject_barfly_item_candidate(
+                raw, idx, candidates_by_id
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    async def _materialize_barfly_replies(
+        engine: Any,
+        task: Any,
+        items: list[dict[str, Any]],
+        candidates_by_id: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """One held draft per approved-shape item, through the shared
+        ``_originate_post`` chokepoint — split out so the main verb's own
+        branch count stays flat (xenon budget)."""
+        materialized_ids: list[str] = []
+        for raw in items:
+            candidate = candidates_by_id[str(raw["tweet_id"]).strip()]
+            new_task = await engine.materialize_barfly_reply(
+                exploration_task=task,
+                candidate=candidate,
+                reply_body=str(raw["reply_body"]).strip(),
+                rationale=str(raw["rationale"]).strip(),
+            )
+            materialized_ids.append(str(new_task.id))
+        return materialized_ids
+
+    async def propose_conversation_replies(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Head of Marketing drafts 1-N replies (N = the registry's
+        ``max_items_per_cycle``) to screened X conversations Barfly's search
+        cycle already gathered onto the exploration task.
+
+        Validation runs in two passes, mirroring every other item-verb's
+        pure-then-DB split: first EVERY item's shape (dict/tweet_id/
+        reply_body/rationale — no DB touched), then the exploration task is
+        resolved, then EVERY item's ``tweet_id`` is checked against that
+        task's own screened candidates — an invented tweet is rejected
+        naming the valid ids. Unlike ``propose_gap_fill``/``propose_bug_
+        hunt`` (a per-item CEO queue that keeps the exploration task open)
+        this mirrors ``propose_feature_spotlight``'s complete-at-propose
+        asymmetry MULTIPLIED across every item: each approved-shape reply
+        materializes its own held draft (source=x_barfly) through
+        ``XEngine.materialize_barfly_reply`` in this same call, then the
+        exploration task itself completes — the CEO decides each
+        materialized draft individually in the existing X post queue, not on
+        this task.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        max_items = PROGRAMS["barfly"].max_items_per_cycle
+        if rej := self._reject_barfly_caller_and_bounds(role, items, max_items):
+            return rej
+        if rej := self._reject_barfly_item_shapes(items):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_barfly_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open barfly exploration task assigned to you",
+                remediate=(
+                    "propose_conversation_replies only runs against an active "
+                    "exploration cycle spawned by the barfly engine; wait for "
+                    "the next cycle"
+                ),
+                context_briefing={},
+            )
+        candidates_by_id = {
+            str(c.get("id")): c
+            for c in markers.get_barfly_candidates(task)
+            if isinstance(c, dict) and c.get("id")
+        }
+        if rej := self._reject_barfly_item_candidates(items, candidates_by_id):
+            return rej
+
+        from roboco.services.x_engine import get_x_engine
+
+        engine = get_x_engine(self.task.session)
+        materialized_ids = await self._materialize_barfly_replies(
+            engine, task, items, candidates_by_id
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="conversation_replies_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each reply in the X post queue",
+            context_briefing={
+                "item_count": len(items),
+                "materialized_task_ids": materialized_ids,
+            },
         )
 
     @staticmethod

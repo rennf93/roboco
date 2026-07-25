@@ -75,6 +75,7 @@ from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
+    BARFLY_SOURCE,
     CORONER_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
@@ -920,8 +921,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
     ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
     ``board_mirror`` / ``board_megaphone`` / ``board_librarian`` /
-    ``board_war_room``) that ``_dispatch_pm_work`` owns. One flat call keeps
-    the dev loop's skip out of a long per-source ``if`` chain (xenon budget)."""
+    ``board_war_room`` / ``board_barfly``) that ``_dispatch_pm_work`` owns.
+    One flat call keeps the dev loop's skip out of a long per-source ``if``
+    chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -937,6 +939,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         MEGAPHONE_SOURCE,
         LIBRARIAN_SOURCE,
         WAR_ROOM_SOURCE,
+        BARFLY_SOURCE,
     )
 
 
@@ -945,8 +948,8 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     exploration dispatcher, keyed by ``task['source']``. Every registered
     program (roadmap / x_feature / pest_control / periscope / coroner /
     sentinel / spackle / scales / mirror / megaphone / librarian /
-    war_room) is solo-authored (PO/HoM/Auditor alone) — this bypasses the
-    two-reviewer board-review gate; none of these ever ride
+    war_room / barfly) is solo-authored (PO/HoM/Auditor alone) — this
+    bypasses the two-reviewer board-review gate; none of these ever ride
     ``_handle_board_assigned_task`` (that would also spawn a second board
     role and fire the Approve & Start handoff, both wrong for a cycle with
     one author). Module-level (not a method, so it always dispatches to the
@@ -973,6 +976,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
         LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
         WAR_ROOM_SOURCE: orch._dispatch_war_room_exploration,
+        BARFLY_SOURCE: orch._dispatch_barfly_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -1047,6 +1051,22 @@ def _format_rejected_spotlights(markers_dict: dict[str, Any]) -> str:
         return "(none)"
     return "; ".join(
         f"{r.get('title') or r.get('slug')} — {r.get('reason')}" for r in rejected
+    )
+
+
+def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
+    """Render Barfly's screened candidate conversations for the exploration
+    prompt — module-level (not a method), mirroring ``_format_seen_features``,
+    so it's unit testable without a wholesale-mocked ``self``. A missing/
+    malformed marker renders as "(none)" rather than breaking the prompt."""
+    candidates = markers_dict.get(_markers.BARFLY_CANDIDATES)
+    if not isinstance(candidates, list) or not candidates:
+        return "(none)"
+    return "\n".join(
+        f"- id={c.get('id')} author={c.get('author_handle')}: "
+        f"{c.get('text')} ({c.get('engagement_note')})"
+        for c in candidates
+        if isinstance(c, dict)
     )
 
 
@@ -13205,6 +13225,40 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_periscope_exploration",
         )
 
+    async def _dispatch_barfly_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to review Barfly's screened X
+        conversations and draft replies.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_conversation_replies``
+        completes this task atomically (the x_feature/periscope complete-at-
+        propose asymmetry, multiplied across every materialized reply), so
+        it stops matching the PENDING fetch on the next tick. Reuses the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for barfly exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("barfly")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_barfly_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_barfly_exploration",
+        )
+
     async def _periscope_brief_context(self) -> str:
         """Best-effort "latest market brief" read for the roadmap exploration
         prompt's cross-role injection (spec §4) — mirrors
@@ -13645,8 +13699,8 @@ Start now: evidence(task_id="{task_id}")
             if assigned_to:
                 # Every registered Board Program (roadmap / x_feature /
                 # pest_control / periscope / coroner / sentinel / spackle /
-                # scales / mirror / megaphone / librarian / war_room) is
-                # solo-authored and bypasses the two-reviewer
+                # scales / mirror / megaphone / librarian / war_room /
+                # barfly) is solo-authored and bypasses the two-reviewer
                 # board-review gate — routed via the module-level dict
                 # dispatch table so this chain stays flat as new programs
                 # register (xenon budget). Falls through to the generic
@@ -16750,6 +16804,62 @@ claim in a real source.
 
 Do NOT claim, plan, delegate, or attempt to act on anything you find
 yourself — that is not your job here, and the gateway will reject those.
+"""
+
+    def _build_barfly_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Barfly conversation-
+        reply cycle.
+
+        HoM-solo, complete-at-propose (mirrors the Periscope prompt's shape):
+        review the SCREENED candidates already gathered — never invent a
+        tweet — pick up to N worth replying to, draft, then idle. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        candidates_line = _format_barfly_candidates(markers_dict)
+        max_items = PROGRAMS["barfly"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Barfly
+conversation-reply cycle.
+
+TASK: {task_id}
+
+Barfly finds X conversations where RoboCo is relevant but UNMENTIONED —
+search results, not the mentions timeline. Review the SCREENED candidates
+already gathered below and draft replies for the ones genuinely worth it. You
+must reply ONLY to a candidate already on this list — never invent a tweet or
+target an id that isn't here.
+
+SCREENED CANDIDATES:
+{candidates_line}
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Pick up to {max_items} candidates genuinely worth a reply — skip anything
+   low-value, off-topic despite the keyword match, or already answered by
+   someone else in a way that makes a RoboCo reply redundant.
+3. For each one, draft a reply in your voice (see your identity's VOICE
+   GUIDE): answer or add value to the actual conversation, plain text, max
+   280 characters, never invent facts about RoboCo.
+4. propose_conversation_replies(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
+       object with: tweet_id (REQUIRED — must be one of the candidate ids
+       above, verbatim), reply_body (the reply text, <=280 chars), rationale
+       (REQUIRED — why this conversation is worth replying to).
+5. i_am_idle() — once proposed. Each reply materializes its own held draft in
+   the X post queue; the CEO reviews, edits, approves, or rejects each one
+   individually — nothing here posts anything itself.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
 """
 
     def _build_sentinel_prompt(

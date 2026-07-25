@@ -241,6 +241,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `propose_messaging_fixes` | `propose_messaging_fixes(items: list[MessagingFixItemInput])` |
 | `propose_editorial_post` | `propose_editorial_post(angle: str, body: str, rationale: str)` |
 | `propose_campaign` | `propose_campaign(campaign_name: str, posts: list[CampaignPostInput])` |
+| `propose_conversation_replies` | `propose_conversation_replies(items: list[ConversationReplyItemInput])` |
 
 ## auditor
 

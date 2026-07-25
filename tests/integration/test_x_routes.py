@@ -116,14 +116,20 @@ class _StubClient(XClient):
     def configured(self) -> bool:
         return True
 
-    async def post_tweet(self, text: str) -> XPostResult:
-        _ = text
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = (text, in_reply_to_tweet_id)
         return XPostResult(posted=True, tweet_id="42", detail="posted")
 
     async def fetch_mentions(
         self, since_id: str | None, max_results: int
     ) -> list[XMention]:
         _ = (since_id, max_results)
+        return []
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
         return []
 
 

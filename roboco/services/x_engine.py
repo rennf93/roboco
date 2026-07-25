@@ -55,6 +55,7 @@ from roboco.services.notification_delivery import get_notification_delivery_serv
 from roboco.services.project import get_project_service
 from roboco.services.settings import get_settings_service
 from roboco.services.task import (
+    X_BARFLY_SOURCE,
     X_CAMPAIGN_SOURCE,
     X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -74,6 +75,7 @@ from roboco.services.x_client import (
 from roboco.services.x_credentials import get_x_credentials_service
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -386,6 +388,78 @@ def _sections_since(
         if sec_date > cutoff_date:
             out.append(section)
     return out
+
+
+# --- redraft identity/context extractors, by source (XEngine._redraft_identity /
+# ._redraft_context) — module-level + dict-dispatched rather than growing
+# if-chains in the two methods, so a fifth X source registers by adding one
+# dict entry each, not another branch (xenon budget).
+#
+# ponytail: X_EDITORIAL_SOURCE and X_CAMPAIGN_SOURCE have no registered
+# extractor here or in ``_carry_redraft_markers`` — a rejected editorial/
+# campaign post still redrafts (the generic, unlocked fallback in
+# ``_redraft_identity``/``_redraft_context`` below), it just loses its
+# ``x_editorial_ref``/``x_campaign_ref`` marker on the redraft, so the panel's
+# angle/campaign-guidance line won't render for it. Add an entry to both dicts
+# below + a branch in ``_carry_redraft_markers`` when that's needed. --------
+
+
+def _redraft_identity_x_post(task: TaskTable) -> tuple[str, str] | None:
+    version = markers.get_x_release_version(task)
+    return (X_POST_SOURCE, version) if version else None
+
+
+def _redraft_identity_x_reply(task: TaskTable) -> tuple[str, str] | None:
+    mention_id = (markers.get_x_mention_ref(task) or {}).get("id")
+    return (X_REPLY_SOURCE, str(mention_id)) if mention_id else None
+
+
+def _redraft_identity_x_feature(task: TaskTable) -> tuple[str, str] | None:
+    slug = (markers.get_x_feature_ref(task) or {}).get("slug")
+    return (X_FEATURE_SOURCE, str(slug)) if slug else None
+
+
+def _redraft_identity_x_barfly(task: TaskTable) -> tuple[str, str] | None:
+    tweet_id = (markers.get_barfly_reply_ref(task) or {}).get("tweet_id")
+    return (X_BARFLY_SOURCE, str(tweet_id)) if tweet_id else None
+
+
+_REDRAFT_IDENTITY_EXTRACTORS: dict[
+    str, Callable[[TaskTable], tuple[str, str] | None]
+] = {
+    X_POST_SOURCE: _redraft_identity_x_post,
+    X_REPLY_SOURCE: _redraft_identity_x_reply,
+    X_FEATURE_SOURCE: _redraft_identity_x_feature,
+    X_BARFLY_SOURCE: _redraft_identity_x_barfly,
+}
+
+
+def _redraft_context_x_post(post_task: TaskTable) -> str:
+    version = markers.get_x_release_version(post_task)
+    return f"This is a release announcement for version {version}." if version else ""
+
+
+def _redraft_context_x_reply(post_task: TaskTable) -> str:
+    text = (markers.get_x_mention_ref(post_task) or {}).get("text")
+    return f"This is a reply to this X mention:\n{text}" if text else ""
+
+
+def _redraft_context_x_feature(post_task: TaskTable) -> str:
+    title = (markers.get_x_feature_ref(post_task) or {}).get("title")
+    return f"This is a feature-spotlight post about: {title}." if title else ""
+
+
+def _redraft_context_x_barfly(post_task: TaskTable) -> str:
+    text = (markers.get_barfly_reply_ref(post_task) or {}).get("text")
+    return f"This is a reply to this X conversation:\n{text}" if text else ""
+
+
+_REDRAFT_CONTEXT_BUILDERS: dict[str, Callable[[TaskTable], str]] = {
+    X_POST_SOURCE: _redraft_context_x_post,
+    X_REPLY_SOURCE: _redraft_context_x_reply,
+    X_FEATURE_SOURCE: _redraft_context_x_feature,
+    X_BARFLY_SOURCE: _redraft_context_x_barfly,
+}
 
 
 class XEngine(BaseService):
@@ -1151,6 +1225,43 @@ class XEngine(BaseService):
         )
         return task
 
+    async def materialize_barfly_reply(
+        self,
+        *,
+        exploration_task: TaskTable,
+        candidate: dict[str, Any],
+        reply_body: str,
+        rationale: str,
+    ) -> TaskTable:
+        """Materialize ONE Barfly-authored reply draft through the shared
+        ``_originate_post`` chokepoint (source=X_BARFLY_SOURCE) — called once
+        per approved-shape item from the ``propose_conversation_replies``
+        content verb (N per cycle, unlike ``materialize_feature_spotlight``'s
+        single call). Does NOT touch ``exploration_task``'s own status — the
+        verb completes the exploration once, after every item in the batch
+        has materialized."""
+        task = await self._originate_post(
+            title=f"X reply: conversation {candidate.get('id')}",
+            body=_clamp_tweet(reply_body),
+            source=X_BARFLY_SOURCE,
+            project_id=cast("UUID", exploration_task.project_id),
+        )
+        markers.set_barfly_reply_ref(
+            task,
+            {
+                "tweet_id": str(candidate.get("id") or ""),
+                "author_handle": str(candidate.get("author_handle") or ""),
+                "text": str(candidate.get("text") or ""),
+                "rationale": rationale,
+            },
+        )
+        await self.session.flush()
+        self.log.info(
+            "x-engine: barfly reply drafted (held for CEO)",
+            tweet_id=candidate.get("id"),
+        )
+        return task
+
     # ---- reject -> redraft (CEO feedback loop) -----------------------------
 
     async def redraft_from_rejection(
@@ -1290,26 +1401,14 @@ class XEngine(BaseService):
     def _redraft_identity(self, task: TaskTable) -> tuple[str, str] | None:
         """(source, key) discriminating one draft's underlying item from
         another of the same source: release version for x_post, mention id
-        for x_reply, feature slug for x_feature. None when the task carries
-        no such marker.
-
-        # ponytail: x_campaign has no identity/context/carry-forward branch
-        # here — a rejected campaign post still redrafts (via the generic,
-        # unlocked fallback below), it just loses its x_campaign_ref marker
-        # (campaign_name/stage_label/publish_after/sequence) on the redraft,
-        # so the panel's guidance line won't render for it. Add a branch here
-        # + _redraft_context + _carry_redraft_markers when that's needed.
-        """
-        if task.source == X_POST_SOURCE:
-            version = markers.get_x_release_version(task)
-            return (X_POST_SOURCE, version) if version else None
-        if task.source == X_REPLY_SOURCE:
-            mention_id = (markers.get_x_mention_ref(task) or {}).get("id")
-            return (X_REPLY_SOURCE, str(mention_id)) if mention_id else None
-        if task.source == X_FEATURE_SOURCE:
-            slug = (markers.get_x_feature_ref(task) or {}).get("slug")
-            return (X_FEATURE_SOURCE, str(slug)) if slug else None
-        return None
+        for x_reply, feature slug for x_feature, target tweet id for
+        x_barfly. None when the task carries no such marker or the source
+        has no registered extractor (x_editorial/x_campaign — see the
+        ponytail note above the extractor dicts). Dict-dispatched (not an
+        if-chain) to keep this flat as new X sources register (xenon
+        budget)."""
+        extractor = _REDRAFT_IDENTITY_EXTRACTORS.get(task.source)
+        return extractor(task) if extractor is not None else None
 
     async def _resolve_redraft_project(
         self, post_task: TaskTable
@@ -1389,21 +1488,9 @@ class XEngine(BaseService):
     def _redraft_context(self, post_task: TaskTable) -> str:
         """One line of source-specific factual grounding folded into the
         revision prompt, so the redraft doesn't drift from what the post is
-        actually about."""
-        if post_task.source == X_POST_SOURCE:
-            version = markers.get_x_release_version(post_task)
-            return (
-                f"This is a release announcement for version {version}."
-                if version
-                else ""
-            )
-        if post_task.source == X_REPLY_SOURCE:
-            text = (markers.get_x_mention_ref(post_task) or {}).get("text")
-            return f"This is a reply to this X mention:\n{text}" if text else ""
-        if post_task.source == X_FEATURE_SOURCE:
-            title = (markers.get_x_feature_ref(post_task) or {}).get("title")
-            return f"This is a feature-spotlight post about: {title}." if title else ""
-        return ""
+        actually about. Dict-dispatched, mirroring ``_redraft_identity``."""
+        builder = _REDRAFT_CONTEXT_BUILDERS.get(post_task.source)
+        return builder(post_task) if builder is not None else ""
 
     def _carry_redraft_markers(self, new_task: TaskTable, post_task: TaskTable) -> None:
         """Copy the rejected draft's source-specific reference marker onto the
@@ -1423,6 +1510,10 @@ class XEngine(BaseService):
             ref = markers.get_x_feature_ref(post_task)
             if ref:
                 markers.set_x_feature_ref(new_task, ref)
+        elif post_task.source == X_BARFLY_SOURCE:
+            ref = markers.get_barfly_reply_ref(post_task)
+            if ref:
+                markers.set_barfly_reply_ref(new_task, ref)
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:

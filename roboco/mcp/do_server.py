@@ -784,6 +784,24 @@ def propose_editorial_post(
     )
 
 
+def propose_conversation_replies(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: draft 1-5 replies to Barfly's screened X conversations.
+
+    Call this exactly ONCE per exploration cycle, after reviewing the
+    candidate conversations already gathered on this task (search results —
+    RoboCo is relevant but unmentioned). Each reply materializes its own held
+    draft in the X post queue; the CEO reviews and approves/rejects each one
+    individually.
+
+    Args:
+        items: 1-5 dicts, each with: tweet_id (REQUIRED — must name one of
+            this task's real candidate conversations; an invented tweet is
+            rejected), reply_body (the reply text, <=280 chars), rationale
+            (REQUIRED — why this conversation is worth replying to).
+    """
+    return _post("/api/v1/do/propose_conversation_replies", {"items": items})
+
+
 def propose_postmortem(
     incident_summary: str,
     root_cause: str,
@@ -1267,6 +1285,7 @@ _TOOLS: dict[str, Any] = {
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_editorial_post": propose_editorial_post,
+    "propose_conversation_replies": propose_conversation_replies,
     "propose_postmortem": propose_postmortem,
     "propose_quality_report": propose_quality_report,
     "propose_playbook_drafts": propose_playbook_drafts,

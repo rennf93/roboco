@@ -30,6 +30,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Megaphone,
+  MessageCircle,
   Rocket,
   Sparkles,
   XCircle,
@@ -63,6 +64,12 @@ function sourceMeta(source: XPost["source"]) {
       label: "War Room campaign",
       icon: CalendarClock,
       hint: "One ordered post in a Head of Marketing campaign — approve each independently",
+    };
+  if (source === "x_barfly")
+    return {
+      label: "Conversation reply",
+      icon: MessageCircle,
+      hint: "Drafted by the Head of Marketing's Barfly search sweep — a conversation where RoboCo is relevant but unmentioned",
     };
   return {
     label: "Mention reply",
@@ -163,6 +170,13 @@ function XPostRow({
           <HelpTip label="The shipped feature this spotlight covers">
             <Badge variant="outline" className="max-w-56 truncate">
               feature: {post.feature.title}
+            </Badge>
+          </HelpTip>
+        )}
+        {post.barfly && (
+          <HelpTip label="The X conversation this reply answers">
+            <Badge variant="secondary" className="max-w-56 truncate">
+              re: {post.barfly.text}
             </Badge>
           </HelpTip>
         )}

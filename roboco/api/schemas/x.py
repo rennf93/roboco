@@ -32,12 +32,21 @@ class XCampaignRefModel(BaseModel):
     sequence: int
 
 
+class XBarflyRefModel(BaseModel):
+    """The screened X conversation a held Barfly reply answers."""
+
+    tweet_id: str
+    author_handle: str
+    text: str
+    rationale: str
+
+
 class XPostResponse(BaseModel):
-    """One held draft (release post, mention reply, feature spotlight, or
-    War Room campaign post) awaiting the CEO."""
+    """One held draft (release post, mention reply, feature spotlight, War
+    Room campaign post, or Barfly conversation reply) awaiting the CEO."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign"
+    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign" | "x_barfly"
     title: str
     status: str
     body: str
@@ -46,6 +55,7 @@ class XPostResponse(BaseModel):
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
     campaign: XCampaignRefModel | None = None
+    barfly: XBarflyRefModel | None = None
     reject_reason: str | None = None
     project_slug: str | None = None
     project_name: str | None = None
@@ -75,7 +85,7 @@ class XPostHistoryResponse(BaseModel):
     """One acted-on X draft (posted or rejected) — the CEO's history view."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign"
+    source: str  # "x_post" | "x_reply" | "x_feature" | "x_campaign" | "x_barfly"
     title: str
     status: str  # "completed" | "cancelled"
     body: str
@@ -84,6 +94,7 @@ class XPostHistoryResponse(BaseModel):
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
     campaign: XCampaignRefModel | None = None
+    barfly: XBarflyRefModel | None = None
     tweet_id: str | None = None
     reject_reason: str | None = None
     acted_at: datetime

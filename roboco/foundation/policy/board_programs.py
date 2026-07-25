@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 WEEK_SECONDS = 7 * 24 * 3600
 MONTH_SECONDS = 30 * 24 * 3600
 QUARTER_SECONDS = 90 * 24 * 3600
+DAY_SECONDS = 24 * 3600
 
 
 class TriggerKind(StrEnum):
@@ -184,6 +185,17 @@ PROGRAMS: dict[str, BoardProgram] = {
             # Org-scoped (spec §4): a campaign is about a release or an
             # on-demand marketing push, not one repo's own state — no
             # per-project opt-in gate.
+            scope="org",
+        ),
+        BoardProgram(
+            key="barfly",
+            role="head_marketing",
+            trigger=TriggerKind.CRON,
+            source="board_barfly",
+            default_interval_seconds=2 * DAY_SECONDS,
+            max_items_per_cycle=5,
+            # Org-scoped (spec §4): it searches X for adjacent conversations,
+            # not a repo — no per-project opt-in gate, mirrors periscope.
             scope="org",
         ),
     )

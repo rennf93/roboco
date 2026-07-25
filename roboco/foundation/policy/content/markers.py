@@ -64,6 +64,8 @@ DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
 REBALANCE_PLAN = "rebalance_plan"
 PLAYBOOK_DRAFTS = "playbook_drafts"
 WAR_ROOM_BRIEF = "war_room_brief"
+BARFLY_CANDIDATES = "barfly_candidates"
+BARFLY_REPLY_REF = "barfly_reply_ref"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -465,6 +467,36 @@ def get_war_room_brief(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_war_room_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, WAR_ROOM_BRIEF, payload)
+
+
+# --- Barfly conversation candidates + reply ref -----------------------------
+# The screened candidate X conversations (search results — RoboCo is relevant
+# but unmentioned) the barfly engine gathers onto the exploration task it
+# opens: a list of {id, author_handle, text, engagement_note}. The Head of
+# Marketing picks from THIS list only via ``propose_conversation_replies``
+# (never inventing a tweet) — no per-item status here, unlike PEST_HUNT/
+# GAP_FILL, since each approved-shape reply materializes its OWN held draft
+# immediately (mirrors X_FEATURE_REF's complete-at-propose asymmetry). The
+# materialized draft (source=x_barfly) then carries BARFLY_REPLY_REF: the
+# candidate it answers plus the HoM's rationale — mirrors X_MENTION_REF.
+
+
+def get_barfly_candidates(task: HasMarkers) -> list[dict[str, Any]]:
+    val = get_marker(task, BARFLY_CANDIDATES, [])
+    return val if isinstance(val, list) else []
+
+
+def set_barfly_candidates(task: HasMarkers, candidates: list[dict[str, Any]]) -> None:
+    set_marker(task, BARFLY_CANDIDATES, candidates)
+
+
+def get_barfly_reply_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, BARFLY_REPLY_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_barfly_reply_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, BARFLY_REPLY_REF, ref)
 
 
 # --- video draft ------------------------------------------------------------
