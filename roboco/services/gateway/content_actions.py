@@ -1265,8 +1265,13 @@ class ContentActions:
         return None
 
     @classmethod
-    def _reject_roadmap_item(cls, raw: Any, idx: int) -> Envelope | None:
-        """Validate one raw roadmap item dict; None when clean."""
+    def _reject_roadmap_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw roadmap item dict's shape/fields; None when clean.
+
+        Synchronous — no DB access. Split from ``_reject_roadmap_item`` (which
+        adds the Task-6b project-exclusion check) so the shape checks stay
+        classmethod-testable without a session.
+        """
         if not isinstance(raw, dict):
             return Envelope.invalid_state(
                 message=f"item {idx} is not an object",
@@ -1279,6 +1284,54 @@ class ContentActions:
         if rej := cls._reject_roadmap_item_fields(raw, idx):
             return rej
         return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_roadmap_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw roadmap item dict; None when clean.
+
+        Folds the shape/fields/team checks with the Task-6b project-exclusion
+        check into one call so the ``propose_roadmap`` loop keeps a single
+        return point per item (xenon/PLR0911 budget).
+        """
+        if rej := self._reject_roadmap_item_shape(raw, idx):
+            return rej
+        return await self._reject_excluded_roadmap_project(raw, idx)
+
+    async def _reject_excluded_roadmap_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that excluded itself from the
+        roadmap program (``!roadmap`` in its ``board_programs``) — the PO
+        learns this at propose time instead of a silent materialize-time skip.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time as it already did before Task
+        6b (this check only ever narrows an otherwise-valid slug).
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["roadmap"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which excluded "
+                    "itself from the roadmap program"
+                ),
+                remediate=(
+                    f"drop item {idx} or retarget it to a project not "
+                    "excluded via '!roadmap'"
+                ),
+                context_briefing={},
+            )
+        return None
 
     async def propose_roadmap(
         self,
@@ -1320,7 +1373,7 @@ class ContentActions:
             )
         normalized: list[dict[str, Any]] = []
         for idx, raw in enumerate(items):
-            if rej := self._reject_roadmap_item(raw, idx):
+            if rej := await self._reject_roadmap_item(raw, idx):
                 return rej
             normalized.append(_normalize_roadmap_item(idx, raw))
 

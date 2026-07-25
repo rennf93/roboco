@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { Team } from "@/types";
 import type { Project } from "@/types";
+import type { BoardProgram } from "@/lib/api/board-programs";
 
 const { useUpdateProject, mutateAsync } = vi.hoisted(() => ({
   useUpdateProject: vi.fn(),
@@ -9,6 +12,16 @@ const { useUpdateProject, mutateAsync } = vi.hoisted(() => ({
 }));
 vi.mock("@/hooks/use-projects", () => ({ useUpdateProject }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+const { listBoardPrograms } = vi.hoisted(() => ({
+  // Empty by default so the pre-existing suites below (none of which test
+  // this section) render with no participate/exclude checkboxes; the Board
+  // Programs describe block overrides this per test.
+  listBoardPrograms: vi.fn(async (): Promise<BoardProgram[]> => []),
+}));
+vi.mock("@/lib/api/board-programs", () => ({
+  boardProgramsApi: { list: listBoardPrograms },
+}));
 
 if (typeof window !== "undefined" && !window.ResizeObserver) {
   window.ResizeObserver = class {
@@ -50,6 +63,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     monthly_budget_usd: null,
     sandbox_services: null,
     sandbox_extensions: null,
+    board_programs: null,
     workspace_path: null,
     last_synced_at: null,
     head_commit: null,
@@ -60,21 +74,46 @@ function makeProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function buildProgram(overrides: Partial<BoardProgram> = {}): BoardProgram {
+  return {
+    key: "pest_control",
+    role: "product_owner",
+    trigger: "cron",
+    scope: "project",
+    enabled: true,
+    opted_in_project_slugs: [],
+    last_opened_at: null,
+    open_cycle: false,
+    last_cycle_summary: null,
+    ...overrides,
+  };
+}
+
+function withQueryClient(ui: ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
+}
+
+function renderCard(project: Project) {
+  return render(withQueryClient(<BudgetOpsCard project={project} />));
+}
+
 describe("BudgetOpsCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mutateAsync.mockResolvedValue(makeProject());
     useUpdateProject.mockReturnValue({ mutateAsync, isPending: false });
+    listBoardPrograms.mockResolvedValue([]);
   });
 
   it("pre-fills the stored monthly budget and shows spend against it", () => {
-    render(
-      <BudgetOpsCard
-        project={makeProject({
-          monthly_budget_usd: 100,
-          monthly_spend_usd: 42.5,
-        })}
-      />,
+    renderCard(
+      makeProject({
+        monthly_budget_usd: 100,
+        monthly_spend_usd: 42.5,
+      }),
     );
     expect(screen.getByLabelText(/Monthly Budget/i)).toHaveValue(100);
     expect(screen.getByTestId("project-spend").textContent).toBe(
@@ -83,7 +122,7 @@ describe("BudgetOpsCard", () => {
   });
 
   it("Save is disabled until a field changes", () => {
-    render(<BudgetOpsCard project={makeProject()} />);
+    renderCard(makeProject());
     const save = screen.getByRole("button", { name: /^Save$/i });
     expect(save).toBeDisabled();
 
@@ -92,7 +131,7 @@ describe("BudgetOpsCard", () => {
   });
 
   it("rejects a 0 or negative budget without saving", () => {
-    render(<BudgetOpsCard project={makeProject()} />);
+    renderCard(makeProject());
     fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
       target: { value: "0" },
     });
@@ -105,7 +144,7 @@ describe("BudgetOpsCard", () => {
   });
 
   it("saves an explicit null when the budget is cleared", async () => {
-    render(<BudgetOpsCard project={makeProject({ monthly_budget_usd: 42 })} />);
+    renderCard(makeProject({ monthly_budget_usd: 42 }));
     fireEvent.change(screen.getByLabelText(/Monthly Budget/i), {
       target: { value: "" },
     });
@@ -121,7 +160,7 @@ describe("BudgetOpsCard", () => {
   });
 
   it("saves the CI-watch, video-engine, and dep-update fields together", async () => {
-    render(<BudgetOpsCard project={makeProject()} />);
+    renderCard(makeProject());
     fireEvent.click(screen.getByRole("switch", { name: /CI-watch/i }));
     fireEvent.change(screen.getByLabelText(/CI-watch Workflow/i), {
       target: { value: "ci.yml" },
@@ -149,6 +188,89 @@ describe("BudgetOpsCard", () => {
       video_engine_enabled: true,
       dep_update_command: "uv lock --upgrade",
       dep_update_paths: ["uv.lock", "pnpm-lock.yaml"],
+      board_programs: [],
     });
+  });
+});
+
+describe("BudgetOpsCard — Board Programs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mutateAsync.mockResolvedValue(makeProject());
+    useUpdateProject.mockReturnValue({ mutateAsync, isPending: false });
+    listBoardPrograms.mockResolvedValue([
+      buildProgram({ key: "pest_control", scope: "project" }),
+      buildProgram({ key: "roadmap", scope: "org", role: "product_owner" }),
+    ]);
+  });
+
+  it("renders a project-scoped program as a participates-in checkbox", async () => {
+    renderCard(makeProject({ board_programs: null }));
+
+    expect(
+      await screen.findByText("Board Programs — participates in"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("pest_control")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "pest_control" }),
+    ).not.toBeChecked();
+  });
+
+  it("renders an org-scoped program as an excluded-from checkbox", async () => {
+    renderCard(makeProject({ board_programs: null }));
+
+    expect(
+      await screen.findByText("Board Programs — excluded from"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("roadmap")).toBeInTheDocument();
+  });
+
+  it("pre-checks a project-scoped checkbox already in the stored list", async () => {
+    renderCard(makeProject({ board_programs: ["pest_control"] }));
+
+    expect(
+      await screen.findByRole("switch", { name: "pest_control" }),
+    ).toBeChecked();
+  });
+
+  it("pre-checks an org-scoped exclusion checkbox already in the stored list", async () => {
+    renderCard(makeProject({ board_programs: ["!roadmap"] }));
+
+    expect(
+      await screen.findByText("Board Programs — excluded from"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "roadmap" })).toBeChecked();
+  });
+
+  it("toggling participates-in and excluded-from checkboxes submits both entries", async () => {
+    renderCard(makeProject({ board_programs: null }));
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "pest_control" }),
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "roadmap" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { board_programs?: string[] };
+    };
+    expect(new Set(call.updates.board_programs)).toEqual(
+      new Set(["pest_control", "!roadmap"]),
+    );
+  });
+
+  it("saving an unrelated field round-trips untouched Board Programs unchanged", async () => {
+    renderCard(makeProject({ board_programs: ["!roadmap"] }));
+    await screen.findByText("Board Programs — excluded from");
+
+    fireEvent.click(screen.getByRole("switch", { name: /CI-watch/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    const call = mutateAsync.mock.calls[0][0] as {
+      updates: { board_programs?: string[] };
+    };
+    expect(call.updates.board_programs).toEqual(["!roadmap"]);
   });
 });

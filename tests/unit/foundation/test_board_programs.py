@@ -1,0 +1,149 @@
+"""tests/unit/foundation/test_board_programs.py"""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from roboco.config import Settings
+from roboco.foundation.policy.board_programs import (
+    PROGRAMS,
+    BoardProgram,
+    TriggerKind,
+    program_due,
+    project_participates,
+    validate_board_programs_field,
+)
+
+
+def test_x_feature_default_interval_matches_settings_field_default() -> None:
+    """Guards the registry cadence and the live due-check's cadence
+    (``Settings.x_feature_spotlight_interval_seconds``) from drifting apart
+    again — reads the pydantic field default, never a live env-configured
+    instance, so this can't pass by accident in a differently-configured
+    environment."""
+    field_default = Settings.model_fields["x_feature_spotlight_interval_seconds"]
+    assert PROGRAMS["x_feature"].default_interval_seconds == field_default.default
+
+
+def test_registry_carries_the_two_migrated_programs() -> None:
+    assert set(PROGRAMS) == {"roadmap", "x_feature"}
+    rm = PROGRAMS["roadmap"]
+    assert rm.role == "product_owner"
+    assert rm.source == "board_roadmap"
+    assert rm.trigger is TriggerKind.CRON
+    xf = PROGRAMS["x_feature"]
+    assert xf.role == "head_marketing"
+    assert xf.source == "x_feature_exploration"
+
+
+def test_program_due_cron_interval() -> None:
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    p = PROGRAMS["roadmap"]
+    assert program_due(p, now=now, last_opened_at=None, interval_override=None)
+    recent = now - timedelta(seconds=10)
+    assert not program_due(p, now=now, last_opened_at=recent, interval_override=None)
+    old = now - timedelta(seconds=p.default_interval_seconds + 1)
+    assert program_due(p, now=now, last_opened_at=old, interval_override=None)
+
+
+def test_program_due_event_never_cron_fires() -> None:
+    p = BoardProgram(
+        key="k",
+        role="auditor",
+        trigger=TriggerKind.EVENT,
+        source="s",
+        default_interval_seconds=0,
+    )
+    assert not program_due(
+        p,
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
+def test_program_due_interval_override_wins_over_default() -> None:
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    p = PROGRAMS["roadmap"]
+    recent = now - timedelta(seconds=100)
+    # Default interval (a week) would still block; a short override fires.
+    assert program_due(p, now=now, last_opened_at=recent, interval_override=50)
+    assert not program_due(p, now=now, last_opened_at=recent, interval_override=200)
+
+
+# ---------------------------------------------------------------------------
+# Task 6b: per-project program scoping
+# ---------------------------------------------------------------------------
+
+
+def test_registry_entries_default_to_org_scope() -> None:
+    assert PROGRAMS["roadmap"].scope == "org"
+    assert PROGRAMS["x_feature"].scope == "org"
+
+
+_PROJECT_PROGRAM = BoardProgram(
+    key="pest_control",
+    role="product_owner",
+    trigger=TriggerKind.CRON,
+    source="board_pest_control",
+    default_interval_seconds=7 * 24 * 3600,
+    scope="project",
+)
+_ORG_PROGRAM = PROGRAMS["roadmap"]  # scope="org"
+
+
+def test_project_scoped_program_is_affirmative_opt_in() -> None:
+    assert not project_participates(_PROJECT_PROGRAM, None)
+    assert not project_participates(_PROJECT_PROGRAM, [])
+    assert not project_participates(_PROJECT_PROGRAM, ["some_other_key"])
+    assert project_participates(_PROJECT_PROGRAM, ["pest_control"])
+
+
+def test_org_scoped_program_is_default_eligible_opt_out() -> None:
+    assert project_participates(_ORG_PROGRAM, None)
+    assert project_participates(_ORG_PROGRAM, [])
+    assert project_participates(_ORG_PROGRAM, ["some_other_key"])
+    assert not project_participates(_ORG_PROGRAM, ["!roadmap"])
+
+
+def test_validate_board_programs_field_accepts_none() -> None:
+    assert validate_board_programs_field(None) is None
+
+
+def test_validate_board_programs_field_accepts_known_org_exclusion() -> None:
+    assert validate_board_programs_field(["!roadmap"]) == ["!roadmap"]
+
+
+def test_validate_board_programs_field_rejects_plain_key_on_org_scoped_program() -> (
+    None
+):
+    """Both registered programs are org-scoped today, so a plain "roadmap"
+    entry (the project-scoped opt-in form) is meaningless — org-scoped
+    programs run against every project by default and are only ever
+    excluded via '!key'. See test_validate_board_programs_field_allows_
+    plain_project_scoped_key below for the positive case on a synthetic
+    project-scoped program."""
+    with pytest.raises(ValueError, match="meaningless"):
+        validate_board_programs_field(["roadmap"])
+
+
+def test_validate_board_programs_field_rejects_unknown_key() -> None:
+    with pytest.raises(ValueError, match="unknown board program key"):
+        validate_board_programs_field(["not_a_real_program"])
+
+
+def test_validate_board_programs_field_rejects_unknown_excluded_key() -> None:
+    with pytest.raises(ValueError, match="unknown board program key"):
+        validate_board_programs_field(["!not_a_real_program"])
+
+
+def test_validate_board_programs_field_rejects_bang_on_project_scoped_key() -> None:
+    registry = {"pest_control": _PROJECT_PROGRAM}
+    with pytest.raises(ValueError, match="meaningless"):
+        validate_board_programs_field(["!pest_control"], programs=registry)
+
+
+def test_validate_board_programs_field_allows_plain_project_scoped_key() -> None:
+    registry = {"pest_control": _PROJECT_PROGRAM}
+    assert validate_board_programs_field(["pest_control"], programs=registry) == [
+        "pest_control"
+    ]

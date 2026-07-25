@@ -153,3 +153,54 @@ def test_roadmap_prompt_names_solo_po_and_real_verbs() -> None:
     assert "Head of Marketing is not" in prompt
     assert "involved in this cycle" in prompt
     assert "do not" in prompt.lower()
+
+
+def test_roadmap_prompt_omits_prior_cycles_section_when_empty() -> None:
+    orch = _make_orch()
+    prompt = orch._build_roadmap_prompt(_roadmap_task())
+    assert "## Prior cycles" not in prompt
+
+
+def test_roadmap_prompt_renders_prior_cycles_when_given() -> None:
+    orch = _make_orch()
+    prompt = orch._build_roadmap_prompt(
+        _roadmap_task(), "proposed 5, approved 3; rejected: item-2 — too risky"
+    )
+    assert "## Prior cycles" in prompt
+    assert "proposed 5, approved 3; rejected: item-2 — too risky" in prompt
+
+
+@pytest.mark.asyncio
+async def test_roadmap_dispatch_injects_prior_context_into_prompt() -> None:
+    """The dispatcher fetches LEARN context (best-effort) and threads it into
+    the prompt builder — proving the wiring, not just the builder in
+    isolation."""
+    orch = _make_orch()
+    task = _roadmap_task()
+    with (
+        patch.object(orch, "_is_agent_active", return_value=False),
+        patch.object(orch, "_task_git_context", return_value=None),
+        patch.object(
+            orch,
+            "_board_program_prior_context",
+            AsyncMock(return_value="proposed 2, approved 1"),
+        ),
+        patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
+    ):
+        await orch._dispatch_roadmap_exploration(task)
+
+    prompt = spawn.await_args_list[0].kwargs["initial_prompt"]
+    assert "proposed 2, approved 1" in prompt
+
+
+@pytest.mark.asyncio
+async def test_board_program_prior_context_survives_db_failure() -> None:
+    """A DB hiccup fetching prior context degrades to '' — never raises, so
+    the caller (the dispatcher) never needs its own safety net around it."""
+    orch = _make_orch()
+    with patch(
+        "roboco.services.board_programs.get_board_program_engine",
+        side_effect=RuntimeError("db down"),
+    ):
+        result = await orch._board_program_prior_context("roadmap")
+    assert result == ""

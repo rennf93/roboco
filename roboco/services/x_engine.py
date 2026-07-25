@@ -49,6 +49,7 @@ from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
+from roboco.services.board_programs import program_armed
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
@@ -705,7 +706,9 @@ class XEngine(BaseService):
     async def open_feature_spotlight_exploration(self) -> TaskTable | None:
         """Originate ONE held exploration task for the Head of Marketing, or None.
 
-        No-ops when the flags are off, no X credentials are configured (drafting
+        No-ops when the program isn't armed (``program_armed`` — settings-store
+        override, else the legacy ``x_engine_enabled``+``x_feature_spotlight_
+        enabled`` pair), no X credentials are configured (drafting
         content nobody can ever post is pointless — mirrors the release/mentions
         guard), a materialized spotlight draft is still awaiting the CEO (never
         stack a second one), nothing has shipped since the last spotlight
@@ -742,7 +745,7 @@ class XEngine(BaseService):
         one boolean so ``open_feature_spotlight_exploration``'s own
         return-statement count stays under the xenon/PLR0911 budget — each
         sub-guard still logs its own skip reason."""
-        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
+        if not await program_armed(self.session, "x_feature"):
             return False
         client = await self._client()
         if not client.configured:

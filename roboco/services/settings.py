@@ -130,6 +130,12 @@ _VALIDATORS = {
     # flag (absent from FEATURE_FLAGS/the panel card) but reuses this same KV
     # store instead of a dedicated table or a restart-losing in-memory flag.
     "x_brand_voice_nudge_sent": _validate_bool,
+    # Board Program per-program enablement (BoardProgramEngine.enabled).
+    # Dotted, not in FEATURE_FLAGS (no roboco.config attribute to fall back
+    # to) — an unset key falls back to the migrated legacy flag instead
+    # (roadmap_engine_enabled / x_engine_enabled+x_feature_spotlight_enabled).
+    "board_program.roadmap.enabled": _validate_bool,
+    "board_program.x_feature.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

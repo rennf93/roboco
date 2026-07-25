@@ -177,6 +177,7 @@ export const projectsApi = {
         monthly_budget_usd: null,
         sandbox_services: null,
         sandbox_extensions: null,
+        board_programs: null,
         workspace_path: null,
         last_synced_at: null,
         head_commit: null,

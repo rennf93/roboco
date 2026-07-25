@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from roboco.foundation.policy.board_programs import PROGRAMS, project_participates
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
@@ -97,6 +98,7 @@ class RoadmapService(BaseService):
         item["materialized_task_id"] = str(new_task.id)
         markers.set_roadmap_cycle(task, payload)
         self._maybe_complete_cycle(task, payload)
+        await self._record_learn(task, item_id, "approved")
         await self.session.flush()
         return RoadmapItemResult(
             status="approved",
@@ -135,6 +137,7 @@ class RoadmapService(BaseService):
         item["reject_reason"] = reason
         markers.set_roadmap_cycle(task, payload)
         self._maybe_complete_cycle(task, payload)
+        await self._record_learn(task, item_id, "rejected", reason)
         await self.session.flush()
         return RoadmapItemResult(
             status="rejected",
@@ -182,6 +185,14 @@ class RoadmapService(BaseService):
         )
         if project is None or project.id is None:
             raise ValueError(f"unknown project slug: {item['project_slug']!r}")
+        if not project_participates(PROGRAMS["roadmap"], project.board_programs):
+            self.log.warning(
+                "roadmap: materialize skipped — project excluded (!roadmap)",
+                project_slug=item["project_slug"],
+            )
+            raise ValueError(
+                f"project {item['project_slug']!r} is excluded from the roadmap program"
+            )
         draft = {
             "title": item["title"],
             "objective": item["description"],
@@ -215,6 +226,29 @@ class RoadmapService(BaseService):
                 agent_role=None,
                 audit_agent_id=None,
             )
+
+    async def _record_learn(
+        self, task: TaskTable, item_id: str, verdict: str, reason: str | None = None
+    ) -> None:
+        """Best-effort LEARN: a record_decision failure must never break the
+        CEO's approve/reject — mirrors the vault-writer best-effort seams.
+
+        Targets ``task`` (this exploration task) by id — exact attribution
+        even when a newer cycle for "roadmap" has since opened, unlike
+        ``record_decision``'s most-recent fallback.
+        """
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            await get_board_program_engine(self.session).record_decision(
+                "roadmap",
+                item_id,
+                verdict,
+                reason,
+                exploration_task_id=cast("UUID", task.id),
+            )
+        except Exception:
+            self.log.warning("roadmap: LEARN record_decision failed (best-effort)")
 
 
 def get_roadmap_service(session: AsyncSession) -> RoadmapService:

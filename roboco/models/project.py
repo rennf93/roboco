@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from pydantic import Field, field_validator
 
+from roboco.foundation.policy.board_programs import validate_board_programs_field
 from roboco.models.base import RobocoBase, Team, TimestampMixin
 from roboco.models.env_branches import normalize_environments
 from roboco.models.sandbox import (
@@ -291,6 +292,25 @@ class Project(TimestampMixin):
     ) -> dict[str, list[str]] | None:
         return _normalize_sandbox_extensions(v)
 
+    # Board Program per-project scoping (Task 6b). A project-scoped program
+    # key opts this project INTO its cycles; an org-scoped key prefixed "!"
+    # opts this project OUT of its output. Null = parity default (no
+    # project-scoped participation, no org-scoped exclusion).
+    board_programs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Board Program scoping: a plain program key opts this project "
+            "into a project-scoped program's cycles; a '!'-prefixed org-"
+            "scoped key excludes this project from that program's output. "
+            "Null = participates in nothing, excluded from nothing."
+        ),
+    )
+
+    @field_validator("board_programs")
+    @classmethod
+    def _check_board_programs(cls, v: list[str] | None) -> list[str] | None:
+        return validate_board_programs_field(v)
+
     # Metadata
     created_by: UUID = Field(..., description="PM who registered the project")
     is_active: bool = Field(default=True, description="Whether project is active")
@@ -375,6 +395,7 @@ class ProjectUpdate(RobocoBase):
     monthly_budget_usd: float | None = Field(default=None, gt=0)
     sandbox_services: list[str] | None = None
     sandbox_extensions: dict[str, list[str]] | None = None
+    board_programs: list[str] | None = None
     github_installation_id: int | None = Field(
         default=None,
         description="GitHub App installation id covering this repo (see Project).",
@@ -391,6 +412,11 @@ class ProjectUpdate(RobocoBase):
         cls, v: dict[str, list[str]] | None
     ) -> dict[str, list[str]] | None:
         return _normalize_sandbox_extensions(v)
+
+    @field_validator("board_programs")
+    @classmethod
+    def _check_board_programs(cls, v: list[str] | None) -> list[str] | None:
+        return validate_board_programs_field(v)
 
     @field_validator("environments")
     @classmethod

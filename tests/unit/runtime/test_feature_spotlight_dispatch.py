@@ -189,3 +189,41 @@ def test_feature_spotlight_prompt_brief_fallbacks_when_marker_missing() -> None:
     prompt = orch._build_feature_spotlight_prompt(_feature_task())
     assert "nothing new since the last cycle" in prompt
     assert "(none)" in prompt
+
+
+def test_feature_spotlight_prompt_omits_prior_cycles_section_when_empty() -> None:
+    orch = _make_orch()
+    prompt = orch._build_feature_spotlight_prompt(_feature_task())
+    assert "## Prior cycles" not in prompt
+
+
+def test_feature_spotlight_prompt_renders_prior_cycles_when_given() -> None:
+    orch = _make_orch()
+    prompt = orch._build_feature_spotlight_prompt(
+        _feature_task(), "proposed 1, approved 0; rejected: org-memory — too soon"
+    )
+    assert "## Prior cycles" in prompt
+    assert "proposed 1, approved 0; rejected: org-memory — too soon" in prompt
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_dispatch_injects_prior_context_into_prompt() -> None:
+    """The dispatcher fetches LEARN context (best-effort) and threads it into
+    the prompt builder — proving the wiring, not just the builder in
+    isolation."""
+    orch = _make_orch()
+    task = _feature_task()
+    with (
+        patch.object(orch, "_is_agent_active", return_value=False),
+        patch.object(orch, "_task_git_context", return_value=None),
+        patch.object(
+            orch,
+            "_board_program_prior_context",
+            AsyncMock(return_value="proposed 1, approved 1"),
+        ),
+        patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
+    ):
+        await orch._dispatch_feature_spotlight_exploration(task)
+
+    prompt = spawn.await_args_list[0].kwargs["initial_prompt"]
+    assert "proposed 1, approved 1" in prompt

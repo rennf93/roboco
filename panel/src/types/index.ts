@@ -1075,6 +1075,11 @@ export interface Project {
   monthly_spend_usd?: number | null;
   sandbox_services: string[] | null;
   sandbox_extensions: Record<string, string[]> | null;
+  // Board Program per-project scoping: a plain program key opts this project
+  // INTO that project-scoped program's cycles; a '!'-prefixed org-scoped key
+  // excludes this project from that program's output. Null = default
+  // (participates in nothing, excluded from nothing).
+  board_programs: string[] | null;
   // Runtime state
   workspace_path: string | null;
   last_synced_at: string | null;
@@ -1141,6 +1146,7 @@ export interface ProjectUpdate {
   monthly_budget_usd?: number | null;
   sandbox_services?: string[];
   sandbox_extensions?: Record<string, string[]>;
+  board_programs?: string[];
 }
 
 export interface ProjectTaskCounts {

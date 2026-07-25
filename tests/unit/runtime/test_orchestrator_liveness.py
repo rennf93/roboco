@@ -23,7 +23,6 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 _CI_WATCH_INTERVAL = 0.01
 _VIDEO_RENDER_INTERVAL = 0.05
 _X_MENTIONS_INTERVAL = 0.04
-_ROADMAP_INTERVAL = 0.06
 
 
 def _orch() -> Any:
@@ -199,23 +198,22 @@ async def test_x_mentions_loop_records_heartbeat(
 
 
 @pytest.mark.asyncio
-async def test_roadmap_engine_loop_records_heartbeat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The roadmap-engine loop records under its canonical name + interval —
-    guards against copy-paste name drift on the heartbeat calls."""
+async def test_board_program_loop_records_heartbeat() -> None:
+    """The board-program loop (replaces roadmap-engine/x-feature-spotlight)
+    records under its canonical name + interval — guards against copy-paste
+    name drift on the heartbeat calls. See test_board_program_loop.py for
+    the rest of this loop's coverage (interval computation, tick-error
+    isolation)."""
     orch = _orch()
-    monkeypatch.setattr(settings, "roadmap_engine_enabled", True)
-    monkeypatch.setattr(settings, "roadmap_interval_seconds", 0.06)
 
     async def _stop_after_cycle() -> None:
         orch._running = False
 
-    orch._run_roadmap_engine_cycle = AsyncMock(side_effect=_stop_after_cycle)
+    orch._run_board_program_cycle = AsyncMock(side_effect=_stop_after_cycle)
 
     with patch("asyncio.sleep", new=AsyncMock()):
-        await orch._roadmap_engine_loop()
+        await orch._board_program_loop()
 
-    assert "roadmap_engine" in orch._loop_heartbeats
-    _, interval = orch._loop_heartbeats["roadmap_engine"]
-    assert interval == _ROADMAP_INTERVAL
+    assert "board_program" in orch._loop_heartbeats
+    _, interval = orch._loop_heartbeats["board_program"]
+    assert interval == orch._board_program_interval_seconds()

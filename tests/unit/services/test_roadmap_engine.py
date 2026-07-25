@@ -13,13 +13,25 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+import pytest_asyncio
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import (
+    AgentTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    SystemSettingTable,
+    TaskTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services.roadmap_engine import RoadmapEngine
-from roboco.services.task import ROADMAP_SOURCE, get_task_service
+from roboco.services.task import (
+    ROADMAP_SOURCE,
+    X_FEATURE_EXPLORATION_SOURCE,
+    get_task_service,
+)
+from sqlalchemy import delete, update
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +40,28 @@ SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
 SLUG = "roboco"
 ONE = 1
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
+    """See ``test_board_program_engine.py``'s identical fixture: Board
+    Program settings-store rows / ledger rows / open exploration tasks are
+    shared, cross-test-persistent DB state that a sibling suite (this
+    module's own tests, or the write-route ``test_board_programs_api.py``
+    run-now test) can leave behind. Purge before every test in this file."""
+    await db_session.execute(
+        delete(SystemSettingTable).where(SystemSettingTable.key.like("board_program.%"))
+    )
+    await db_session.execute(delete(BoardProgramCycleTable))
+    await db_session.execute(
+        update(TaskTable)
+        .where(
+            TaskTable.source.in_([ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE]),
+            TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
+        )
+        .values(status=TS.CANCELLED)
+    )
+    await db_session.commit()
 
 
 async def _seed(session: AsyncSession) -> None:
@@ -114,6 +148,38 @@ async def test_dedupe_one_open_cycle(
     second = await RoadmapEngine(db_session).run_cycle()
     assert second is None
     assert len(await get_task_service(db_session).list_open_roadmap_cycles()) == ONE
+
+
+@pytest.mark.asyncio
+async def test_settings_store_true_overrides_legacy_false(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The double-flag regression this guards: a settings-store True must
+    win over a False legacy flag, not be silently overridden by it."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "roadmap_engine_enabled", False)
+    monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.roadmap.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = RoadmapEngine(db_session)
+    assert await engine.run_cycle() is not None
+
+
+@pytest.mark.asyncio
+async def test_settings_store_false_overrides_legacy_true(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch)
+    db_session.add(
+        SystemSettingTable(key="board_program.roadmap.enabled", value="false")
+    )
+    await db_session.flush()
+    engine = RoadmapEngine(db_session)
+    assert await engine.run_cycle() is None
+    assert await get_task_service(db_session).list_open_roadmap_cycles() == []
 
 
 @pytest.mark.asyncio
