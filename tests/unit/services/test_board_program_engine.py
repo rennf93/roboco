@@ -50,6 +50,7 @@ from roboco.services.task import (
     ROADMAP_SOURCE,
     SCALES_SOURCE,
     SENTINEL_SOURCE,
+    WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     TaskCreateRequest,
     get_task_service,
@@ -96,6 +97,7 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     SCALES_SOURCE,
                     MEGAPHONE_SOURCE,
                     LIBRARIAN_SOURCE,
+                    WAR_ROOM_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -475,6 +477,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["scales"].source == SCALES_SOURCE
     assert PROGRAMS["megaphone"].source == MEGAPHONE_SOURCE
     assert PROGRAMS["librarian"].source == LIBRARIAN_SOURCE
+    assert PROGRAMS["war_room"].source == WAR_ROOM_SOURCE
 
 
 @pytest.mark.asyncio
@@ -504,6 +507,81 @@ async def test_run_due_programs_never_opens_coroner_even_when_armed(
     engine = BoardProgramEngine(db_session)
     opened = await engine.run_due_programs()
     assert "coroner" not in opened
+
+
+def _patch_war_room_originator(
+    monkeypatch: pytest.MonkeyPatch, holder: dict[str, TaskTable | None]
+) -> None:
+    monkeypatch.setitem(bp_module._ORIGINATORS, "war_room", _fake_originator(holder))
+
+
+@pytest.mark.asyncio
+async def test_war_room_originator_is_real_unarmed_no_op(
+    db_session: AsyncSession,
+) -> None:
+    """Unlike Coroner's always-None ``_originate_coroner`` stub, War Room's
+    ``_ORIGINATORS["war_room"]`` entry genuinely calls into
+    ``WarRoomEngine.run_cycle`` — proven by NOT patching it here: it returns
+    None because the program isn't armed in this bare session, a real
+    arming decision (see test_war_room_engine.py for the engine's own full
+    arm/creds/dedup coverage), not a hardcoded stub."""
+    assert await bp_module._ORIGINATORS["war_room"](db_session) is None
+
+
+@pytest.mark.asyncio
+async def test_run_due_programs_never_opens_war_room_even_when_armed(
+    db_session: AsyncSession,
+) -> None:
+    """EVENT programs are opened only by their own hooks, never the loop —
+    ``run_due_programs`` must skip ``war_room`` entirely regardless of
+    arming. War Room's originator is REAL (unlike coroner's stub), so this
+    specifically proves the trigger-kind guard in ``run_due_programs``
+    itself — not an originator that happens to no-op."""
+    db_session.add(
+        SystemSettingTable(key="board_program.war_room.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert "war_room" not in opened
+
+
+@pytest.mark.asyncio
+async def test_open_program_cycle_drives_war_room_via_real_originator(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE run-now-works-for-EVENT proof: ``open_program_cycle`` never
+    checks trigger kind at all, so once war_room is armed + dedup-clear it
+    genuinely originates through the REAL ``_ORIGINATORS["war_room"]``
+    entry — unlike coroner, whose run-now would 409 forever (its originator
+    is a stub that always returns None)."""
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
+    db_session.add(
+        SystemSettingTable(key="board_program.war_room.enabled", value="true")
+    )
+    new_task = await _make_exploration(db_session, source=WAR_ROOM_SOURCE)
+    holder: dict[str, TaskTable | None] = {"task": new_task}
+    _patch_war_room_originator(monkeypatch, holder)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    task = await engine.open_program_cycle("war_room")
+    assert task is not None
+    assert task.id == new_task.id
+
+    rows = (
+        (
+            await db_session.execute(
+                select(BoardProgramCycleTable).where(
+                    BoardProgramCycleTable.program_key == "war_room"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == ONE
 
 
 # ---------------------------------------------------------------------------

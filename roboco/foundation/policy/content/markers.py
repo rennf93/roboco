@@ -46,6 +46,7 @@ X_EDITORIAL_REF = "x_editorial_ref"
 X_SEEN_FEATURES = "x_seen_features"
 X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
 X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
+X_CAMPAIGN_REF = "x_campaign_ref"
 ROADMAP_CYCLE = "roadmap_cycle"
 PEST_HUNT = "pest_hunt"
 MARKET_BRIEF = "market_brief"
@@ -62,6 +63,7 @@ VAULT_NOTE_REF = "vault_note_ref"
 DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
 REBALANCE_PLAN = "rebalance_plan"
 PLAYBOOK_DRAFTS = "playbook_drafts"
+WAR_ROOM_BRIEF = "war_room_brief"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -271,6 +273,15 @@ def set_x_spotlight_skip_reason(task: HasMarkers, reason: str) -> None:
     set_marker(task, X_SPOTLIGHT_SKIP_REASON, reason)
 
 
+def get_x_campaign_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_CAMPAIGN_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_campaign_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_CAMPAIGN_REF, ref)
+
+
 # --- board roadmap cycle ---------------------------------------------------
 # The themed cycle (goal + item drafts) the Product Owner authors via
 # ``propose_roadmap`` onto the exploration task the roadmap engine opened.
@@ -437,6 +448,23 @@ def get_playbook_drafts(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_playbook_drafts(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, PLAYBOOK_DRAFTS, payload)
+
+
+# --- War Room campaign brief -------------------------------------------------
+# The exploration task's starting context, stamped once at origination by
+# ``WarRoomEngine``: {version, highlights} when opened by the release-publish
+# hook, or {} when opened on-demand (a CEO "run now" call with no release to
+# anchor to — the Head of Marketing designs a brief-less campaign). Read-only
+# after that; ``propose_campaign`` never mutates it.
+
+
+def get_war_room_brief(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, WAR_ROOM_BRIEF)
+    return val if isinstance(val, dict) else None
+
+
+def set_war_room_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, WAR_ROOM_BRIEF, payload)
 
 
 # --- video draft ------------------------------------------------------------

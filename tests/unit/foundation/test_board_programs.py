@@ -148,9 +148,35 @@ def test_registry_carries_librarian() -> None:
     assert p.default_interval_seconds == 2 * WEEK_SECONDS
 
 
-def test_registry_carries_eleven_programs() -> None:
+_WAR_ROOM_MAX_POSTS_PER_CAMPAIGN = 6
+
+
+def test_registry_carries_war_room() -> None:
+    wr = PROGRAMS["war_room"]
+    assert wr.role == "head_marketing"
+    assert wr.source == "board_war_room"
+    assert wr.trigger is TriggerKind.EVENT
+    assert wr.scope == "org"
+    assert wr.max_items_per_cycle == _WAR_ROOM_MAX_POSTS_PER_CAMPAIGN
+
+
+def test_war_room_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_coroner_is_never_cron_due.
+    Unlike Coroner, War Room's ``_ORIGINATORS`` entry is a REAL originator
+    (see test_board_program_engine.py), so this test is what actually proves
+    the loop still never drives it — the trigger-kind guard, not a stub."""
+    assert not program_due(
+        PROGRAMS["war_room"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
+def test_registry_carries_twelve_programs() -> None:
     """Locks the union so a future addition/removal is deliberate — matches
-    the count-whatever-your-base-has-plus-librarian shape the other
+    the count-whatever-your-base-has-plus-war_room shape the other
     registry-parity tests already exercise per-key."""
     assert set(PROGRAMS) == {
         "roadmap",
@@ -164,6 +190,7 @@ def test_registry_carries_eleven_programs() -> None:
         "mirror",
         "megaphone",
         "librarian",
+        "war_room",
     }
 
 

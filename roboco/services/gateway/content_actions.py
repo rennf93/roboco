@@ -459,6 +459,16 @@ _MESSAGING_FIX_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
 )
 _MESSAGING_FIX_EVIDENCE_MAX_CHARS = 2000
 
+# War Room (Board Program) campaigns are HoM-authored, mirroring
+# _FEATURE_SPOTLIGHT_ROLES/_PERISCOPE_ROLES.
+_WAR_ROOM_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_CAMPAIGN_STAGE_LABELS: frozenset[str] = frozenset(
+    {"teaser", "launch", "follow_up", "spotlight", "other"}
+)
+_CAMPAIGN_NAME_MAX_CHARS = 100
+_CAMPAIGN_MIN_POSTS = 2
+_CAMPAIGN_MAX_POSTS = 6
+
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 # The Auditor is deliberately NOT in this set — "auditor curates but does not
 # draft" is an enforced invariant (test_playbook_verbs.py). A Coroner
@@ -3507,6 +3517,259 @@ class ContentActions:
             logger.warning(
                 "sentinel telegram notify failed (best-effort)", error=str(exc)
             )
+
+    @classmethod
+    def _reject_campaign_name(cls, campaign_name: str) -> Envelope | None:
+        if rej := cls._reject_soup(campaign_name, field="campaign_name", min_chars=3):
+            return rej
+        if len(campaign_name) > _CAMPAIGN_NAME_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"campaign_name is {len(campaign_name)} chars, over the "
+                    f"{_CAMPAIGN_NAME_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten campaign_name",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_campaign_post_body(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_campaign_post`` to keep its own
+        return-statement count under the xenon/PLR0911 budget."""
+        body = raw.get("body")
+        if not isinstance(body, str) or not body.strip():
+            return Envelope.invalid_state(
+                message=f"post {idx} is missing 'body'",
+                remediate=f"provide the tweet text for post {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(body, field=f"post {idx} body", min_chars=8):
+            return rej
+        if len(body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"post {idx} body is {len(body)} chars, over the "
+                    f"{MAX_TWEET_CHARS}-char tweet limit"
+                ),
+                remediate=(
+                    f"shorten post {idx} to {MAX_TWEET_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_campaign_post_stage(raw: dict[str, Any], idx: int) -> Envelope | None:
+        stage = raw.get("stage_label")
+        if not isinstance(stage, str) or stage.strip() not in _CAMPAIGN_STAGE_LABELS:
+            return Envelope.invalid_state(
+                message=(
+                    f"post {idx} stage_label must be one of "
+                    f"{sorted(_CAMPAIGN_STAGE_LABELS)}"
+                ),
+                remediate=(
+                    f"set post {idx}'s stage_label to one of "
+                    f"{sorted(_CAMPAIGN_STAGE_LABELS)}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_campaign_post_timing(
+        raw: dict[str, Any], idx: int, previous: datetime | None
+    ) -> tuple[Envelope | None, Any]:
+        """Parse + validate one post's ``publish_after``: a real ISO 8601
+        datetime, strictly in the future at propose time, and strictly after
+        the previous item's (ascending order across the campaign — spec §4's
+        teaser -> launch -> follow-up -> spotlight arc). Returns
+        ``(rejection, parsed)`` — a non-None rejection means ``parsed`` is
+        unusable; the caller threads the clean ``parsed`` value into the NEXT
+        item's ascending-order check."""
+        value = raw.get("publish_after")
+        if not isinstance(value, str) or not value.strip():
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} is missing 'publish_after'",
+                    remediate=(
+                        f"provide post {idx}'s recommended publish time as an "
+                        "ISO 8601 datetime"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"post {idx} publish_after {value!r} is not a valid "
+                        "ISO 8601 datetime"
+                    ),
+                    remediate=(
+                        f"provide post {idx}'s publish_after as an ISO 8601 "
+                        "datetime, e.g. '2026-08-01T09:00:00+00:00'"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if parsed <= datetime.now(UTC):
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} publish_after {value!r} is not in the future",
+                    remediate=f"post {idx}'s publish_after must be a future timestamp",
+                    context_briefing={},
+                ),
+                None,
+            )
+        if previous is not None and parsed <= previous:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"post {idx} publish_after must be strictly after post "
+                        f"{idx - 1}'s — campaign posts run in ascending order"
+                    ),
+                    remediate=(
+                        f"push post {idx}'s publish_after later than post {idx - 1}'s"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        return None, parsed
+
+    @classmethod
+    def _reject_campaign_post(
+        cls, raw: Any, idx: int, previous: datetime | None
+    ) -> tuple[Envelope | None, Any]:
+        """Validate one raw campaign-post dict; ``(None, parsed_publish_after)``
+        when clean."""
+        if not isinstance(raw, dict):
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} is not an object",
+                    remediate=(
+                        "each post must be an object with body/publish_after/"
+                        "stage_label"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        if rej := cls._reject_campaign_post_body(raw, idx):
+            return rej, None
+        if rej := cls._reject_campaign_post_stage(raw, idx):
+            return rej, None
+        return cls._reject_campaign_post_timing(raw, idx, previous)
+
+    async def propose_campaign(
+        self,
+        *,
+        agent_id: UUID,
+        campaign_name: str,
+        posts: list[dict[str, Any]],
+    ) -> Envelope:
+        """Head of Marketing authors ONE War Room campaign — an ordered set
+        of 2-6 held X drafts (teaser -> launch -> follow-up -> spotlight),
+        each carrying a recommended ``publish_after`` timestamp.
+
+        V1 is manual-cadence (spec, 2026-07-24, pinned by the orchestrating
+        session): ``publish_after`` is GUIDANCE rendered in the panel queue,
+        never a schedule anything acts on — the CEO approves each draft at
+        its own moment, exactly like every other X-queue draft ("nothing
+        auto-posts" stays absolute; see ``WarRoomEngine``'s module docstring
+        for the documented auto-schedule ceiling, not built here). Call this
+        exactly once per cycle: it materializes every post (via
+        ``XEngine.materialize_campaign_post``) and completes the exploration
+        task in the same call — mirrors ``propose_market_brief``'s
+        complete-at-propose shape, batched over N posts.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _WAR_ROOM_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a campaign; only the "
+                    "Head of Marketing authors one"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_campaign_name(campaign_name):
+            return rej
+        if not (_CAMPAIGN_MIN_POSTS <= len(posts) <= _CAMPAIGN_MAX_POSTS):
+            return Envelope.invalid_state(
+                message=(
+                    f"a campaign needs {_CAMPAIGN_MIN_POSTS}-"
+                    f"{_CAMPAIGN_MAX_POSTS} ordered posts, got {len(posts)}"
+                ),
+                remediate=(
+                    f"propose between {_CAMPAIGN_MIN_POSTS} and "
+                    f"{_CAMPAIGN_MAX_POSTS} posts"
+                ),
+                context_briefing={},
+            )
+        name = campaign_name.strip()
+        normalized: list[dict[str, Any]] = []
+        previous: datetime | None = None
+        for idx, raw in enumerate(posts):
+            rejection, parsed = self._reject_campaign_post(raw, idx, previous)
+            if rejection is not None:
+                return rejection
+            previous = parsed
+            normalized.append(
+                {
+                    "body": str(raw["body"]).strip(),
+                    "campaign_name": name,
+                    "stage_label": str(raw["stage_label"]).strip(),
+                    "publish_after": parsed.isoformat(),
+                    "sequence": idx + 1,
+                }
+            )
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_war_room_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open war-room exploration task assigned to you",
+                remediate=(
+                    "propose_campaign only runs against an active exploration "
+                    "cycle spawned by the War Room engine; wait for the next "
+                    "cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        for item in normalized:
+            await engine.materialize_campaign_post(
+                exploration_task=task,
+                campaign_ref={
+                    "campaign_name": item["campaign_name"],
+                    "stage_label": item["stage_label"],
+                    "publish_after": item["publish_after"],
+                    "sequence": item["sequence"],
+                },
+                body=item["body"],
+            )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="campaign_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each post in the X post queue",
+            context_briefing={"campaign_name": name, "post_count": len(normalized)},
+        )
 
     @classmethod
     def _reject_caption(

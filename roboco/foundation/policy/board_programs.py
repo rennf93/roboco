@@ -170,6 +170,22 @@ PROGRAMS: dict[str, BoardProgram] = {
             # one repo — no per-project opt-in gate, mirrors sentinel/periscope.
             scope="org",
         ),
+        BoardProgram(
+            key="war_room",
+            role="head_marketing",
+            trigger=TriggerKind.EVENT,
+            source="board_war_room",
+            # EVENT programs are never cron-due (see program_due below) — this
+            # is a harmless placeholder, not a live cadence. War Room's cycles
+            # open only via the release-publish hook or a CEO "run now" call,
+            # never the loop.
+            default_interval_seconds=WEEK_SECONDS,
+            max_items_per_cycle=6,  # a campaign's post cap (2-6, spec §4)
+            # Org-scoped (spec §4): a campaign is about a release or an
+            # on-demand marketing push, not one repo's own state — no
+            # per-project opt-in gate.
+            scope="org",
+        ),
     )
 }
 

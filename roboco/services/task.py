@@ -677,7 +677,20 @@ X_FEATURE_SOURCE = "x_feature"
 # materializer IS the existing X held-draft queue, zero new approval surface.
 X_EDITORIAL_SOURCE = "x_editorial"
 
-X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE, X_EDITORIAL_SOURCE)
+# Source tag for one ordered post materialized from a War Room (Board Program)
+# campaign — teaser/launch/follow_up/spotlight, each carrying its own
+# publish_after guidance (x_campaign_ref marker). Added to X_SOURCES so it
+# inherits every existing consumer (XPostService, list_open_x_posts, the
+# PM-dispatcher's held-source skip) for free, mirroring X_FEATURE_SOURCE.
+X_CAMPAIGN_SOURCE = "x_campaign"
+
+X_SOURCES = (
+    X_POST_SOURCE,
+    X_REPLY_SOURCE,
+    X_FEATURE_SOURCE,
+    X_EDITORIAL_SOURCE,
+    X_CAMPAIGN_SOURCE,
+)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
@@ -750,6 +763,17 @@ CORONER_SOURCE = "board_coroner"
 # MUTATES a live one (reprioritize) or cancels it, so there is no separate
 # "materialized item" source.
 SCALES_SOURCE = "board_scales"
+
+# Source tag for a War Room (Board Program) campaign-planning exploration: a
+# PENDING task the War Room engine opens for the Head of Marketing to design
+# an ordered campaign (teaser -> launch -> follow-up -> spotlight) and author
+# it via the ``propose_campaign`` content verb. EVENT-triggered (spec §4:
+# release-publish or a CEO "run now" call, never a cron cadence) and, like
+# CORONER_SOURCE/PERISCOPE_SOURCE, complete-at-propose: one call materializes
+# every post and completes the task in the same step — no separate
+# materialized-item source exists (each post lands directly under
+# X_CAMPAIGN_SOURCE in roboco.services.x_engine).
+WAR_ROOM_SOURCE = "board_war_room"
 
 # Coroner's bounce trigger (spec §4): a task that has bounced this many times
 # into needs_revision gets one autopsy attempt.
@@ -2277,6 +2301,23 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == LIBRARIAN_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_war_room_cycles(self) -> list[TaskTable]:
+        """Non-terminal War Room campaign-planning exploration tasks — the
+        one-open-campaign-at-a-time dedup basis. Mirrors
+        ``list_open_coroner_cycles``: complete-at-propose (``propose_campaign``
+        completes the task atomically), so this is purely the dedup gate, not
+        also a panel-queue basis — the materialized posts themselves live
+        under X_CAMPAIGN_SOURCE and ride the normal X post queue."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == WAR_ROOM_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

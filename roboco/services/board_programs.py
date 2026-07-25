@@ -124,13 +124,28 @@ async def _originate_librarian(session: AsyncSession) -> TaskTable | None:
     return await get_librarian_engine(session).run_cycle()
 
 
+async def _originate_war_room(session: AsyncSession) -> TaskTable | None:
+    """War Room's ``_ORIGINATORS`` binding — a REAL originator, unlike
+    ``_originate_coroner``'s always-None stub. War Room is EVENT-triggered
+    same as Coroner (``run_due_programs`` never calls this — see the
+    trigger-kind guard there), but its "run now" / CEO on-demand path
+    (``BoardProgramEngine.open_program_cycle``, which does NOT check trigger
+    kind) genuinely drives a fresh blank-brief cycle through
+    ``WarRoomEngine.run_cycle``. The release-publish hook bypasses this dict
+    entirely via ``WarRoomEngine.open_for_release`` (mirrors
+    ``CoronerEngine.open_for_incident``)."""
+    from roboco.services.war_room_engine import get_war_room_engine
+
+    return await get_war_room_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
 # PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE,
-# SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE, LIBRARIAN_SOURCE) so the
-# two can't drift.
+# SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE, LIBRARIAN_SOURCE,
+# WAR_ROOM_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
@@ -143,6 +158,7 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "mirror": _originate_mirror,
     "megaphone": _originate_megaphone,
     "librarian": _originate_librarian,
+    "war_room": _originate_war_room,
 }
 
 

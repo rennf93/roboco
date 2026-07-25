@@ -273,6 +273,7 @@ class ReleaseProposalService(BaseService):
                 # below are best-effort side effects; the caller commits them.
                 await self.session.commit()
                 await self._draft_x_post(report, release_project_id)
+                await self._draft_war_room(report, release_project_id)
                 await self._draft_video(report, release_project_id)
                 await self._draft_docs_update(report)
             return result
@@ -306,6 +307,34 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("x-post draft failed (best-effort): %s", exc)
+
+    async def _draft_war_room(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
+        """Hand the just-published release to the War Room engine for a held
+        campaign-planning exploration (best-effort — never raises into
+        approve(); an origination failure must not affect the release's
+        already-succeeded publish). Off/no-creds/dedup-blocked is itself a
+        no-op inside the engine (``WarRoomEngine.open_for_release``), mirrors
+        ``_draft_x_post``. Reuses the same curated highlights as the release
+        post so the campaign's brief and the announcement tweet never
+        disagree on what shipped."""
+        try:
+            from roboco.services.war_room_engine import get_war_room_engine
+            from roboco.services.x_engine import changelog_highlights
+
+            highlights = changelog_highlights(report.drafted_changelog) or list(
+                report.change_summary
+            )
+            await get_war_room_engine(self.session).open_for_release(
+                version=report.proposed_version,
+                highlights=highlights,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "war-room campaign origination failed (best-effort): %s", exc
+            )
 
     async def _draft_video(
         self, report: ReleaseReadinessReport, project_id: UUID | None

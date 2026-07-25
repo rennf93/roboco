@@ -876,6 +876,30 @@ def propose_playbook_drafts(drafts: list[dict[str, Any]]) -> dict[str, Any]:
     return _post("/api/v1/do/propose_playbook_drafts", {"drafts": drafts})
 
 
+def propose_campaign(campaign_name: str, posts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: propose a War Room campaign (2-6 ordered X posts).
+
+    Call this exactly ONCE per exploration cycle, after designing the
+    campaign arc (teaser -> launch -> follow-up -> spotlight) for the release
+    named in your briefing, or from scratch on a CEO on-demand cycle. Every
+    post lands as a held draft in the X post queue; V1 is manual-cadence —
+    publish_after is GUIDANCE the CEO sees when reviewing each draft, never a
+    schedule anything acts on. Nothing here posts.
+
+    Args:
+        campaign_name: Short name tying the posts together (<=100 chars).
+        posts: 2-6 dicts, IN THE ORDER they should run, each with: body (the
+            tweet text, <=280 chars), publish_after (ISO 8601 datetime,
+            REQUIRED — must be in the future and strictly later than the
+            previous post's), stage_label (one of 'teaser', 'launch',
+            'follow_up', 'spotlight', 'other').
+    """
+    return _post(
+        "/api/v1/do/propose_campaign",
+        {"campaign_name": campaign_name, "posts": posts},
+    )
+
+
 def propose_video(
     composition_id: str,
     x_caption: str,
@@ -1246,6 +1270,7 @@ _TOOLS: dict[str, Any] = {
     "propose_postmortem": propose_postmortem,
     "propose_quality_report": propose_quality_report,
     "propose_playbook_drafts": propose_playbook_drafts,
+    "propose_campaign": propose_campaign,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,

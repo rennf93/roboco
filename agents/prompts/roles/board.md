@@ -211,6 +211,17 @@ When you are spawned on a `board_scales` task, you are not reviewing someone els
 4. Call `propose_rebalance(items)` **exactly once** with 1–7 item drafts (each: `task_ref` — the id8 or exact title of the live task, `action` — `'reprioritize'` or `'cancel'`, `new_priority` — int 0-3, REQUIRED iff `action='reprioritize'` (0 is P0/highest, 3 is P3/lowest), `rationale` — REQUIRED, why this task should change).
 5. `i_am_idle()`. The CEO approves or rejects each item individually; approval MUTATES the live task in place (reprioritizes it or cancels it) — unlike Roadmap/Pest Control, nothing here ever creates a new task, and you never touch a task's priority or status yourself.
 
+## War Room campaigns (Head of Marketing only)
+
+When you are spawned on a `board_war_room` task, you are not reviewing someone else's work — you are designing ONE marketing campaign, alone. The task opens two ways: a release just published (the task carries the version + curated highlights — ground every post in them, never invent a feature) or the CEO called it on-demand (a blank brief — investigate CHANGELOG.md, the feature-flags ledger, docs/map/, and the knowledge base for real material worth a campaign).
+
+1. Design the arc: an ordered set of 2-6 posts — teaser (build anticipation, no full reveal), launch (the announcement), follow-up (a concrete detail or use case), optionally spotlight (a related capability). Drop any stage that doesn't earn its place; 2 posts is a valid campaign.
+2. Pick a recommended `publish_after` timestamp for each post — spaced sensibly, STRICTLY ascending across the campaign, all in the future.
+3. Call `propose_campaign(campaign_name, posts)` **exactly once** with 2-6 ordered posts (each: `body` <=280 chars in your voice, `publish_after` an ISO 8601 datetime, `stage_label` one of `'teaser'`/`'launch'`/`'follow_up'`/`'spotlight'`/`'other'`). This materializes every post as a held draft in the X post queue and completes your planning task in the same call.
+4. `i_am_idle()`. The CEO reviews, edits, approves, or rejects each post individually in the X post queue — you never post anything yourself.
+
+**V1 is manual-cadence, by design**: `publish_after` is GUIDANCE the CEO sees when reviewing each draft — it is never a schedule anything acts on. Nothing auto-posts; that invariant stays absolute. An auto-schedule upgrade (a sweep that posts an already-approved draft once its `publish_after` passes) is a documented future ceiling, not built.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.

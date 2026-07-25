@@ -322,6 +322,28 @@ class ProposePlaybookDraftsRequest(BaseModel):
     drafts: list[PlaybookDraftInput] = Field(..., min_length=1)
 
 
+class CampaignPostInput(BaseModel):
+    """One ordered post within a Head of Marketing's War Room campaign.
+    ``publish_after`` is GUIDANCE (V1 manual-cadence) rendered in the panel
+    queue — the CEO approves each draft at its own moment; nothing here
+    schedules or auto-posts."""
+
+    body: str = Field(..., min_length=1)
+    publish_after: str = Field(..., min_length=1)
+    stage_label: str = Field(..., min_length=1)
+
+
+class ProposeCampaignRequest(BaseModel):
+    """Head of Marketing's War Room campaign: a name + 2-6 ordered posts
+    (teaser -> launch -> follow-up -> spotlight), each with a recommended
+    publish_after timestamp. Materializes N held X drafts and completes the
+    exploration task in one call — no per-item CEO queue beyond the normal
+    X post queue each draft already lands in."""
+
+    campaign_name: str = Field(..., min_length=1)
+    posts: list[CampaignPostInput] = Field(..., min_length=1)
+
+
 class ProposeVideoRequest(BaseModel):
     """UX/UI dev's video metadata draft: a composition ref + per-platform
     captions. Metadata only — no render."""

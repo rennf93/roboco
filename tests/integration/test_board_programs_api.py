@@ -34,13 +34,16 @@ from roboco.services.task import (
     SCALES_SOURCE,
     SENTINEL_SOURCE,
     SPACKLE_SOURCE,
+    WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
 )
+from roboco.services.x_credentials import get_x_credentials_service
 from sqlalchemy import delete, update
 
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
+HOM_UUID = _foundation.AGENTS["head-marketing"].uuid
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -53,6 +56,7 @@ async def _seed_agents(session: AsyncSession) -> None:
         (CEO_UUID, "ceo", AgentRole.CEO),
         (SYSTEM_UUID, "system", AgentRole.SYSTEM),
         (PO_UUID, "product-owner", AgentRole.PRODUCT_OWNER),
+        (HOM_UUID, "head-marketing", AgentRole.HEAD_MARKETING),
     ):
         if await session.get(AgentTable, uuid) is not None:
             continue
@@ -110,6 +114,43 @@ async def _arm_roadmap(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -
     await session.flush()
 
 
+async def _arm_war_room(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arms war_room via its settings-store key (no legacy flag exists for
+    it — ``program_armed``'s ``_legacy_enabled`` returns False for an
+    unregistered legacy alias), seeds the project ``WarRoomEngine.
+    _roboco_project`` resolves against (mirrors ``_arm_roadmap``'s unique-
+    slug-per-call rationale), and seeds X credentials — ``WarRoomEngine``'s
+    own creds gate would otherwise no-op every call, mirroring XEngine's
+    release/spotlight guard."""
+    key = "board_program.war_room.enabled"
+    existing = await session.get(SystemSettingTable, key)
+    if existing is None:
+        session.add(SystemSettingTable(key=key, value="true"))
+    else:
+        existing.value = "true"
+
+    slug = f"roboco-api-{uuid4().hex[:8]}"
+    monkeypatch.setattr(cfg, "self_heal_project_slug", slug)
+    session.add(
+        ProjectTable(
+            id=uuid4(),
+            name="RoboCo",
+            slug=slug,
+            git_url="https://example.com/roboco.git",
+            assigned_cell=Team.BACKEND,
+            created_by=SYSTEM_UUID,
+        )
+    )
+    await session.flush()
+
+    await get_x_credentials_service(session).set_credentials(
+        api_key="ak-test",
+        api_secret="as-test",
+        access_token="at-test",
+        access_token_secret="ats-test",
+    )
+
+
 def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
     app = FastAPI()
     app.include_router(board_programs_router, prefix="/api/board-programs")
@@ -163,6 +204,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     MIRROR_SOURCE,
                     MEGAPHONE_SOURCE,
                     LIBRARIAN_SOURCE,
+                    WAR_ROOM_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -189,6 +231,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "mirror",
         "megaphone",
         "librarian",
+        "war_room",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"
@@ -210,6 +253,10 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
     assert coroner["role"] == "auditor"
     assert coroner["trigger"] == "event"
     assert coroner["scope"] == "org"
+    war_room = next(p for p in body if p["key"] == "war_room")
+    assert war_room["role"] == "head_marketing"
+    assert war_room["trigger"] == "event"
+    assert war_room["scope"] == "org"
     assert roadmap["open_cycle"] is False
     assert roadmap["last_opened_at"] is None
     # Not asserted == [] — org-scoped "eligible" means every active project
@@ -239,6 +286,31 @@ async def test_run_now_opens_a_cycle_then_conflicts_on_retry(
     assert body["last_opened_at"] is not None
 
     second = await ceo_client.post("/api/board-programs/roadmap/run-now")
+    assert second.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_run_now_opens_a_cycle_for_event_program_war_room(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """War Room is EVENT-triggered same as Coroner (never cron-due — see
+    test_list_returns_every_registered_program's assertion), but UNLIKE
+    Coroner its ``_ORIGINATORS`` entry is a REAL originator
+    (``WarRoomEngine.run_cycle``, not an always-None stub): run-now must
+    actually open a cycle through the route, proving the EVENT contract
+    holds without needing a stub — ``open_program_cycle`` never checks
+    trigger kind, only the cron loop does."""
+    await _arm_war_room(db_session, monkeypatch)
+
+    first = await ceo_client.post("/api/board-programs/war_room/run-now")
+    assert first.status_code == HTTPStatus.OK
+    body = first.json()
+    assert body["open_cycle"] is True
+    assert body["last_opened_at"] is not None
+
+    second = await ceo_client.post("/api/board-programs/war_room/run-now")
     assert second.status_code == HTTPStatus.CONFLICT
 
 

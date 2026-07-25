@@ -55,6 +55,7 @@ from roboco.services.notification_delivery import get_notification_delivery_serv
 from roboco.services.project import get_project_service
 from roboco.services.settings import get_settings_service
 from roboco.services.task import (
+    X_CAMPAIGN_SOURCE,
     X_EDITORIAL_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_FEATURE_SOURCE,
@@ -1117,6 +1118,39 @@ class XEngine(BaseService):
         )
         return task
 
+    async def materialize_campaign_post(
+        self, *, exploration_task: TaskTable, campaign_ref: dict[str, Any], body: str
+    ) -> TaskTable:
+        """Materialize ONE ordered post within a War Room campaign — a held
+        X draft carrying the campaign/stage/schedule context
+        (``x_campaign_ref`` marker: ``{campaign_name, stage_label,
+        publish_after, sequence}``). Called once per post, in ascending
+        ``sequence`` order, from the ``propose_campaign`` content verb; unlike
+        ``materialize_feature_spotlight`` this does NOT complete
+        ``exploration_task`` itself (the caller completes it once after every
+        post in the campaign has been materialized).
+
+        ``publish_after`` is GUIDANCE only (V1 manual-cadence, spec
+        2026-07-24) — rendered in the panel queue for the CEO, never consulted
+        by anything that auto-posts. No auto-schedule sweep exists.
+        """
+        task = await self._originate_post(
+            title=f"X post: {campaign_ref['campaign_name']} — "
+            f"{campaign_ref['stage_label']}",
+            body=_clamp_tweet(body),
+            source=X_CAMPAIGN_SOURCE,
+            project_id=cast("UUID", exploration_task.project_id),
+        )
+        markers.set_x_campaign_ref(task, campaign_ref)
+        await self.session.flush()
+        self.log.info(
+            "x-engine: campaign post drafted (held for CEO)",
+            campaign_name=campaign_ref.get("campaign_name"),
+            stage_label=campaign_ref.get("stage_label"),
+            sequence=campaign_ref.get("sequence"),
+        )
+        return task
+
     # ---- reject -> redraft (CEO feedback loop) -----------------------------
 
     async def redraft_from_rejection(
@@ -1257,7 +1291,15 @@ class XEngine(BaseService):
         """(source, key) discriminating one draft's underlying item from
         another of the same source: release version for x_post, mention id
         for x_reply, feature slug for x_feature. None when the task carries
-        no such marker."""
+        no such marker.
+
+        # ponytail: x_campaign has no identity/context/carry-forward branch
+        # here — a rejected campaign post still redrafts (via the generic,
+        # unlocked fallback below), it just loses its x_campaign_ref marker
+        # (campaign_name/stage_label/publish_after/sequence) on the redraft,
+        # so the panel's guidance line won't render for it. Add a branch here
+        # + _redraft_context + _carry_redraft_markers when that's needed.
+        """
         if task.source == X_POST_SOURCE:
             version = markers.get_x_release_version(task)
             return (X_POST_SOURCE, version) if version else None

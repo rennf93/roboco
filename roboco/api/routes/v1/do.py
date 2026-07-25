@@ -27,6 +27,7 @@ from roboco.api.schemas.v1.do import (
     PitchRequest,
     ProgressRequest,
     ProposeBugHuntRequest,
+    ProposeCampaignRequest,
     ProposeEditorialPostRequest,
     ProposeFeatureSpotlightRequest,
     ProposeGapFillRequest,
@@ -372,6 +373,26 @@ async def do_propose_playbook_drafts(
     env = await actions.propose_playbook_drafts(
         agent_id=x_agent_id,
         drafts=[d.model_dump() for d in body.drafts],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_campaign")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_campaign(
+    request: Request,
+    body: ProposeCampaignRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_campaign(
+        agent_id=x_agent_id,
+        campaign_name=body.campaign_name,
+        posts=[p.model_dump() for p in body.posts],
     )
     return envelope_to_response(env, request)
 

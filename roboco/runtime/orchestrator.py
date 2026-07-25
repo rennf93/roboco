@@ -90,6 +90,7 @@ from roboco.services.task import (
     SPACKLE_SOURCE,
     VIDEO_HELD_SOURCES,
     VIDEO_SOURCE,
+    WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
 )
@@ -918,9 +919,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
     ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
-    ``board_mirror`` / ``board_megaphone`` / ``board_librarian``) that
-    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
-    of a long per-source ``if`` chain (xenon budget)."""
+    ``board_mirror`` / ``board_megaphone`` / ``board_librarian`` /
+    ``board_war_room``) that ``_dispatch_pm_work`` owns. One flat call keeps
+    the dev loop's skip out of a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -935,6 +936,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         MIRROR_SOURCE,
         MEGAPHONE_SOURCE,
         LIBRARIAN_SOURCE,
+        WAR_ROOM_SOURCE,
     )
 
 
@@ -942,8 +944,8 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     """Route an assigned pending task to its Board Program's one-shot
     exploration dispatcher, keyed by ``task['source']``. Every registered
     program (roadmap / x_feature / pest_control / periscope / coroner /
-    sentinel / spackle / scales / mirror / megaphone / librarian) is
-    solo-authored (PO/HoM/Auditor alone) — this bypasses the
+    sentinel / spackle / scales / mirror / megaphone / librarian /
+    war_room) is solo-authored (PO/HoM/Auditor alone) — this bypasses the
     two-reviewer board-review gate; none of these ever ride
     ``_handle_board_assigned_task`` (that would also spawn a second board
     role and fire the Approve & Start handoff, both wrong for a cycle with
@@ -970,6 +972,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         MIRROR_SOURCE: orch._dispatch_mirror_exploration,
         MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
         LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
+        WAR_ROOM_SOURCE: orch._dispatch_war_room_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -13021,6 +13024,45 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("coroner: incident-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_war_room_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to design ONE War Room campaign
+        and author it via ``propose_campaign``.
+
+        Like ``_dispatch_coroner_exploration`` (not the roadmap/pest-control
+        "already authored" marker shape): no pre-check is needed —
+        ``propose_campaign`` completes this task atomically, so a successful
+        call stops it matching the PENDING fetch on the next tick. Reuses the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses. EVENT-triggered (spec §4): this task only
+        ever exists because a release just published or the CEO called "run
+        now" — there is no LEARN "prior cycles" injection here (no cron
+        cadence to have learned from, mirrors Coroner). The task's own
+        ``war_room_brief`` marker (release version + highlights, or {} for a
+        blank on-demand cycle) is already server-assembled at origination
+        time — no extra DB read is needed to pass it into the prompt.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for War Room campaign planning",
+            task_id=task_id,
+        )
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_war_room_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_war_room_exploration",
+        )
+
     async def _dispatch_spackle_exploration(self, task: dict[str, Any]) -> None:
         """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
 
@@ -13603,8 +13645,8 @@ Start now: evidence(task_id="{task_id}")
             if assigned_to:
                 # Every registered Board Program (roadmap / x_feature /
                 # pest_control / periscope / coroner / sentinel / spackle /
-                # scales / mirror / megaphone / librarian) is solo-authored
-                # and bypasses the two-reviewer
+                # scales / mirror / megaphone / librarian / war_room) is
+                # solo-authored and bypasses the two-reviewer
                 # board-review gate — routed via the module-level dict
                 # dispatch table so this chain stays flat as new programs
                 # register (xenon budget). Falls through to the generic
@@ -16406,6 +16448,71 @@ INCIDENT: {title!r} ({incident_task_id}) — {kind}
 
 Do NOT message the fleet about this — you stay silent to other agents; your
 output is this postmortem and your journal, both CEO-facing.
+"""
+
+    def _build_war_room_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the Head of Marketing's one-shot War Room campaign-
+        planning cycle.
+
+        EVENT-triggered (spec §4): opened by the release-publish hook
+        (carrying a release version + highlights on the ``war_room_brief``
+        marker) or a CEO "run now" call (blank brief — ``{}``). No LEARN
+        injection — mirrors ``_build_coroner_prompt``: no cron cadence to
+        have learned from.
+        """
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        brief = markers_dict.get(_markers.WAR_ROOM_BRIEF) or {}
+        version = brief.get("version")
+        highlights = brief.get("highlights") or []
+        if version:
+            highlight_lines = "\n".join(f"- {h}" for h in highlights)
+            brief_block = (
+                f"\nRELEASE: v{version} just shipped. Highlights:\n{highlight_lines}\n"
+            )
+        else:
+            brief_block = (
+                "\nNo release triggered this cycle — the CEO called this "
+                "on-demand. Ground the campaign in what's actually shipped "
+                "and worth talking about (CHANGELOG.md, the feature-flags "
+                "ledger, your own recent spotlight/brief history).\n"
+            )
+        return f"""\
+You are the Head of Marketing. It's time to plan a War Room campaign.
+
+TASK: {task_id}
+{brief_block}
+Design ONE campaign — an ordered arc of 2-6 posts (teaser -> launch ->
+follow-up -> spotlight) — for the CEO to review. You author this alone.
+
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. If a release triggered this cycle, ground every post in the highlights
+   above — never invent a feature. On an on-demand cycle, investigate
+   CHANGELOG.md, the feature-flags ledger, docs/map/, and the knowledge base
+   for real, currently-shipped material worth a campaign.
+3. Design the arc: a teaser (build anticipation, no full reveal), a launch
+   (the announcement itself), a follow-up (a concrete detail or use case),
+   and optionally a spotlight (a related capability) — order matters, drop
+   any stage that doesn't earn its place; 2 posts is a valid campaign.
+4. Pick a recommended publish_after for each post — spaced sensibly (hours to
+   days apart depending on the arc), STRICTLY ascending, and all in the
+   future. This is GUIDANCE only: V1 is manual-cadence — the CEO approves
+   each draft individually in the X post queue at their own moment, nothing
+   here schedules or auto-posts.
+5. propose_campaign(campaign_name="<short name>", posts=[...])
+     — call this EXACTLY ONCE with 2-6 posts IN ORDER. Each post is an
+       object with: body (the tweet text, plain, <=280 chars, in your voice —
+       see the VOICE GUIDE), publish_after (ISO 8601 datetime, future,
+       strictly ascending across posts), stage_label (one of 'teaser',
+       'launch', 'follow_up', 'spotlight', 'other').
+6. i_am_idle() — once proposed. This completes your planning cycle
+   immediately; the CEO reviews, edits, approves, or rejects each post
+   individually in the X post queue — you never post anything yourself.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
 """
 
     def _build_spackle_prompt(

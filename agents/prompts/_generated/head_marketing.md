@@ -29,3 +29,4 @@
 | `propose_market_brief` | `propose_market_brief(headline: str, findings: list[MarketBriefFindingInput], threats: list[str] | None = None, opportunities: list[str] | None = None, positioning_note: str = '')` |
 | `propose_messaging_fixes` | `propose_messaging_fixes(items: list[MessagingFixItemInput])` |
 | `propose_editorial_post` | `propose_editorial_post(angle: str, body: str, rationale: str)` |
+| `propose_campaign` | `propose_campaign(campaign_name: str, posts: list[CampaignPostInput])` |

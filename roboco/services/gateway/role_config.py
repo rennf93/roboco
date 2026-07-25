@@ -142,12 +142,15 @@ _PRODUCT_OWNER_DO = (
 # ``propose_messaging_fixes`` (Mirror) is likewise Head-of-Marketing-only —
 # the mirror image of the Product Owner's ``propose_gap_fill`` (Spackle).
 # ``propose_editorial_post`` (Megaphone) is likewise Head-of-Marketing-only.
+# ``propose_campaign`` (War Room) is the same bounded expansion, one call per
+# campaign-planning cycle.
 _HEAD_MARKETING_DO = (
     *_BOARD_DO,
     "propose_feature_spotlight",
     "propose_market_brief",
     "propose_messaging_fixes",
     "propose_editorial_post",
+    "propose_campaign",
 )
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
