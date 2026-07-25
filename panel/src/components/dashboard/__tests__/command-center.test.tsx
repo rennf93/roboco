@@ -85,6 +85,9 @@ vi.mock("../social-summary-card", () => ({
 vi.mock("../roadmap-review-queue", () => ({
   RoadmapReviewQueue: () => <div>RoadmapReviewQueueStub</div>,
 }));
+vi.mock("../pest-control-review-queue", () => ({
+  PestControlReviewQueue: () => <div>PestControlReviewQueueStub</div>,
+}));
 vi.mock("../strategy-signals-panel", () => ({
   StrategySignalsPanel: () => <div>StrategySignalsPanelStub</div>,
 }));
@@ -125,6 +128,7 @@ describe("CommandCenter", () => {
       "ReleaseProposalCardStub",
       "PlaybookReviewQueueStub",
       "RoadmapReviewQueueStub",
+      "PestControlReviewQueueStub",
       "ActiveBlockersPanelStub",
       "RecentActivityFeedStub",
     ]) {

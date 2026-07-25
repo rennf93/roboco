@@ -45,6 +45,12 @@ export type {
   RoadmapItem,
   RoadmapItemActionResult,
 } from "./roadmap";
+export { pestControlApi } from "./pest-control";
+export type {
+  PestHuntCycle,
+  PestHuntItem,
+  PestHuntItemActionResult,
+} from "./pest-control";
 export { boardProgramsApi } from "./board-programs";
 export type { BoardProgram } from "./board-programs";
 export { videoApi, videoMediaUrl } from "./video";
