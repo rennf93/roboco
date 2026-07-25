@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import httpx
@@ -43,6 +44,20 @@ async def test_null_client_fetch_mentions_returns_empty() -> None:
     client: NullXClient = NullXClient()
     mentions = await client.fetch_mentions(since_id=None, max_results=10)
     assert mentions == []
+
+
+@pytest.mark.asyncio
+async def test_null_client_search_recent_returns_empty() -> None:
+    client: NullXClient = NullXClient()
+    results = await client.search_recent("AI agent orchestration", max_results=10)
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_null_client_post_tweet_ignores_reply_target() -> None:
+    client: NullXClient = NullXClient()
+    result = await client.post_tweet("hello", in_reply_to_tweet_id="123")
+    assert result.posted is False
 
 
 def test_build_x_client_with_creds_returns_live_client() -> None:
@@ -194,3 +209,99 @@ async def test_live_client_resolves_account_id_via_users_me_when_unset() -> None
 def test_max_tweet_chars_is_280() -> None:
     expected = 280
     assert expected == MAX_TWEET_CHARS
+
+
+@pytest.mark.asyncio
+async def test_live_client_post_tweet_with_reply_target_sets_reply_body() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"data": {"id": "999", "text": "hi"}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
+    result = await client.post_tweet("hi", in_reply_to_tweet_id="42")
+    assert result.posted is True
+    assert captured["body"] == {"text": "hi", "reply": {"in_reply_to_tweet_id": "42"}}
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_client_post_tweet_without_reply_target_omits_reply_key() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"data": {"id": "999", "text": "hi"}})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
+    await client.post_tweet("hi")
+    assert "reply" not in captured["body"]  # type: ignore[operator]
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_client_search_recent_parses_public_metrics() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tweets/search/recent"):
+            assert "AI+agent" in str(request.url) or "AI%20agent" in str(request.url)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "555",
+                            "author_id": "666",
+                            "text": "we should try an AI agent team",
+                            "public_metrics": {
+                                "like_count": 2,
+                                "reply_count": 0,
+                                "retweet_count": 1,
+                            },
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
+    results = await client.search_recent("AI agent", max_results=10)
+    assert len(results) == 1
+    assert results[0].id == "555"
+    assert results[0].author_id == "666"
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_client_search_recent_http_error_is_graceful() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="forbidden")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
+    results = await client.search_recent("AI agent", max_results=10)
+    assert results == []
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_client_search_recent_clamps_max_results() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["max_results"] = request.url.params.get("max_results", "")
+        return httpx.Response(200, json={"data": []})
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.AsyncClient(transport=transport)
+    client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
+    await client.search_recent("q", max_results=3)  # below the API's 10 floor
+    assert captured["max_results"] == "10"
+    await http_client.aclose()

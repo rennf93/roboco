@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterable
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,12 +75,24 @@ from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
+    BARFLY_SOURCE,
+    CORONER_SOURCE,
+    DOGFOOD_SOURCE,
+    LIBRARIAN_SOURCE,
+    MEGAPHONE_SOURCE,
+    MIRROR_SOURCE,
+    PERISCOPE_SOURCE,
+    PEST_CONTROL_SOURCE,
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
+    SCALES_SOURCE,
     SELF_HEAL_SOURCE,
+    SENTINEL_SOURCE,
+    SPACKLE_SOURCE,
     VIDEO_HELD_SOURCES,
     VIDEO_SOURCE,
+    WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
 )
@@ -906,12 +918,75 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
 
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
-    Board exploration cycles (``board_roadmap`` / feature-spotlight exploration)
-    that ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
+    Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
+    / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
+    ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
+    ``board_mirror`` / ``board_megaphone`` / ``board_librarian`` /
+    ``board_war_room`` / ``board_barfly`` / ``board_dogfood``) that
+    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
     of a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
-    return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
+    return task.get("source") in (
+        ROADMAP_SOURCE,
+        X_FEATURE_EXPLORATION_SOURCE,
+        PEST_CONTROL_SOURCE,
+        PERISCOPE_SOURCE,
+        CORONER_SOURCE,
+        SENTINEL_SOURCE,
+        SPACKLE_SOURCE,
+        SCALES_SOURCE,
+        MIRROR_SOURCE,
+        MEGAPHONE_SOURCE,
+        LIBRARIAN_SOURCE,
+        WAR_ROOM_SOURCE,
+        BARFLY_SOURCE,
+        DOGFOOD_SOURCE,
+    )
+
+
+async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -> bool:
+    """Route an assigned pending task to its Board Program's one-shot
+    exploration dispatcher, keyed by ``task['source']``. Every registered
+    program (roadmap / x_feature / pest_control / periscope / coroner /
+    sentinel / spackle / scales / mirror / megaphone / librarian /
+    war_room / barfly / dogfood) is solo-authored (PO/HoM/Auditor alone) —
+    this bypasses the two-reviewer board-review gate; none of these ever ride
+    ``_handle_board_assigned_task`` (that would also spawn a second board
+    role and fire the Approve & Start handoff, both wrong for a cycle with
+    one author). Module-level (not a method, so it always dispatches to the
+    REAL per-source method — a stub that mocks only the individual
+    ``_dispatch_*_exploration`` attributes, as every board-program dispatch
+    test does, is unaffected), mirroring ``_is_non_dev_dispatch_source``. A
+    dict dispatch table, not an ``if``/``elif`` chain, keeps
+    ``_dispatch_pm_work``'s own cyclomatic complexity bounded as new
+    programs register (xenon budget).
+
+    Returns True when handled — the caller must not fall through to the
+    board-review / PM-assigned paths — False for a normal PM/board task.
+    """
+    dispatch: dict[str, Callable[[dict[str, Any]], Awaitable[None]]] = {
+        ROADMAP_SOURCE: orch._dispatch_roadmap_exploration,
+        X_FEATURE_EXPLORATION_SOURCE: orch._dispatch_feature_spotlight_exploration,
+        PEST_CONTROL_SOURCE: orch._dispatch_pest_control_exploration,
+        PERISCOPE_SOURCE: orch._dispatch_periscope_exploration,
+        CORONER_SOURCE: orch._dispatch_coroner_exploration,
+        SENTINEL_SOURCE: orch._dispatch_sentinel_exploration,
+        SPACKLE_SOURCE: orch._dispatch_spackle_exploration,
+        SCALES_SOURCE: orch._dispatch_scales_exploration,
+        MIRROR_SOURCE: orch._dispatch_mirror_exploration,
+        MEGAPHONE_SOURCE: orch._dispatch_megaphone_exploration,
+        LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
+        WAR_ROOM_SOURCE: orch._dispatch_war_room_exploration,
+        BARFLY_SOURCE: orch._dispatch_barfly_exploration,
+        DOGFOOD_SOURCE: orch._dispatch_dogfood_exploration,
+    }
+    source = task.get("source")
+    handler = dispatch.get(source) if isinstance(source, str) else None
+    if handler is None:
+        return False
+    await handler(task)
+    return True
 
 
 # Cap on findings rendered inline in a dispatch prompt (REVISION_REQUIRED /
@@ -979,6 +1054,22 @@ def _format_rejected_spotlights(markers_dict: dict[str, Any]) -> str:
         return "(none)"
     return "; ".join(
         f"{r.get('title') or r.get('slug')} — {r.get('reason')}" for r in rejected
+    )
+
+
+def _format_barfly_candidates(markers_dict: dict[str, Any]) -> str:
+    """Render Barfly's screened candidate conversations for the exploration
+    prompt — module-level (not a method), mirroring ``_format_seen_features``,
+    so it's unit testable without a wholesale-mocked ``self``. A missing/
+    malformed marker renders as "(none)" rather than breaking the prompt."""
+    candidates = markers_dict.get(_markers.BARFLY_CANDIDATES)
+    if not isinstance(candidates, list) or not candidates:
+        return "(none)"
+    return "\n".join(
+        f"- id={c.get('id')} author={c.get('author_handle')}: "
+        f"{c.get('text')} ({c.get('engagement_note')})"
+        for c in candidates
+        if isinstance(c, dict)
     )
 
 
@@ -3740,6 +3831,37 @@ class AgentOrchestrator:
             )
             return False
 
+    async def _is_dogfood_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A Product Owner spawned onto a source=board_dogfood task — the
+        ONLY board-role case that gets the playwright MCP, so the PO can walk
+        the product as a user (spec §4). Task-scoped, not role-blanket: a PO
+        spawned for roadmap/pest_control/scales/any other cycle must NOT get
+        browser tools. Mirrors ``_is_video_authoring_spawn``'s shape exactly
+        — fail-closed: any lookup error means no browser, never a broken
+        spawn."""
+        if agent_role != "product_owner" or not task_id:
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import DOGFOOD_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == DOGFOOD_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "dogfood spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _generate_mcp_config(
         self,
         agent_id: str,
@@ -3757,8 +3879,9 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
-        - playwright          browser tools (fe-qa/ux-qa, and the ux-dev on
-                              a video-authoring task — see below)
+        - playwright          browser tools (fe-qa/ux-qa, the ux-dev on
+                              a video-authoring task, and the PO on a
+                              dogfood-walk task — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3860,6 +3983,7 @@ class AgentOrchestrator:
         video_authoring = await self._is_video_authoring_spawn(
             agent_id, agent_role, task_id
         )
+        dogfood_walk = await self._is_dogfood_spawn(agent_id, agent_role, task_id)
         self._append_role_scoped_mcp_servers(
             mcp_servers,
             agent_id,
@@ -3867,6 +3991,7 @@ class AgentOrchestrator:
             agent_uuid,
             mcp_env,
             video_authoring=video_authoring,
+            dogfood_walk=dogfood_walk,
         )
 
         config: dict[str, Any] = {"mcpServers": mcp_servers}
@@ -3899,6 +4024,7 @@ class AgentOrchestrator:
         mcp_env: dict[str, str],
         *,
         video_authoring: bool = False,
+        dogfood_walk: bool = False,
     ) -> None:
         """Register the role-scoped MCP servers (docs, research, playwright).
 
@@ -3954,18 +4080,23 @@ class AgentOrchestrator:
             }
 
         # Playwright MCP — structured browser tools (navigate/click/snapshot/
-        # screenshot). Two cases: fe-qa/ux-qa browser verification, and a
+        # screenshot). Three cases: fe-qa/ux-qa browser verification, a
         # ux-dev authoring a source=video task (``video_authoring``, probed
         # at spawn) so the composition author can preview their HTML in a
-        # real browser while iterating. Both run images that bake the
-        # binary + wrapper entrypoint (docker/agent-qa-fe.Dockerfile,
-        # docker/agent-ux.Dockerfile); registering it for any other role
-        # would reference a command that doesn't exist in that image.
+        # real browser while iterating, and a product_owner spawned onto a
+        # source=board_dogfood task (``dogfood_walk``, probed at spawn via
+        # ``_is_dogfood_spawn``) so the PO can walk the panel as a user —
+        # task-scoped, not role-blanket: a PO spawned for any other board
+        # program must NOT get browser tools. All three run images that bake
+        # the binary + wrapper entrypoint (docker/agent-qa-fe.Dockerfile,
+        # docker/agent-ux.Dockerfile, docker/agent-pm.Dockerfile); registering
+        # it for any other role would reference a command that doesn't exist
+        # in that image.
         playwright_mcp_teams = ("frontend", "ux_ui")
         browser_qa = (
             agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams
         )
-        if browser_qa or video_authoring:
+        if browser_qa or video_authoring or dogfood_walk:
             mcp_servers["playwright"] = {
                 "command": "/app/scripts/playwright-mcp-entrypoint.sh",
                 "args": [],
@@ -8156,10 +8287,32 @@ Start by:
                     cap_usd=cap_usd,
                     spend_usd=spend_usd,
                 )
+                await self._fire_coroner_budget_hook(db, task_id)
         except Exception as exc:
             logger.warning(
                 "task budget-breach block/notify failed",
                 task_id=task_id_str,
+                error=str(exc),
+            )
+
+    @staticmethod
+    async def _fire_coroner_budget_hook(db: Any, task_id: "UUID") -> None:
+        """Coroner (Board Program) budget-blocked trigger (spec §4).
+
+        Runs on the SAME already-open session as the rest of
+        ``_handle_task_budget_breach`` — ``get_db_context()`` commits on clean
+        ``async with`` exit and ROLLS BACK on any exception, so this catches
+        its OWN failures internally rather than letting them propagate and
+        undo the block/notify that already succeeded this call.
+        """
+        from roboco.services.coroner_engine import get_coroner_engine
+
+        try:
+            await get_coroner_engine(db).open_for_incident(task_id, kind="budget")
+        except Exception as exc:
+            logger.warning(
+                "coroner: budget hook failed (best-effort)",
+                task_id=str(task_id),
                 error=str(exc),
             )
 
@@ -12743,10 +12896,13 @@ Start now: evidence(task_id="{task_id}")
         self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("roadmap")
+        market_brief_context = await self._periscope_brief_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
-            initial_prompt=self._build_roadmap_prompt(task, prior_context),
+            initial_prompt=self._build_roadmap_prompt(
+                task, prior_context, market_brief_context
+            ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_roadmap_exploration",
         )
@@ -12770,6 +12926,315 @@ Start now: evidence(task_id="{task_id}")
                 program=program_key,
             )
             return ""
+
+    async def _dispatch_pest_control_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Pest Control bug hunt.
+
+        Mirrors ``_dispatch_roadmap_exploration`` exactly (PO-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_bug_hunt`` marks it
+        via the ``pest_hunt`` marker, not this dispatcher). The extra step is
+        the server-assembled evidence context (rework hotspots + findings-
+        ledger aggregates) the PO cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.PEST_HUNT) is not None:
+            return  # already authored — the CEO pest-control queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Product Owner for pest-control exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("pest_control")
+        evidence_context = await self._pest_control_evidence_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_pest_control_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_pest_control_exploration",
+        )
+
+    async def _pest_control_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_board_program_prior_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.pest_control_engine import get_pest_control_engine
+
+            async with get_db_context() as db:
+                return await get_pest_control_engine(db).evidence_context()
+        except Exception:
+            logger.warning("pest-control: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_scales_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Scales rebalance plan.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        same "already authored" marker pre-check — ``propose_rebalance``
+        marks it via the ``rebalance_plan`` marker, not this dispatcher). The
+        extra step is the server-assembled stale-backlog snapshot the PO
+        cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.REBALANCE_PLAN) is not None:
+            return  # already authored — the CEO Scales queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("scales")
+        evidence_context = await self._scales_evidence_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_scales_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_scales_exploration",
+        )
+
+    async def _scales_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the stale-
+        backlog snapshot from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.scales_engine import get_scales_engine
+
+            async with get_db_context() as db:
+                return await get_scales_engine(db).evidence_context()
+        except Exception:
+            logger.warning("scales: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_coroner_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to autopsy an incident and author ONE
+        postmortem via ``propose_postmortem``.
+
+        Like ``_dispatch_feature_spotlight_exploration`` (not the roadmap/
+        pest-control "already authored" marker shape): no pre-check is
+        needed — ``propose_postmortem`` completes this task atomically, so a
+        successful call stops it matching the PENDING fetch on the next
+        tick. Reuses the same one-shot ``_board_dispatched`` tracker +
+        respawn breaker every other board dispatch uses. EVENT-triggered
+        (spec §4): this task only ever exists because
+        ``CoronerEngine.open_for_incident`` opened it — there is no LEARN
+        "prior cycles" injection here (no cron cadence to have learned from).
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
+        incident_context = await self._coroner_incident_context(task)
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_coroner_prompt(task, incident_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_coroner_exploration",
+        )
+
+    async def _coroner_incident_context(self, task: dict[str, Any]) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture."""
+        markers_dict = task.get("orchestration_markers") or {}
+        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
+        incident_task_id = incident_ref.get("incident_task_id")
+        if not incident_task_id:
+            return ""
+        try:
+            from uuid import UUID as _UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            async with get_db_context() as db:
+                return await get_coroner_engine(db).incident_context(
+                    _UUID(str(incident_task_id))
+                )
+        except Exception:
+            logger.warning("coroner: incident-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_war_room_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to design ONE War Room campaign
+        and author it via ``propose_campaign``.
+
+        Like ``_dispatch_coroner_exploration`` (not the roadmap/pest-control
+        "already authored" marker shape): no pre-check is needed —
+        ``propose_campaign`` completes this task atomically, so a successful
+        call stops it matching the PENDING fetch on the next tick. Reuses the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses. EVENT-triggered (spec §4): this task only
+        ever exists because a release just published or the CEO called "run
+        now" — there is no LEARN "prior cycles" injection here (no cron
+        cadence to have learned from, mirrors Coroner). The task's own
+        ``war_room_brief`` marker (release version + highlights, or {} for a
+        blank on-demand cycle) is already server-assembled at origination
+        time — no extra DB read is needed to pass it into the prompt.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for War Room campaign planning",
+            task_id=task_id,
+        )
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_war_room_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_war_room_exploration",
+        )
+
+    async def _dispatch_spackle_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        same "already authored" marker pre-check — ``propose_gap_fill`` marks
+        it via the ``gap_fill`` marker, not this dispatcher). Unlike Pest
+        Control there is no server-assembled evidence context — the spec
+        deliberately keeps Spackle free of a heavy server-side inventory
+        engine; the inventory diffing is the PO's own read-tool work, ordered
+        explicitly by ``_build_spackle_prompt``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.GAP_FILL) is not None:
+            return  # already authored — the CEO spackle queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("spackle")
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_spackle_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_spackle_exploration",
+        )
+
+    async def _dispatch_mirror_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to author a Mirror positioning
+        audit.
+
+        Mirrors ``_dispatch_spackle_exploration`` exactly (HoM-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_messaging_fixes``
+        marks it via the ``messaging_fixes`` marker, not this dispatcher).
+        Like Spackle there is no server-assembled evidence context — the
+        messaging audit (README claims vs shipped features, docs-site
+        promises vs code, charter alignment) is the HoM's own read-tool
+        work, ordered explicitly by ``_build_mirror_prompt``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.MESSAGING_FIXES) is not None:
+            return  # already authored — the CEO mirror queue owns the rest
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for mirror exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("mirror")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_mirror_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_mirror_exploration",
+        )
+
+    async def _dispatch_dogfood_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to walk the product and author a
+        Dogfood friction audit.
+
+        Mirrors ``_dispatch_spackle_exploration`` exactly (PO-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_friction_fixes``
+        marks it via the ``friction_fixes`` marker, not this dispatcher).
+        There is no server-assembled evidence context — walking the product
+        live is the PO's own tool work, ordered explicitly by
+        ``_build_dogfood_prompt``. This is the ONE spawn (task-scoped, keyed
+        on ``task["source"] == DOGFOOD_SOURCE``) that also gets the
+        playwright MCP mounted — see ``_is_dogfood_spawn``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.FRICTION_FIXES) is not None:
+            return  # already authored — the CEO dogfood queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for dogfood exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("dogfood")
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_dogfood_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_dogfood_exploration",
+        )
 
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
@@ -12806,6 +13271,250 @@ Start now: evidence(task_id="{task_id}")
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_feature_spotlight_exploration",
         )
+
+    async def _dispatch_periscope_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to research the market and file a
+        Periscope brief.
+
+        Mirrors ``_dispatch_feature_spotlight_exploration``: no "already
+        authored" marker pre-check is needed — ``propose_market_brief``
+        completes this task atomically (the x_feature complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for periscope exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("periscope")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_periscope_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_periscope_exploration",
+        )
+
+    async def _dispatch_barfly_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to review Barfly's screened X
+        conversations and draft replies.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_conversation_replies``
+        completes this task atomically (the x_feature/periscope complete-at-
+        propose asymmetry, multiplied across every materialized reply), so
+        it stops matching the PENDING fetch on the next tick. Reuses the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for barfly exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("barfly")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_barfly_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_barfly_exploration",
+        )
+
+    async def _periscope_brief_context(self) -> str:
+        """Best-effort "latest market brief" read for the roadmap exploration
+        prompt's cross-role injection (spec §4) — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block the roadmap spawn, only drop
+        the brief section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.periscope_engine import get_periscope_engine
+
+            async with get_db_context() as db:
+                return await get_periscope_engine(db).latest_brief_context()
+        except Exception:
+            logger.warning("periscope: latest-brief read failed (best-effort)")
+            return ""
+
+    async def _dispatch_sentinel_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to assess org-wide quality drift and file a
+        Sentinel report.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_quality_report`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses. The extra step is the
+        server-assembled drift evidence (waived-findings trend, open-
+        findings-by-severity, conventions hotspots, budget snapshot) the
+        Auditor cannot gather itself — mirrors
+        ``_dispatch_pest_control_exploration``'s evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("sentinel")
+        evidence_context = await self._sentinel_evidence_context()
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_sentinel_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_sentinel_exploration",
+        )
+
+    async def _sentinel_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.sentinel_engine import get_sentinel_engine
+
+            async with get_db_context() as db:
+                return await get_sentinel_engine(db).evidence_context()
+        except Exception:
+            logger.warning("sentinel: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_megaphone_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to pick ONE editorial angle and
+        file a Megaphone post.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_editorial_post`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses. The extra step is the
+        server-assembled shipped-this-week digest (completed tasks +
+        CHANGELOG Unreleased bullets) the Head of Marketing cannot gather
+        itself — mirrors ``_dispatch_pest_control_exploration``'s
+        evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for megaphone exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("megaphone")
+        digest_context = await self._megaphone_digest_context()
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_megaphone_prompt(
+                task, prior_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_megaphone_exploration",
+        )
+
+    async def _megaphone_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for prompt injection —
+        mirrors ``_sentinel_evidence_context``'s degrade-to-empty-string
+        posture: a read failure here must never block the spawn, only drop
+        the digest section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.megaphone_engine import get_megaphone_engine
+
+            async with get_db_context() as db:
+                return await get_megaphone_engine(db).digest_context()
+        except Exception:
+            logger.warning("megaphone: digest-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to mine journals/learnings and draft
+        playbooks (Librarian, Board Program).
+
+        Mirrors ``_dispatch_sentinel_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_playbook_drafts`` completes
+        this task atomically (the x_feature/periscope/sentinel complete-at-
+        propose asymmetry), so it stops matching the PENDING fetch on the
+        next tick. Reuses the same one-shot ``_board_dispatched`` tracker +
+        respawn breaker every other board dispatch uses. The extra step is
+        the server-assembled mining context (recurring learning-journal
+        topics + existing playbook titles) the Auditor cannot gather itself
+        — mirrors ``_dispatch_sentinel_exploration``'s evidence-context
+        shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("librarian")
+        mining_context = await self._librarian_mining_context()
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_librarian_prompt(
+                task, prior_context, mining_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_librarian_exploration",
+        )
+
+    async def _librarian_mining_context(self) -> str:
+        """Best-effort mining-context read for prompt injection — mirrors
+        ``_sentinel_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the mining
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.librarian_engine import get_librarian_engine
+
+            async with get_db_context() as db:
+                return await get_librarian_engine(db).mining_context()
+        except Exception:
+            logger.warning("librarian: mining-context read failed (best-effort)")
+            return ""
 
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
@@ -13068,23 +13777,19 @@ Start now: evidence(task_id="{task_id}")
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
-                if task.get("source") == ROADMAP_SOURCE:
-                    # PO-solo (v1) — bypasses the two-reviewer board-review gate;
-                    # never rides _handle_board_assigned_task (that would also
-                    # spawn Head of Marketing and fire the Approve & Start
-                    # handoff, both wrong for a roadmap cycle).
-                    await self._dispatch_roadmap_exploration(task)
-                elif task.get("source") == X_FEATURE_EXPLORATION_SOURCE:
-                    # HoM-solo (mirrors the ROADMAP_SOURCE branch above) —
-                    # bypasses the two-reviewer board-review gate; never rides
-                    # _handle_board_assigned_task (that would also spawn the
-                    # Product Owner and fire the Approve & Start handoff, both
-                    # wrong for a feature-spotlight cycle).
-                    await self._dispatch_feature_spotlight_exploration(task)
-                elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
-                    await self._handle_board_assigned_task(task, assigned_to)
-                else:
-                    await self._handle_pm_assigned_task(task, assigned_to)
+                # Every registered Board Program (roadmap / x_feature /
+                # pest_control / periscope / coroner / sentinel / spackle /
+                # scales / mirror / megaphone / librarian / war_room /
+                # barfly / dogfood) is solo-authored and bypasses the
+                # two-reviewer board-review gate — routed via the module-level dict
+                # dispatch table so this chain stays flat as new programs
+                # register (xenon budget). Falls through to the generic
+                # board/PM-assigned handlers only for a non-program task.
+                if not await _dispatch_board_program_exploration(self, task):
+                    if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                        await self._handle_board_assigned_task(task, assigned_to)
+                    else:
+                        await self._handle_pm_assigned_task(task, assigned_to)
                 continue
 
             await self._route_unassigned_pm_task(client, task)
@@ -15649,7 +16354,10 @@ those, and a substantive recorded note IS your job here.
 """
 
     def _build_roadmap_prompt(
-        self, task: dict[str, Any], prior_context: str = ""
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        market_brief_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
 
@@ -15658,11 +16366,19 @@ those, and a substantive recorded note IS your job here.
         then idle. No claim/plan/delegate/complete — those verbs aren't the
         Product Owner's. ``prior_context`` is the LEARN rendering of the last
         closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
-        when none exist yet."""
+        when none exist yet. ``market_brief_context`` is Periscope's latest
+        filed market brief (spec §4: "its brief is Printer's cross-role
+        input") — empty when no brief has ever been filed; never blocks."""
         task_id = task.get("id", "unknown")
         min_items = settings.roadmap_min_items_per_cycle
         max_items = settings.roadmap_max_items_per_cycle
         prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        brief_block = (
+            f"\n## Head of Marketing's latest market brief (Periscope)\n"
+            f"{market_brief_context}\n"
+            if market_brief_context
+            else ""
+        )
         return f"""\
 You are the Product Owner. It's time for your periodic roadmap exploration.
 
@@ -15671,7 +16387,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-{prior_block}
+{brief_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -15691,6 +16407,436 @@ involved in this cycle.
 
 Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
 that is not your job here, and the gateway will reject those verbs.
+"""
+
+    def _build_pest_control_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Pest Control exploration.
+
+        Unlike the two-reviewer board-review prompt, this is PO-solo: hunt
+        latent defects, author up to 5 evidence-backed bug drafts, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled rework/findings evidence
+        (``PestControlEngine.evidence_context``) — both empty when none
+        exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["pest_control"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Product Owner. It's time for your periodic Pest Control exploration.
+
+TASK: {task_id}
+
+Hunt LATENT defects — bugs the org already recorded but nobody read, not
+whatever CI happens to be red on right now (that's self-heal/CI-watch's job,
+not yours). Propose evidence-backed bug tasks for the CEO to review; you
+author this alone.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the evidence gathered for you above (rework hotspots, recurring/
+   waived findings). It is server-assembled — you cannot re-run those
+   queries yourself, so start from it, don't second-guess it.
+3. Also grep the repo (read-only) for `ponytail:` comments and TODO markers
+   — deliberate shortcuts and deferred debt are exactly the kind of "green
+   but rotten" signal this program exists to surface.
+4. For each candidate, confirm it's a REAL, LIVE bug (not already fixed,
+   not already tracked) before drafting an item.
+5. propose_bug_hunt(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — the file:line / ledger row /
+       metric that justifies this as a real bug; no evidence, no item).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the pest-control queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
+"""
+
+    def _build_scales_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Scales exploration.
+
+        PO-solo: review the injected stale-backlog snapshot against the
+        charter, propose up to 7 re-priority/cancellation drafts, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled stale-backlog snapshot (``ScalesEngine.
+        evidence_context``) — both empty when none exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["scales"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Product Owner. It's time for your periodic Scales
+portfolio-rebalance exploration.
+
+TASK: {task_id}
+
+Review the LIVE backlog against the company charter and propose
+re-prioritizations and cancellations — the org has no other mechanism that
+ever retires stale backlog, and a board role is exactly who should propose
+deletions. You author this alone.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context, including the company charter.
+2. Read the stale-backlog snapshot gathered for you above (BACKLOG/PENDING
+   tasks older than 30 days). It is server-assembled — you cannot re-run
+   that query yourself, so start from it, don't second-guess it.
+3. Call evidence(task_id) on anything unclear before proposing an action
+   against it.
+4. For each candidate, decide: reprioritize (it's still worth doing, just at
+   the wrong priority) or cancel (it no longer serves the charter and should
+   be retired) — never both.
+5. propose_rebalance(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: task_ref (the id8 or exact title of the live task),
+       action ('reprioritize' or 'cancel'), new_priority (int 0-3, REQUIRED
+       iff action is 'reprioritize' — 0 is P0/highest, 3 is P3/lowest),
+       rationale (REQUIRED — why this task should change).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the Scales queue; approval MUTATES the live task in
+   place — nothing here changes anything itself.
+
+Do NOT cancel, reprioritize, claim, plan, or delegate anything yourself —
+that is not your job here, and the gateway will reject those verbs. You only
+ever propose.
+"""
+
+    def _build_coroner_prompt(
+        self, task: dict[str, Any], incident_context: str = ""
+    ) -> str:
+        """Prompt for the Auditor's one-shot Coroner postmortem.
+
+        ``incident_context`` is the server-assembled findings-ledger +
+        transition-history evidence (``CoronerEngine.incident_context``) for
+        the incident named on this task's ``coroner_incident`` marker — empty
+        when the marker or the read failed (degrade, never block the spawn).
+        """
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
+        incident_task_id = incident_ref.get("incident_task_id", "unknown")
+        kind = incident_ref.get("kind", "unknown")
+        title = incident_ref.get("title", "unknown")
+        context_block = (
+            f"\n## Evidence gathered for you\n{incident_context}\n"
+            if incident_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. An incident just triggered your Coroner postmortem.
+
+TASK: {task_id}
+
+INCIDENT: {title!r} ({incident_task_id}) — {kind}
+{context_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. evidence({incident_task_id!r}) — read the incident's full journey: PR,
+   commits, dev/QA/PM journal trail, decisions.
+3. Read the evidence gathered for you above (findings ledger, transition
+   history). It is server-assembled — you cannot re-run those queries
+   yourself, so start from it.
+4. Determine: what actually failed, at which lifecycle stage, and the
+   SYSTEMIC cause (not just this one incident's symptom — what about the
+   process let it happen).
+5. propose_postmortem(incident_summary=..., root_cause=..., failed_stage=...,
+   process_change={{...}}, playbook=...)
+     — call this EXACTLY ONCE. process_change.kind is one of 'playbook'
+       (also pass playbook={{'title':..., 'body':...}} — drafted immediately
+       into the pending-playbook curation queue), 'prompt_fix',
+       'conventions_rule', or 'other'. Propose ONE change — the smallest
+       thing that would have caught or prevented this.
+6. i_am_idle() — once proposed. This completes the autopsy immediately and
+   notifies the CEO; there is no per-item queue to leave open.
+
+Do NOT message the fleet about this — you stay silent to other agents; your
+output is this postmortem and your journal, both CEO-facing.
+"""
+
+    def _build_war_room_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the Head of Marketing's one-shot War Room campaign-
+        planning cycle.
+
+        EVENT-triggered (spec §4): opened by the release-publish hook
+        (carrying a release version + highlights on the ``war_room_brief``
+        marker) or a CEO "run now" call (blank brief — ``{}``). No LEARN
+        injection — mirrors ``_build_coroner_prompt``: no cron cadence to
+        have learned from.
+        """
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        brief = markers_dict.get(_markers.WAR_ROOM_BRIEF) or {}
+        version = brief.get("version")
+        highlights = brief.get("highlights") or []
+        if version:
+            highlight_lines = "\n".join(f"- {h}" for h in highlights)
+            brief_block = (
+                f"\nRELEASE: v{version} just shipped. Highlights:\n{highlight_lines}\n"
+            )
+        else:
+            brief_block = (
+                "\nNo release triggered this cycle — the CEO called this "
+                "on-demand. Ground the campaign in what's actually shipped "
+                "and worth talking about (CHANGELOG.md, the feature-flags "
+                "ledger, your own recent spotlight/brief history).\n"
+            )
+        return f"""\
+You are the Head of Marketing. It's time to plan a War Room campaign.
+
+TASK: {task_id}
+{brief_block}
+Design ONE campaign — an ordered arc of 2-6 posts (teaser -> launch ->
+follow-up -> spotlight) — for the CEO to review. You author this alone.
+
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. If a release triggered this cycle, ground every post in the highlights
+   above — never invent a feature. On an on-demand cycle, investigate
+   CHANGELOG.md, the feature-flags ledger, docs/map/, and the knowledge base
+   for real, currently-shipped material worth a campaign.
+3. Design the arc: a teaser (build anticipation, no full reveal), a launch
+   (the announcement itself), a follow-up (a concrete detail or use case),
+   and optionally a spotlight (a related capability) — order matters, drop
+   any stage that doesn't earn its place; 2 posts is a valid campaign.
+4. Pick a recommended publish_after for each post — spaced sensibly (hours to
+   days apart depending on the arc), STRICTLY ascending, and all in the
+   future. This is GUIDANCE only: V1 is manual-cadence — the CEO approves
+   each draft individually in the X post queue at their own moment, nothing
+   here schedules or auto-posts.
+5. propose_campaign(campaign_name="<short name>", posts=[...])
+     — call this EXACTLY ONCE with 2-6 posts IN ORDER. Each post is an
+       object with: body (the tweet text, plain, <=280 chars, in your voice —
+       see the VOICE GUIDE), publish_after (ISO 8601 datetime, future,
+       strictly ascending across posts), stage_label (one of 'teaser',
+       'launch', 'follow_up', 'spotlight', 'other').
+6. i_am_idle() — once proposed. This completes your planning cycle
+   immediately; the CEO reviews, edits, approves, or rejects each post
+   individually in the X post queue — you never post anything yourself.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
+"""
+
+    def _build_spackle_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Spackle exploration.
+
+        Unlike Pest Control there is no server-assembled evidence context
+        (spec: Spackle carries no heavy server-side inventory engine) — the
+        inventory diffing (API routes vs panel surfaces, armed flags vs
+        docs, docs claims vs code, coverage holes, dead-end panel tabs) is
+        the PO's own read-tool work, ordered explicitly below. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["spackle"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Product Owner. It's time for your periodic Spackle exploration.
+
+TASK: {task_id}
+
+Audit the target project's half-shipped surface area — the gaps between what
+was built and what was finished. Propose evidence-backed gap-fill tasks for
+the CEO to review; you author this alone.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Compare inventories against each other, citing `file:line` for every
+   claimed gap:
+   a. API routes (roboco/api/routes/) with no panel surface that exposes
+      them, and vice versa — a panel page calling an endpoint that doesn't
+      exist or was removed.
+   b. Armed feature flags (roboco/config.py, the feature-flags panel card)
+      with no docs describing them.
+   c. Docs-site / docs/map/ promises the code doesn't actually keep.
+   d. Coverage holes by module, if a coverage report is available.
+   e. Dead-end panel tabs — a page/tab with no working action or data.
+3. For each candidate, confirm it's a REAL, LIVE gap (not already fixed, not
+   already tracked as a task) before drafting an item.
+4. propose_gap_fill(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — must name BOTH sides of the
+       gap, e.g. the route that exists and the panel surface that doesn't;
+       no evidence, no item).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the spackle queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
+"""
+
+    def _build_mirror_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Mirror exploration.
+
+        Unlike Periscope/Sentinel there is no server-assembled evidence
+        context (spec: Mirror carries no heavy server-side inventory engine,
+        same posture as Spackle) — the messaging audit (README claims vs
+        shipped features, docs-site promises vs code, charter alignment) is
+        the HoM's own read-tool work, ordered explicitly below.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["mirror"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Mirror exploration.
+
+TASK: {task_id}
+
+Audit the target project's messaging surfaces against the company charter
+and shipped reality — the gaps between what the copy claims and what the
+product actually does. Propose evidence-backed docs tasks for the CEO to
+review; you author this alone.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context (carries the company charter).
+2. Compare the messaging surfaces against shipped reality, citing `file:line`
+   or a URL for every claimed drift:
+   a. README claims vs what the codebase actually ships (CHANGELOG.md,
+      docs/map/, feature flags).
+   b. The docs site / docs-site repo's promises vs the code — when that repo
+      is registered as a project and opted into mirror, treat it as a
+      first-class target, not an afterthought.
+   c. Charter alignment — does the messaging still match the CEO's stated
+      objectives and positioning (`company_goals`, already in your
+      briefing)?
+   d. Shipped capabilities the copy doesn't mention at all — the inverse
+      drift, not just overclaiming.
+3. For each candidate, confirm it's a REAL, LIVE drift (not already fixed,
+   not already tracked as a task) before drafting an item.
+4. propose_messaging_fixes(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — must name BOTH the drifted
+       claim and the reality it contradicts; no evidence, no item).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the mirror queue; an approved item lands in BACKLOG
+   as a docs task for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
+"""
+
+    def _build_dogfood_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Dogfood walk.
+
+        The ONE board-program spawn that also gets the playwright MCP (see
+        ``_is_dogfood_spawn`` — task-scoped on this exact task, not a
+        role-blanket grant), so this is the only prompt that references
+        browser tools. ``prior_context`` is the LEARN rendering of the last
+        closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
+        when none exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["dogfood"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        panel_line = ""
+        self_slug = settings.self_heal_project_slug or "roboco-api"
+        if task.get("project_slug") == self_slug and settings.panel_base_url:
+            panel_line = (
+                f"\nThe panel is reachable at {settings.panel_base_url} — start "
+                "your walk there.\n"
+            )
+        return f"""\
+You are the Product Owner. It's time for your periodic Dogfood walk.
+
+TASK: {task_id}
+
+Walk the target project's live surfaces as a real USER would, not as a code
+reviewer — the panel (browser tools: browser_navigate, browser_snapshot,
+browser_click, browser_type, browser_take_screenshot, etc. are mounted for
+THIS task only), the docs site, and the Telegram flow when a live URL is
+reachable. File UX friction: what broke, what confused you, what felt slow
+or wrong. You author this alone.
+{panel_line}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Find a live URL for each surface: the panel (see above, when this cycle's
+   target is RoboCo's own project) and the docs site (check the target
+   project's README/docs for a published URL). If NO live URL is reachable
+   for a surface, do NOT fabricate a walk — fall back to an honest read-tool
+   review of that surface's source instead, and say so explicitly in the
+   item's evidence (e.g. "docs site URL unreachable; reviewed docs/ source
+   instead").
+3. Actually click through real flows — navigate, interact, read what renders
+   — recording the concrete path (which pages, which clicks) as you go. A
+   friction item without a walked path is not dogfooding, it's guessing.
+4. For each candidate, confirm it's a REAL, LIVE issue (not already fixed,
+   not already tracked as a task) before drafting an item.
+5. propose_friction_fixes(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — the actual walked path: which
+       pages, which clicks, what broke or felt wrong, in prose; NEVER a
+       screenshot; no evidence, no item).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the dogfood queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
 """
 
     def _build_feature_spotlight_prompt(
@@ -15755,6 +16901,306 @@ RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
+"""
+
+    def _build_periscope_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Periscope market-
+        research cycle.
+
+        HoM-solo, complete-at-propose (mirrors the feature-spotlight prompt's
+        shape): research the market, file ONE brief, then idle. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        task_id = task.get("id", "unknown")
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_findings = PROGRAMS["periscope"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Periscope
+market-research cycle.
+
+TASK: {task_id}
+
+Research the market — competitors, adjacent-tool releases, positioning
+shifts — and file ONE brief for the CEO. This is a REPORT, not a task queue:
+nothing you file here materializes work, and there is no per-item CEO
+decision to wait on. Your brief also becomes the Product Owner's cross-role
+input for the next roadmap-exploration cycle (Printer), so ground every
+claim in a real source.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Research: use web_search/web_fetch for competitor moves, adjacent-tool
+   releases, and positioning shifts; check the knowledge base for prior
+   market signal. Cite the source URL for every claim you act on — a claim
+   without a source is noise, and the verb rejects an uncited finding.
+3. Pick a one-line headline naming this cycle's biggest signal.
+4. propose_market_brief(headline="<one-line summary>", findings=[...],
+   threats=[...], opportunities=[...], positioning_note="<optional>")
+     — call this EXACTLY ONCE with 1-{max_findings} cited findings. Each
+       finding is an object with: claim, source_url (REQUIRED — a real
+       http(s) URL), relevance (why this matters to us). threats/
+       opportunities are optional lists of up to 5 short notes each;
+       positioning_note is an optional note on a shift worth acting on.
+5. i_am_idle() — once filed. The CEO reads the brief as a report in the
+   panel; nothing here needs your further attention.
+
+Do NOT claim, plan, delegate, or attempt to act on anything you find
+yourself — that is not your job here, and the gateway will reject those.
+"""
+
+    def _build_barfly_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Barfly conversation-
+        reply cycle.
+
+        HoM-solo, complete-at-propose (mirrors the Periscope prompt's shape):
+        review the SCREENED candidates already gathered — never invent a
+        tweet — pick up to N worth replying to, draft, then idle. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        candidates_line = _format_barfly_candidates(markers_dict)
+        max_items = PROGRAMS["barfly"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Barfly
+conversation-reply cycle.
+
+TASK: {task_id}
+
+Barfly finds X conversations where RoboCo is relevant but UNMENTIONED —
+search results, not the mentions timeline. Review the SCREENED candidates
+already gathered below and draft replies for the ones genuinely worth it. You
+must reply ONLY to a candidate already on this list — never invent a tweet or
+target an id that isn't here.
+
+SCREENED CANDIDATES:
+{candidates_line}
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Pick up to {max_items} candidates genuinely worth a reply — skip anything
+   low-value, off-topic despite the keyword match, or already answered by
+   someone else in a way that makes a RoboCo reply redundant.
+3. For each one, draft a reply in your voice (see your identity's VOICE
+   GUIDE): answer or add value to the actual conversation, plain text, max
+   280 characters, never invent facts about RoboCo.
+4. propose_conversation_replies(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
+       object with: tweet_id (REQUIRED — must be one of the candidate ids
+       above, verbatim), reply_body (the reply text, <=280 chars), rationale
+       (REQUIRED — why this conversation is worth replying to).
+5. i_am_idle() — once proposed. Each reply materializes its own held draft in
+   the X post queue; the CEO reviews, edits, approves, or rejects each one
+   individually — nothing here posts anything itself.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
+"""
+
+    def _build_sentinel_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Auditor's one-shot Sentinel drift-watch cycle.
+
+        Auditor-solo, complete-at-propose (mirrors the periscope prompt's
+        shape): assess drift, file ONE report, then idle. ``prior_context``
+        is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled waiver/findings/conventions/budget evidence
+        (``SentinelEngine.evidence_context``) — both empty when none exist
+        yet. The Auditor stays silent to agents throughout — this report goes
+        to the CEO only, never a fleet notification."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["sentinel"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. It's time for your periodic Sentinel drift-watch cycle.
+
+TASK: {task_id}
+
+Assess org-wide QUALITY DRIFT — waiver-accumulation trends, conventions-
+violation hotspots, budget anomalies — and file ONE "state of quality"
+report for the CEO. This is a REPORT, not a task queue: nothing you file
+here materializes work, and there is no per-item CEO decision to wait on.
+You stay silent to the fleet throughout — this report goes to the CEO only.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the evidence gathered for you above (waived-findings trend, open-
+   findings-by-severity, conventions-violation hotspots, top spend by task/
+   project). It is server-assembled — you cannot re-run those queries
+   yourself, so start from it, don't second-guess it.
+3. Also check docs/map/ (the exhaustive codebase map) for staleness against
+   what you know has actually shipped, if that would sharpen a finding.
+4. For each candidate drift signal, confirm it's REAL and worth naming (not
+   noise) before drafting an item.
+5. propose_quality_report(headline="<one-line summary>", items=[...],
+   overall_assessment="<synthesis across all items>")
+     — call this EXACTLY ONCE with 1-{max_items} items. Each item is an
+       object with: area (one of 'waivers', 'findings', 'conventions',
+       'budget', 'docs', 'other'), observation (what you found), evidence
+       (the ledger row / metric / file that backs it), suggested_action
+       (what should happen next — a later "convert to task" step, not
+       something you do yourself).
+6. i_am_idle() — once filed. The CEO reads the report in the panel; nothing
+   here needs your further attention.
+
+Do NOT claim, plan, delegate, fix anything yourself, message any other
+agent, or attempt to act on anything you find — that is not your job here,
+and the gateway will reject those verbs.
+"""
+
+    def _build_megaphone_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        digest_context: str = "",
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Megaphone editorial
+        cycle.
+
+        HoM-solo, complete-at-propose (mirrors the periscope/feature-
+        spotlight prompts' shape): pick ONE angle, write ONE post, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``digest_context`` is
+        the server-assembled shipped-this-week digest (``MegaphoneEngine.
+        digest_context``) — both empty when none exist yet."""
+        task_id = task.get("id", "unknown")
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        digest_block = (
+            f"\n## Shipped-this-week digest\n{digest_context}\n"
+            if digest_context
+            else ""
+        )
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Megaphone
+editorial cycle.
+
+TASK: {task_id}
+
+This is the standing editorial calendar — beyond release posts and feature
+spotlights: dev-log threads on what the fleet shipped this week,
+behind-the-scenes posts, changelog highlights. Pick ONE angle and file ONE
+post; the draft lands in the SAME X post queue release/spotlight drafts do —
+there is no separate approval surface.
+{digest_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the shipped-this-week digest above (completed tasks + the
+   CHANGELOG.md Unreleased section, when available). It is server-assembled —
+   you cannot re-run those queries yourself, so start from it.
+3. Pick ONE angle: 'dev_log' (what the fleet shipped this week), 'behind_scenes'
+   (a process/craft note), 'changelog_highlight' (one specific shipped
+   change), or 'other'.
+4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
+   text, no markdown, no thread, max 280 characters, and never invent a
+   capability that doesn't exist.
+5. propose_editorial_post(angle="<one of the four above>", body="<the post>",
+   rationale="<why this angle, this cycle>")
+     — call this EXACTLY ONCE.
+6. i_am_idle() — once proposed. The CEO reviews, edits, approves, or rejects
+   the draft in the X post queue; nothing posts without that explicit
+   approval.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
+"""
+
+    def _build_librarian_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        mining_context: str = "",
+    ) -> str:
+        """Prompt for the Auditor's one-shot Librarian playbook-mining cycle.
+
+        Auditor-solo, complete-at-propose (mirrors the sentinel prompt's
+        shape): mine journals/learnings for repeated patterns, draft 1-3
+        playbooks, then idle. ``prior_context`` is the LEARN rendering of the
+        last closed cycles (``BoardProgramEngine.prior_cycle_context``);
+        ``mining_context`` is the server-assembled recurring-learning-topic +
+        existing-playbook-title evidence (``LibrarianEngine.
+        mining_context``) — both empty when none exist yet. The Auditor
+        stays silent to agents throughout — the drafts ride the normal
+        pending-playbook curation queue, never a fleet notification."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_drafts = PROGRAMS["librarian"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        mining_block = (
+            f"\n## Mining context gathered for you\n{mining_context}\n"
+            if mining_context
+            else ""
+        )
+        return f"""\
+You are the Auditor. It's time for your periodic Librarian playbook-mining
+cycle.
+
+TASK: {task_id}
+
+Playbook curation today is reactive — you only judge what delivery roles
+happen to draft via draft_playbook. This cycle is the proactive half: mine
+what the org already recorded (journals, learnings) for a repeated pattern
+nobody has turned into a playbook yet, and draft it yourself. This is a
+mining pass, not a task queue: nothing you file here materializes work
+for anyone else, and there is no per-item CEO decision to wait on — each
+draft you author lands directly in the SAME pending-playbook curation
+queue your own approve_playbook/reject_playbook already review (a later
+cycle curates them, never this same call).
+{mining_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the mining context gathered for you above (recurring learning-
+   journal topics, existing playbook titles). It is server-assembled — you
+   cannot re-run those queries yourself, so start from it.
+3. Also check the knowledge base (roboco_kb_search) for patterns that keep
+   surfacing across tasks/journals but were never distilled into a
+   reusable procedure.
+4. For each candidate pattern, confirm it is REAL and REPEATED (at least
+   two independent instances) — a one-off is not a pattern — and that it
+   does NOT already duplicate an existing playbook title (listed above,
+   case-insensitive; the verb rejects a duplicate).
+5. propose_playbook_drafts(drafts=[...]) — call this EXACTLY ONCE with
+   1-{max_drafts} drafts. Each draft is an object with: title (<=200 chars,
+   must not duplicate an existing playbook), body (<=4000 chars — the
+   procedure itself: when to use it, the steps), pattern_evidence
+   (REQUIRED, <=500 chars — which repeated journal/learning pattern
+   justifies this playbook; a draft without it is noise, and the verb
+   rejects it).
+6. i_am_idle() — once filed. The drafts sit in the normal pending-playbook
+   curation queue; nothing here needs your further attention this cycle.
+
+Do NOT claim, plan, delegate, fix anything yourself, message any other
+agent, or call draft_playbook (you don't have it — use
+propose_playbook_drafts instead) — that is not your job here, and the
+gateway will reject those verbs.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

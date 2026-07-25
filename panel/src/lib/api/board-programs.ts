@@ -1,12 +1,15 @@
 import api from "./client";
 
 // ---------------------------------------------------------------------------
-// Board Programs — the generic registry (roadmap, x_feature today) the CEO
+// Board Programs — the generic registry (fourteen entries: the migrated
+// roadmap/x_feature cycles plus the twelve Phase-2/3 programs) the CEO
 // monitors and can run off-schedule. See roboco/api/routes/board_programs.py.
 // ---------------------------------------------------------------------------
 
 export interface BoardProgram {
   key: string;
+  title: string;
+  description: string;
   role: string;
   trigger: string;
   scope: string;

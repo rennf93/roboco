@@ -19,6 +19,9 @@ const SOURCE_LABELS: Record<XPost["source"], string> = {
   x_post: "Release post",
   x_reply: "Reply",
   x_feature: "Feature spotlight",
+  x_editorial: "Editorial post",
+  x_campaign: "War Room campaign",
+  x_barfly: "Conversation reply",
 };
 
 /** Focused X draft: editable body with the live 280 counter, the mention
@@ -84,6 +87,19 @@ export function XPostDetail({
         <blockquote className="break-words border-l-2 pl-2 text-xs text-muted-foreground">
           {post.mention.text}
         </blockquote>
+      )}
+      {post.barfly && (
+        <blockquote className="break-words border-l-2 pl-2 text-xs text-muted-foreground">
+          {post.barfly.text}
+        </blockquote>
+      )}
+
+      {post.campaign && (
+        <p className="text-xs text-muted-foreground">
+          {post.campaign.stage_label} (#{post.campaign.sequence}) of &quot;
+          {post.campaign.campaign_name}&quot; — recommended{" "}
+          {new Date(post.campaign.publish_after).toLocaleString()}
+        </p>
       )}
 
       <div className="space-y-1">

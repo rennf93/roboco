@@ -33,6 +33,7 @@ from roboco.services import board_programs as bp_module
 from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.task import (
+    X_BARFLY_SOURCE,
     X_FEATURE_SOURCE,
     X_POST_SOURCE,
     X_REPLY_SOURCE,
@@ -79,13 +80,17 @@ class _StubClient(XClient):
         self._posted = posted
         self._tweet_id = tweet_id
         self.calls: list[str] = []
+        self.reply_targets: list[str | None] = []
 
     @property
     def configured(self) -> bool:
         return True
 
-    async def post_tweet(self, text: str) -> XPostResult:
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
         self.calls.append(text)
+        self.reply_targets.append(in_reply_to_tweet_id)
         if not self._posted:
             return XPostResult(posted=False, tweet_id=None, detail="rejected by X")
         return XPostResult(posted=True, tweet_id=self._tweet_id, detail="posted")
@@ -94,6 +99,10 @@ class _StubClient(XClient):
         self, since_id: str | None, max_results: int
     ) -> list[XMention]:
         _ = (since_id, max_results)
+        return []
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
         return []
 
 
@@ -276,14 +285,20 @@ async def test_approve_no_credentials_result(db_session: AsyncSession) -> None:
         def configured(self) -> bool:
             return False
 
-        async def post_tweet(self, text: str) -> XPostResult:
-            _ = text
+        async def post_tweet(
+            self, text: str, *, in_reply_to_tweet_id: str | None = None
+        ) -> XPostResult:
+            _ = (text, in_reply_to_tweet_id)
             return XPostResult(posted=False, tweet_id=None, detail="no creds")
 
         async def fetch_mentions(
             self, since_id: str | None, max_results: int
         ) -> list[XMention]:
             _ = (since_id, max_results)
+            return []
+
+        async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+            _ = (query, max_results)
             return []
 
     _ = no_creds_client
@@ -484,6 +499,59 @@ async def test_list_open_posts_includes_feature_spotlight_source(
     db_session: AsyncSession,
 ) -> None:
     task = await _seed_draft(db_session, source=X_FEATURE_SOURCE)
+    open_posts = await _svc(db_session).list_open_posts()
+    ids = {t.id for t in open_posts}
+    assert task.id in ids
+
+
+@pytest.mark.asyncio
+async def test_approve_posts_barfly_draft_as_a_reply(db_session: AsyncSession) -> None:
+    """An x_barfly draft's carried tweet_id (barfly_reply_ref) threads
+    through to post_tweet's in_reply_to_tweet_id — the CEO's approve posts
+    it as an actual reply, not a standalone tweet."""
+    task = await _seed_draft(db_session, source=X_BARFLY_SOURCE)
+    markers.set_barfly_reply_ref(
+        task,
+        {
+            "tweet_id": "555",
+            "author_handle": "someone",
+            "text": "we should build a multi-agent org",
+            "rationale": "directly relevant",
+        },
+    )
+    await db_session.flush()
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    assert client.reply_targets == ["555"]
+
+
+@pytest.mark.asyncio
+async def test_approve_plain_x_post_never_passes_a_reply_target(
+    db_session: AsyncSession,
+) -> None:
+    """A non-barfly source never threads in_reply_to_tweet_id — proves the
+    branch is source-gated, not accidentally always-on."""
+    task = await _seed_draft(db_session, source=X_POST_SOURCE)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        await _svc(db_session).approve(_id(task))
+    assert client.reply_targets == [None]
+
+
+@pytest.mark.asyncio
+async def test_list_open_posts_includes_barfly_source(db_session: AsyncSession) -> None:
+    task = await _seed_draft(db_session, source=X_BARFLY_SOURCE)
     open_posts = await _svc(db_session).list_open_posts()
     ids = {t.id for t in open_posts}
     assert task.id in ids

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
+import structlog
 from sqlalchemy import String, and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -668,7 +669,36 @@ X_FEATURE_EXPLORATION_SOURCE = "x_feature_exploration"
 # free.
 X_FEATURE_SOURCE = "x_feature"
 
-X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
+# Source tag for a materialized Megaphone editorial post — the HoM-authored
+# standing-editorial-calendar draft (dev-log threads, behind-the-scenes posts,
+# changelog highlights — spec §4). Added to X_SOURCES so it inherits every
+# existing consumer (XPostService, list_open_x_posts, the PM-dispatcher's
+# held-source skip) for free, mirroring X_FEATURE_SOURCE exactly — the
+# materializer IS the existing X held-draft queue, zero new approval surface.
+X_EDITORIAL_SOURCE = "x_editorial"
+
+# Source tag for one ordered post materialized from a War Room (Board Program)
+# campaign — teaser/launch/follow_up/spotlight, each carrying its own
+# publish_after guidance (x_campaign_ref marker). Added to X_SOURCES so it
+# inherits every existing consumer (XPostService, list_open_x_posts, the
+# PM-dispatcher's held-source skip) for free, mirroring X_FEATURE_SOURCE.
+X_CAMPAIGN_SOURCE = "x_campaign"
+
+# Source tag for a materialized Barfly (Board Program) reply draft — a
+# HoM-authored reply to a screened X conversation the search cycle found.
+# Added to X_SOURCES so it inherits XPostService (approve/reject),
+# list_open_x_posts/list_x_post_history, and the PM-dispatcher's held-source
+# skip for free, exactly like X_FEATURE_SOURCE.
+X_BARFLY_SOURCE = "x_barfly"
+
+X_SOURCES = (
+    X_POST_SOURCE,
+    X_REPLY_SOURCE,
+    X_FEATURE_SOURCE,
+    X_EDITORIAL_SOURCE,
+    X_CAMPAIGN_SOURCE,
+    X_BARFLY_SOURCE,
+)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
@@ -697,6 +727,181 @@ ROADMAP_SOURCE = "board_roadmap"
 # Source tag stamped on a task MATERIALIZED from an approved roadmap item
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
+
+# Source tag for a Pest Control (Board Program) exploration cycle: a PENDING
+# task the pest-control engine opens for the Product Owner to hunt latent
+# defects (findings-ledger clusters, rework hotspots) in an opted-in project
+# and author evidence-backed bug drafts (the ``propose_bug_hunt`` content
+# verb). Mirrors ROADMAP_SOURCE: IS dispatched (one-shot PO spawn) but never
+# rides the delivery lifecycle; items materialize into BACKLOG only via the
+# CEO's per-item approve (source=PEST_CONTROL_ITEM_SOURCE below).
+PEST_CONTROL_SOURCE = "board_pest_control"
+
+# Source tag stamped on a task MATERIALIZED from an approved pest-hunt item
+# (distinct from PEST_CONTROL_SOURCE, which tags the held exploration cycle).
+PEST_CONTROL_ITEM_SOURCE = "pest_control"
+
+# Source tag for a Periscope (Board Program) exploration cycle: a PENDING task
+# the periscope engine opens for the Head of Marketing to research the market
+# (competitors, adjacent-tool releases, positioning shifts) and author a brief
+# via the ``propose_market_brief`` content verb. Org-scoped (no project
+# targeting — it reads the market, not a repo) and, like X_FEATURE_
+# EXPLORATION_SOURCE, complete-at-propose: a report has no per-item CEO
+# decision, so no separate materialized-item source exists for it.
+PERISCOPE_SOURCE = "board_periscope"
+
+# Source tag for a Coroner (Board Program) postmortem-exploration task: the
+# EVENT-triggered autopsy the Auditor authors (spec §4) when an incident task
+# bounces >=3x, is cancelled after work started, or is budget-blocked.
+# Dispatched (one-shot Auditor spawn), never rides the delivery lifecycle, and
+# — unlike ROADMAP_SOURCE/PEST_CONTROL_SOURCE — has no separate materialized-
+# item source: a single ``propose_postmortem`` call completes it in place
+# (mirrors X_FEATURE_EXPLORATION_SOURCE's atomic-complete shape, not the
+# stays-open-for-per-item-decisions roadmap/pest-control shape).
+CORONER_SOURCE = "board_coroner"
+
+# Source tag for a Scales (Board Program) portfolio-rebalance exploration
+# cycle: a PENDING task the scales engine opens for the Product Owner to
+# review the live backlog against the charter and author re-priority /
+# cancellation drafts (the ``propose_rebalance`` content verb). Org-scoped
+# (spec §4: it reads the portfolio, not one repo) but IS dispatched
+# (one-shot PO spawn) and never rides the delivery lifecycle. Mirrors
+# ROADMAP_SOURCE/PEST_CONTROL_SOURCE's stays-open-for-per-item-decisions
+# shape — unlike them, an approved item never materializes a NEW task: it
+# MUTATES a live one (reprioritize) or cancels it, so there is no separate
+# "materialized item" source.
+SCALES_SOURCE = "board_scales"
+
+# Source tag for a War Room (Board Program) campaign-planning exploration: a
+# PENDING task the War Room engine opens for the Head of Marketing to design
+# an ordered campaign (teaser -> launch -> follow-up -> spotlight) and author
+# it via the ``propose_campaign`` content verb. EVENT-triggered (spec §4:
+# release-publish or a CEO "run now" call, never a cron cadence) and, like
+# CORONER_SOURCE/PERISCOPE_SOURCE, complete-at-propose: one call materializes
+# every post and completes the task in the same step — no separate
+# materialized-item source exists (each post lands directly under
+# X_CAMPAIGN_SOURCE in roboco.services.x_engine).
+WAR_ROOM_SOURCE = "board_war_room"
+
+# Coroner's bounce trigger (spec §4): a task that has bounced this many times
+# into needs_revision gets one autopsy attempt.
+_CORONER_BOUNCE_THRESHOLD = 3
+
+
+_module_log = structlog.get_logger()
+
+
+async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
+    """Best-effort Coroner autopsy trigger for a task's 3rd bounce.
+
+    Scheduled via ``asyncio.create_task`` from the SYNC
+    ``_emit_status_transition_audit`` chokepoint, so this opens its OWN fresh
+    DB session rather than reusing the caller's mid-transaction one — the
+    caller's transaction may still roll back after this fires (the same
+    accepted small race every other fire-and-forget hook in this module
+    carries, e.g. the lifecycle-event indexer), which would rarely misfire an
+    autopsy on a bounce that never really landed. ``CoronerEngine.
+    open_for_incident`` itself is armed+dedup-gated, so a misfire is at worst
+    a wasted, no-op autopsy spawn, never a duplicate/live one.
+    """
+    from roboco.db.base import get_db_context
+    from roboco.services.coroner_engine import get_coroner_engine
+
+    try:
+        async with get_db_context() as db:
+            await get_coroner_engine(db).open_for_incident(task_id, kind="bounced")
+            await db.commit()
+    except Exception:
+        _module_log.warning(
+            "coroner: bounce hook failed (best-effort)", task_id=str(task_id)
+        )
+
+
+# Source tag for a Sentinel (Board Program) exploration cycle: a PENDING task
+# the sentinel engine opens for the Auditor to assess org-wide quality drift
+# (waiver-accumulation trends, conventions-violation hotspots, docs/map
+# staleness, budget anomalies) and file ONE "state of quality" report via the
+# ``propose_quality_report`` content verb. Org-scoped (no project targeting)
+# and, like PERISCOPE_SOURCE, complete-at-propose: a report has no per-item
+# CEO decision, so no separate materialized-item source exists for it.
+SENTINEL_SOURCE = "board_sentinel"
+
+# Source tag for a Spackle (Board Program) exploration cycle: a PENDING task
+# the spackle engine opens for the Product Owner to audit an opted-in
+# project's half-shipped surface area (API routes with no panel surface and
+# vice versa, armed flags with no docs, docs promises the code doesn't keep,
+# coverage holes, dead-end panel tabs) and author evidence-backed gap-fill
+# drafts (the ``propose_gap_fill`` content verb). Mirrors PEST_CONTROL_SOURCE
+# exactly: IS dispatched (one-shot PO spawn) but never rides the delivery
+# lifecycle; items materialize into BACKLOG only via the CEO's per-item
+# approve (source=SPACKLE_ITEM_SOURCE below).
+SPACKLE_SOURCE = "board_spackle"
+
+# Source tag stamped on a task MATERIALIZED from an approved gap-fill item
+# (distinct from SPACKLE_SOURCE, which tags the held exploration cycle).
+SPACKLE_ITEM_SOURCE = "spackle"
+
+# Source tag for a Mirror (Board Program) exploration cycle: a PENDING task
+# the mirror engine opens for the Head of Marketing to audit an opted-in
+# project's messaging surfaces (README, docs-site, website) against the
+# charter and shipped reality, and author evidence-backed messaging-fix
+# drafts (the ``propose_messaging_fixes`` content verb). Mirrors
+# SPACKLE_SOURCE exactly: IS dispatched (one-shot HoM spawn) but never rides
+# the delivery lifecycle; items materialize into BACKLOG only via the CEO's
+# per-item approve (source=MIRROR_ITEM_SOURCE below).
+MIRROR_SOURCE = "board_mirror"
+
+# Source tag stamped on a task MATERIALIZED from an approved messaging-fix
+# item (distinct from MIRROR_SOURCE, which tags the held exploration cycle).
+MIRROR_ITEM_SOURCE = "mirror"
+
+# Source tag for a Megaphone (Board Program) exploration cycle: a PENDING task
+# the megaphone engine opens for the Head of Marketing to pick ONE angle off
+# the server-assembled shipped-this-week digest and author a post via the
+# ``propose_editorial_post`` content verb. Org-scoped (no project targeting —
+# it reads the org's own shipped-task/changelog history, not a repo) and,
+# like X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: the materializer IS
+# the existing X held-draft queue (source=X_EDITORIAL_SOURCE above), so there
+# is no separate per-item CEO decision to leave the exploration task open for.
+MEGAPHONE_SOURCE = "board_megaphone"
+
+# Source tag for a Librarian (Board Program) exploration cycle: a PENDING
+# task the librarian engine opens for the Auditor to mine journals/learnings
+# for repeated patterns nobody has turned into a playbook yet and draft 1-3
+# of them via the ``propose_playbook_drafts`` content verb. Org-scoped (spec
+# §4: it mines org-wide journal/learning data, not one repo) and, like
+# PERISCOPE_SOURCE/SENTINEL_SOURCE, complete-at-propose: each draft is
+# already a real PlaybookTable row riding the normal pending-playbook
+# curation queue, so there is no separate materialized-item source.
+LIBRARIAN_SOURCE = "board_librarian"
+
+# Source tag for a Barfly (Board Program) conversation-reply exploration
+# cycle: a PENDING task the barfly engine opens for the Head of Marketing,
+# carrying screened candidate X conversations (search results — RoboCo is
+# relevant but unmentioned) for the ``propose_conversation_replies`` content
+# verb. Org-scoped (spec §4: it searches X, not a repo) and, like
+# PERISCOPE_SOURCE/X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: each
+# approved-shape reply materializes its OWN held draft (source=X_BARFLY_SOURCE
+# above) in the same call, so there is no per-item CEO decision on THIS task
+# — the CEO instead decides each materialized draft in the existing X post
+# queue.
+BARFLY_SOURCE = "board_barfly"
+
+# Source tag for a Dogfood (Board Program) exploration cycle: a PENDING task
+# the dogfood engine opens for the Product Owner to walk an opted-in
+# project's live surfaces (panel via Playwright, docs site, Telegram flow) as
+# a user and author evidence-backed UX-friction drafts (the
+# ``propose_friction_fixes`` content verb). Mirrors SPACKLE_SOURCE exactly:
+# IS dispatched (one-shot PO spawn) but never rides the delivery lifecycle;
+# items materialize into BACKLOG only via the CEO's per-item approve
+# (source=DOGFOOD_ITEM_SOURCE below). EVENT-triggered (a release-publish hook
+# or a CEO "run now"), never cron — the one program whose spawn also gets the
+# playwright MCP (see AgentOrchestrator._is_dogfood_spawn).
+DOGFOOD_SOURCE = "board_dogfood"
+
+# Source tag stamped on a task MATERIALIZED from an approved friction-fix
+# item (distinct from DOGFOOD_SOURCE, which tags the held exploration cycle).
+DOGFOOD_ITEM_SOURCE = "dogfood"
 
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
@@ -957,6 +1162,7 @@ class TaskService(BaseService):
             and from_status != TaskStatus.NEEDS_REVISION.value
         ):
             task.revision_count = (task.revision_count or 0) + 1
+            self._maybe_schedule_coroner_bounce_hook(task)
 
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
@@ -992,6 +1198,35 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
+        ONCE, at the 3rd bounce — not on every later re-bounce, which would
+        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
+        Best-effort, fire-and-forget on a FRESH DB session (this method is
+        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
+        docstring for the accepted small race this implies) so a hook
+        failure — or the enclosing transaction later rolling back — can
+        never fail the transition that got us here. Split out of
+        ``_emit_status_transition_audit`` to keep its own complexity down
+        (xenon budget)."""
+        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            # Scheduling itself failing (e.g. no running event loop) must
+            # never break the transition already recorded above —
+            # _fire_coroner_bounce_hook's own body is already try/excepted
+            # for everything past this point.
+            _module_log.warning(
+                "coroner: bounce hook scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
 
     def _touch_vault_frontmatter(
         self, task: TaskTable, *, to_status: str, team: str
@@ -1133,6 +1368,33 @@ class TaskService(BaseService):
         except Exception as e:
             self.log.warning(
                 "Auditor rework alert failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
+        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
+
+        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
+        bounce hook, ``cancel`` is already async) right after the transition
+        flushes, for the top-level task the caller asked to cancel — not each
+        cascade-cancelled descendant, so a big-subtree cancel opens at most
+        one autopsy attempt. "Work started" is commits or a work session ever
+        having existed on this task; ``CoronerEngine.open_for_incident`` does
+        its own armed+dedup gating, so a false-positive call here is a cheap
+        no-op. Best-effort: never lets a hook failure break the cancel.
+        """
+        if not (task.commits or task.work_session_id is not None):
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                require_uuid(task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
                 task_id=str(task.id),
                 error=str(e),
             )
@@ -1868,6 +2130,98 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
+        """Non-terminal pest-control exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_bug_hunt``); ordered oldest-first.
+        Mirrors ``list_open_roadmap_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PEST_CONTROL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_coroner_cycles(self) -> list[TaskTable]:
+        """Non-terminal Coroner postmortem-exploration tasks — the one-open-
+        autopsy-at-a-time dedup basis. Mirrors ``list_open_pest_control_cycles``;
+        unlike it there is no separate authored-vs-not split (``propose_
+        postmortem`` completes the task atomically), so this is purely the
+        dedup gate, not also a panel-queue basis."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_spackle_cycles(self) -> list[TaskTable]:
+        """Non-terminal spackle exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_gap_fill``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SPACKLE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_mirror_cycles(self) -> list[TaskTable]:
+        """Non-terminal mirror exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Head of
+        Marketing authors it (``propose_messaging_fixes``); ordered
+        oldest-first. Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MIRROR_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
+        """Non-terminal dogfood exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_friction_fixes``); ordered oldest-first.
+        Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == DOGFOOD_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_coroner_postmortems(
+        self, limit: int = 50
+    ) -> list[TaskTable]:
+        """Completed Coroner postmortem tasks, newest first — backs the
+        panel's read-only Postmortems list."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def list_open_feature_explorations(self) -> list[TaskTable]:
         """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
         dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
@@ -1878,6 +2232,82 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_periscope_cycles(self) -> list[TaskTable]:
+        """Non-terminal Periscope exploration tasks — the one-open-cycle dedup
+        + ``propose_market_brief``'s task lookup. Mirrors
+        ``list_open_feature_explorations``: complete-at-propose, so a task
+        found here is always pre-brief (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_periscope_briefs(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Periscope exploration tasks (each carries a ``market_
+        brief`` marker) — the panel's Market Briefs list + the roadmap
+        prompt's "latest brief" injection basis. Newest-first, bounded by
+        ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
+        """Non-terminal Megaphone exploration tasks — the one-open-cycle dedup
+        + ``propose_editorial_post``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-draft (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MEGAPHONE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
+        """Non-terminal Sentinel exploration tasks — the one-open-cycle dedup
+        + ``propose_quality_report``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-report (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_sentinel_reports(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Sentinel exploration tasks (each carries a
+        ``quality_report`` marker) — the panel's Quality Reports list basis.
+        Newest-first, bounded by ``limit``. Mirrors ``list_periscope_briefs``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -1897,6 +2327,99 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
+
+    async def list_open_scales_cycles(self) -> list[TaskTable]:
+        """Non-terminal Scales exploration tasks — the one-open-cycle dedup +
+        panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_rebalance``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SCALES_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_librarian_cycles(self) -> list[TaskTable]:
+        """Non-terminal Librarian exploration tasks — the one-open-cycle
+        dedup + ``propose_playbook_drafts``'s task lookup. Mirrors
+        ``list_open_sentinel_cycles``: complete-at-propose, so a task found
+        here is always pre-drafts (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == LIBRARIAN_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_war_room_cycles(self) -> list[TaskTable]:
+        """Non-terminal War Room campaign-planning exploration tasks — the
+        one-open-campaign-at-a-time dedup basis. Mirrors
+        ``list_open_coroner_cycles``: complete-at-propose (``propose_campaign``
+        completes the task atomically), so this is purely the dedup gate, not
+        also a panel-queue basis — the materialized posts themselves live
+        under X_CAMPAIGN_SOURCE and ride the normal X post queue."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == WAR_ROOM_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_barfly_cycles(self) -> list[TaskTable]:
+        """Non-terminal Barfly exploration tasks — the one-open-cycle dedup +
+        ``propose_conversation_replies``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-authored."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == BARFLY_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def resolve_scales_task_ref(self, ref: str) -> TaskTable | None:
+        """Resolve a Scales rebalance item's ``task_ref`` — an id8 prefix or
+        an exact task title — to a live BACKLOG/PENDING task.
+
+        Mirrors the revision-findings ledger's "by id or exact text" match
+        (``unmatched_criteria``), applied to tasks instead of acceptance
+        criteria: an id8 prefix is tried first (the ``search_tasks`` id-cast
+        idiom), then an exact title match. None when nothing live matches —
+        the caller (``propose_rebalance``) rejects the item naming the ref.
+        """
+        ref = ref.strip()
+        if not ref:
+            return None
+        live = TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
+        by_id = await self.session.execute(
+            select(TaskTable)
+            .where(live, cast("Any", TaskTable.id).cast(String).ilike(f"{ref}%"))
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        task = by_id.scalar_one_or_none()
+        if task is not None:
+            return task
+        by_title = await self.session.execute(
+            select(TaskTable)
+            .where(live, TaskTable.title == ref)
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        return by_title.scalar_one_or_none()
 
     async def list_open_vault_note_drafts(self) -> list[TaskTable]:
         """Vault-note drafts still awaiting board review / CEO approval — the
@@ -7531,6 +8054,7 @@ class TaskService(BaseService):
         await self._close_task_pr_best_effort(task)
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
+        await self._alert_coroner_of_cancel(task)
 
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate

@@ -273,8 +273,10 @@ class ReleaseProposalService(BaseService):
                 # below are best-effort side effects; the caller commits them.
                 await self.session.commit()
                 await self._draft_x_post(report, release_project_id)
+                await self._draft_war_room(report, release_project_id)
                 await self._draft_video(report, release_project_id)
                 await self._draft_docs_update(report)
+                await self._draft_dogfood_walk()
             return result
         finally:
             await self._finalize_release_lock(
@@ -306,6 +308,34 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("x-post draft failed (best-effort): %s", exc)
+
+    async def _draft_war_room(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
+        """Hand the just-published release to the War Room engine for a held
+        campaign-planning exploration (best-effort — never raises into
+        approve(); an origination failure must not affect the release's
+        already-succeeded publish). Off/no-creds/dedup-blocked is itself a
+        no-op inside the engine (``WarRoomEngine.open_for_release``), mirrors
+        ``_draft_x_post``. Reuses the same curated highlights as the release
+        post so the campaign's brief and the announcement tweet never
+        disagree on what shipped."""
+        try:
+            from roboco.services.war_room_engine import get_war_room_engine
+            from roboco.services.x_engine import changelog_highlights
+
+            highlights = changelog_highlights(report.drafted_changelog) or list(
+                report.change_summary
+            )
+            await get_war_room_engine(self.session).open_for_release(
+                version=report.proposed_version,
+                highlights=highlights,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "war-room campaign origination failed (best-effort): %s", exc
+            )
 
     async def _draft_video(
         self, report: ReleaseReadinessReport, project_id: UUID | None
@@ -341,6 +371,21 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("docs-sync task origination failed (best-effort): %s", exc)
+
+    async def _draft_dogfood_walk(self) -> None:
+        """Trigger a Dogfood board-program cycle off a just-published release
+        (best-effort — never raises into approve(); a trigger failure must
+        not affect the release's already-succeeded publish). Armed, scope,
+        and one-open-cycle dedup all live in ``BoardProgramEngine.
+        open_program_cycle`` — a Dogfood cycle rotates across opted-in
+        projects on its own (see ``DogfoodEngine.run_cycle``), so this hook
+        carries no project targeting, unlike the release-scoped drafts above."""
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            await get_board_program_engine(self.session).open_program_cycle("dogfood")
+        except Exception as exc:
+            logger.warning("dogfood walk trigger failed (best-effort): %s", exc)
 
     async def _finalize_release_lock(
         self,

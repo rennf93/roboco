@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import urlparse
 
 import structlog
 
@@ -29,7 +30,9 @@ from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.foundation.policy.journaling import Scope as _Scope
+from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.commit_validator import validate_commit_message
@@ -328,9 +331,80 @@ _PITCH_ROLES: frozenset[str] = frozenset({"product_owner", "head_marketing"})
 # spec's non-goals).
 _ROADMAP_ROLES: frozenset[str] = frozenset({"product_owner"})
 
+# Pest Control (Board Program) bug hunts are Product-Owner-only, mirroring
+# _ROADMAP_ROLES.
+_PEST_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Spackle (Board Program) gap-fill audits are Product-Owner-only, mirroring
+# _PEST_ROLES.
+_GAP_FILL_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Mirror (Board Program) messaging-fix audits are Head-of-Marketing-only —
+# the mirror image of _GAP_FILL_ROLES.
+_MESSAGING_FIXES_ROLES: frozenset[str] = frozenset({"head_marketing"})
+
 # Feature spotlights are HoM-authored — the Product Owner stays out of this
 # cycle (mirrors _ROADMAP_ROLES's PO-only symmetry, reversed).
 _FEATURE_SPOTLIGHT_ROLES: frozenset[str] = frozenset({"head_marketing"})
+
+# Periscope market briefs are HoM-authored, mirroring _FEATURE_SPOTLIGHT_ROLES.
+_PERISCOPE_ROLES: frozenset[str] = frozenset({"head_marketing"})
+
+# Megaphone editorial posts are HoM-authored, mirroring _PERISCOPE_ROLES.
+_MEGAPHONE_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_EDITORIAL_ANGLES: frozenset[str] = frozenset(
+    {"dev_log", "behind_scenes", "changelog_highlight", "other"}
+)
+_EDITORIAL_RATIONALE_MAX_CHARS = 300
+
+# Barfly (Board Program) conversation replies are HoM-authored, mirroring
+# _PERISCOPE_ROLES.
+_BARFLY_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_BARFLY_RATIONALE_MAX_CHARS = 300
+
+# Market-brief free-text caps (spec §4 / Task 2). ``source_url`` is validated
+# separately (a URL, not soup-checked prose) — see _reject_market_brief_url.
+_MARKET_BRIEF_HEADLINE_MAX_CHARS = 200
+_MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS = 500
+_MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS = 300
+_MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS = 300
+_MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS = 500
+_MARKET_BRIEF_LIST_MAX_ITEMS = 5  # threats / opportunities cap
+_MARKET_BRIEF_LIST_ITEM_MAX_CHARS = 300
+
+# Coroner postmortems are Auditor-authored — the one program the Auditor
+# originates content for (spec §4), distinct from its curation-only
+# approve/reject_playbook verbs.
+_CORONER_ROLES: frozenset[str] = frozenset({"auditor"})
+_CORONER_PROCESS_CHANGE_KINDS: frozenset[str] = frozenset(
+    {"playbook", "prompt_fix", "conventions_rule", "other"}
+)
+_CORONER_INCIDENT_SUMMARY_MAX_CHARS = 500
+_CORONER_ROOT_CAUSE_MAX_CHARS = 800
+_CORONER_PROCESS_CHANGE_DESC_MAX_CHARS = 800
+
+# Sentinel (Board Program) quality reports are Auditor-authored — a bounded
+# expansion mirroring _PEST_ROLES/_PERISCOPE_ROLES.
+_SENTINEL_ROLES: frozenset[str] = frozenset({"auditor"})
+
+# Quality-report free-text caps (spec §4).
+_QUALITY_REPORT_HEADLINE_MAX_CHARS = 200
+_QUALITY_REPORT_ITEM_OBSERVATION_MAX_CHARS = 500
+_QUALITY_REPORT_ITEM_EVIDENCE_MAX_CHARS = 500
+_QUALITY_REPORT_ITEM_SUGGESTED_ACTION_MAX_CHARS = 300
+_QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS = 800
+_QUALITY_REPORT_AREAS: frozenset[str] = frozenset(
+    {"waivers", "findings", "conventions", "budget", "docs", "other"}
+)
+
+# Librarian (Board Program) playbook drafts are Auditor-authored, mirroring
+# _SENTINEL_ROLES. Each draft is created directly via PlaybookService (the
+# Coroner _draft_coroner_playbook precedent) — the Auditor does NOT also gain
+# draft_playbook (see _DRAFT_PLAYBOOK_ROLES above / role_config.py).
+_LIBRARIAN_ROLES: frozenset[str] = frozenset({"auditor"})
+_PLAYBOOK_DRAFT_TITLE_MAX_CHARS = 200  # matches PlaybookCreate.title's own cap
+_PLAYBOOK_DRAFT_BODY_MAX_CHARS = 4000
+_PLAYBOOK_DRAFT_PATTERN_EVIDENCE_MAX_CHARS = 500
 
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
@@ -341,7 +415,93 @@ _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("rationale", 8),
 )
 
+# Text fields on a pest-hunt item draft. ``evidence`` is the load-bearing one
+# (spec §4: "a bug hunt without evidence is noise") — required, substantive,
+# and capped so a runaway dump can't blow out the marker payload.
+_PEST_HUNT_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_PEST_HUNT_EVIDENCE_MAX_CHARS = 2000
+
+# Text fields on a gap-fill item draft. ``evidence`` is the load-bearing one
+# (spec §4: evidence must name BOTH sides of the gap — e.g. the route that
+# exists and the panel surface that doesn't) — required, substantive, and
+# capped so a runaway dump can't blow out the marker payload. Mirrors
+# _PEST_HUNT_ITEM_TEXT_FIELDS.
+_GAP_FILL_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_GAP_FILL_EVIDENCE_MAX_CHARS = 2000
+
+# Scales (Board Program) rebalance plans are Product-Owner-only, mirroring
+# _PEST_ROLES. Unlike a roadmap/pest-control item, a rebalance item never
+# drafts a NEW task — it references a LIVE one (``task_ref``) that approval
+# mutates (reprioritize) or cancels, so there is no team/project-slug/
+# acceptance-criteria shape to validate here, just the action + rationale.
+_SCALES_ROLES: frozenset[str] = frozenset({"product_owner"})
+_SCALES_ACTIONS: frozenset[str] = frozenset({"reprioritize", "cancel"})
+_SCALES_VALID_PRIORITIES: frozenset[int] = frozenset({0, 1, 2, 3})
+_SCALES_RATIONALE_MAX_CHARS = 500
+
+# Text fields on a messaging-fix item draft. ``evidence`` is the load-bearing
+# one (spec §4: must name the drifted claim AND the reality it contradicts)
+# — required, substantive, and capped so a runaway dump can't blow out the
+# marker payload. Mirrors _GAP_FILL_ITEM_TEXT_FIELDS.
+_MESSAGING_FIX_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_MESSAGING_FIX_EVIDENCE_MAX_CHARS = 2000
+
+# War Room (Board Program) campaigns are HoM-authored, mirroring
+# _FEATURE_SPOTLIGHT_ROLES/_PERISCOPE_ROLES.
+_WAR_ROOM_ROLES: frozenset[str] = frozenset({"head_marketing"})
+_CAMPAIGN_STAGE_LABELS: frozenset[str] = frozenset(
+    {"teaser", "launch", "follow_up", "spotlight", "other"}
+)
+_CAMPAIGN_NAME_MAX_CHARS = 100
+_CAMPAIGN_MIN_POSTS = 2
+_CAMPAIGN_MAX_POSTS = 6
+
+# Dogfood (Board Program) friction-fix audits are Product-Owner-only,
+# mirroring _GAP_FILL_ROLES.
+_DOGFOOD_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Text fields on a friction-fix item draft. ``evidence`` is the load-bearing
+# one (spec §4: the actual walked path — clicks/pages — plus what broke or
+# felt wrong, prose, no screenshots) — required, substantive, and capped so
+# a runaway dump can't blow out the marker payload. Mirrors
+# _GAP_FILL_ITEM_TEXT_FIELDS.
+_FRICTION_FIXES_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_FRICTION_FIXES_EVIDENCE_MAX_CHARS = 2000
+
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
+# The Auditor is deliberately NOT in this set — "auditor curates but does not
+# draft" is an enforced invariant (test_playbook_verbs.py). A Coroner
+# postmortem's playbook-kind process change is drafted through a DIFFERENT
+# path — directly via PlaybookService inside propose_postmortem, never this
+# do-verb (see _draft_coroner_playbook below) — so the invariant holds even
+# though the Auditor now originates playbook drafts by another route; that
+# draft rides the SAME pending-playbook curation queue every delivery-role
+# draft does, curated by the Auditor same as any other, never self-approved
+# inline.
 _DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter", "cell_pm", "main_pm"}
 )
@@ -402,6 +562,167 @@ def _normalize_roadmap_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
         "reject_reason": None,
         "materialized_task_id": None,
     }
+
+
+def _normalize_pest_hunt_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw pest-hunt item dict into the stored marker
+    shape. Mirrors ``_normalize_roadmap_item`` — ``id`` is server-assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_gap_fill_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw gap-fill item dict into the stored marker
+    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_scales_item(
+    idx: int, raw: dict[str, Any], target: Any
+) -> dict[str, Any]:
+    """Coerce a validated raw rebalance item dict + its resolved target task
+    into the stored marker shape. Mirrors ``_normalize_pest_hunt_item`` —
+    ``id`` is server-assigned. Unlike a pest-hunt item there is no draft to
+    normalize: ``target`` (resolved by ``TaskService.resolve_scales_task_ref``
+    before this is called) supplies the id/title actually acted on."""
+    action = str(raw["action"]).strip()
+    return {
+        "id": f"item-{idx}",
+        "task_ref": str(raw["task_ref"]).strip(),
+        "target_task_id": str(target.id),
+        "target_task_title": target.title,
+        "action": action,
+        "new_priority": raw.get("new_priority") if action == "reprioritize" else None,
+        "rationale": str(raw["rationale"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "executed_detail": None,
+    }
+
+
+def _normalize_messaging_fix_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw messaging-fix item dict into the stored marker
+    shape. Mirrors ``_normalize_gap_fill_item`` — ``id`` is server-assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_friction_fix_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw friction-fix item dict into the stored marker
+    shape. Mirrors ``_normalize_messaging_fix_item`` — ``id`` is server-
+    assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_market_brief_finding(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw market-brief finding into the stored marker
+    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned."""
+    return {
+        "id": f"finding-{idx}",
+        "claim": str(raw["claim"]).strip(),
+        "source_url": str(raw["source_url"]).strip(),
+        "relevance": str(raw["relevance"]).strip(),
+    }
+
+
+def _normalize_quality_report_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw quality-report item into the stored marker
+    shape. Mirrors ``_normalize_market_brief_finding`` — ``id`` is
+    server-assigned."""
+    return {
+        "id": f"item-{idx}",
+        "area": str(raw["area"]).strip(),
+        "observation": str(raw["observation"]).strip(),
+        "evidence": str(raw["evidence"]).strip(),
+        "suggested_action": str(raw["suggested_action"]).strip(),
+    }
+
+
+def _render_market_brief_for_screening(
+    headline: str,
+    findings: list[dict[str, Any]],
+    threats: list[str],
+    opportunities: list[str],
+    positioning_note: str,
+) -> str:
+    """One line per content piece — every line is independently checked by
+    ``screen_external_text``, so a single injected line among otherwise-clean
+    web-derived content is flagged without dropping the rest of the brief."""
+    lines = [f"Headline: {headline}"]
+    for f in findings:
+        lines.append(f"Finding: {f['claim']} (source: {f['source_url']})")
+        lines.append(f"Relevance: {f['relevance']}")
+    lines.extend(f"Threat: {t}" for t in threats)
+    lines.extend(f"Opportunity: {o}" for o in opportunities)
+    if positioning_note:
+        lines.append(f"Positioning: {positioning_note}")
+    return "\n".join(lines)
 
 
 class ContentActions:
@@ -1438,6 +1759,1139 @@ class ContentActions:
                 )
 
     @classmethod
+    def _reject_pest_hunt_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one pest-hunt item dict."""
+        for field, min_chars in _PEST_HUNT_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_pest_hunt_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        pest-hunt item dict — split from the text-fields loop above to keep
+        ``_reject_pest_hunt_item_fields`` under the xenon complexity budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _PEST_HUNT_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_PEST_HUNT_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_PEST_HUNT_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_pest_hunt_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one pest-hunt item dict. Mirrors ``_reject_roadmap_item_fields``."""
+        if rej := cls._reject_pest_hunt_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_pest_hunt_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_pest_hunt_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw pest-hunt item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for both item kinds."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_pest_hunt_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_pest_hunt_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw pest-hunt item dict; None when clean. Mirrors
+        ``_reject_roadmap_item``."""
+        if rej := self._reject_pest_hunt_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_pest_control_project(raw, idx)
+
+    async def _reject_unparticipating_pest_control_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        pest_control program (``"pest_control"`` absent from its
+        ``board_programs``) — the positive-gate mirror of
+        ``_reject_excluded_roadmap_project``'s ``!roadmap`` exclusion check:
+        project-scoped programs are opt-in, so the polarity flips.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as roadmap's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["pest_control"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the pest_control program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "pest_control on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_bug_hunt(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Pest Control bug hunt (1-N evidence-backed
+        item drafts, N = the registry's ``max_items_per_cycle``).
+
+        Persists the hunt onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the pest-control queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_roadmap`` — no top-level theme goal here,
+        just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _PEST_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a bug hunt; only the "
+                    "Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["pest_control"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a bug hunt needs 1-{max_items} item drafts, got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_pest_hunt_item(raw, idx):
+                return rej
+            normalized.append(_normalize_pest_hunt_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_pest_control_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_pest_hunt(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open pest-control exploration task assigned to you",
+                remediate=(
+                    "propose_bug_hunt only runs against an active exploration "
+                    "cycle spawned by the pest-control engine; wait for the "
+                    "next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_pest_hunt(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_pest_hunt_items(task, normalized)
+        return Envelope.ok(
+            status="pest_hunt_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the pest-control queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_pest_hunt_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_roadmap_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="pest_control",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "pest-control telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @staticmethod
+    def _reject_scales_item_action_and_priority(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate ``action`` + the conditional ``new_priority`` requirement
+        of one raw rebalance item dict — split out to keep
+        ``_reject_scales_item_shape`` under the xenon/PLR0911 budget."""
+        action = raw.get("action")
+        if action not in _SCALES_ACTIONS:
+            return Envelope.invalid_state(
+                message=f"item {idx} has an invalid action {action!r}",
+                remediate="action must be 'reprioritize' or 'cancel'",
+                context_briefing={},
+            )
+        if action != "reprioritize":
+            return None
+        new_priority = raw.get("new_priority")
+        if (
+            not isinstance(new_priority, int)
+            or isinstance(new_priority, bool)
+            or new_priority not in _SCALES_VALID_PRIORITIES
+        ):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} is 'reprioritize' but new_priority is {new_priority!r}"
+                ),
+                remediate=(
+                    "new_priority is required for a reprioritize item and must "
+                    "be one of 0 (P0/highest) .. 3 (P3/lowest)"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_scales_item_rationale(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the required ``rationale`` field — split out of
+        ``_reject_scales_item_shape`` to keep its own return-statement count
+        under the xenon/PLR0911 budget."""
+        rationale = raw.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'rationale'",
+                remediate=f"provide a substantive rationale for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            rationale, field=f"item {idx} rationale", min_chars=8
+        ):
+            return rej
+        if len(rationale) > _SCALES_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} rationale is {len(rationale)} chars, over the "
+                    f"{_SCALES_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s rationale to "
+                    f"{_SCALES_RATIONALE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_scales_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw rebalance item dict's shape/fields; None when
+        clean (before ``task_ref`` resolution, which needs the DB)."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with task_ref/action/"
+                    "new_priority/rationale"
+                ),
+                context_briefing={},
+            )
+        task_ref = raw.get("task_ref")
+        if not isinstance(task_ref, str) or not task_ref.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'task_ref'",
+                remediate=(
+                    f"provide the id8 or exact title of the live task item "
+                    f"{idx} targets"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_scales_item_action_and_priority(raw, idx):
+            return rej
+        return cls._reject_scales_item_rationale(raw, idx)
+
+    async def _reject_scales_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> tuple[Envelope | None, Any]:
+        """Validate one raw rebalance item, then resolve its ``task_ref``.
+
+        Returns ``(None, target_task)`` when clean, ``(rejection, None)``
+        otherwise. Resolution happens here (not a separate pass) since a
+        ``task_ref`` only makes sense checked against a real live task.
+        """
+        if rej := self._reject_scales_item_shape(raw, idx):
+            return rej, None
+        from roboco.services.task import get_task_service
+
+        target = await get_task_service(self.task.session).resolve_scales_task_ref(
+            str(raw["task_ref"]).strip()
+        )
+        if target is None:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"item {idx} task_ref {raw['task_ref']!r} does not "
+                        "resolve to a live BACKLOG/PENDING task"
+                    ),
+                    remediate=(
+                        f"item {idx}'s task_ref must be the id8 or exact title "
+                        "of a live BACKLOG/PENDING task"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        return None, target
+
+    async def propose_rebalance(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Scales portfolio-rebalance plan (1-N
+        re-priority/cancellation items against the LIVE backlog, N = the
+        registry's ``max_items_per_cycle``).
+
+        Persists the plan onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the Scales queue. One call per cycle: the exploration task
+        stays open (and this verb keeps refusing) until every item is
+        terminal. Unlike ``propose_roadmap``/``propose_bug_hunt`` an item
+        never drafts a NEW task — it references a LIVE one (``task_ref``,
+        resolved to a real BACKLOG/PENDING task here) that approval MUTATES
+        (reprioritize) or cancels, never creates.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _SCALES_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a rebalance plan; only the "
+                    "Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["scales"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a rebalance plan needs 1-{max_items} item drafts, got "
+                    f"{len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            rejection, target = await self._reject_scales_item(raw, idx)
+            if rejection is not None:
+                return rejection
+            normalized.append(_normalize_scales_item(idx, raw, target))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_scales_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_rebalance_plan(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open scales exploration task assigned to you",
+                remediate=(
+                    "propose_rebalance only runs against an active exploration "
+                    "cycle spawned by the scales engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_rebalance_plan(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_rebalance_items(task, normalized)
+        return Envelope.ok(
+            status="rebalance_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the Scales queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_rebalance_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="scales",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("target_task_title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scales telegram notify failed (best-effort)", error=str(exc)
+                )
+
+    @classmethod
+    def _reject_gap_fill_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one gap-fill item dict. Mirrors
+        ``_reject_pest_hunt_item_text_fields``."""
+        for field, min_chars in _GAP_FILL_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_gap_fill_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        gap-fill item dict — split from the text-fields loop above to keep
+        ``_reject_gap_fill_item_fields`` under the xenon complexity budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _GAP_FILL_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_GAP_FILL_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_GAP_FILL_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_gap_fill_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one gap-fill item dict. Mirrors ``_reject_pest_hunt_item_fields``."""
+        if rej := cls._reject_gap_fill_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_gap_fill_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_gap_fill_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw gap-fill item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for every item kind."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_gap_fill_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_gap_fill_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw gap-fill item dict; None when clean. Mirrors
+        ``_reject_pest_hunt_item``."""
+        if rej := self._reject_gap_fill_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_spackle_project(raw, idx)
+
+    async def _reject_unparticipating_spackle_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        spackle program (``"spackle"`` absent from its ``board_programs``) —
+        mirrors ``_reject_unparticipating_pest_control_project``.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as pest_control's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["spackle"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the spackle program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "spackle on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_gap_fill(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Spackle gap-fill audit (1-N evidence-backed
+        item drafts, N = the registry's ``max_items_per_cycle``).
+
+        Persists the audit onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the spackle queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_bug_hunt`` — no top-level theme goal
+        here, just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _GAP_FILL_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a gap-fill audit; only "
+                    "the Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["spackle"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a gap-fill audit needs 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_gap_fill_item(raw, idx):
+                return rej
+            normalized.append(_normalize_gap_fill_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_spackle_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_gap_fill(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open spackle exploration task assigned to you",
+                remediate=(
+                    "propose_gap_fill only runs against an active exploration "
+                    "cycle spawned by the spackle engine; wait for the next "
+                    "cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_gap_fill(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_gap_fill_items(task, normalized)
+        return Envelope.ok(
+            status="gap_fill_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the spackle queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_gap_fill_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="spackle",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "spackle telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @classmethod
+    def _reject_messaging_fix_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one messaging-fix item dict. Mirrors
+        ``_reject_gap_fill_item_text_fields``."""
+        for field, min_chars in _MESSAGING_FIX_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_messaging_fix_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        messaging-fix item dict — split from the text-fields loop above to
+        keep ``_reject_messaging_fix_item_fields`` under the xenon complexity
+        budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _MESSAGING_FIX_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_MESSAGING_FIX_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_MESSAGING_FIX_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_messaging_fix_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one messaging-fix item dict. Mirrors ``_reject_gap_fill_item_fields``."""
+        if rej := cls._reject_messaging_fix_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_messaging_fix_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_messaging_fix_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw messaging-fix item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for every item kind."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_messaging_fix_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_messaging_fix_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw messaging-fix item dict; None when clean. Mirrors
+        ``_reject_gap_fill_item``."""
+        if rej := self._reject_messaging_fix_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_mirror_project(raw, idx)
+
+    async def _reject_unparticipating_mirror_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        mirror program (``"mirror"`` absent from its ``board_programs``) —
+        mirrors ``_reject_unparticipating_spackle_project``.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as spackle's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["mirror"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the mirror program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "mirror on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_messaging_fixes(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Head of Marketing authors a Mirror positioning audit (1-N
+        evidence-backed item drafts, N = the registry's
+        ``max_items_per_cycle``).
+
+        Persists the audit onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the mirror queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_gap_fill`` — no top-level theme goal
+        here, just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _MESSAGING_FIXES_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose messaging fixes; only "
+                    "the Head of Marketing authors this audit"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["mirror"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a messaging-fixes audit needs 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_messaging_fix_item(raw, idx):
+                return rej
+            normalized.append(_normalize_messaging_fix_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_mirror_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_messaging_fixes(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open mirror exploration task assigned to you",
+                remediate=(
+                    "propose_messaging_fixes only runs against an active "
+                    "exploration cycle spawned by the mirror engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_messaging_fixes(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_messaging_fix_items(task, normalized)
+        return Envelope.ok(
+            status="messaging_fixes_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the mirror queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_messaging_fix_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_gap_fill_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="mirror",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "mirror telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @classmethod
+    def _reject_friction_fix_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one friction-fix item dict. Mirrors
+        ``_reject_messaging_fix_item_text_fields``."""
+        for field, min_chars in _FRICTION_FIXES_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_friction_fix_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        friction-fix item dict — split from the text-fields loop above to
+        keep ``_reject_friction_fix_item_fields`` under the xenon complexity
+        budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _FRICTION_FIXES_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_FRICTION_FIXES_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_FRICTION_FIXES_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_friction_fix_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one friction-fix item dict. Mirrors ``_reject_messaging_fix_item_fields``."""
+        if rej := cls._reject_friction_fix_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_friction_fix_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_friction_fix_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw friction-fix item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for every item kind."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_friction_fix_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_friction_fix_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw friction-fix item dict; None when clean. Mirrors
+        ``_reject_messaging_fix_item``."""
+        if rej := self._reject_friction_fix_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_dogfood_project(raw, idx)
+
+    async def _reject_unparticipating_dogfood_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        dogfood program (``"dogfood"`` absent from its ``board_programs``) —
+        mirrors ``_reject_unparticipating_mirror_project``.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as mirror's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["dogfood"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the dogfood program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "dogfood on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_friction_fixes(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Dogfood friction audit (1-N evidence-backed
+        item drafts, N = the registry's ``max_items_per_cycle``).
+
+        Persists the audit onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the dogfood queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_messaging_fixes`` — no top-level theme
+        goal here, just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _DOGFOOD_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose friction fixes; only "
+                    "the Product Owner authors this audit"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["dogfood"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a friction audit needs 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_friction_fix_item(raw, idx):
+                return rej
+            normalized.append(_normalize_friction_fix_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_dogfood_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_friction_fixes(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open dogfood exploration task assigned to you",
+                remediate=(
+                    "propose_friction_fixes only runs against an active "
+                    "exploration cycle spawned by the dogfood engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_friction_fixes(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_friction_fix_items(task, normalized)
+        return Envelope.ok(
+            status="friction_fixes_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the dogfood queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_friction_fix_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_messaging_fix_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="dogfood",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dogfood telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @classmethod
     def _reject_feature_spotlight_fields(
         cls, feature_slug: str, feature_title: str, body: str
     ) -> Envelope | None:
@@ -1606,6 +3060,1232 @@ class ContentActions:
         )
 
     @classmethod
+    def _reject_editorial_post_fields(
+        cls, angle: str, body: str, rationale: str
+    ) -> Envelope | None:
+        """Angle vocabulary + soup + 280-char validation for a Megaphone
+        draft's fields, collapsed into one caller-side check (keeps
+        propose_editorial_post's return-statement count under the
+        xenon/PLR0911 budget) — mirrors
+        ``_reject_feature_spotlight_fields``."""
+        if angle not in _EDITORIAL_ANGLES:
+            return Envelope.invalid_state(
+                message=f"angle {angle!r} is not a recognized editorial angle",
+                remediate=(
+                    "angle must be one of: " + ", ".join(sorted(_EDITORIAL_ANGLES))
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(body, field="body", min_chars=8):
+            return rej
+        if len(body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"body is {len(body)} chars, over the {MAX_TWEET_CHARS}-char "
+                    "tweet limit"
+                ),
+                remediate="shorten the post to 280 characters or fewer",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(rationale, field="rationale", min_chars=8):
+            return rej
+        if len(rationale) > _EDITORIAL_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"rationale is {len(rationale)} chars, over the "
+                    f"{_EDITORIAL_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the rationale",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_editorial_post(
+        self,
+        *,
+        agent_id: UUID,
+        angle: str = "",
+        body: str = "",
+        rationale: str = "",
+    ) -> Envelope:
+        """Head of Marketing authors ONE Megaphone editorial-calendar post.
+
+        Validates role, the angle vocabulary, the 280-char tweet limit, and
+        the rationale, then materializes the SAME held X-queue draft
+        ``propose_feature_spotlight`` uses (via ``XEngine.
+        materialize_editorial_post``, source=x_editorial) and completes the
+        caller's exploration task in the same call — a Megaphone post has no
+        per-item CEO decision to leave the exploration open for, mirroring
+        the x_feature complete-at-propose asymmetry. One call per cycle.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _MEGAPHONE_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose an editorial post; only "
+                    "the Head of Marketing does"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_editorial_post_fields(angle, body, rationale):
+            return rej
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_megaphone_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open megaphone exploration task assigned to you",
+                remediate=(
+                    "propose_editorial_post only runs against an active "
+                    "exploration spawned by the megaphone engine; wait for "
+                    "the next cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        new_task = await engine.materialize_editorial_post(
+            exploration_task=task, angle=angle, body=body, rationale=rationale
+        )
+        return Envelope.ok(
+            status="editorial_post_proposed",
+            task_id=str(new_task.id),
+            next="i_am_idle() — the CEO reviews the draft in the X post queue",
+            context_briefing={"angle": angle, "rationale": rationale},
+        )
+
+    @classmethod
+    def _reject_barfly_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw conversation-reply item dict's shape; None when
+        clean (before ``tweet_id`` resolution against the task's real
+        candidates, which needs the task in hand)."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with tweet_id/reply_body/rationale"
+                ),
+                context_briefing={},
+            )
+        tweet_id = raw.get("tweet_id")
+        if not isinstance(tweet_id, str) or not tweet_id.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'tweet_id'",
+                remediate=(
+                    f"item {idx}'s tweet_id must name one of the candidate "
+                    "conversations already on this task"
+                ),
+                context_briefing={},
+            )
+        reply_body = raw.get("reply_body")
+        if not isinstance(reply_body, str) or not reply_body.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'reply_body'",
+                remediate=f"provide a substantive reply_body for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            reply_body, field=f"item {idx} reply_body", min_chars=8
+        ):
+            return rej
+        if len(reply_body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} reply_body is {len(reply_body)} chars, over "
+                    f"the {MAX_TWEET_CHARS}-char tweet limit"
+                ),
+                remediate=f"shorten item {idx}'s reply_body to {MAX_TWEET_CHARS} chars",
+                context_briefing={},
+            )
+        return cls._reject_barfly_item_rationale(raw, idx)
+
+    @classmethod
+    def _reject_barfly_item_rationale(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the required ``rationale`` field — split out of
+        ``_reject_barfly_item_shape`` to keep its own return-statement count
+        under the xenon/PLR0911 budget."""
+        rationale = raw.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing 'rationale'",
+                remediate=f"provide a substantive rationale for item {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            rationale, field=f"item {idx} rationale", min_chars=8
+        ):
+            return rej
+        if len(rationale) > _BARFLY_RATIONALE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} rationale is {len(rationale)} chars, over "
+                    f"the {_BARFLY_RATIONALE_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten item {idx}'s rationale",
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_barfly_item_candidate(
+        raw: dict[str, Any], idx: int, candidates_by_id: dict[str, dict[str, Any]]
+    ) -> Envelope | None:
+        """Reject a ``tweet_id`` that doesn't name one of THIS cycle's real
+        screened candidates — the agent must reply to what was actually
+        found, never invent a tweet. Split out so
+        ``_reject_barfly_item``'s xenon budget stays flat."""
+        tweet_id = str(raw["tweet_id"]).strip()
+        if tweet_id in candidates_by_id:
+            return None
+        valid = ", ".join(sorted(candidates_by_id)) or "(none)"
+        return Envelope.invalid_state(
+            message=(
+                f"item {idx} tweet_id {tweet_id!r} does not match any "
+                "candidate conversation on this task"
+            ),
+            remediate=f"item {idx}'s tweet_id must be one of: {valid}",
+            context_briefing={},
+        )
+
+    def _reject_barfly_caller_and_bounds(
+        self, role: str, items: list[dict[str, Any]], max_items: int
+    ) -> Envelope | None:
+        """Role gate + item-count bounds — split out so the main verb's own
+        branch count stays flat (xenon budget)."""
+        if role not in _BARFLY_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose conversation replies; only "
+                    "the Head of Marketing authors them"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"conversation replies need 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} drafted replies",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_barfly_item_shapes(cls, items: list[dict[str, Any]]) -> Envelope | None:
+        """Pure, DB-free pass over every item's shape — split out so the
+        main verb's own branch count stays flat (xenon budget)."""
+        for idx, raw in enumerate(items):
+            if rej := cls._reject_barfly_item_shape(raw, idx):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_barfly_item_candidates(
+        items: list[dict[str, Any]], candidates_by_id: dict[str, dict[str, Any]]
+    ) -> Envelope | None:
+        """Second pass, once the exploration task (and so its real
+        candidates) is in hand — split out so the main verb's own branch
+        count stays flat (xenon budget)."""
+        for idx, raw in enumerate(items):
+            if rej := ContentActions._reject_barfly_item_candidate(
+                raw, idx, candidates_by_id
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    async def _materialize_barfly_replies(
+        engine: Any,
+        task: Any,
+        items: list[dict[str, Any]],
+        candidates_by_id: dict[str, dict[str, Any]],
+    ) -> list[str]:
+        """One held draft per approved-shape item, through the shared
+        ``_originate_post`` chokepoint — split out so the main verb's own
+        branch count stays flat (xenon budget)."""
+        materialized_ids: list[str] = []
+        for raw in items:
+            candidate = candidates_by_id[str(raw["tweet_id"]).strip()]
+            new_task = await engine.materialize_barfly_reply(
+                exploration_task=task,
+                candidate=candidate,
+                reply_body=str(raw["reply_body"]).strip(),
+                rationale=str(raw["rationale"]).strip(),
+            )
+            materialized_ids.append(str(new_task.id))
+        return materialized_ids
+
+    async def propose_conversation_replies(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Head of Marketing drafts 1-N replies (N = the registry's
+        ``max_items_per_cycle``) to screened X conversations Barfly's search
+        cycle already gathered onto the exploration task.
+
+        Validation runs in two passes, mirroring every other item-verb's
+        pure-then-DB split: first EVERY item's shape (dict/tweet_id/
+        reply_body/rationale — no DB touched), then the exploration task is
+        resolved, then EVERY item's ``tweet_id`` is checked against that
+        task's own screened candidates — an invented tweet is rejected
+        naming the valid ids. Unlike ``propose_gap_fill``/``propose_bug_
+        hunt`` (a per-item CEO queue that keeps the exploration task open)
+        this mirrors ``propose_feature_spotlight``'s complete-at-propose
+        asymmetry MULTIPLIED across every item: each approved-shape reply
+        materializes its own held draft (source=x_barfly) through
+        ``XEngine.materialize_barfly_reply`` in this same call, then the
+        exploration task itself completes — the CEO decides each
+        materialized draft individually in the existing X post queue, not on
+        this task.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        max_items = PROGRAMS["barfly"].max_items_per_cycle
+        if rej := self._reject_barfly_caller_and_bounds(role, items, max_items):
+            return rej
+        if rej := self._reject_barfly_item_shapes(items):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_barfly_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open barfly exploration task assigned to you",
+                remediate=(
+                    "propose_conversation_replies only runs against an active "
+                    "exploration cycle spawned by the barfly engine; wait for "
+                    "the next cycle"
+                ),
+                context_briefing={},
+            )
+        candidates_by_id = {
+            str(c.get("id")): c
+            for c in markers.get_barfly_candidates(task)
+            if isinstance(c, dict) and c.get("id")
+        }
+        if rej := self._reject_barfly_item_candidates(items, candidates_by_id):
+            return rej
+
+        from roboco.services.x_engine import get_x_engine
+
+        engine = get_x_engine(self.task.session)
+        materialized_ids = await self._materialize_barfly_replies(
+            engine, task, items, candidates_by_id
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="conversation_replies_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each reply in the X post queue",
+            context_briefing={
+                "item_count": len(items),
+                "materialized_task_ids": materialized_ids,
+            },
+        )
+
+    @staticmethod
+    def _reject_market_brief_url(url: str, idx: int) -> Envelope | None:
+        """An uncited market claim is noise (spec Task 2) — validate
+        ``source_url`` parses as a real http(s) URL rather than soup-checking
+        it as prose."""
+        if len(url) > _MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} source_url is {len(url)} chars, over the "
+                    f"{_MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s source_url",
+                context_briefing={},
+            )
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return Envelope.invalid_state(
+                message=f"finding {idx} source_url {url!r} is not a valid http(s) URL",
+                remediate=(
+                    f"provide a real http(s) URL finding {idx}'s claim came from"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_finding(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw market-brief finding dict; None when clean."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"finding {idx} is not an object",
+                remediate="each finding needs claim/source_url/relevance",
+                context_briefing={},
+            )
+        if rej := cls._reject_market_brief_finding_claim(raw, idx):
+            return rej
+        if rej := cls._reject_market_brief_finding_source(raw, idx):
+            return rej
+        return cls._reject_market_brief_finding_relevance(raw, idx)
+
+    @classmethod
+    def _reject_market_brief_finding_claim(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        claim = raw.get("claim")
+        if not isinstance(claim, str) or not claim.strip():
+            return Envelope.invalid_state(
+                message=f"finding {idx} is missing 'claim'",
+                remediate=f"provide a substantive claim for finding {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(claim, field=f"finding {idx} claim", min_chars=8):
+            return rej
+        if len(claim) > _MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} claim is {len(claim)} chars, over the "
+                    f"{_MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s claim",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_finding_source(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        source_url = raw.get("source_url")
+        if not isinstance(source_url, str) or not source_url.strip():
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} is missing 'source_url' — an uncited "
+                    "market claim is noise"
+                ),
+                remediate=(
+                    f"provide the http(s) source URL finding {idx}'s claim came from"
+                ),
+                context_briefing={},
+            )
+        return cls._reject_market_brief_url(source_url, idx)
+
+    @classmethod
+    def _reject_market_brief_finding_relevance(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        relevance = raw.get("relevance")
+        if not isinstance(relevance, str) or not relevance.strip():
+            return Envelope.invalid_state(
+                message=f"finding {idx} is missing 'relevance'",
+                remediate=f"provide a substantive relevance for finding {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            relevance, field=f"finding {idx} relevance", min_chars=8
+        ):
+            return rej
+        if len(relevance) > _MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} relevance is {len(relevance)} chars, over "
+                    f"the {_MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s relevance",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_text_list(
+        cls, values: Any, *, field: str
+    ) -> Envelope | None:
+        """Validate an optional ``threats``/``opportunities`` list: at most
+        ``_MARKET_BRIEF_LIST_MAX_ITEMS`` substantive strings, each capped at
+        ``_MARKET_BRIEF_LIST_ITEM_MAX_CHARS``. ``None`` (omitted) is clean."""
+        if values is None:
+            return None
+        if not isinstance(values, list) or len(values) > _MARKET_BRIEF_LIST_MAX_ITEMS:
+            return Envelope.invalid_state(
+                message=(
+                    f"{field} must be a list of at most "
+                    f"{_MARKET_BRIEF_LIST_MAX_ITEMS} strings"
+                ),
+                remediate=f"provide at most {_MARKET_BRIEF_LIST_MAX_ITEMS} {field}",
+                context_briefing={},
+            )
+        for i, v in enumerate(values):
+            if rej := cls._reject_market_brief_list_item(v, field=field, idx=i):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_market_brief_list_item(
+        cls, value: Any, *, field: str, idx: int
+    ) -> Envelope | None:
+        """One ``threats``/``opportunities`` entry — split out of
+        ``_reject_market_brief_text_list`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        if not isinstance(value, str) or not value.strip():
+            return Envelope.invalid_state(
+                message=f"{field}[{idx}] is empty",
+                remediate=f"provide substantive text for {field}[{idx}] or drop it",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(value, field=f"{field}[{idx}]", min_chars=4):
+            return rej
+        if len(value) > _MARKET_BRIEF_LIST_ITEM_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"{field}[{idx}] is {len(value)} chars, over the "
+                    f"{_MARKET_BRIEF_LIST_ITEM_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten {field}[{idx}]",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_market_brief(
+        self,
+        *,
+        agent_id: UUID,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None = None,
+        opportunities: list[str] | None = None,
+        positioning_note: str = "",
+    ) -> Envelope:
+        """Head of Marketing files ONE Periscope weekly market-research brief
+        — competitors, adjacent-tool releases, positioning shifts — delivered
+        as a held REPORT to the CEO.
+
+        Unlike ``propose_roadmap``/``propose_bug_hunt`` (a per-item CEO queue
+        that keeps the exploration task open until every item is decided),
+        this mirrors ``propose_feature_spotlight``'s complete-at-propose
+        asymmetry: a report has no per-item decision, so the exploration task
+        completes in this same call. The brief is screened through
+        ``injection_guard.screen_external_text`` before persisting — it is
+        web-derived content that later reaches the roadmap exploration
+        prompt, same untrusted-text posture as X mentions / vault notes
+        (screen-and-flag, never drop).
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _PERISCOPE_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a market brief; only the "
+                    "Head of Marketing authors one"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_market_brief_fields(
+            headline, findings, threats, opportunities, positioning_note
+        ):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_periscope_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_market_brief(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open periscope exploration task assigned to you",
+                remediate=(
+                    "propose_market_brief only runs against an active "
+                    "exploration cycle spawned by the periscope engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        await self._persist_market_brief(
+            task,
+            headline=headline,
+            findings=findings,
+            threats=threats,
+            opportunities=opportunities,
+            positioning_note=positioning_note,
+        )
+        await self._notify_periscope_brief(task, headline.strip())
+        return Envelope.ok(
+            status="market_brief_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reads the brief as a report in the panel",
+            context_briefing={
+                "headline": headline.strip(),
+                "finding_count": len(findings),
+            },
+        )
+
+    async def _persist_market_brief(
+        self,
+        task: Any,
+        *,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None,
+        opportunities: list[str] | None,
+        positioning_note: str,
+    ) -> None:
+        """Normalize, screen, persist, and complete — split out of
+        ``propose_market_brief`` to keep its own cyclomatic complexity under
+        the xenon budget. Complete-at-propose: a report has no per-item CEO
+        decision to wait on (the x_feature asymmetry, not the roadmap/
+        pest-control per-item flow) — BoardProgramEngine's dedup ledger
+        auto-closes the cycle row the moment it next checks this now-terminal
+        exploration task.
+        """
+        normalized_findings = [
+            _normalize_market_brief_finding(idx, raw)
+            for idx, raw in enumerate(findings)
+        ]
+        normalized_threats = [str(t).strip() for t in (threats or [])]
+        normalized_opportunities = [str(o).strip() for o in (opportunities or [])]
+        normalized_note = positioning_note.strip()
+        screened = screen_external_text(
+            _render_market_brief_for_screening(
+                headline,
+                normalized_findings,
+                normalized_threats,
+                normalized_opportunities,
+                normalized_note,
+            ),
+            source=f"periscope_brief:{task.id}",
+        )
+        if screened.flagged:
+            logger.warning(
+                "periscope: injection pattern detected in market brief",
+                task_id=str(task.id),
+                hits=screened.hits,
+            )
+        markers.set_market_brief(
+            task,
+            {
+                "headline": headline.strip(),
+                "findings": normalized_findings,
+                "threats": normalized_threats,
+                "opportunities": normalized_opportunities,
+                "positioning_note": normalized_note,
+                "injection_hits": screened.hits,
+            },
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+
+    @classmethod
+    def _reject_market_brief_findings_list(
+        cls, findings: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-finding validation loop, split out of
+        ``_reject_market_brief_fields`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_findings = PROGRAMS["periscope"].max_items_per_cycle
+        if not (1 <= len(findings) <= max_findings):
+            return Envelope.invalid_state(
+                message=(
+                    f"a brief needs 1-{max_findings} cited findings, got "
+                    f"{len(findings)}"
+                ),
+                remediate=f"propose between 1 and {max_findings} cited findings",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(findings):
+            if rej := cls._reject_market_brief_finding(raw, idx):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_market_brief_fields(
+        cls,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None,
+        opportunities: list[str] | None,
+        positioning_note: str,
+    ) -> Envelope | None:
+        """Full field validation for ``propose_market_brief``, split out to
+        keep the verb's own return-statement count under the xenon/PLR0911
+        budget."""
+        if rej := cls._reject_soup(headline, field="headline", min_chars=8):
+            return rej
+        if len(headline) > _MARKET_BRIEF_HEADLINE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"headline is {len(headline)} chars, over the "
+                    f"{_MARKET_BRIEF_HEADLINE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the headline",
+                context_briefing={},
+            )
+        if rej := cls._reject_market_brief_findings_list(findings):
+            return rej
+        if rej := cls._reject_market_brief_text_list(threats, field="threats"):
+            return rej
+        if rej := cls._reject_market_brief_text_list(
+            opportunities, field="opportunities"
+        ):
+            return rej
+        return cls._reject_market_brief_positioning_note(positioning_note)
+
+    @classmethod
+    def _reject_market_brief_positioning_note(cls, value: str) -> Envelope | None:
+        """Split out of ``_reject_market_brief_fields`` to keep its own
+        return-statement count under the xenon/PLR0911 budget. Optional —
+        empty is clean; only a non-empty value is soup/length-checked."""
+        if not value or not value.strip():
+            return None
+        if rej := cls._reject_soup(value, field="positioning_note", min_chars=8):
+            return rej
+        if len(value) > _MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"positioning_note is {len(value)} chars, over the "
+                    f"{_MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten positioning_note",
+                context_briefing={},
+            )
+        return None
+
+    async def _notify_periscope_brief(self, task: Any, headline: str) -> None:
+        """Best-effort CEO nudge the moment a market brief lands — ONE call
+        per cycle (a report, not N queue items), so unlike
+        ``_notify_pest_hunt_items``/``_notify_roadmap_items`` this fires once,
+        not per-finding."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
+                task=task, task_id=task.id, headline=headline
+            )
+        except Exception as exc:
+            logger.warning(
+                "periscope telegram notify failed (best-effort)", error=str(exc)
+            )
+
+    @staticmethod
+    def _reject_quality_report_item_area(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        area = raw.get("area")
+        if not isinstance(area, str) or area.strip() not in _QUALITY_REPORT_AREAS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} area {area!r} must be one of "
+                    f"{sorted(_QUALITY_REPORT_AREAS)}"
+                ),
+                remediate=(
+                    f"set item {idx}'s area to one of {sorted(_QUALITY_REPORT_AREAS)}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_quality_report_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate observation/evidence/suggested_action of one quality-
+        report item dict — split from ``_reject_quality_report_item`` to
+        keep its own xenon complexity budget."""
+        for field, max_chars in (
+            ("observation", _QUALITY_REPORT_ITEM_OBSERVATION_MAX_CHARS),
+            ("evidence", _QUALITY_REPORT_ITEM_EVIDENCE_MAX_CHARS),
+            ("suggested_action", _QUALITY_REPORT_ITEM_SUGGESTED_ACTION_MAX_CHARS),
+        ):
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(value, field=f"item {idx} {field}", min_chars=8):
+                return rej
+            if len(value) > max_chars:
+                return Envelope.invalid_state(
+                    message=(
+                        f"item {idx} {field} is {len(value)} chars, over the "
+                        f"{max_chars}-char cap"
+                    ),
+                    remediate=f"shorten item {idx}'s {field}",
+                    context_briefing={},
+                )
+        return None
+
+    @classmethod
+    def _reject_quality_report_item(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw quality-report item dict; None when clean.
+        Mirrors ``_reject_market_brief_finding``."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item needs area/observation/evidence/suggested_action"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_quality_report_item_area(raw, idx):
+            return rej
+        return cls._reject_quality_report_item_text_fields(raw, idx)
+
+    @classmethod
+    def _reject_quality_report_items(
+        cls, items: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-item validation loop, split out of
+        ``_reject_quality_report_fields`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_items = PROGRAMS["sentinel"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a quality report needs 1-{max_items} items, got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(items):
+            if rej := cls._reject_quality_report_item(raw, idx):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_quality_report_fields(
+        cls, headline: str, items: list[dict[str, Any]], overall_assessment: str
+    ) -> Envelope | None:
+        """Full field validation for ``propose_quality_report``, split out to
+        keep the verb's own return-statement count under the xenon/PLR0911
+        budget."""
+        if rej := cls._reject_soup(headline, field="headline", min_chars=8):
+            return rej
+        if len(headline) > _QUALITY_REPORT_HEADLINE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"headline is {len(headline)} chars, over the "
+                    f"{_QUALITY_REPORT_HEADLINE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the headline",
+                context_briefing={},
+            )
+        if rej := cls._reject_quality_report_items(items):
+            return rej
+        if rej := cls._reject_soup(
+            overall_assessment, field="overall_assessment", min_chars=8
+        ):
+            return rej
+        if len(overall_assessment) > _QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"overall_assessment is {len(overall_assessment)} chars, "
+                    "over the "
+                    f"{_QUALITY_REPORT_OVERALL_ASSESSMENT_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten overall_assessment",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_quality_report(
+        self,
+        *,
+        agent_id: UUID,
+        headline: str,
+        items: list[dict[str, Any]],
+        overall_assessment: str,
+    ) -> Envelope:
+        """Auditor files ONE Sentinel weekly "state of quality" report —
+        waiver-accumulation trends, conventions-violation hotspots, budget
+        anomalies — delivered as a held REPORT to the CEO.
+
+        Mirrors ``propose_market_brief``'s complete-at-propose asymmetry: a
+        report has no per-item CEO decision, so the exploration task
+        completes in this same call. Unlike ``propose_market_brief`` this is
+        deliberately NOT screened through
+        ``injection_guard.screen_external_text`` — every input here is
+        internal org data (the findings ledger, the conventions table, the
+        spend tables, the Auditor's own read of the codebase), never
+        untrusted web/external text, so there is nothing to screen.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _SENTINEL_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a quality report; only "
+                    "the Auditor authors one"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_quality_report_fields(
+            headline, items, overall_assessment
+        ):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_sentinel_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_quality_report(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open sentinel exploration task assigned to you",
+                remediate=(
+                    "propose_quality_report only runs against an active "
+                    "exploration cycle spawned by the sentinel engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        await self._persist_quality_report(
+            task,
+            headline=headline,
+            items=items,
+            overall_assessment=overall_assessment,
+        )
+        await self._notify_quality_report(task, headline.strip())
+        return Envelope.ok(
+            status="quality_report_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reads the report in the panel",
+            context_briefing={
+                "headline": headline.strip(),
+                "item_count": len(items),
+            },
+        )
+
+    async def _persist_quality_report(
+        self,
+        task: Any,
+        *,
+        headline: str,
+        items: list[dict[str, Any]],
+        overall_assessment: str,
+    ) -> None:
+        """Normalize, persist, and complete — split out of
+        ``propose_quality_report`` to keep its own cyclomatic complexity
+        under the xenon budget. Complete-at-propose: mirrors
+        ``_persist_market_brief``."""
+        normalized_items = [
+            _normalize_quality_report_item(idx, raw) for idx, raw in enumerate(items)
+        ]
+        markers.set_quality_report(
+            task,
+            {
+                "headline": headline.strip(),
+                "items": normalized_items,
+                "overall_assessment": overall_assessment.strip(),
+            },
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+
+    async def _notify_quality_report(self, task: Any, headline: str) -> None:
+        """Best-effort CEO nudge the moment a quality report lands — ONE call
+        per cycle (a report, not N queue items), mirrors
+        ``_notify_periscope_brief``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
+                task=task, task_id=task.id, headline=headline
+            )
+        except Exception as exc:
+            logger.warning(
+                "sentinel telegram notify failed (best-effort)", error=str(exc)
+            )
+
+    @classmethod
+    def _reject_campaign_name(cls, campaign_name: str) -> Envelope | None:
+        if rej := cls._reject_soup(campaign_name, field="campaign_name", min_chars=3):
+            return rej
+        if len(campaign_name) > _CAMPAIGN_NAME_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"campaign_name is {len(campaign_name)} chars, over the "
+                    f"{_CAMPAIGN_NAME_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten campaign_name",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_campaign_post_body(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_campaign_post`` to keep its own
+        return-statement count under the xenon/PLR0911 budget."""
+        body = raw.get("body")
+        if not isinstance(body, str) or not body.strip():
+            return Envelope.invalid_state(
+                message=f"post {idx} is missing 'body'",
+                remediate=f"provide the tweet text for post {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(body, field=f"post {idx} body", min_chars=8):
+            return rej
+        if len(body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"post {idx} body is {len(body)} chars, over the "
+                    f"{MAX_TWEET_CHARS}-char tweet limit"
+                ),
+                remediate=(
+                    f"shorten post {idx} to {MAX_TWEET_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_campaign_post_stage(raw: dict[str, Any], idx: int) -> Envelope | None:
+        stage = raw.get("stage_label")
+        if not isinstance(stage, str) or stage.strip() not in _CAMPAIGN_STAGE_LABELS:
+            return Envelope.invalid_state(
+                message=(
+                    f"post {idx} stage_label must be one of "
+                    f"{sorted(_CAMPAIGN_STAGE_LABELS)}"
+                ),
+                remediate=(
+                    f"set post {idx}'s stage_label to one of "
+                    f"{sorted(_CAMPAIGN_STAGE_LABELS)}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_campaign_post_timing(
+        raw: dict[str, Any], idx: int, previous: datetime | None
+    ) -> tuple[Envelope | None, Any]:
+        """Parse + validate one post's ``publish_after``: a real ISO 8601
+        datetime, strictly in the future at propose time, and strictly after
+        the previous item's (ascending order across the campaign — spec §4's
+        teaser -> launch -> follow-up -> spotlight arc). Returns
+        ``(rejection, parsed)`` — a non-None rejection means ``parsed`` is
+        unusable; the caller threads the clean ``parsed`` value into the NEXT
+        item's ascending-order check."""
+        value = raw.get("publish_after")
+        if not isinstance(value, str) or not value.strip():
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} is missing 'publish_after'",
+                    remediate=(
+                        f"provide post {idx}'s recommended publish time as an "
+                        "ISO 8601 datetime"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"post {idx} publish_after {value!r} is not a valid "
+                        "ISO 8601 datetime"
+                    ),
+                    remediate=(
+                        f"provide post {idx}'s publish_after as an ISO 8601 "
+                        "datetime, e.g. '2026-08-01T09:00:00+00:00'"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if parsed <= datetime.now(UTC):
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} publish_after {value!r} is not in the future",
+                    remediate=f"post {idx}'s publish_after must be a future timestamp",
+                    context_briefing={},
+                ),
+                None,
+            )
+        if previous is not None and parsed <= previous:
+            return (
+                Envelope.invalid_state(
+                    message=(
+                        f"post {idx} publish_after must be strictly after post "
+                        f"{idx - 1}'s — campaign posts run in ascending order"
+                    ),
+                    remediate=(
+                        f"push post {idx}'s publish_after later than post {idx - 1}'s"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        return None, parsed
+
+    @classmethod
+    def _reject_campaign_post(
+        cls, raw: Any, idx: int, previous: datetime | None
+    ) -> tuple[Envelope | None, Any]:
+        """Validate one raw campaign-post dict; ``(None, parsed_publish_after)``
+        when clean."""
+        if not isinstance(raw, dict):
+            return (
+                Envelope.invalid_state(
+                    message=f"post {idx} is not an object",
+                    remediate=(
+                        "each post must be an object with body/publish_after/"
+                        "stage_label"
+                    ),
+                    context_briefing={},
+                ),
+                None,
+            )
+        if rej := cls._reject_campaign_post_body(raw, idx):
+            return rej, None
+        if rej := cls._reject_campaign_post_stage(raw, idx):
+            return rej, None
+        return cls._reject_campaign_post_timing(raw, idx, previous)
+
+    async def propose_campaign(
+        self,
+        *,
+        agent_id: UUID,
+        campaign_name: str,
+        posts: list[dict[str, Any]],
+    ) -> Envelope:
+        """Head of Marketing authors ONE War Room campaign — an ordered set
+        of 2-6 held X drafts (teaser -> launch -> follow-up -> spotlight),
+        each carrying a recommended ``publish_after`` timestamp.
+
+        V1 is manual-cadence (spec, 2026-07-24, pinned by the orchestrating
+        session): ``publish_after`` is GUIDANCE rendered in the panel queue,
+        never a schedule anything acts on — the CEO approves each draft at
+        its own moment, exactly like every other X-queue draft ("nothing
+        auto-posts" stays absolute; see ``WarRoomEngine``'s module docstring
+        for the documented auto-schedule ceiling, not built here). Call this
+        exactly once per cycle: it materializes every post (via
+        ``XEngine.materialize_campaign_post``) and completes the exploration
+        task in the same call — mirrors ``propose_market_brief``'s
+        complete-at-propose shape, batched over N posts.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _WAR_ROOM_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a campaign; only the "
+                    "Head of Marketing authors one"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_campaign_name(campaign_name):
+            return rej
+        if not (_CAMPAIGN_MIN_POSTS <= len(posts) <= _CAMPAIGN_MAX_POSTS):
+            return Envelope.invalid_state(
+                message=(
+                    f"a campaign needs {_CAMPAIGN_MIN_POSTS}-"
+                    f"{_CAMPAIGN_MAX_POSTS} ordered posts, got {len(posts)}"
+                ),
+                remediate=(
+                    f"propose between {_CAMPAIGN_MIN_POSTS} and "
+                    f"{_CAMPAIGN_MAX_POSTS} posts"
+                ),
+                context_briefing={},
+            )
+        name = campaign_name.strip()
+        normalized: list[dict[str, Any]] = []
+        previous: datetime | None = None
+        for idx, raw in enumerate(posts):
+            rejection, parsed = self._reject_campaign_post(raw, idx, previous)
+            if rejection is not None:
+                return rejection
+            previous = parsed
+            normalized.append(
+                {
+                    "body": str(raw["body"]).strip(),
+                    "campaign_name": name,
+                    "stage_label": str(raw["stage_label"]).strip(),
+                    "publish_after": parsed.isoformat(),
+                    "sequence": idx + 1,
+                }
+            )
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_war_room_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open war-room exploration task assigned to you",
+                remediate=(
+                    "propose_campaign only runs against an active exploration "
+                    "cycle spawned by the War Room engine; wait for the next "
+                    "cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        for item in normalized:
+            await engine.materialize_campaign_post(
+                exploration_task=task,
+                campaign_ref={
+                    "campaign_name": item["campaign_name"],
+                    "stage_label": item["stage_label"],
+                    "publish_after": item["publish_after"],
+                    "sequence": item["sequence"],
+                },
+                body=item["body"],
+            )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="campaign_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each post in the X post queue",
+            context_briefing={"campaign_name": name, "post_count": len(normalized)},
+        )
+
+    @classmethod
     def _reject_caption(
         cls, value: str, *, field: str, max_chars: int
     ) -> Envelope | None:
@@ -1747,6 +4427,506 @@ class ContentActions:
                 "platforms": platforms,
             },
         )
+
+    @classmethod
+    def _reject_postmortem_text_fields(
+        cls, incident_summary: str, root_cause: str
+    ) -> Envelope | None:
+        """Soup + length caps on the postmortem's two free-text narrative
+        fields, folded into one caller-side check (xenon/PLR0911 budget —
+        mirrors ``_reject_feature_spotlight_fields``)."""
+        if rej := cls._reject_soup(
+            incident_summary, field="incident_summary", min_chars=20
+        ):
+            return rej
+        if len(incident_summary) > _CORONER_INCIDENT_SUMMARY_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"incident_summary is {len(incident_summary)} chars, over "
+                    f"the {_CORONER_INCIDENT_SUMMARY_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten incident_summary",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(root_cause, field="root_cause", min_chars=20):
+            return rej
+        if len(root_cause) > _CORONER_ROOT_CAUSE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"root_cause is {len(root_cause)} chars, over the "
+                    f"{_CORONER_ROOT_CAUSE_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten root_cause",
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_postmortem_failed_stage(failed_stage: str) -> Envelope | None:
+        """``failed_stage`` must be a real lifecycle status — never a made-up
+        label — so it stays comparable across postmortems."""
+        from roboco.models.base import TaskStatus
+
+        valid = {s.value for s in TaskStatus}
+        if failed_stage not in valid:
+            return Envelope.invalid_state(
+                message=f"failed_stage {failed_stage!r} is not a real task status",
+                remediate=f"pass one of: {sorted(valid)}",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_postmortem_process_change(cls, process_change: Any) -> Envelope | None:
+        if not isinstance(process_change, dict):
+            return Envelope.invalid_state(
+                message="process_change must be an object",
+                remediate="pass process_change={'kind': ..., 'description': ...}",
+                context_briefing={},
+            )
+        kind = process_change.get("kind")
+        if kind not in _CORONER_PROCESS_CHANGE_KINDS:
+            return Envelope.invalid_state(
+                message=f"process_change.kind {kind!r} is invalid",
+                remediate=(
+                    f"kind must be one of {sorted(_CORONER_PROCESS_CHANGE_KINDS)}"
+                ),
+                context_briefing={},
+            )
+        description = str(process_change.get("description", ""))
+        if rej := cls._reject_soup(
+            description, field="process_change.description", min_chars=15
+        ):
+            return rej
+        if len(description) > _CORONER_PROCESS_CHANGE_DESC_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"process_change.description is {len(description)} chars, "
+                    f"over the {_CORONER_PROCESS_CHANGE_DESC_MAX_CHARS}-char limit"
+                ),
+                remediate="shorten process_change.description",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_postmortem_playbook(
+        cls, process_change: dict[str, Any], playbook: dict[str, Any] | None
+    ) -> Envelope | None:
+        """``playbook`` is required iff ``process_change.kind == 'playbook'``
+        (spec §4) — never optional-but-ignored on that kind, never demanded
+        on any other."""
+        if process_change.get("kind") != "playbook":
+            return None
+        if not isinstance(playbook, dict):
+            return Envelope.invalid_state(
+                message="process_change.kind='playbook' requires a playbook",
+                remediate="pass playbook={'title': ..., 'body': ...}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            str(playbook.get("title", "")), field="playbook.title", min_chars=5
+        ):
+            return rej
+        return cls._reject_soup(
+            str(playbook.get("body", "")), field="playbook.body", min_chars=20
+        )
+
+    @classmethod
+    def _reject_postmortem(
+        cls,
+        incident_summary: str,
+        root_cause: str,
+        failed_stage: str,
+        process_change: Any,
+        playbook: dict[str, Any] | None,
+    ) -> Envelope | None:
+        if rej := cls._reject_postmortem_text_fields(incident_summary, root_cause):
+            return rej
+        if rej := cls._reject_postmortem_failed_stage(failed_stage):
+            return rej
+        if rej := cls._reject_postmortem_process_change(process_change):
+            return rej
+        return cls._reject_postmortem_playbook(process_change, playbook)
+
+    async def _draft_coroner_playbook(
+        self, agent_id: UUID, incident_summary: str, playbook: dict[str, Any]
+    ) -> tuple[str | None, Envelope | None]:
+        """Create the process-change playbook DRAFT directly via
+        ``PlaybookService`` — not the ``draft_playbook`` do-verb, since this
+        call already runs inside the Auditor-only ``propose_postmortem`` gate.
+        The Auditor also carries ``draft_playbook`` on its manifest
+        (role_config.py) so a coroner-authored draft is indistinguishable
+        from any other in the pending-playbook curation queue — reviewed and
+        approved/rejected there same as any delivery-role draft, never
+        self-approved in this same call. Returns (playbook_id, None) on
+        success or (None, rejection_envelope) on a title conflict — checked
+        BEFORE any postmortem-task mutation so a conflict is a clean,
+        retryable rejection, not a half-completed autopsy."""
+        from roboco.models.playbook import PlaybookCreate
+        from roboco.services.base import ConflictError
+        from roboco.services.playbook import get_playbook_service
+
+        try:
+            drafted = await get_playbook_service(self.task.session).draft(
+                PlaybookCreate(
+                    title=str(playbook["title"]).strip(),
+                    problem=incident_summary.strip(),
+                    procedure=str(playbook["body"]).strip(),
+                    tags=["coroner", "postmortem"],
+                ),
+                created_by=agent_id,
+            )
+        except ConflictError as exc:
+            return None, Envelope.invalid_state(
+                message=str(exc),
+                remediate="use a more distinct playbook title (slug must be unique)",
+                context_briefing={},
+            )
+        return str(drafted.id), None
+
+    @classmethod
+    def _reject_playbook_draft_item(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw playbook-draft dict; None when clean. Mirrors
+        ``_reject_quality_report_item_text_fields``'s loop-over-fields shape."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"draft {idx} is not an object",
+                remediate="each draft needs title/body/pattern_evidence",
+                context_briefing={},
+            )
+        for field, min_chars, max_chars in (
+            ("title", 5, _PLAYBOOK_DRAFT_TITLE_MAX_CHARS),
+            ("body", 20, _PLAYBOOK_DRAFT_BODY_MAX_CHARS),
+            ("pattern_evidence", 15, _PLAYBOOK_DRAFT_PATTERN_EVIDENCE_MAX_CHARS),
+        ):
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"draft {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for draft {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"draft {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+            if len(value) > max_chars:
+                return Envelope.invalid_state(
+                    message=(
+                        f"draft {idx} {field} is {len(value)} chars, over the "
+                        f"{max_chars}-char cap"
+                    ),
+                    remediate=f"shorten draft {idx}'s {field}",
+                    context_briefing={},
+                )
+        return None
+
+    @staticmethod
+    def _reject_playbook_draft_duplicate_titles(
+        drafts: list[dict[str, Any]],
+    ) -> Envelope | None:
+        """Case-insensitive dedup WITHIN this batch — split out so the
+        title-conflict message is distinct from the per-item field check."""
+        seen: set[str] = set()
+        for idx, raw in enumerate(drafts):
+            title = str(raw.get("title", "")).strip().lower()
+            if title in seen:
+                return Envelope.invalid_state(
+                    message=f"draft {idx} title duplicates another draft in this batch",
+                    remediate="give each draft a distinct title",
+                    context_briefing={},
+                )
+            seen.add(title)
+        return None
+
+    @classmethod
+    def _reject_playbook_drafts_batch(
+        cls, drafts: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-draft validation + in-batch dedup, split out
+        of ``propose_playbook_drafts`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_drafts = PROGRAMS["librarian"].max_items_per_cycle
+        if not (1 <= len(drafts) <= max_drafts):
+            return Envelope.invalid_state(
+                message=f"propose 1-{max_drafts} playbook drafts, got {len(drafts)}",
+                remediate=f"propose between 1 and {max_drafts} drafts",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(drafts):
+            if rej := cls._reject_playbook_draft_item(raw, idx):
+                return rej
+        return cls._reject_playbook_draft_duplicate_titles(drafts)
+
+    async def _reject_playbook_drafts_existing_titles(
+        self, drafts: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """Live, unbounded case-insensitive dedup against every non-archived
+        playbook already in the store — the mining prompt only shows the
+        most-recent 20 as a hint, so this re-checks fresh at propose time
+        rather than trusting what the Auditor read minutes ago."""
+        from roboco.services.librarian_engine import get_librarian_engine
+
+        existing = await get_librarian_engine(
+            self.task.session
+        ).existing_playbook_titles_lower()
+        for idx, raw in enumerate(drafts):
+            title = str(raw["title"]).strip()
+            if title.lower() in existing:
+                return Envelope.invalid_state(
+                    message=(
+                        f"draft {idx} title {title!r} duplicates an existing playbook"
+                    ),
+                    remediate=(
+                        "give this draft a distinct title, or drop it — a playbook "
+                        "for this pattern may already exist"
+                    ),
+                    context_briefing={},
+                )
+        return None
+
+    async def _draft_librarian_playbooks(
+        self, agent_id: UUID, drafts: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, str]], Envelope | None]:
+        """Create each validated draft as a real DRAFT playbook via
+        ``PlaybookService.draft()`` directly — the Coroner precedent
+        (``_draft_coroner_playbook`` above), never the ``draft_playbook``
+        do-verb, so "auditor curates but does not draft" stays true at the
+        do-verb surface even though the Auditor originates these drafts.
+
+        A per-item ``ConflictError`` (a genuine same-tick race — the live
+        pre-check in ``_reject_playbook_drafts_existing_titles`` already
+        closed the realistic window) aborts the rest of the batch with a
+        clean rejection.
+        ponytail: no rollback of earlier successes in this loop — any draft
+        already created before the conflict stays a real, independently
+        valid playbook riding the normal curation queue (just not
+        cross-referenced on this particular report); this is the same
+        residual race Coroner already accepts, and Librarian's own
+        single-open-cycle dedup makes a same-cycle collision vanishingly
+        rare in practice.
+        """
+        from roboco.models.playbook import PlaybookCreate
+        from roboco.services.base import ConflictError
+        from roboco.services.playbook import get_playbook_service
+
+        svc = get_playbook_service(self.task.session)
+        created: list[dict[str, str]] = []
+        for idx, raw in enumerate(drafts):
+            try:
+                drafted = await svc.draft(
+                    PlaybookCreate(
+                        title=str(raw["title"]).strip(),
+                        problem=str(raw["pattern_evidence"]).strip(),
+                        procedure=str(raw["body"]).strip(),
+                        tags=["librarian", "auto-authored"],
+                    ),
+                    created_by=agent_id,
+                )
+            except ConflictError as exc:
+                return created, Envelope.invalid_state(
+                    message=f"draft {idx}: {exc}",
+                    remediate="use a more distinct title (slug must be unique)",
+                    context_briefing={"drafted_before_conflict": len(created)},
+                )
+            created.append({"id": str(drafted.id), "title": drafted.title})
+        return created, None
+
+    async def propose_playbook_drafts(
+        self, *, agent_id: UUID, drafts: list[dict[str, Any]]
+    ) -> Envelope:
+        """Auditor mines journals/learnings for repeated patterns and drafts
+        1-3 playbooks on its open Librarian cycle task, completing it in the
+        same call (mirrors ``propose_market_brief``/``propose_quality_report``'s
+        complete-at-propose asymmetry — a mining cycle has no per-item CEO
+        decision to wait on).
+
+        Each draft is created via ``PlaybookService.draft()`` DIRECTLY — the
+        same Coroner precedent ``_draft_coroner_playbook`` established: the
+        Auditor does NOT also carry ``draft_playbook`` on its manifest
+        (``role_config.py``, ``test_playbook_verbs.py``'s "auditor curates
+        but does not draft" invariant), so a Librarian-authored draft reaches
+        the pending-playbook curation queue through this direct service
+        call, never the do-verb every delivery role uses. A LATER Auditor
+        spawn curates them — a deliberate, documented self-curation
+        asymmetry (see ``agents/prompts/identities/auditor.md``).
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _LIBRARIAN_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose playbook drafts; only the "
+                    "Auditor mines for patterns"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_playbook_drafts_batch(drafts):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_librarian_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_playbook_drafts(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open Librarian mining task assigned to you",
+                remediate=(
+                    "propose_playbook_drafts only runs against an active mining "
+                    "cycle spawned by the librarian engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        if rej := await self._reject_playbook_drafts_existing_titles(drafts):
+            return rej
+
+        created, rej = await self._draft_librarian_playbooks(agent_id, drafts)
+        if rej is not None:
+            return rej
+
+        markers.set_playbook_drafts(task, {"drafts": created})
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+        await self._notify_librarian_drafts(task, created)
+        return Envelope.ok(
+            status="playbook_drafts_proposed",
+            task_id=str(task.id),
+            next=(
+                "i_am_idle() — the drafts ride the normal pending-playbook "
+                "curation queue"
+            ),
+            context_briefing={"draft_count": len(created)},
+        )
+
+    async def _notify_librarian_drafts(
+        self, task: Any, created: list[dict[str, str]]
+    ) -> None:
+        """Best-effort CEO nudge the moment Librarian mines its drafts —
+        mirrors ``_notify_postmortem``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
+                task=task,
+                task_id=task.id,
+                titles=[d["title"] for d in created],
+            )
+        except Exception as exc:
+            logger.warning(
+                "librarian telegram notify failed (best-effort)", error=str(exc)
+            )
+
+    async def propose_postmortem(
+        self,
+        *,
+        agent_id: UUID,
+        incident_summary: str,
+        root_cause: str,
+        failed_stage: str,
+        process_change: dict[str, Any],
+        playbook: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """Auditor authors ONE Coroner postmortem on its open autopsy task,
+        completing it in the same call — no per-item CEO queue (spec §4:
+        a report, not a list of items the CEO decides one by one). Call
+        exactly once per autopsy cycle.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _CORONER_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a postmortem; only the "
+                    "Auditor authors one"
+                ),
+                remediate="this verb is Auditor-only",
+                context_briefing={},
+            )
+        if rej := self._reject_postmortem(
+            incident_summary, root_cause, failed_stage, process_change, playbook
+        ):
+            return rej
+
+        from roboco.services.coroner_engine import get_coroner_engine
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_coroner_cycles()
+        task = next((t for t in cycles if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open Coroner autopsy task assigned to you",
+                remediate=(
+                    "propose_postmortem only runs against an active autopsy "
+                    "spawned by the coroner engine; wait for the next incident"
+                ),
+                context_briefing={},
+            )
+
+        playbook_id: str | None = None
+        if process_change["kind"] == "playbook":
+            playbook_id, rej = await self._draft_coroner_playbook(
+                agent_id, incident_summary, playbook or {}
+            )
+            if rej is not None:
+                return rej
+
+        engine = get_coroner_engine(self.task.session)
+        await engine.complete_with_postmortem(
+            task,
+            {
+                "incident_summary": incident_summary.strip(),
+                "root_cause": root_cause.strip(),
+                "failed_stage": failed_stage,
+                "process_change": {
+                    "kind": process_change["kind"],
+                    "description": str(process_change["description"]).strip(),
+                },
+                "playbook_id": playbook_id,
+            },
+        )
+        await self._notify_postmortem(task, incident_summary, process_change["kind"])
+        return Envelope.ok(
+            status="postmortem_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO is notified; no per-item decision needed",
+            context_briefing={
+                "failed_stage": failed_stage,
+                "process_change_kind": process_change["kind"],
+                "playbook_id": playbook_id,
+            },
+        )
+
+    async def _notify_postmortem(
+        self, task: Any, incident_summary: str, process_change_kind: str
+    ) -> None:
+        """Best-effort push notification the moment a postmortem lands —
+        mirrors ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_postmortem(
+                task=task,
+                task_id=task.id,
+                incident_summary=incident_summary,
+                process_change_kind=process_change_kind,
+            )
+        except Exception as exc:
+            logger.warning(
+                "coroner postmortem telegram notify failed (best-effort)",
+                error=str(exc),
+            )
 
     async def dm(
         self,

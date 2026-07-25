@@ -77,6 +77,8 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 function buildProgram(overrides: Partial<BoardProgram> = {}): BoardProgram {
   return {
     key: "pest_control",
+    title: "Pest Control",
+    description: "Weekly bug hunt over the opted-in project.",
     role: "product_owner",
     trigger: "cron",
     scope: "project",
@@ -200,7 +202,12 @@ describe("BudgetOpsCard — Board Programs", () => {
     useUpdateProject.mockReturnValue({ mutateAsync, isPending: false });
     listBoardPrograms.mockResolvedValue([
       buildProgram({ key: "pest_control", scope: "project" }),
-      buildProgram({ key: "roadmap", scope: "org", role: "product_owner" }),
+      buildProgram({
+        key: "roadmap",
+        title: "Roadmap Cycle",
+        scope: "org",
+        role: "product_owner",
+      }),
     ]);
   });
 
@@ -210,9 +217,9 @@ describe("BudgetOpsCard — Board Programs", () => {
     expect(
       await screen.findByText("Board Programs — participates in"),
     ).toBeInTheDocument();
-    expect(screen.getByText("pest_control")).toBeInTheDocument();
+    expect(screen.getByText("Pest Control")).toBeInTheDocument();
     expect(
-      screen.getByRole("switch", { name: "pest_control" }),
+      screen.getByRole("switch", { name: "Pest Control" }),
     ).not.toBeChecked();
   });
 
@@ -222,14 +229,14 @@ describe("BudgetOpsCard — Board Programs", () => {
     expect(
       await screen.findByText("Board Programs — excluded from"),
     ).toBeInTheDocument();
-    expect(screen.getByText("roadmap")).toBeInTheDocument();
+    expect(screen.getByText("Roadmap Cycle")).toBeInTheDocument();
   });
 
   it("pre-checks a project-scoped checkbox already in the stored list", async () => {
     renderCard(makeProject({ board_programs: ["pest_control"] }));
 
     expect(
-      await screen.findByRole("switch", { name: "pest_control" }),
+      await screen.findByRole("switch", { name: "Pest Control" }),
     ).toBeChecked();
   });
 
@@ -239,16 +246,16 @@ describe("BudgetOpsCard — Board Programs", () => {
     expect(
       await screen.findByText("Board Programs — excluded from"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "roadmap" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Roadmap Cycle" })).toBeChecked();
   });
 
   it("toggling participates-in and excluded-from checkboxes submits both entries", async () => {
     renderCard(makeProject({ board_programs: null }));
 
     fireEvent.click(
-      await screen.findByRole("switch", { name: "pest_control" }),
+      await screen.findByRole("switch", { name: "Pest Control" }),
     );
-    fireEvent.click(screen.getByRole("switch", { name: "roadmap" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Roadmap Cycle" }));
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
 
     await waitFor(() => expect(mutateAsync).toHaveBeenCalled());

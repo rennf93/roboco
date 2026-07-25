@@ -89,7 +89,7 @@ The PR-gate turn cut (when every child of an assembled parent is terminal, `_try
 | `ROBOCO_NOTIFICATION_SPAWN_COOLDOWN_SECONDS` | `600` | Cross-tick damper for notification-triggered spawns (escalation/approval/audit/a2a — task-less, so the readiness gate and respawn breaker never see them): one spawn per (agent, notification) per window; the notification stays pending so the next window retries. `0` = legacy every-tick respawn. |
 | `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Sandboxed per-agent-spawn test DB/Redis/Mongo: throwaway sibling containers provisioned from the engine registry in `roboco/models/sandbox.py` (postgres:16-alpine / redis:8-alpine / mongo:8), per-project opt-in. The valid-service set is `VALID_SANDBOX_SERVICES` (registry-derived). See "Sandboxed Dev DB/Redis/Mongo" below and `docs/rag/architecture/sandbox-db.md`. |
 | `ROBOCO_X_ENGINE_ENABLED` | `false` | The X (Twitter) engine: draft release/mention posts, ALL held for per-post CEO approval. See "X (Twitter) Engine" below and `docs/rag/architecture/x-engine.md`. |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | The board roadmap engine: weekly Product-Owner-authored cycle, CEO approves each item individually into BACKLOG. See "Board Roadmap Engine" below. |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | Legacy alias for the `roadmap` Board Program (Printer): weekly Product-Owner-authored cycle, CEO approves each item individually into BACKLOG. See "Board Program Registry" below and `docs/rag/architecture/board-programs.md`. |
 | `ROBOCO_OBSIDIAN_VAULT_ENABLED` | `false` (both compose files set `true`) | The Obsidian vault projection: tasks/journals/A2A become wikilinked markdown, rebuildable from the DB. See `docs/rag/architecture/obsidian-vault.md`. |
 | `ROBOCO_VAULT_INTAKE_ENABLED` | `false` (both compose files set `true`) | The vault's `#roboco`-tag inbox watcher — requires `ROBOCO_OBSIDIAN_VAULT_ENABLED` also on. See `docs/rag/architecture/obsidian-vault.md`. |
 | `ROBOCO_VAULT_ARCHIVE_DAYS` | `30` (`0` disables) | Age (past its terminal timestamp) a completed/cancelled task's note must reach before the vault janitor moves it to `RoboCo/Archive/<year>/`. |
@@ -176,18 +176,21 @@ Drafts release-announcement and mention-reply posts, ALL held for per-post CEO a
 | `ROBOCO_X_ACCOUNT_USER_ID` | (empty) | Numeric X user id of the account's own account. Empty resolves it once per mentions cycle via `GET /2/users/me` (one extra call). |
 | `ROBOCO_X_REQUEST_TIMEOUT_SECONDS` | `15.0` | Per-request timeout for outbound X API HTTP calls. |
 
-## Board Roadmap Engine
+## Board Program Registry
 
-Weekly, the Product Owner explores the company's projects and proposes a themed cycle of roadmap item drafts; the CEO approves or rejects each one individually. Default-off; approved items land in BACKLOG and nothing auto-starts. See `docs/rag/architecture/company-layer.md`.
+Fourteen registered programs (Printer/roadmap, feature-spotlight, and twelve new ones across Product Owner / Head of Marketing / Auditor) ride one generic registry + engine instead of bespoke per-engine loops. Every artifact is HELD; the CEO is the only path to materialization. See `docs/rag/architecture/board-programs.md` for the full lifecycle, the fourteen-program catalog, and each role's exact `propose_*` call shape.
+
+**Arming has no master flag.** Each program is armed independently through a settings-store row (`board_program.{key}.enabled`, toggled from the panel's Board Programs page, Business section) — `roadmap` and `x_feature` additionally accept their pre-existing legacy env flags as a fallback when no settings-store row exists yet (byte-for-byte migration); every other program is settings-store-only and defaults OFF.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | Master switch. Off = no exploration cycle is originated and the Product Owner is never spawned for this. |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | Seconds between roadmap-exploration cycles (default weekly). |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | Legacy fallback for the `roadmap` program only (see above). |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | Seconds between roadmap-exploration cycles (default weekly) when no settings-store interval override is set. |
 | `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | Minimum roadmap item drafts a themed cycle must propose. |
 | `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | Maximum roadmap item drafts a themed cycle may propose. |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | The one compose-settable knob among the twelve new programs: the 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. Every other new program has no env knob at all — cadence overrides, when set, also live in the settings store. |
 
-No dedicated migration — a cycle is marker-backed (`orchestration_markers` on the held exploration task), not a new table.
+No dedicated migration for a cycle's own payload — a cycle is marker-backed (`orchestration_markers` on the held exploration task) for every program, not a new table per program. The shared LEARN ledger (`board_program_cycles`, migration `087`) and the per-project scoping column (`projects.board_programs`, migration `088`) are the only new tables/columns.
 
 ## Possibilities Matrix
 

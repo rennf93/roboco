@@ -101,6 +101,39 @@ describe("XPostQueue", () => {
     expect(screen.getByText(/Playbook curation/)).toBeInTheDocument();
   });
 
+  it("renders a War Room campaign draft with its label and publish_after guidance", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "x-5",
+        source: "x_campaign",
+        title: "X post: War Room launch — launch",
+        status: "pending",
+        body: "War Room is live: plan a whole campaign in one cycle.",
+        char_count: 55,
+        campaign: {
+          campaign_name: "War Room launch",
+          stage_label: "launch",
+          publish_after: "2026-08-01T09:00:00+00:00",
+          sequence: 2,
+        },
+      },
+    ] as XPost[]);
+
+    render(withQueryClient(<XPostQueue />));
+
+    expect(await screen.findByText("War Room campaign")).toBeInTheDocument();
+    expect(screen.queryByText("Mention reply")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/launch · #2 of "War Room launch" · recommended/),
+    ).toBeInTheDocument();
+  });
+
+  it("never renders the campaign guidance line for a non-campaign draft", async () => {
+    render(withQueryClient(<XPostQueue />));
+    await screen.findByText("Release post");
+    expect(screen.queryByText(/recommended/)).not.toBeInTheDocument();
+  });
+
   it("renders a project badge when project_slug/project_name is present", async () => {
     listPosts.mockResolvedValueOnce([
       {
@@ -191,10 +224,7 @@ describe("XPostQueue", () => {
   // distinct, non-swallowed toast — not a blanket success/failure.
   it.each([
     ["already_in_progress", "A post is already in progress for this draft."],
-    [
-      "no_credentials",
-      "No X credentials configured — set them below first.",
-    ],
+    ["no_credentials", "No X credentials configured — set them below first."],
     ["post_failed", "Posting failed: the X API rejected the tweet"],
     [
       "redis_unavailable",

@@ -22,16 +22,21 @@ from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.board_programs import router as board_programs_router
 from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
+from roboco.api.routes.coroner import router as coroner_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
+from roboco.api.routes.dogfood import router as dogfood_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
+from roboco.api.routes.mirror import router as mirror_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.periscope import router as periscope_router
+from roboco.api.routes.pest_control import router as pest_control_router
 from roboco.api.routes.pitch import router as pitch_router
 from roboco.api.routes.playbooks import router as playbooks_router
 from roboco.api.routes.product import router as product_router
@@ -41,9 +46,12 @@ from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.release import router as release_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
+from roboco.api.routes.scales import router as scales_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
+from roboco.api.routes.sentinel import router as sentinel_router
 from roboco.api.routes.settings import router as settings_router
+from roboco.api.routes.spackle import router as spackle_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
 from roboco.api.routes.tasks import router as tasks_router
@@ -324,6 +332,62 @@ def _mount_v1_routers(app: FastAPI) -> None:
     app.include_router(do_module.router)
 
 
+def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
+    """Mount every Board Program route — the generic registry route plus each
+    program's own per-item / read-only surface. Grouped into one helper
+    (mirrors ``_mount_v1_routers``) to keep ``create_app``'s own statement
+    count from growing unbounded as programs are added."""
+    # Board roadmap engine — the CEO approves/rejects items within a held
+    # roadmap cycle. Approving materializes a BACKLOG task; nothing auto-starts.
+    app.include_router(roadmap_router, prefix=f"{api_prefix}/roadmap", tags=["Roadmap"])
+    # Board Programs — the generic registry status + off-schedule "run now"
+    # (roadmap + x_feature today; every later program rides the same route).
+    app.include_router(
+        board_programs_router,
+        prefix=f"{api_prefix}/board-programs",
+        tags=["Board Programs"],
+    )
+    # Pest Control (Board Program) — the CEO approves/rejects items within a
+    # held bug-hunt cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(
+        pest_control_router,
+        prefix=f"{api_prefix}/pest-control",
+        tags=["Pest Control"],
+    )
+    # Periscope (Board Program) — the CEO reads filed market-research briefs.
+    # Read-only: a brief is a report, not a queue item; nothing to approve.
+    app.include_router(
+        periscope_router, prefix=f"{api_prefix}/periscope", tags=["Periscope"]
+    )
+    # Coroner (Board Program) — read-only Postmortems list. A postmortem
+    # completes atomically at propose_postmortem time; there is nothing here
+    # for the CEO to approve/reject.
+    app.include_router(coroner_router, prefix=f"{api_prefix}/coroner", tags=["Coroner"])
+    # Sentinel (Board Program) — the CEO reads filed org-wide quality-drift
+    # reports. Read-only: a report is a report, not a queue item; nothing to
+    # approve.
+    app.include_router(
+        sentinel_router, prefix=f"{api_prefix}/sentinel", tags=["Sentinel"]
+    )
+    # Spackle (Board Program) — the CEO approves/rejects items within a held
+    # gap-fill cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(spackle_router, prefix=f"{api_prefix}/spackle", tags=["Spackle"])
+    # Scales (Board Program) — the CEO approves/rejects items within a held
+    # portfolio-rebalance cycle. Approving EXECUTES the item against the live
+    # target task (reprioritize or cancel); nothing here creates a task.
+    app.include_router(scales_router, prefix=f"{api_prefix}/scales", tags=["Scales"])
+    # Mirror (Board Program) — the CEO approves/rejects items within a held
+    # messaging-fixes cycle. Approving materializes a BACKLOG docs task;
+    # nothing auto-starts.
+    app.include_router(mirror_router, prefix=f"{api_prefix}/mirror", tags=["Mirror"])
+    # Dogfood (Board Program) — the CEO approves/rejects items within a held
+    # friction-fix cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -457,21 +521,12 @@ def create_app() -> FastAPI:
         tags=["X"],
     )
 
-    # Board roadmap engine — the CEO approves/rejects items within a held
-    # roadmap cycle. Approving materializes a BACKLOG task; nothing auto-starts.
-    app.include_router(
-        roadmap_router,
-        prefix=f"{api_prefix}/roadmap",
-        tags=["Roadmap"],
-    )
-
-    # Board Programs — the generic registry status + off-schedule "run now"
-    # (roadmap + x_feature today; every later program rides the same route).
-    app.include_router(
-        board_programs_router,
-        prefix=f"{api_prefix}/board-programs",
-        tags=["Board Programs"],
-    )
+    # Board Programs — the generic registry route + each program's own
+    # per-item / read-only surface (roadmap, board-programs, pest control,
+    # periscope, coroner, sentinel, spackle, scales). Grouped into one helper
+    # to keep this function's own statement count from growing unbounded as
+    # programs are added (mirrors ``_mount_v1_routers`` below).
+    _mount_board_program_routers(app, api_prefix)
 
     # Video engine — the CEO requests an on-demand marketing video; the
     # release/spotlight triggers open the same UX/UI authoring task via their

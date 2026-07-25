@@ -126,16 +126,36 @@ _BOARD_DO = (
 
 # Product Owner only (v1 — HoM stays a reviewer via the normal board gate when
 # an approved roadmap item later ships as real work; see the roadmap spec's
-# non-goals).
+# non-goals). ``propose_bug_hunt`` (Pest Control), ``propose_gap_fill``
+# (Spackle), and ``propose_rebalance`` (Scales) are likewise
+# Product-Owner-only. ``propose_friction_fixes`` (Dogfood) is likewise
+# Product-Owner-only — the one program whose spawn also gets the playwright
+# MCP (task-scoped, not role-blanket — see AgentOrchestrator._is_dogfood_spawn).
 _PRODUCT_OWNER_DO = (
     *_BOARD_DO,
     "propose_roadmap",
+    "propose_bug_hunt",
+    "propose_gap_fill",
+    "propose_rebalance",
+    "propose_friction_fixes",
 )
 
 # Head of Marketing only (mirrors _PRODUCT_OWNER_DO's propose_roadmap grant).
+# ``propose_market_brief`` (Periscope) is likewise Head-of-Marketing-only.
+# ``propose_messaging_fixes`` (Mirror) is likewise Head-of-Marketing-only —
+# the mirror image of the Product Owner's ``propose_gap_fill`` (Spackle).
+# ``propose_editorial_post`` (Megaphone) is likewise Head-of-Marketing-only.
+# ``propose_campaign`` (War Room) is the same bounded expansion, one call per
+# campaign-planning cycle. ``propose_conversation_replies`` (Barfly) is
+# likewise Head-of-Marketing-only.
 _HEAD_MARKETING_DO = (
     *_BOARD_DO,
     "propose_feature_spotlight",
+    "propose_market_brief",
+    "propose_messaging_fixes",
+    "propose_editorial_post",
+    "propose_campaign",
+    "propose_conversation_replies",
 )
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
@@ -146,6 +166,17 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # agents_config.can_a2a_direct, not by omitting the tool.
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
 # its surface (approve/reject/archive are KB curation actions, not agent comms).
+# ``propose_postmortem`` is the Coroner (Board Program) grant (spec §4): the
+# ONE program the Auditor originates content for. It does NOT also carry
+# ``draft_playbook`` — a coroner-authored playbook-kind process change is
+# drafted by calling PlaybookService directly inside propose_postmortem
+# (content_actions.py), never through this do-verb; "auditor curates but
+# does not draft" stays an invariant (test_playbook_verbs.py). Librarian
+# (below) is the program the spec flagged as the one that would deliberately
+# revisit that invariant — it does NOT: propose_playbook_drafts follows the
+# exact same precedent, drafting directly via PlaybookService inside the
+# verb (content_actions.py), so draft_playbook itself still never appears
+# here.
 _AUDITOR_DO = (
     "note",
     "evidence",
@@ -155,8 +186,17 @@ _AUDITOR_DO = (
     "reject_playbook",
     "archive_playbook",
     "curate_vault",
+    "propose_postmortem",
     "notify_list",
     "notify_get",
+    # Sentinel (Board Program): the Auditor's weekly org-wide drift report,
+    # a bounded expansion mirroring _PRODUCT_OWNER_DO's propose_roadmap /
+    # _HEAD_MARKETING_DO's propose_market_brief grants.
+    "propose_quality_report",
+    # Librarian (Board Program): proactive playbook mining — drafts 1-3
+    # playbooks directly via PlaybookService (see the comment above), never
+    # via draft_playbook.
+    "propose_playbook_drafts",
 )
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come

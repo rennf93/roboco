@@ -85,6 +85,21 @@ vi.mock("../social-summary-card", () => ({
 vi.mock("../roadmap-review-queue", () => ({
   RoadmapReviewQueue: () => <div>RoadmapReviewQueueStub</div>,
 }));
+vi.mock("../pest-control-review-queue", () => ({
+  PestControlReviewQueue: () => <div>PestControlReviewQueueStub</div>,
+}));
+vi.mock("../spackle-review-queue", () => ({
+  SpackleReviewQueue: () => <div>SpackleReviewQueueStub</div>,
+}));
+vi.mock("../scales-review-queue", () => ({
+  ScalesReviewQueue: () => <div>ScalesReviewQueueStub</div>,
+}));
+vi.mock("../mirror-review-queue", () => ({
+  MirrorReviewQueue: () => <div>MirrorReviewQueueStub</div>,
+}));
+vi.mock("../dogfood-review-queue", () => ({
+  DogfoodReviewQueue: () => <div>DogfoodReviewQueueStub</div>,
+}));
 vi.mock("../strategy-signals-panel", () => ({
   StrategySignalsPanel: () => <div>StrategySignalsPanelStub</div>,
 }));
@@ -125,6 +140,11 @@ describe("CommandCenter", () => {
       "ReleaseProposalCardStub",
       "PlaybookReviewQueueStub",
       "RoadmapReviewQueueStub",
+      "PestControlReviewQueueStub",
+      "SpackleReviewQueueStub",
+      "ScalesReviewQueueStub",
+      "MirrorReviewQueueStub",
+      "DogfoodReviewQueueStub",
       "ActiveBlockersPanelStub",
       "RecentActivityFeedStub",
     ]) {

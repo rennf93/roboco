@@ -26,10 +26,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from roboco.config import settings
-from roboco.db.tables import BoardProgramCycleTable, ProjectTable
+from roboco.db.tables import BoardProgramCycleTable, ProjectTable, TaskTable
 from roboco.foundation.policy.board_programs import (
     PROGRAMS,
     TriggerKind,
@@ -47,7 +47,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import TaskTable
     from roboco.foundation.policy.board_programs import BoardProgram
 
 _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
@@ -65,13 +64,192 @@ async def _originate_x_feature(session: AsyncSession) -> TaskTable | None:
     return await get_x_engine(session).open_feature_spotlight_exploration()
 
 
+async def _originate_pest_control(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.pest_control_engine import get_pest_control_engine
+
+    return await get_pest_control_engine(session).run_cycle()
+
+
+async def _originate_periscope(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.periscope_engine import get_periscope_engine
+
+    return await get_periscope_engine(session).run_cycle()
+
+
+async def _originate_scales(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.scales_engine import get_scales_engine
+
+    return await get_scales_engine(session).run_cycle()
+
+
+async def _originate_coroner(_session: AsyncSession) -> TaskTable | None:
+    """Coroner is EVENT-triggered (spec §4) — ``run_due_programs`` skips every
+    non-CRON program before it would ever call this (see ``program_due``), so
+    this always-None stub only exists to keep ``_ORIGINATORS`` covering the
+    registry 1:1 (asserted by tests). A real cycle opens through
+    ``CoronerEngine.open_for_incident``, called directly from the bounce/
+    cancel/budget-block hooks — it bypasses this dict entirely, building its
+    own ``BoardProgramCycleTable`` row the same way ``_originate_and_record``
+    does below, since there is no loop tick to route it through."""
+    return None
+
+
+async def _originate_sentinel(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.sentinel_engine import get_sentinel_engine
+
+    return await get_sentinel_engine(session).run_cycle()
+
+
+async def _originate_spackle(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.spackle_engine import get_spackle_engine
+
+    return await get_spackle_engine(session).run_cycle()
+
+
+async def _originate_mirror(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.mirror_engine import get_mirror_engine
+
+    return await get_mirror_engine(session).run_cycle()
+
+
+async def _originate_megaphone(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.megaphone_engine import get_megaphone_engine
+
+    return await get_megaphone_engine(session).run_cycle()
+
+
+async def _originate_librarian(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.librarian_engine import get_librarian_engine
+
+    return await get_librarian_engine(session).run_cycle()
+
+
+async def _originate_war_room(session: AsyncSession) -> TaskTable | None:
+    """War Room's ``_ORIGINATORS`` binding — a REAL originator, unlike
+    ``_originate_coroner``'s always-None stub. War Room is EVENT-triggered
+    same as Coroner (``run_due_programs`` never calls this — see the
+    trigger-kind guard there), but its "run now" / CEO on-demand path
+    (``BoardProgramEngine.open_program_cycle``, which does NOT check trigger
+    kind) genuinely drives a fresh blank-brief cycle through
+    ``WarRoomEngine.run_cycle``. The release-publish hook bypasses this dict
+    entirely via ``WarRoomEngine.open_for_release`` (mirrors
+    ``CoronerEngine.open_for_incident``)."""
+    from roboco.services.war_room_engine import get_war_room_engine
+
+    return await get_war_room_engine(session).run_cycle()
+
+
+async def _originate_barfly(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.barfly_engine import get_barfly_engine
+
+    return await get_barfly_engine(session).run_cycle()
+
+
+async def _originate_dogfood(session: AsyncSession) -> TaskTable | None:
+    """Unlike Coroner's never-firing stub, this is a REAL originator: a
+    Dogfood cycle needs no external incident id, just the next opted-in
+    project in rotation, so both the release-publish hook and a CEO "run
+    now" call open a cycle through the ordinary ``open_program_cycle`` path.
+    The cron loop still never reaches this — ``program_due`` refuses any
+    non-CRON trigger before ``_run_due_one`` would call it — see
+    ``roboco.services.dogfood_engine``'s module docstring."""
+    from roboco.services.dogfood_engine import get_dogfood_engine
+
+    return await get_dogfood_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
-# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE) so the two can't drift.
+# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
+# PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE,
+# SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE, LIBRARIAN_SOURCE,
+# WAR_ROOM_SOURCE, BARFLY_SOURCE, DOGFOOD_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
+    "pest_control": _originate_pest_control,
+    "periscope": _originate_periscope,
+    "coroner": _originate_coroner,
+    "sentinel": _originate_sentinel,
+    "spackle": _originate_spackle,
+    "scales": _originate_scales,
+    "mirror": _originate_mirror,
+    "megaphone": _originate_megaphone,
+    "librarian": _originate_librarian,
+    "war_room": _originate_war_room,
+    "barfly": _originate_barfly,
+    "dogfood": _originate_dogfood,
+}
+
+
+# Sentinel "last explored" timestamp for a project a rotation has never
+# targeted — older than any real ``opened_at``, so it always sorts first.
+_NEVER_EXPLORED = datetime.min.replace(tzinfo=UTC)
+
+
+async def pick_rotation_target(
+    session: AsyncSession, projects: list[ProjectTable], *, source: str
+) -> ProjectTable:
+    """The opted-in project due this cycle for a project-scoped program's
+    round-robin: never-explored beats explored, else the oldest
+    last-explored timestamp wins — ties (including every never-explored
+    project) break by ``projects``' own deterministic order
+    (``BoardProgramEngine.opted_in_projects``' ORDER BY). ``source`` is the
+    program's own exploration-task source tag (e.g. ``PEST_CONTROL_SOURCE``),
+    read via ``_last_explored_at`` rather than the LEARN ledger — see that
+    function's docstring. Shared by every project-scoped program's rotation
+    (Pest Control, Spackle, Mirror, Dogfood) so they rotate identically."""
+    if len(projects) == 1:
+        return projects[0]
+    last_explored = await _last_explored_at(session, source)
+    return min(
+        projects,
+        key=lambda p: (
+            p.id in last_explored,
+            last_explored.get(cast("UUID", p.id), _NEVER_EXPLORED),
+        ),
+    )
+
+
+async def _last_explored_at(session: AsyncSession, source: str) -> dict[UUID, datetime]:
+    """Most recent exploration task's ``created_at`` per project id, for a
+    given task ``source`` — a project-scoped rotation's memory of which
+    opted-in project went last. Reads the exploration tasks themselves
+    rather than the LEARN ledger (``board_program_cycles``): that ledger is
+    only populated by a ``BoardProgramEngine``-mediated call
+    (``open_program_cycle`` / ``run_due_programs``), so keying off it would
+    leave the rotation blind whenever an engine's own ``run_cycle`` runs
+    directly. Every prior cycle is guaranteed terminal by the time this
+    runs — the one-open-cycle dedup in each engine's ``run_cycle`` already
+    refused a new cycle while any project's exploration task was still
+    open."""
+    result = await session.execute(
+        select(TaskTable.project_id, func.max(TaskTable.created_at))
+        .where(TaskTable.source == source)
+        .group_by(TaskTable.project_id)
+    )
+    return {pid: created for pid, created in result.all() if pid is not None}
+
+
+async def _pest_control_rework_spike(session: AsyncSession) -> bool:
+    """True when the trailing-7-day rework rate crosses
+    ``settings.pest_rework_threshold`` — the "metric" half of Pest Control's
+    "weekly cron OR rework-rate spike" trigger (spec §4). Mirrors the
+    strategy-engine idle-trigger pattern rather than a new TriggerKind: the
+    program's own trigger stays CRON, and this predicate lets a cycle open
+    off-schedule on top of that cadence."""
+    from roboco.services.metrics import get_metrics_service
+
+    report = await get_metrics_service(session).get_rework_metrics(days=7)
+    return report.rate > settings.pest_rework_threshold
+
+
+# Metric-predicate bindings, mirroring ``_ORIGINATORS`` — one entry per
+# program that wants an off-schedule accelerator on top of its CRON cadence.
+# Absent from this dict = cron-only (every program but pest_control today).
+_METRIC_PREDICATES: dict[str, Callable[[AsyncSession], Awaitable[bool]]] = {
+    "pest_control": _pest_control_rework_spike,
 }
 
 
@@ -122,10 +300,14 @@ class BoardProgramEngine(BaseService):
         return await program_armed(self.session, key)
 
     async def run_due_programs(self) -> list[str]:
-        """Originate a cycle for every enabled, due CRON program.
+        """Originate a cycle for every enabled, due CRON program, PLUS every
+        program whose metric predicate (``_METRIC_PREDICATES``) fires this
+        tick even off-schedule.
 
-        Returns the keys that opened a new cycle. One program's failure is
-        logged and never blocks the rest — mirrors the CI-watch sweep.
+        Returns the keys that opened a new cycle. One program's failure — cron
+        or metric — is logged and never blocks the rest, mirrors the CI-watch
+        sweep. A metric hit for a program already opened by the cron pass is
+        a cheap no-op (``open_program_cycle`` re-checks dedup itself).
         """
         opened: list[str] = []
         now = datetime.now(UTC)
@@ -137,7 +319,38 @@ class BoardProgramEngine(BaseService):
                     opened.append(key)
             except Exception:
                 self.log.exception("board-program cycle failed", program=key)
+        await self._run_due_metric_predicates(opened)
         return opened
+
+    async def _run_due_metric_predicates(self, opened: list[str]) -> None:
+        """Append to ``opened`` any program whose metric predicate fires this
+        tick, off-schedule — split out of ``run_due_programs`` to keep its
+        complexity down (xenon budget).
+
+        Cheap gates first: scope (any project opted in?) and dedup (already
+        an open cycle?) are checked BEFORE the predicate runs, so a predicate
+        that costs several queries (e.g. the rework-rate check's 8-11 query
+        ``MetricsService`` call) is never evaluated on a tick that would have
+        been rejected anyway — a spike-prone metric shouldn't pay full price
+        every tick just to be discarded by a guard it was always going to
+        fail.
+        """
+        for key, predicate in _METRIC_PREDICATES.items():
+            if key in opened or not await self.enabled(key):
+                continue
+            program = PROGRAMS[key]
+            try:
+                if not await self._scope_gate(program):
+                    continue
+                blocked, _ = await self._dedup_state(key)
+                if blocked:
+                    continue
+                if await predicate(self.session) and (
+                    await self.open_program_cycle(key) is not None
+                ):
+                    opened.append(key)
+            except Exception:
+                self.log.exception("board-program metric predicate failed", program=key)
 
     async def _run_due_one(self, key: str, now: datetime) -> bool:
         if not await self.enabled(key):
@@ -184,9 +397,15 @@ class BoardProgramEngine(BaseService):
         return False
 
     async def opted_in_projects(self, program: BoardProgram) -> list[ProjectTable]:
-        """Active projects where ``project_participates(program, ...)`` holds."""
+        """Active projects where ``project_participates(program, ...)`` holds,
+        deterministically ordered (created_at, then id) — callers that pick
+        a single project out of this list (e.g. ``PestControlEngine``'s
+        rotation) need a stable order, not whatever Postgres happens to
+        return without an ORDER BY."""
         result = await self.session.execute(
-            select(ProjectTable).where(ProjectTable.is_active.is_(True))
+            select(ProjectTable)
+            .where(ProjectTable.is_active.is_(True))
+            .order_by(ProjectTable.created_at, ProjectTable.id)
         )
         return [
             p

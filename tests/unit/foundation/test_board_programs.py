@@ -6,6 +6,7 @@ import pytest
 from roboco.config import Settings
 from roboco.foundation.policy.board_programs import (
     PROGRAMS,
+    WEEK_SECONDS,
     BoardProgram,
     TriggerKind,
     program_due,
@@ -25,7 +26,7 @@ def test_x_feature_default_interval_matches_settings_field_default() -> None:
 
 
 def test_registry_carries_the_two_migrated_programs() -> None:
-    assert set(PROGRAMS) == {"roadmap", "x_feature"}
+    assert {"roadmap", "x_feature"} <= set(PROGRAMS)
     rm = PROGRAMS["roadmap"]
     assert rm.role == "product_owner"
     assert rm.source == "board_roadmap"
@@ -33,6 +34,220 @@ def test_registry_carries_the_two_migrated_programs() -> None:
     xf = PROGRAMS["x_feature"]
     assert xf.role == "head_marketing"
     assert xf.source == "x_feature_exploration"
+
+
+_PEST_CONTROL_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_pest_control() -> None:
+    pc = PROGRAMS["pest_control"]
+    assert pc.role == "product_owner"
+    assert pc.source == "board_pest_control"
+    assert pc.trigger is TriggerKind.CRON
+    assert pc.scope == "project"
+    assert pc.max_items_per_cycle == _PEST_CONTROL_MAX_ITEMS_PER_CYCLE
+
+
+def test_registry_carries_periscope() -> None:
+    p = PROGRAMS["periscope"]
+    assert p.role == "head_marketing"
+    assert p.source == "board_periscope"
+    assert p.trigger is TriggerKind.CRON
+    assert p.scope == "org"
+    assert p.default_interval_seconds == WEEK_SECONDS
+
+
+_SCALES_MAX_ITEMS_PER_CYCLE = 7
+
+
+def test_registry_carries_scales() -> None:
+    s = PROGRAMS["scales"]
+    assert s.role == "product_owner"
+    assert s.source == "board_scales"
+    assert s.trigger is TriggerKind.CRON
+    assert s.scope == "org"
+    assert s.max_items_per_cycle == _SCALES_MAX_ITEMS_PER_CYCLE
+    assert s.default_interval_seconds == 30 * 24 * 3600
+
+
+def test_registry_carries_coroner() -> None:
+    c = PROGRAMS["coroner"]
+    assert c.role == "auditor"
+    assert c.source == "board_coroner"
+    assert c.trigger is TriggerKind.EVENT
+    assert c.scope == "org"
+
+
+def test_coroner_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_program_due_event_never_cron_
+    fires but against the real registered entry."""
+    assert not program_due(
+        PROGRAMS["coroner"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
+def test_registry_carries_sentinel() -> None:
+    s = PROGRAMS["sentinel"]
+    assert s.role == "auditor"
+    assert s.source == "board_sentinel"
+    assert s.trigger is TriggerKind.CRON
+    assert s.scope == "org"
+    assert s.default_interval_seconds == WEEK_SECONDS
+
+
+_SPACKLE_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_spackle() -> None:
+    sp = PROGRAMS["spackle"]
+    assert sp.role == "product_owner"
+    assert sp.source == "board_spackle"
+    assert sp.trigger is TriggerKind.CRON
+    assert sp.scope == "project"
+    assert sp.max_items_per_cycle == _SPACKLE_MAX_ITEMS_PER_CYCLE
+    assert sp.default_interval_seconds == 2 * WEEK_SECONDS
+
+
+_MIRROR_MAX_ITEMS_PER_CYCLE = 5
+_QUARTER_SECONDS = 90 * 24 * 3600
+
+
+def test_registry_carries_mirror() -> None:
+    m = PROGRAMS["mirror"]
+    assert m.role == "head_marketing"
+    assert m.source == "board_mirror"
+    assert m.trigger is TriggerKind.CRON
+    assert m.scope == "project"
+    assert m.max_items_per_cycle == _MIRROR_MAX_ITEMS_PER_CYCLE
+    assert m.default_interval_seconds == _QUARTER_SECONDS
+
+
+def test_registry_carries_megaphone() -> None:
+    mg = PROGRAMS["megaphone"]
+    assert mg.role == "head_marketing"
+    assert mg.source == "board_megaphone"
+    assert mg.trigger is TriggerKind.CRON
+    assert mg.scope == "org"
+    assert mg.default_interval_seconds == 3 * 24 * 3600
+
+
+_LIBRARIAN_MAX_ITEMS_PER_CYCLE = 3
+
+
+def test_registry_carries_librarian() -> None:
+    p = PROGRAMS["librarian"]
+    assert p.role == "auditor"
+    assert p.source == "board_librarian"
+    assert p.trigger is TriggerKind.CRON
+    assert p.scope == "org"
+    assert p.max_items_per_cycle == _LIBRARIAN_MAX_ITEMS_PER_CYCLE
+    assert p.default_interval_seconds == 2 * WEEK_SECONDS
+
+
+_WAR_ROOM_MAX_POSTS_PER_CAMPAIGN = 6
+
+
+def test_registry_carries_war_room() -> None:
+    wr = PROGRAMS["war_room"]
+    assert wr.role == "head_marketing"
+    assert wr.source == "board_war_room"
+    assert wr.trigger is TriggerKind.EVENT
+    assert wr.scope == "org"
+    assert wr.max_items_per_cycle == _WAR_ROOM_MAX_POSTS_PER_CAMPAIGN
+
+
+def test_war_room_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_coroner_is_never_cron_due.
+    Unlike Coroner, War Room's ``_ORIGINATORS`` entry is a REAL originator
+    (see test_board_program_engine.py), so this test is what actually proves
+    the loop still never drives it — the trigger-kind guard, not a stub."""
+    assert not program_due(
+        PROGRAMS["war_room"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
+_DOGFOOD_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_dogfood() -> None:
+    d = PROGRAMS["dogfood"]
+    assert d.role == "product_owner"
+    assert d.source == "board_dogfood"
+    assert d.trigger is TriggerKind.EVENT
+    assert d.scope == "project"
+    assert d.max_items_per_cycle == _DOGFOOD_MAX_ITEMS_PER_CYCLE
+
+
+def test_dogfood_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_coroner_is_never_cron_due,
+    but against Dogfood: unlike Coroner it DOES have a real originator (see
+    roboco.services.board_programs._originate_dogfood), so this asserts the
+    cron loop's own gate refuses it, not that no originator exists."""
+    assert not program_due(
+        PROGRAMS["dogfood"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
+_BARFLY_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_barfly() -> None:
+    b = PROGRAMS["barfly"]
+    assert b.role == "head_marketing"
+    assert b.source == "board_barfly"
+    assert b.trigger is TriggerKind.CRON
+    assert b.scope == "org"
+    assert b.max_items_per_cycle == _BARFLY_MAX_ITEMS_PER_CYCLE
+    assert b.default_interval_seconds == 2 * 24 * 3600
+
+
+def test_registry_carries_fourteen_programs() -> None:
+    """Locks the union so a future addition/removal is deliberate — matches
+    the count-whatever-your-base-has-plus-war_room shape the other
+    registry-parity tests already exercise per-key."""
+    assert set(PROGRAMS) == {
+        "roadmap",
+        "x_feature",
+        "pest_control",
+        "periscope",
+        "coroner",
+        "sentinel",
+        "spackle",
+        "scales",
+        "mirror",
+        "megaphone",
+        "librarian",
+        "war_room",
+        "barfly",
+        "dogfood",
+    }
+
+
+_MIN_DESCRIPTION_CHARS = 40
+
+
+def test_every_registry_entry_has_human_title_and_description() -> None:
+    """The panel renders title/description, never the raw key — a registry
+    entry shipping without them regresses the card to unreadable keys."""
+    for key, program in PROGRAMS.items():
+        assert program.title.strip(), f"{key} has no title"
+        assert len(program.description.strip()) >= _MIN_DESCRIPTION_CHARS, (
+            f"{key} description too thin"
+        )
+    titles = [p.title for p in PROGRAMS.values()]
+    assert len(set(titles)) == len(titles), "duplicate program titles"
 
 
 def test_program_due_cron_interval() -> None:

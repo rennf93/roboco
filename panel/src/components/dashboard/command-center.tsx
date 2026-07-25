@@ -21,6 +21,11 @@ import { ReleaseProposalCard } from "./release-proposal-card";
 import { PlaybookReviewQueue } from "./playbook-review-queue";
 import { SocialSummaryCard } from "./social-summary-card";
 import { RoadmapReviewQueue } from "./roadmap-review-queue";
+import { PestControlReviewQueue } from "./pest-control-review-queue";
+import { SpackleReviewQueue } from "./spackle-review-queue";
+import { ScalesReviewQueue } from "./scales-review-queue";
+import { MirrorReviewQueue } from "./mirror-review-queue";
+import { DogfoodReviewQueue } from "./dogfood-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -206,6 +211,21 @@ export function CommandCenter() {
 
       {/* Board roadmap queue (hidden when no cycle authored) */}
       <RoadmapReviewQueue />
+
+      {/* Pest Control bug-hunt queue (hidden when no cycle authored) */}
+      <PestControlReviewQueue />
+
+      {/* Spackle gap-fill queue (hidden when no cycle authored) */}
+      <SpackleReviewQueue />
+
+      {/* Scales portfolio-rebalance queue (hidden when no cycle authored) */}
+      <ScalesReviewQueue />
+
+      {/* Mirror messaging-fix queue (hidden when no cycle authored) */}
+      <MirrorReviewQueue />
+
+      {/* Dogfood friction-fix queue (hidden when no cycle authored) */}
+      <DogfoodReviewQueue />
 
       {/* Blockers and Activity Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

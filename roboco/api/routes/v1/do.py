@@ -26,7 +26,19 @@ from roboco.api.schemas.v1.do import (
     NotifyRequest,
     PitchRequest,
     ProgressRequest,
+    ProposeBugHuntRequest,
+    ProposeCampaignRequest,
+    ProposeConversationRepliesRequest,
+    ProposeEditorialPostRequest,
     ProposeFeatureSpotlightRequest,
+    ProposeFrictionFixesRequest,
+    ProposeGapFillRequest,
+    ProposeMarketBriefRequest,
+    ProposeMessagingFixesRequest,
+    ProposePlaybookDraftsRequest,
+    ProposePostmortemRequest,
+    ProposeQualityReportRequest,
+    ProposeRebalanceRequest,
     ProposeRoadmapRequest,
     ProposeVideoRequest,
     PRUpdateRequest,
@@ -159,6 +171,101 @@ async def do_propose_roadmap(
     return envelope_to_response(env, request)
 
 
+@router.post("/propose_bug_hunt")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_bug_hunt(
+    request: Request,
+    body: ProposeBugHuntRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_bug_hunt(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_gap_fill")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_gap_fill(
+    request: Request,
+    body: ProposeGapFillRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_gap_fill(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_rebalance")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_rebalance(
+    request: Request,
+    body: ProposeRebalanceRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_rebalance(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_messaging_fixes")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_messaging_fixes(
+    request: Request,
+    body: ProposeMessagingFixesRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_messaging_fixes(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_friction_fixes")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_friction_fixes(
+    request: Request,
+    body: ProposeFrictionFixesRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_friction_fixes(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
 @router.post("/propose_feature_spotlight")
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
@@ -180,6 +287,152 @@ async def do_propose_feature_spotlight(
         video_script=body.video_script,
         skip=body.skip,
         skip_reason=body.skip_reason,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_conversation_replies")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_conversation_replies(
+    request: Request,
+    body: ProposeConversationRepliesRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_conversation_replies(
+        agent_id=x_agent_id,
+        items=[item.model_dump() for item in body.items],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_market_brief")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_market_brief(
+    request: Request,
+    body: ProposeMarketBriefRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_market_brief(
+        agent_id=x_agent_id,
+        headline=body.headline,
+        findings=[f.model_dump() for f in body.findings],
+        threats=body.threats,
+        opportunities=body.opportunities,
+        positioning_note=body.positioning_note,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_editorial_post")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_editorial_post(
+    request: Request,
+    body: ProposeEditorialPostRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_editorial_post(
+        agent_id=x_agent_id,
+        angle=body.angle,
+        body=body.body,
+        rationale=body.rationale,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_postmortem")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_postmortem(
+    request: Request,
+    body: ProposePostmortemRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_postmortem(
+        agent_id=x_agent_id,
+        incident_summary=body.incident_summary,
+        root_cause=body.root_cause,
+        failed_stage=body.failed_stage,
+        process_change=body.process_change.model_dump(),
+        playbook=body.playbook.model_dump() if body.playbook is not None else None,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_quality_report")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_quality_report(
+    request: Request,
+    body: ProposeQualityReportRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_quality_report(
+        agent_id=x_agent_id,
+        headline=body.headline,
+        items=[item.model_dump() for item in body.items],
+        overall_assessment=body.overall_assessment,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_playbook_drafts")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_playbook_drafts(
+    request: Request,
+    body: ProposePlaybookDraftsRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_playbook_drafts(
+        agent_id=x_agent_id,
+        drafts=[d.model_dump() for d in body.drafts],
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_campaign")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_campaign(
+    request: Request,
+    body: ProposeCampaignRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_campaign(
+        agent_id=x_agent_id,
+        campaign_name=body.campaign_name,
+        posts=[p.model_dump() for p in body.posts],
     )
     return envelope_to_response(env, request)
 

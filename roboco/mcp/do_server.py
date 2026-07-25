@@ -589,6 +589,107 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
     )
 
 
+def propose_bug_hunt(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Pest Control bug hunt (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after hunting through the
+    findings ledger, rework hotspots (revision_count), and TODO/ponytail debt
+    for latent defects the org records but nobody reads. The CEO reviews and
+    approves/rejects each item individually; approved items land in the
+    backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — the file:line / ledger row / metric that
+            justifies this as a real, live bug; no evidence, no item).
+    """
+    return _post("/api/v1/do/propose_bug_hunt", {"items": items})
+
+
+def propose_gap_fill(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Spackle gap-fill audit (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after auditing half-shipped
+    surface area in the target project: API routes with no panel surface (and
+    vice versa), armed flags with no docs, docs promises the code doesn't
+    keep, coverage holes by module, dead-end panel tabs. The CEO reviews and
+    approves/rejects each item individually; approved items land in the
+    backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — must name BOTH sides of the gap, e.g. the
+            route that exists and the panel surface that doesn't; no
+            evidence, no item).
+    """
+    return _post("/api/v1/do/propose_gap_fill", {"items": items})
+
+
+def propose_rebalance(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Scales portfolio-rebalance plan (1-7 items).
+
+    Call this exactly ONCE per exploration cycle, after reviewing the
+    server-assembled stale-backlog snapshot against the company charter.
+    Each item re-prioritizes or cancels ONE live BACKLOG/PENDING task — this
+    never drafts a new task. The CEO reviews and approves/rejects each item
+    individually; approval MUTATES the target task in place (nothing here
+    changes anything itself).
+
+    Args:
+        items: 1-7 dicts, each with: task_ref (the id8 or exact title of the
+            live task this item targets), action ('reprioritize' or
+            'cancel'), new_priority (int 0-3, REQUIRED iff action is
+            'reprioritize' — 0 is P0/highest, 3 is P3/lowest), rationale
+            (REQUIRED — why this task should be re-prioritized or cancelled).
+    """
+    return _post("/api/v1/do/propose_rebalance", {"items": items})
+
+
+def propose_messaging_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: propose a Mirror positioning audit (1-5
+    evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after auditing the target
+    project's messaging surfaces (README, docs-site, website) against the
+    charter and shipped reality: claims the copy makes that the code doesn't
+    back, and shipped capabilities the copy doesn't mention. The CEO reviews
+    and approves/rejects each item individually; approved items land in the
+    backlog as docs tasks (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — must name the drifted claim AND the reality
+            it contradicts; no evidence, no item).
+    """
+    return _post("/api/v1/do/propose_messaging_fixes", {"items": items})
+
+
+def propose_friction_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Dogfood friction audit (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after walking the target
+    project's live surfaces as a real user would (the panel via Playwright,
+    the docs site, the Telegram flow when reachable) and filing what broke or
+    felt wrong. The CEO reviews and approves/rejects each item individually;
+    approved items land in the backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — the walked path, the actual clicks/pages,
+            and what broke or felt wrong; prose only, no screenshots; no
+            evidence, no item).
+    """
+    return _post("/api/v1/do/propose_friction_fixes", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -639,6 +740,201 @@ def propose_feature_spotlight(
             "skip": skip,
             "skip_reason": skip_reason,
         },
+    )
+
+
+def propose_market_brief(
+    headline: str,
+    findings: list[dict[str, Any]],
+    threats: list[str] | None = None,
+    opportunities: list[str] | None = None,
+    positioning_note: str = "",
+) -> dict[str, Any]:
+    """Head of Marketing: file the Periscope weekly market-research brief.
+
+    Call this exactly ONCE per exploration cycle, after researching
+    competitors, adjacent-tool releases, and positioning shifts (web_search /
+    web_fetch + the knowledge base). This is a REPORT, not a task queue: the
+    CEO reads it in the panel — nothing materializes, and there is no
+    per-item approve/reject.
+
+    Args:
+        headline: One-line summary of the cycle's biggest signal (<=200 chars).
+        findings: 1-7 dicts, each with: claim (<=500 chars), source_url
+            (REQUIRED, a real http(s) URL — an uncited claim is noise and the
+            verb rejects it), relevance (<=300 chars — why this matters to us).
+        threats: Optional list of up to 5 short threat notes (<=300 chars each).
+        opportunities: Optional list of up to 5 short opportunity notes
+            (<=300 chars each).
+        positioning_note: Optional note (<=500 chars) on a positioning shift
+            worth acting on.
+    """
+    return _post(
+        "/api/v1/do/propose_market_brief",
+        {
+            "headline": headline,
+            "findings": findings,
+            "threats": threats,
+            "opportunities": opportunities,
+            "positioning_note": positioning_note,
+        },
+    )
+
+
+def propose_editorial_post(
+    angle: str,
+    body: str,
+    rationale: str,
+) -> dict[str, Any]:
+    """Head of Marketing: draft ONE Megaphone editorial-calendar post.
+
+    Call this exactly ONCE per exploration cycle, after picking ONE angle off
+    the shipped-this-week digest in your briefing. The draft is held in the
+    SAME X post queue propose_feature_spotlight uses — nothing auto-posts.
+
+    Args:
+        angle: One of 'dev_log', 'behind_scenes', 'changelog_highlight',
+            'other'.
+        body: The tweet text (plain, <=280 chars, no invented facts).
+        rationale: Why this angle, this cycle (<=300 chars).
+    """
+    return _post(
+        "/api/v1/do/propose_editorial_post",
+        {"angle": angle, "body": body, "rationale": rationale},
+    )
+
+
+def propose_conversation_replies(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: draft 1-5 replies to Barfly's screened X conversations.
+
+    Call this exactly ONCE per exploration cycle, after reviewing the
+    candidate conversations already gathered on this task (search results —
+    RoboCo is relevant but unmentioned). Each reply materializes its own held
+    draft in the X post queue; the CEO reviews and approves/rejects each one
+    individually.
+
+    Args:
+        items: 1-5 dicts, each with: tweet_id (REQUIRED — must name one of
+            this task's real candidate conversations; an invented tweet is
+            rejected), reply_body (the reply text, <=280 chars), rationale
+            (REQUIRED — why this conversation is worth replying to).
+    """
+    return _post("/api/v1/do/propose_conversation_replies", {"items": items})
+
+
+def propose_postmortem(
+    incident_summary: str,
+    root_cause: str,
+    failed_stage: str,
+    process_change: dict[str, Any],
+    playbook: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Auditor: author ONE Coroner postmortem for your open autopsy task.
+
+    Call this exactly ONCE per autopsy — after reading the incident task's
+    full journey (evidence(), the findings ledger, journal trail) — then
+    call i_am_idle(). It completes the autopsy task immediately: there is no
+    per-item CEO queue like roadmap/pest control, this is a single report.
+
+    Args:
+        incident_summary: What happened, <=500 chars.
+        root_cause: The systemic cause (not just the symptom), <=800 chars.
+        failed_stage: The task status where it actually broke down (a real
+            lifecycle status, e.g. 'awaiting_qa', 'in_progress').
+        process_change: {kind, description} — kind is one of
+            'playbook'|'prompt_fix'|'conventions_rule'|'other'; description
+            (<=800 chars) is the ONE process change you propose.
+        playbook: Required iff process_change.kind == 'playbook':
+            {title, body} — drafted immediately as a DRAFT playbook that
+            rides the normal pending-playbook curation queue.
+    """
+    return _post(
+        "/api/v1/do/propose_postmortem",
+        {
+            "incident_summary": incident_summary,
+            "root_cause": root_cause,
+            "failed_stage": failed_stage,
+            "process_change": process_change,
+            "playbook": playbook,
+        },
+    )
+
+
+def propose_quality_report(
+    headline: str,
+    items: list[dict[str, Any]],
+    overall_assessment: str,
+) -> dict[str, Any]:
+    """Auditor: file the Sentinel weekly "state of quality" report.
+
+    Call this exactly ONCE per exploration cycle, after assessing org-wide
+    drift: waiver-accumulation trends, conventions-violation hotspots, and
+    budget anomalies (the evidence is server-assembled for you in the task
+    prompt). This is a REPORT, not a task queue: the CEO reads it in the
+    panel — nothing materializes, and there is no per-item approve/reject.
+
+    Args:
+        headline: One-line summary of the cycle's biggest quality signal
+            (<=200 chars).
+        items: 1-7 dicts, each with: area (one of 'waivers', 'findings',
+            'conventions', 'budget', 'docs', 'other'), observation (<=500
+            chars — what you found), evidence (<=500 chars — the ledger row
+            / metric / file that backs it), suggested_action (<=300 chars —
+            what should happen next).
+        overall_assessment: A synthesis across all items (<=800 chars).
+    """
+    return _post(
+        "/api/v1/do/propose_quality_report",
+        {
+            "headline": headline,
+            "items": items,
+            "overall_assessment": overall_assessment,
+        },
+    )
+
+
+def propose_playbook_drafts(drafts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Auditor: mine journals/learnings for repeated patterns and draft 1-3
+    playbooks for your open Librarian mining task.
+
+    Call this exactly ONCE per mining cycle, after reading the recurring-
+    learning-topics + existing-playbook-titles evidence server-assembled
+    into your task prompt. Each draft is created immediately as a real DRAFT
+    playbook riding the normal pending-playbook curation queue (the same one
+    your own approve_playbook/reject_playbook curate) — a LATER cycle
+    curates them, never this same call.
+
+    Args:
+        drafts: 1-3 dicts, each with: title (<=200 chars, must not duplicate
+            an existing playbook title — case-insensitive), body (<=4000
+            chars — the procedure itself), pattern_evidence (REQUIRED,
+            <=500 chars — which repeated journal/learning pattern justifies
+            this playbook).
+    """
+    return _post("/api/v1/do/propose_playbook_drafts", {"drafts": drafts})
+
+
+def propose_campaign(campaign_name: str, posts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Head of Marketing: propose a War Room campaign (2-6 ordered X posts).
+
+    Call this exactly ONCE per exploration cycle, after designing the
+    campaign arc (teaser -> launch -> follow-up -> spotlight) for the release
+    named in your briefing, or from scratch on a CEO on-demand cycle. Every
+    post lands as a held draft in the X post queue; V1 is manual-cadence —
+    publish_after is GUIDANCE the CEO sees when reviewing each draft, never a
+    schedule anything acts on. Nothing here posts.
+
+    Args:
+        campaign_name: Short name tying the posts together (<=100 chars).
+        posts: 2-6 dicts, IN THE ORDER they should run, each with: body (the
+            tweet text, <=280 chars), publish_after (ISO 8601 datetime,
+            REQUIRED — must be in the future and strictly later than the
+            previous post's), stage_label (one of 'teaser', 'launch',
+            'follow_up', 'spotlight', 'other').
+    """
+    return _post(
+        "/api/v1/do/propose_campaign",
+        {"campaign_name": campaign_name, "posts": posts},
     )
 
 
@@ -1002,7 +1298,19 @@ _TOOLS: dict[str, Any] = {
     "note": note,
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
+    "propose_bug_hunt": propose_bug_hunt,
+    "propose_gap_fill": propose_gap_fill,
+    "propose_rebalance": propose_rebalance,
+    "propose_messaging_fixes": propose_messaging_fixes,
+    "propose_friction_fixes": propose_friction_fixes,
     "propose_feature_spotlight": propose_feature_spotlight,
+    "propose_market_brief": propose_market_brief,
+    "propose_editorial_post": propose_editorial_post,
+    "propose_conversation_replies": propose_conversation_replies,
+    "propose_postmortem": propose_postmortem,
+    "propose_quality_report": propose_quality_report,
+    "propose_playbook_drafts": propose_playbook_drafts,
+    "propose_campaign": propose_campaign,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,

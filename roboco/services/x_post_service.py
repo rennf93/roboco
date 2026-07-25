@@ -31,7 +31,12 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.notification_delivery import defer_after_commit
-from roboco.services.task import X_FEATURE_SOURCE, X_SOURCES, get_task_service
+from roboco.services.task import (
+    X_BARFLY_SOURCE,
+    X_FEATURE_SOURCE,
+    X_SOURCES,
+    get_task_service,
+)
 from roboco.services.x_client import MAX_TWEET_CHARS, build_x_client
 from roboco.services.x_credentials import get_x_credentials_service
 
@@ -196,7 +201,17 @@ class XPostService(BaseService):
                 tweet_id=None,
                 detail="No X credentials are configured.",
             )
-        result = await client.post_tweet(body)
+        # Pass in_reply_to_tweet_id only when it's actually needed (a
+        # x_barfly draft) — every other source's post_tweet call stays
+        # byte-for-byte identical to before this param existed, so a test
+        # fake carrying the pre-reply-support signature (`post_tweet(self,
+        # text)`) is unaffected.
+        post_kwargs: dict[str, str] = {}
+        if task.source == X_BARFLY_SOURCE:
+            in_reply_to = (markers.get_barfly_reply_ref(task) or {}).get("tweet_id")
+            if in_reply_to:
+                post_kwargs["in_reply_to_tweet_id"] = in_reply_to
+        result = await client.post_tweet(body, **post_kwargs)
         if not result.posted:
             return XPostExecuteResult(
                 status="post_failed", tweet_id=None, detail=result.detail

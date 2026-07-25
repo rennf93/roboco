@@ -128,6 +128,110 @@ class ProposeRoadmapRequest(BaseModel):
     items: list[RoadmapItemInput] = Field(..., min_length=1)
 
 
+class PestHuntItemInput(BaseModel):
+    """One evidence-backed bug item draft within a Product Owner's Pest
+    Control hunt."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeBugHuntRequest(BaseModel):
+    """Product Owner's Pest Control bug hunt: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[PestHuntItemInput] = Field(..., min_length=1)
+
+
+class GapFillItemInput(BaseModel):
+    """One evidence-backed gap-fill item draft within a Product Owner's
+    Spackle audit. Mirrors ``PestHuntItemInput`` — ``evidence`` must name
+    both sides of the gap (e.g. the route that exists and the panel surface
+    that doesn't)."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeGapFillRequest(BaseModel):
+    """Product Owner's Spackle gap-fill audit: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[GapFillItemInput] = Field(..., min_length=1)
+
+
+class RebalanceItemInput(BaseModel):
+    """One re-priority/cancellation item within a Product Owner's Scales
+    portfolio-rebalance plan. Unlike a roadmap/pest-control item draft, this
+    references a LIVE task (``task_ref``) rather than describing a new one."""
+
+    task_ref: str = Field(..., min_length=1)
+    action: str = Field(..., min_length=1)
+    new_priority: int | None = None
+    rationale: str = Field(..., min_length=1)
+
+
+class ProposeRebalanceRequest(BaseModel):
+    """Product Owner's Scales portfolio-rebalance plan: 1-N re-priority/
+    cancellation item drafts against the live backlog (no top-level theme,
+    mirroring the pest-control bug hunt's shape)."""
+
+    items: list[RebalanceItemInput] = Field(..., min_length=1)
+
+
+class MessagingFixItemInput(BaseModel):
+    """One evidence-backed messaging-fix item draft within a Head of
+    Marketing's Mirror audit. Mirrors ``GapFillItemInput`` — ``evidence``
+    must name the drifted claim and the reality it contradicts."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeMessagingFixesRequest(BaseModel):
+    """Head of Marketing's Mirror positioning audit: 1-N evidence-backed
+    item drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[MessagingFixItemInput] = Field(..., min_length=1)
+
+
+class FrictionFixItemInput(BaseModel):
+    """One evidence-backed UX-friction item draft within a Product Owner's
+    Dogfood walk. Mirrors ``MessagingFixItemInput`` — ``evidence`` must name
+    the walked path (the actual clicks/pages) and what broke or felt wrong,
+    prose only, no screenshots."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeFrictionFixesRequest(BaseModel):
+    """Product Owner's Dogfood friction audit: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[FrictionFixItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a
@@ -143,6 +247,141 @@ class ProposeFeatureSpotlightRequest(BaseModel):
     video_script: str = ""
     skip: bool = False
     skip_reason: str = ""
+
+
+class ProposeEditorialPostRequest(BaseModel):
+    """Head of Marketing's Megaphone editorial-calendar post: an angle + a
+    ready-to-post body + a rationale. Materializes into the same X held-draft
+    queue ``propose_feature_spotlight`` uses — no separate approval surface."""
+
+    angle: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    rationale: str = Field(..., min_length=1)
+
+
+class MarketBriefFindingInput(BaseModel):
+    """One cited market finding within a Head of Marketing's Periscope brief.
+    ``source_url`` is REQUIRED — an uncited market claim is noise."""
+
+    claim: str = Field(..., min_length=1)
+    source_url: str = Field(..., min_length=1)
+    relevance: str = Field(..., min_length=1)
+
+
+class ProposeMarketBriefRequest(BaseModel):
+    """Head of Marketing's Periscope weekly market-research brief: a
+    headline + 1-7 cited findings, plus optional threats/opportunities/
+    positioning notes. Delivered as a held report — no per-item CEO queue."""
+
+    headline: str = Field(..., min_length=1)
+    findings: list[MarketBriefFindingInput] = Field(..., min_length=1)
+    threats: list[str] | None = None
+    opportunities: list[str] | None = None
+    positioning_note: str = ""
+
+
+class ConversationReplyItemInput(BaseModel):
+    """One drafted reply within a Head of Marketing's Barfly conversation-
+    reply cycle. ``tweet_id`` must name one of the exploration task's real
+    screened candidates — enforced server-side, not by this schema."""
+
+    tweet_id: str = Field(..., min_length=1)
+    reply_body: str = Field(..., min_length=1)
+    rationale: str = Field(..., min_length=1)
+
+
+class ProposeConversationRepliesRequest(BaseModel):
+    """Head of Marketing's Barfly conversation replies: 1-N drafted replies
+    to screened candidate X conversations (no top-level theme, mirrors the
+    pest-control/gap-fill/rebalance item-only shape)."""
+
+    items: list[ConversationReplyItemInput] = Field(..., min_length=1)
+
+
+class ProcessChangeInput(BaseModel):
+    """The ONE process change a Coroner postmortem proposes."""
+
+    kind: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+
+
+class PostmortemPlaybookInput(BaseModel):
+    """Required iff ``process_change.kind == 'playbook'``."""
+
+    title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+
+
+class ProposePostmortemRequest(BaseModel):
+    """Auditor's Coroner postmortem: incident summary + root cause + ONE
+    process change, drafted after autopsying an incident task the Coroner
+    engine's event hooks opened an autopsy for."""
+
+    incident_summary: str = Field(..., min_length=1)
+    root_cause: str = Field(..., min_length=1)
+    failed_stage: str = Field(..., min_length=1)
+    process_change: ProcessChangeInput
+    playbook: PostmortemPlaybookInput | None = None
+
+
+class QualityReportItemInput(BaseModel):
+    """One drift item within an Auditor's Sentinel quality report."""
+
+    area: str = Field(..., min_length=1)
+    observation: str = Field(..., min_length=1)
+    evidence: str = Field(..., min_length=1)
+    suggested_action: str = Field(..., min_length=1)
+
+
+class ProposeQualityReportRequest(BaseModel):
+    """Auditor's Sentinel weekly "state of quality" report: a headline +
+    1-7 evidence-backed drift items + an overall assessment. Delivered as a
+    held report — no per-item CEO queue."""
+
+    headline: str = Field(..., min_length=1)
+    items: list[QualityReportItemInput] = Field(..., min_length=1)
+    overall_assessment: str = Field(..., min_length=1)
+
+
+class PlaybookDraftInput(BaseModel):
+    """One playbook draft within an Auditor's Librarian mining cycle.
+    ``pattern_evidence`` is REQUIRED — a draft with no cited repeated
+    pattern is noise."""
+
+    title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+    pattern_evidence: str = Field(..., min_length=1)
+
+
+class ProposePlaybookDraftsRequest(BaseModel):
+    """Auditor's Librarian playbook-mining cycle: 1-3 playbook drafts, each
+    created directly as a DRAFT playbook riding the normal pending-playbook
+    curation queue. Delivered as a held mining report — no per-item CEO
+    queue (the drafts themselves ARE the queue item, via playbook curation)."""
+
+    drafts: list[PlaybookDraftInput] = Field(..., min_length=1)
+
+
+class CampaignPostInput(BaseModel):
+    """One ordered post within a Head of Marketing's War Room campaign.
+    ``publish_after`` is GUIDANCE (V1 manual-cadence) rendered in the panel
+    queue — the CEO approves each draft at its own moment; nothing here
+    schedules or auto-posts."""
+
+    body: str = Field(..., min_length=1)
+    publish_after: str = Field(..., min_length=1)
+    stage_label: str = Field(..., min_length=1)
+
+
+class ProposeCampaignRequest(BaseModel):
+    """Head of Marketing's War Room campaign: a name + 2-6 ordered posts
+    (teaser -> launch -> follow-up -> spotlight), each with a recommended
+    publish_after timestamp. Materializes N held X drafts and completes the
+    exploration task in one call — no per-item CEO queue beyond the normal
+    X post queue each draft already lands in."""
+
+    campaign_name: str = Field(..., min_length=1)
+    posts: list[CampaignPostInput] = Field(..., min_length=1)
 
 
 class ProposeVideoRequest(BaseModel):

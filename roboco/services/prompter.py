@@ -75,7 +75,9 @@ _MIN_MEGATASK_PROJECTS = 2
 # one impersonate a privileged origin (a held CEO-gated engine source, or
 # "release_manager", which would even wedge the real release engine's
 # one-open-proposal dedup).
-_ALLOWED_DRAFT_SOURCES = frozenset({"prompter", "roadmap"})
+_ALLOWED_DRAFT_SOURCES = frozenset(
+    {"prompter", "roadmap", "pest_control", "spackle", "mirror", "dogfood"}
+)
 
 # A draft whose per-cell map covers at least this many cells targets the ad-hoc
 # multi-cell shape (a root-subtask with a cell->project map, no single project).

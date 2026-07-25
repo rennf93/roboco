@@ -1,11 +1,14 @@
 """X (Twitter) API v2 client — server-side only, agents never touch it.
 
-Thin httpx wrapper for the two operations the engine needs: post a tweet and
-fetch mentions, both OAuth 1.0a user-context signed. Mirrors the
-`SearchProvider`/`NullProvider` shape in `services/research.py`: a
-`NullXClient` is returned when credentials are unset, so the engine degrades
-gracefully (empty results, no exception) exactly like an unconfigured research
-provider — never raises into the caller, never makes a network call.
+Thin httpx wrapper for the operations the engines need: post a tweet
+(optionally as a reply), fetch mentions, and search recent tweets (Barfly's
+discovery seam — conversations that don't mention the account), all OAuth
+1.0a user-context signed. Mirrors the `SearchProvider`/`NullProvider` shape in
+`services/research.py`: a `NullXClient` is returned when credentials are
+unset, so the engine degrades gracefully (empty results, no exception)
+exactly like an unconfigured research provider — never raises into the
+caller, never makes a network call. The X API tier is ops config, not a code
+concern: search is assumed available (spec §4/§8).
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ MAX_TWEET_CHARS = 280
 _API_BASE = "https://api.twitter.com/2"
 _TWEETS_URL = f"{_API_BASE}/tweets"
 _ME_URL = f"{_API_BASE}/users/me"
+_SEARCH_RECENT_URL = f"{_API_BASE}/tweets/search/recent"
 
 
 class XClientError(Exception):
@@ -155,12 +159,17 @@ class XClient(ABC):
     def configured(self) -> bool: ...
 
     @abstractmethod
-    async def post_tweet(self, text: str) -> XPostResult: ...
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult: ...
 
     @abstractmethod
     async def fetch_mentions(
         self, since_id: str | None, max_results: int
     ) -> list[XMention]: ...
+
+    @abstractmethod
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]: ...
 
 
 class NullXClient(XClient):
@@ -170,8 +179,10 @@ class NullXClient(XClient):
     def configured(self) -> bool:
         return False
 
-    async def post_tweet(self, text: str) -> XPostResult:
-        _ = text
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
+        _ = (text, in_reply_to_tweet_id)
         return XPostResult(
             posted=False, tweet_id=None, detail="no credentials configured"
         )
@@ -180,6 +191,10 @@ class NullXClient(XClient):
         self, since_id: str | None, max_results: int
     ) -> list[XMention]:
         _ = (since_id, max_results)
+        return []
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        _ = (query, max_results)
         return []
 
 
@@ -232,9 +247,14 @@ class LiveXClient(XClient):
         user_id = (data.get("data") or {}).get("id")
         return str(user_id) if user_id else None
 
-    async def post_tweet(self, text: str) -> XPostResult:
+    async def post_tweet(
+        self, text: str, *, in_reply_to_tweet_id: str | None = None
+    ) -> XPostResult:
         client = await self._http()
         header = oauth1_authorization_header("POST", _TWEETS_URL, self._creds)
+        body: dict[str, Any] = {"text": text}
+        if in_reply_to_tweet_id:
+            body["reply"] = {"in_reply_to_tweet_id": in_reply_to_tweet_id}
         try:
             resp = await client.post(
                 _TWEETS_URL,
@@ -242,7 +262,7 @@ class LiveXClient(XClient):
                     "Authorization": header,
                     "Content-Type": "application/json",
                 },
-                json={"text": text},
+                json=body,
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
@@ -288,6 +308,42 @@ class LiveXClient(XClient):
         try:
             resp = await client.get(
                 url,
+                headers={"Authorization": header},
+                params=params,
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError:
+            return []
+        if not resp.is_success:
+            return []
+        try:
+            data: dict[str, Any] = resp.json()
+        except (ValueError, TypeError):
+            return []
+        return _parse_mention_items(data)
+
+    async def search_recent(self, query: str, max_results: int) -> list[XMention]:
+        """Barfly's discovery seam: recent tweets matching ``query``, whether
+        or not they mention the account. Reuses ``_parse_mention_items`` —
+        the v2 recent-search response's ``data`` array is shaped identically
+        to the mentions timeline's.
+
+        # ponytail: author_id only (no username expansion) — mirrors
+        # fetch_mentions; add expansions=author_id&user.fields=username if a
+        # real @handle is ever needed instead of the numeric id.
+        """
+        client = await self._http()
+        params: dict[str, str] = {
+            "query": query,
+            "max_results": str(max(10, min(max_results, 100))),
+            "tweet.fields": "public_metrics,author_id",
+        }
+        header = oauth1_authorization_header(
+            "GET", _SEARCH_RECENT_URL, self._creds, params
+        )
+        try:
+            resp = await client.get(
+                _SEARCH_RECENT_URL,
                 headers={"Authorization": header},
                 params=params,
                 timeout=self._timeout,

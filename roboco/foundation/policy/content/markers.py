@@ -42,16 +42,31 @@ X_MENTION_REF = "x_mention_ref"
 X_REJECT_REASON = "x_reject_reason"
 X_POSTED_TWEET_ID = "x_posted_tweet_id"
 X_FEATURE_REF = "x_feature_ref"
+X_EDITORIAL_REF = "x_editorial_ref"
 X_SEEN_FEATURES = "x_seen_features"
 X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
 X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
+X_CAMPAIGN_REF = "x_campaign_ref"
 ROADMAP_CYCLE = "roadmap_cycle"
+PEST_HUNT = "pest_hunt"
+MARKET_BRIEF = "market_brief"
+CORONER_INCIDENT = "coroner_incident"
+CORONER_POSTMORTEM = "coroner_postmortem"
+QUALITY_REPORT = "quality_report"
+GAP_FILL = "gap_fill"
+MESSAGING_FIXES = "messaging_fixes"
+FRICTION_FIXES = "friction_fixes"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
 VAULT_CURATION_DISPATCHED = "vault_curation_dispatched"
 VAULT_NOTE_REF = "vault_note_ref"
 DOCS_SYNC_RELEASE_VERSION = "docs_sync_release_version"
+REBALANCE_PLAN = "rebalance_plan"
+PLAYBOOK_DRAFTS = "playbook_drafts"
+WAR_ROOM_BRIEF = "war_room_brief"
+BARFLY_CANDIDATES = "barfly_candidates"
+BARFLY_REPLY_REF = "barfly_reply_ref"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -225,6 +240,15 @@ def set_x_feature_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
     set_marker(task, X_FEATURE_REF, ref)
 
 
+def get_x_editorial_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_EDITORIAL_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_editorial_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_EDITORIAL_REF, ref)
+
+
 def get_x_seen_features(task: HasMarkers) -> list[str]:
     val = get_marker(task, X_SEEN_FEATURES, [])
     return [str(s) for s in val] if isinstance(val, list) else []
@@ -252,6 +276,15 @@ def set_x_spotlight_skip_reason(task: HasMarkers, reason: str) -> None:
     set_marker(task, X_SPOTLIGHT_SKIP_REASON, reason)
 
 
+def get_x_campaign_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_CAMPAIGN_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_campaign_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_CAMPAIGN_REF, ref)
+
+
 # --- board roadmap cycle ---------------------------------------------------
 # The themed cycle (goal + item drafts) the Product Owner authors via
 # ``propose_roadmap`` onto the exploration task the roadmap engine opened.
@@ -266,6 +299,223 @@ def get_roadmap_cycle(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_roadmap_cycle(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, ROADMAP_CYCLE, payload)
+
+
+# --- board pest control hunt -------------------------------------------------
+# The evidence-backed bug-item drafts the Product Owner authors via
+# ``propose_bug_hunt`` onto the exploration task the pest-control engine
+# opened. Mirrors ROADMAP_CYCLE exactly — no top-level theme goal, just items,
+# each carrying its own status (proposed/approved/rejected) for the CEO's
+# per-item approve/reject.
+
+
+def get_pest_hunt(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, PEST_HUNT)
+    return val if isinstance(val, dict) else None
+
+
+def set_pest_hunt(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, PEST_HUNT, payload)
+
+
+# --- board spackle gap-fill audit -------------------------------------------
+# The evidence-backed gap-fill item drafts the Product Owner authors via
+# ``propose_gap_fill`` onto the exploration task the spackle engine opened.
+# Mirrors PEST_HUNT exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject.
+
+
+def get_gap_fill(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, GAP_FILL)
+    return val if isinstance(val, dict) else None
+
+
+def set_gap_fill(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, GAP_FILL, payload)
+
+
+# --- board mirror messaging-fixes audit -------------------------------------
+# The evidence-backed messaging-fix item drafts the Head of Marketing authors
+# via ``propose_messaging_fixes`` onto the exploration task the mirror engine
+# opened. Mirrors GAP_FILL exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject.
+
+
+def get_messaging_fixes(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, MESSAGING_FIXES)
+    return val if isinstance(val, dict) else None
+
+
+def set_messaging_fixes(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, MESSAGING_FIXES, payload)
+
+
+# --- Periscope market brief --------------------------------------------------
+# The Head of Marketing's weekly market-research report, authored via
+# ``propose_market_brief`` onto the exploration task the Periscope engine
+# opened: {headline, findings (list of {id, claim, source_url, relevance}),
+# threats, opportunities, positioning_note, injection_hits}. Unlike
+# ROADMAP_CYCLE/PEST_HUNT there is no per-item CEO decision — the verb
+# completes the exploration task in the same call (mirrors X_FEATURE_REF's
+# complete-at-propose asymmetry), so this marker is set exactly once.
+
+
+def get_market_brief(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, MARKET_BRIEF)
+    return val if isinstance(val, dict) else None
+
+
+def set_market_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, MARKET_BRIEF, payload)
+
+
+# --- coroner postmortem ------------------------------------------------------
+# The incident ref the CoronerEngine stamps on the postmortem-exploration task
+# it opens ({incident_task_id, kind, revision_count, title}), and the
+# Auditor-authored postmortem ({incident_summary, root_cause, failed_stage,
+# process_change, playbook_id?}) it writes via ``propose_postmortem``. Unlike
+# ROADMAP_CYCLE/PEST_HUNT there is no per-item status — a single call
+# completes the task, so this is set-once, read-only after that.
+
+
+def get_coroner_incident(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, CORONER_INCIDENT)
+    return val if isinstance(val, dict) else None
+
+
+def set_coroner_incident(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, CORONER_INCIDENT, ref)
+
+
+def get_coroner_postmortem(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, CORONER_POSTMORTEM)
+    return val if isinstance(val, dict) else None
+
+
+def set_coroner_postmortem(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, CORONER_POSTMORTEM, payload)
+
+
+# --- Sentinel quality report --------------------------------------------------
+# The Auditor's weekly org-wide drift report, authored via
+# ``propose_quality_report`` onto the exploration task the sentinel engine
+# opened: {headline, items (list of {id, area, observation, evidence,
+# suggested_action}), overall_assessment}. Mirrors MARKET_BRIEF exactly — no
+# per-item CEO decision, so this marker is set exactly once (complete-at-
+# propose).
+
+
+def get_quality_report(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, QUALITY_REPORT)
+    return val if isinstance(val, dict) else None
+
+
+def set_quality_report(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, QUALITY_REPORT, payload)
+
+
+# --- Scales rebalance plan ---------------------------------------------------
+# The re-priority / cancellation items the Product Owner authors via
+# ``propose_rebalance`` onto the exploration task the Scales engine opened.
+# Mirrors PEST_HUNT exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject. Unlike PEST_HUNT an item never drafts a NEW task: it
+# references a LIVE backlog task (``target_task_id``, resolved from the
+# agent's ``task_ref`` at propose time) that approval MUTATES in place
+# (reprioritize) or cancels — never creates.
+
+
+def get_rebalance_plan(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, REBALANCE_PLAN)
+    return val if isinstance(val, dict) else None
+
+
+def set_rebalance_plan(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, REBALANCE_PLAN, payload)
+
+
+# --- Librarian playbook drafts ------------------------------------------------
+# The playbooks the Auditor mined and drafted via ``propose_playbook_drafts``
+# onto the exploration task the Librarian engine opened: {drafts: [{id, title},
+# ...]}. Mirrors QUALITY_REPORT/MARKET_BRIEF — no per-item CEO decision (each
+# draft is already a real PlaybookTable row riding the normal pending-playbook
+# curation queue), so this marker is set exactly once (complete-at-propose).
+
+
+def get_playbook_drafts(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, PLAYBOOK_DRAFTS)
+    return val if isinstance(val, dict) else None
+
+
+def set_playbook_drafts(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, PLAYBOOK_DRAFTS, payload)
+
+
+# --- War Room campaign brief -------------------------------------------------
+# The exploration task's starting context, stamped once at origination by
+# ``WarRoomEngine``: {version, highlights} when opened by the release-publish
+# hook, or {} when opened on-demand (a CEO "run now" call with no release to
+# anchor to — the Head of Marketing designs a brief-less campaign). Read-only
+# after that; ``propose_campaign`` never mutates it.
+
+
+def get_war_room_brief(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, WAR_ROOM_BRIEF)
+    return val if isinstance(val, dict) else None
+
+
+def set_war_room_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, WAR_ROOM_BRIEF, payload)
+
+
+# --- Barfly conversation candidates + reply ref -----------------------------
+# The screened candidate X conversations (search results — RoboCo is relevant
+# but unmentioned) the barfly engine gathers onto the exploration task it
+# opens: a list of {id, author_handle, text, engagement_note}. The Head of
+# Marketing picks from THIS list only via ``propose_conversation_replies``
+# (never inventing a tweet) — no per-item status here, unlike PEST_HUNT/
+# GAP_FILL, since each approved-shape reply materializes its OWN held draft
+# immediately (mirrors X_FEATURE_REF's complete-at-propose asymmetry). The
+# materialized draft (source=x_barfly) then carries BARFLY_REPLY_REF: the
+# candidate it answers plus the HoM's rationale — mirrors X_MENTION_REF.
+
+
+def get_barfly_candidates(task: HasMarkers) -> list[dict[str, Any]]:
+    val = get_marker(task, BARFLY_CANDIDATES, [])
+    return val if isinstance(val, list) else []
+
+
+def set_barfly_candidates(task: HasMarkers, candidates: list[dict[str, Any]]) -> None:
+    set_marker(task, BARFLY_CANDIDATES, candidates)
+
+
+def get_barfly_reply_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, BARFLY_REPLY_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_barfly_reply_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, BARFLY_REPLY_REF, ref)
+
+
+# --- board dogfood friction fixes --------------------------------------------
+# The evidence-backed UX-friction item drafts the Product Owner authors via
+# ``propose_friction_fixes`` onto the exploration task the dogfood engine
+# opened. Mirrors GAP_FILL exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject. ``evidence`` on each item is the walked path (the actual
+# clicks/pages) plus what broke or felt wrong — not a screenshot.
+
+
+def get_friction_fixes(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, FRICTION_FIXES)
+    return val if isinstance(val, dict) else None
+
+
+def set_friction_fixes(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, FRICTION_FIXES, payload)
 
 
 # --- video draft ------------------------------------------------------------

@@ -1245,6 +1245,44 @@ class Settings(BaseSettings):
         description="Seconds between feature-spotlight exploration cycles.",
     )
 
+    # Barfly (Board Program) — the Head of Marketing searches X for
+    # conversations where RoboCo is relevant but unmentioned and drafts
+    # replies into the same held X-post queue. Arming lives entirely in the
+    # settings-store (board_program.barfly.enabled, no legacy flag); these two
+    # are ops-tunable knobs only. The API tier is an ops decision, not a code
+    # concern — the search client assumes it's available (spec §4/§8).
+    barfly_queries: list[str] = Field(
+        default_factory=lambda: [
+            "AI agent orchestration",
+            "multi-agent coding",
+            "autonomous software team",
+        ],
+        description=(
+            "Search queries Barfly runs each cycle to find X conversations "
+            "about these topics without a direct mention of the account. "
+            "ROBOCO_BARFLY_QUERIES accepts a comma-separated list or a JSON "
+            "array."
+        ),
+    )
+    barfly_max_candidates: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Max screened search candidates Barfly carries into one cycle's "
+            "exploration task."
+        ),
+    )
+
+    @field_validator("barfly_queries", mode="before")
+    @classmethod
+    def _split_barfly_queries_csv(cls, v: str | list[str]) -> str | list[str]:
+        """Accept a comma-separated ``ROBOCO_BARFLY_QUERIES`` env string in
+        addition to a JSON array — csv is the friendlier ops-config shape for
+        a short keyword list."""
+        if isinstance(v, str) and not v.strip().startswith("["):
+            return [q.strip() for q in v.split(",") if q.strip()]
+        return v
+
     # Video generation (HyperFrames) — a UX/UI dev authors a bespoke motion-video
     # composition per release/spotlight/on-demand trigger through the normal
     # delivery lifecycle; a later render pass renders it to MP4 and holds the
@@ -1382,6 +1420,23 @@ class Settings(BaseSettings):
         default=7,
         ge=1,
         description="Maximum roadmap item drafts a themed cycle may propose.",
+    )
+
+    # Pest Control (Board Program, project-scoped) — the Product Owner hunts
+    # latent defects the org records but nobody reads (findings-ledger
+    # clusters, rework hotspots) and proposes evidence-backed bug tasks.
+    # Weekly cron by default; also accelerated off-schedule by a rework-rate
+    # spike (BoardProgramEngine's metric-predicate seam) — see
+    # roboco.services.board_programs._METRIC_PREDICATES. No master enable
+    # flag: arming is settings-store-only (board_program.pest_control.enabled).
+    pest_rework_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "7-day rework rate (MetricsService.get_rework_metrics) above "
+            "which Pest Control's metric predicate opens a cycle off-schedule."
+        ),
     )
 
     # ==========================================================================

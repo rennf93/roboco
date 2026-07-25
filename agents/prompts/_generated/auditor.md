@@ -23,5 +23,8 @@
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
 | `curate_vault` | `curate_vault(task_id: UUID, narrative: str)` |
+| `propose_postmortem` | `propose_postmortem(incident_summary: str, root_cause: str, failed_stage: str, process_change: ProcessChangeInput, playbook: PostmortemPlaybookInput | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
+| `propose_quality_report` | `propose_quality_report(headline: str, items: list[QualityReportItemInput], overall_assessment: str)` |
+| `propose_playbook_drafts` | `propose_playbook_drafts(drafts: list[PlaybookDraftInput])` |

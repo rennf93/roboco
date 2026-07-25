@@ -22,12 +22,31 @@ class XFeatureRefModel(BaseModel):
     title: str
 
 
+class XCampaignRefModel(BaseModel):
+    """One post's context within a War Room campaign. ``publish_after`` is
+    V1 GUIDANCE only — never a schedule anything acts on."""
+
+    campaign_name: str
+    stage_label: str
+    publish_after: str
+    sequence: int
+
+
+class XBarflyRefModel(BaseModel):
+    """The screened X conversation a held Barfly reply answers."""
+
+    tweet_id: str
+    author_handle: str
+    text: str
+    rationale: str
+
+
 class XPostResponse(BaseModel):
-    """One held draft (release post, mention reply, or feature spotlight)
-    awaiting the CEO."""
+    """One held draft (release post, mention reply, feature spotlight, War
+    Room campaign post, or Barfly conversation reply) awaiting the CEO."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature"
+    source: str  # x_post | x_reply | x_feature | x_editorial | x_campaign | x_barfly
     title: str
     status: str
     body: str
@@ -35,6 +54,8 @@ class XPostResponse(BaseModel):
     release_version: str | None = None
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
+    campaign: XCampaignRefModel | None = None
+    barfly: XBarflyRefModel | None = None
     reject_reason: str | None = None
     project_slug: str | None = None
     project_name: str | None = None
@@ -64,7 +85,7 @@ class XPostHistoryResponse(BaseModel):
     """One acted-on X draft (posted or rejected) — the CEO's history view."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply" | "x_feature"
+    source: str  # x_post | x_reply | x_feature | x_editorial | x_campaign | x_barfly
     title: str
     status: str  # "completed" | "cancelled"
     body: str
@@ -72,6 +93,8 @@ class XPostHistoryResponse(BaseModel):
     release_version: str | None = None
     mention: XMentionRefModel | None = None
     feature: XFeatureRefModel | None = None
+    campaign: XCampaignRefModel | None = None
+    barfly: XBarflyRefModel | None = None
     tweet_id: str | None = None
     reject_reason: str | None = None
     acted_at: datetime

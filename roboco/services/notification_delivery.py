@@ -1199,6 +1199,145 @@ class NotificationDeliveryService(BaseService):
             text=text, reply_markup=None, disable_link_preview=True
         )
 
+    async def notify_ceo_of_periscope_brief(
+        self, *, task: TaskTable, task_id: UUID, headline: str
+    ) -> None:
+        """Best-effort CEO nudge the moment a Periscope market brief lands.
+
+        A report, not a queue item: no approve/reject verb exists for it, so
+        this reuses ``notify_ceo_of_queue_item``'s styled-text SHAPE
+        (``render_queue_item_text`` — "periscope" is a display-only
+        ``_KIND_DISPLAY`` entry, never added to ``_VALID_KINDS``/the
+        approve-reject callback surface) but skips ``build_action_keyboard``
+        entirely: no callback exists for a kind ``parse_callback`` never
+        accepts, so no button is ever rendered to tap. The in-app
+        notification is a normal ALERT (mirrors ``notify_ceo_of_completion``),
+        not an APPROVAL — nothing here needs a CEO decision through a queue.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Market brief: {headline[:100]}",
+            body=(
+                "The Head of Marketing filed this week's market-research "
+                f"brief.\n\n{headline}\n\n"
+                "Read the full brief in the panel's Market Briefs tab "
+                "(Business page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("periscope", str(task_id)[:8], "", headline)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/business?tab=market-briefs"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
+    async def notify_ceo_of_sentinel_report(
+        self, *, task: TaskTable, task_id: UUID, headline: str
+    ) -> None:
+        """Best-effort CEO nudge the moment a Sentinel quality report lands.
+
+        Mirrors ``notify_ceo_of_periscope_brief`` exactly: a report, not a
+        queue item — no approve/reject verb exists for it, so this reuses
+        ``render_queue_item_text``'s styled-text SHAPE ("sentinel" is a
+        display-only ``_KIND_DISPLAY`` entry, never added to
+        ``_VALID_KINDS``/the approve-reject callback surface) but skips
+        ``build_action_keyboard`` entirely — no callback exists for a kind
+        ``parse_callback`` never accepts. A normal ALERT, not an APPROVAL —
+        nothing here needs a CEO decision through a queue. The Auditor stays
+        silent to agents throughout (spec §4's "Auditor boundary") — this
+        notification goes to the CEO only.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Quality report: {headline[:100]}",
+            body=(
+                "The Auditor filed this week's state-of-quality report.\n\n"
+                f"{headline}\n\n"
+                "Read the full report in the panel's Quality Reports tab "
+                "(Business page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("sentinel", str(task_id)[:8], "", headline)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/business?tab=quality-reports"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
+    async def notify_ceo_of_librarian_drafts(
+        self, *, task: TaskTable, task_id: UUID, titles: list[str]
+    ) -> None:
+        """Best-effort CEO nudge the moment Librarian mines 1-3 playbook
+        drafts.
+
+        Mirrors ``notify_ceo_of_sentinel_report``/``_periscope_brief``
+        exactly: display only — no approve/reject verb exists for THIS
+        notification (the drafts themselves ride the EXISTING
+        pending-playbook curation queue an Auditor's own
+        ``approve_playbook``/``reject_playbook`` already reviews, never a new
+        queue of their own) — "librarian" is a display-only ``_KIND_DISPLAY``
+        entry, never added to ``_VALID_KINDS``/the approve-reject callback
+        surface. A normal ALERT, not an APPROVAL — nothing here needs a CEO
+        decision through a queue. The Auditor stays silent to agents
+        throughout (spec §4's "Auditor boundary").
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        title_list = ", ".join(titles)
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Playbook drafts mined: {title_list[:100]}",
+            body=(
+                "The Auditor mined recurring patterns and drafted "
+                f"{len(titles)} playbook(s): {title_list}\n\n"
+                "Review them in the panel's pending-playbook curation queue "
+                "(Overview page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("librarian", str(task_id)[:8], "", title_list)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/overview"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
     async def notify_ceo_of_budget_breach(
         self,
         *,
@@ -1275,6 +1414,47 @@ class NotificationDeliveryService(BaseService):
             to_agents=[ceo.id],
             subject=f"Completed: {(task.title or 'Untitled')[:60]}",
             body=_format_completion_body(task, metrics),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        await self._notify_telegram(task_id=task_id, subject=notification.subject)
+
+    async def notify_ceo_of_postmortem(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        incident_summary: str,
+        process_change_kind: str,
+    ) -> None:
+        """CEO-facing Coroner postmortem notification (spec §4).
+
+        Shaped like ``notify_ceo_of_completion`` (INFO, non-actionable — no
+        precedent for a dedicated report-notification type exists yet in this
+        service): unlike ``notify_ceo_of_queue_item``, a postmortem has no
+        per-item approve/reject decision to make, so this is display + a
+        panel deep-link only, never an actionable Telegram keyboard, and
+        never touches ``telegram_inbound``'s ``_VALID_KINDS`` approve/reject
+        codec. Best-effort: a delivery failure must never block the
+        postmortem it's reporting on.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        title = task.title or "Untitled task"
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Postmortem: {title[:40]}",
+            body=(
+                f"The Auditor completed a Coroner postmortem.\n\n"
+                f"{incident_summary}\n\n"
+                f"Proposed process change: {process_change_kind}."
+            ),
             related_task_id=task_id,
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
         )

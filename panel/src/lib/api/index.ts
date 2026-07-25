@@ -45,8 +45,44 @@ export type {
   RoadmapItem,
   RoadmapItemActionResult,
 } from "./roadmap";
+export { pestControlApi } from "./pest-control";
+export type {
+  PestHuntCycle,
+  PestHuntItem,
+  PestHuntItemActionResult,
+} from "./pest-control";
+export { scalesApi } from "./scales";
+export type {
+  RebalanceCycle,
+  RebalanceItem,
+  RebalanceItemActionResult,
+} from "./scales";
 export { boardProgramsApi } from "./board-programs";
 export type { BoardProgram } from "./board-programs";
+export { periscopeApi } from "./periscope";
+export type { MarketBrief, MarketBriefFinding } from "./periscope";
+export { coronerApi } from "./coroner";
+export type { Postmortem } from "./coroner";
+export { sentinelApi } from "./sentinel";
+export type { QualityReport, QualityReportItem } from "./sentinel";
+export { spackleApi } from "./spackle";
+export type {
+  GapFillItem,
+  GapFillItemActionResult,
+  SpackleCycle,
+} from "./spackle";
+export { mirrorApi } from "./mirror";
+export type {
+  MessagingFixItem,
+  MessagingFixItemActionResult,
+  MirrorCycle,
+} from "./mirror";
+export { dogfoodApi } from "./dogfood";
+export type {
+  FrictionFixItem,
+  FrictionFixItemActionResult,
+  DogfoodCycle,
+} from "./dogfood";
 export { videoApi, videoMediaUrl } from "./video";
 export type {
   VideoCut,

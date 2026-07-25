@@ -208,6 +208,10 @@ real tools live in their agent_sdk drivers, not role_config.
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
 | `propose_roadmap` | `propose_roadmap(cycle_goal: str, items: list[RoadmapItemInput])` |
+| `propose_bug_hunt` | `propose_bug_hunt(items: list[PestHuntItemInput])` |
+| `propose_gap_fill` | `propose_gap_fill(items: list[GapFillItemInput])` |
+| `propose_rebalance` | `propose_rebalance(items: list[RebalanceItemInput])` |
+| `propose_friction_fixes` | `propose_friction_fixes(items: list[FrictionFixItemInput])` |
 
 ## head_marketing
 
@@ -234,6 +238,11 @@ real tools live in their agent_sdk drivers, not role_config.
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
 | `propose_feature_spotlight` | `propose_feature_spotlight(feature_slug: str = '', feature_title: str = '', body: str = '', wants_video: bool = False, video_script: str = '', skip: bool = False, skip_reason: str = '')` |
+| `propose_market_brief` | `propose_market_brief(headline: str, findings: list[MarketBriefFindingInput], threats: list[str] | None = None, opportunities: list[str] | None = None, positioning_note: str = '')` |
+| `propose_messaging_fixes` | `propose_messaging_fixes(items: list[MessagingFixItemInput])` |
+| `propose_editorial_post` | `propose_editorial_post(angle: str, body: str, rationale: str)` |
+| `propose_campaign` | `propose_campaign(campaign_name: str, posts: list[CampaignPostInput])` |
+| `propose_conversation_replies` | `propose_conversation_replies(items: list[ConversationReplyItemInput])` |
 
 ## auditor
 
@@ -257,8 +266,11 @@ real tools live in their agent_sdk drivers, not role_config.
 | `reject_playbook` | `reject_playbook(playbook_id: UUID, reason: str)` |
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
 | `curate_vault` | `curate_vault(task_id: UUID, narrative: str)` |
+| `propose_postmortem` | `propose_postmortem(incident_summary: str, root_cause: str, failed_stage: str, process_change: ProcessChangeInput, playbook: PostmortemPlaybookInput | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
+| `propose_quality_report` | `propose_quality_report(headline: str, items: list[QualityReportItemInput], overall_assessment: str)` |
+| `propose_playbook_drafts` | `propose_playbook_drafts(drafts: list[PlaybookDraftInput])` |
 
 ## pr_reviewer
 
