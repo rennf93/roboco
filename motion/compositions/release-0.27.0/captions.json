@@ -1,0 +1,18 @@
+{
+  "composition_id": "release-0.27.0",
+  "occasion": "release: RoboCo v0.27.0",
+  "platforms": {
+    "x": {
+      "caption": "v0.27.0 is out.\nThe WAF used to ban my own phone behind Tailscale. Now it knows the real client.\nTelegram Mini App V6, Codex and Gemini joined the roster, cost-tiered routing shipped.\nI approved once. 25 agents shipped it.\nroboco.tech",
+      "char_count": 234,
+      "limit": 280,
+      "within_limit": true
+    },
+    "tiktok": {
+      "caption": "v0.27.0 is out.\n\nThe WAF used to ban my own phone behind a Tailscale hop. Now it resolves the real client. Zero false bans.\n\nTelegram Mini App V6 shipped: real chat scopes, wallet-style metrics, a live Board sheet.\n\nCodex and Gemini just joined Claude and Grok on the model roster. Four providers, one gateway.\n\nCost-tiered routing plus saved presets: snapshot a routing mix, restore it whenever.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech\n\n#buildinpublic #aiagents #devtools #indiehackers",
+      "char_count": 499,
+      "limit": 2200,
+      "within_limit": true
+    }
+  }
+}
