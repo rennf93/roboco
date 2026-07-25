@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useUpdateProject } from "@/hooks/use-projects";
 import {
   Card,
@@ -16,7 +17,19 @@ import { HelpTip } from "@/components/ui/help-tip";
 import { Wallet } from "lucide-react";
 import { toast } from "sonner";
 import type { Project, ProjectUpdate } from "@/types";
+import { boardProgramsApi } from "@/lib/api/board-programs";
 import { SaveBar } from "./save-bar";
+
+// Set equality, order-independent — the two checkbox groups below toggle
+// entries in and out of insertion order, so a plain array/index compare
+// (the protected_branches idiom) would false-positive dirty on a
+// checked-then-unchecked round trip that lands back at the same members
+// in a different order.
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
 
 export function BudgetOpsCard({ project }: { project: Project }) {
   const updateProject = useUpdateProject();
@@ -42,6 +55,31 @@ export function BudgetOpsCard({ project }: { project: Project }) {
     (project.dep_update_paths || []).join(", "),
   );
 
+  // Board Program per-project scoping: a project-scoped program's plain key
+  // opts this project INTO its cycles; an org-scoped program's '!'-prefixed
+  // key opts this project OUT of its output. Same underlying set for both —
+  // the two checkbox groups below just read/write different string forms.
+  const { data: boardPrograms = [] } = useQuery({
+    queryKey: ["board-programs"],
+    queryFn: () => boardProgramsApi.list(),
+  });
+  const projectScopedPrograms = boardPrograms.filter(
+    (p) => p.scope === "project",
+  );
+  const orgScopedPrograms = boardPrograms.filter((p) => p.scope === "org");
+  const originalBoardPrograms = new Set(project.board_programs ?? []);
+  const [boardProgramsSet, setBoardProgramsSet] = useState<Set<string>>(
+    new Set(originalBoardPrograms),
+  );
+  const toggleBoardProgramEntry = (entry: string, checked: boolean) => {
+    setBoardProgramsSet((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(entry);
+      else next.delete(entry);
+      return next;
+    });
+  };
+
   const dirty =
     monthlyBudgetUsd !==
       (project.monthly_budget_usd != null
@@ -51,7 +89,8 @@ export function BudgetOpsCard({ project }: { project: Project }) {
     ciWatchWorkflow !== (project.ci_watch_workflow || "") ||
     videoEngineEnabled !== project.video_engine_enabled ||
     depUpdateCommand !== (project.dep_update_command || "") ||
-    depUpdatePaths !== (project.dep_update_paths || []).join(", ");
+    depUpdatePaths !== (project.dep_update_paths || []).join(", ") ||
+    !sameStringSet(boardProgramsSet, originalBoardPrograms);
 
   const handleSave = async () => {
     const trimmedBudget = monthlyBudgetUsd.trim();
@@ -77,6 +116,10 @@ export function BudgetOpsCard({ project }: { project: Project }) {
             .map((p) => p.trim())
             .filter(Boolean)
         : undefined,
+      // Always sent (even empty) — this card owns the full state of this
+      // field, same as every other field above; an empty array is the
+      // "no participation, no exclusion" value, equivalent to null on read.
+      board_programs: [...boardProgramsSet],
     };
 
     try {
@@ -174,6 +217,67 @@ export function BudgetOpsCard({ project }: { project: Project }) {
             onCheckedChange={setVideoEngineEnabled}
           />
         </div>
+
+        {projectScopedPrograms.length > 0 && (
+          <div className="grid gap-2">
+            <HelpTip label="Project-scoped Board Programs read this repo directly (e.g. a bug hunt) — check to opt this project into a program's cycles. Also needs that program armed on the Business → Programs page.">
+              <Label>Board Programs — participates in</Label>
+            </HelpTip>
+            {projectScopedPrograms.map((p) => (
+              <div key={p.key} className="flex items-center justify-between">
+                <HelpTip
+                  label={`Explored by the ${p.role} role, ${p.trigger} trigger.`}
+                >
+                  <Label
+                    htmlFor={`board_program_${p.key}`}
+                    className="text-sm font-normal"
+                  >
+                    {p.key}
+                  </Label>
+                </HelpTip>
+                <Switch
+                  id={`board_program_${p.key}`}
+                  checked={boardProgramsSet.has(p.key)}
+                  onCheckedChange={(checked) =>
+                    toggleBoardProgramEntry(p.key, checked)
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {orgScopedPrograms.length > 0 && (
+          <div className="grid gap-2">
+            <HelpTip label="Org-scoped Board Programs (e.g. the roadmap cycle) propose into every project by default — check to exclude this specific project as an output target. The program itself still runs org-wide either way.">
+              <Label>Board Programs — excluded from</Label>
+            </HelpTip>
+            {orgScopedPrograms.map((p) => {
+              const flag = `!${p.key}`;
+              return (
+                <div key={p.key} className="flex items-center justify-between">
+                  <HelpTip
+                    label={`Excludes this project as a ${p.key} output target only; ${p.key} keeps running org-wide.`}
+                  >
+                    <Label
+                      htmlFor={`board_program_excl_${p.key}`}
+                      className="text-sm font-normal"
+                    >
+                      {p.key}
+                    </Label>
+                  </HelpTip>
+                  <Switch
+                    id={`board_program_excl_${p.key}`}
+                    checked={boardProgramsSet.has(flag)}
+                    onCheckedChange={(checked) =>
+                      toggleBoardProgramEntry(flag, checked)
+                    }
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className="grid gap-2">
           <HelpTip label="Dry-run only — the weekly bot runs this in a throwaway clone to detect a lockfile diff; nothing is committed until it opens a task that rides the normal PR-review flow.">
