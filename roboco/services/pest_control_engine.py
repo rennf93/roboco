@@ -27,14 +27,17 @@ this engine also assembles that evidence for the orchestrator's prompt builder
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
-from roboco.services.board_programs import get_board_program_engine, program_armed
+from roboco.services.board_programs import (
+    get_board_program_engine,
+    pick_rotation_target,
+    program_armed,
+)
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.task import (
     PEST_CONTROL_SOURCE,
@@ -66,10 +69,6 @@ _HOTSPOT_LIMIT = 10
 _FINDINGS_LIMIT = 10
 _MIN_REVISION_COUNT = 2
 _MIN_RECURRING_FINDINGS = 2
-
-# Sentinel "last explored" timestamp for a project the rotation has never
-# targeted — older than any real ``opened_at``, so it always sorts first.
-_NEVER_EXPLORED = datetime.min.replace(tzinfo=UTC)
 
 
 class PestControlEngine(BaseService):
@@ -143,42 +142,12 @@ class PestControlEngine(BaseService):
         return task
 
     async def _pick_rotation_target(self, projects: list[ProjectTable]) -> ProjectTable:
-        """The opted-in project due this cycle: never-explored beats
-        explored, else the oldest last-explored timestamp wins — ties
-        (including every never-explored project) break by ``projects``' own
-        deterministic order (``opted_in_projects``' ORDER BY)."""
-        if len(projects) == 1:
-            return projects[0]
-        last_explored = await self._last_explored_at()
-        return min(
-            projects,
-            key=lambda p: (
-                p.id in last_explored,
-                last_explored.get(cast("UUID", p.id), _NEVER_EXPLORED),
-            ),
+        """The opted-in project due this cycle — see
+        ``roboco.services.board_programs.pick_rotation_target`` (shared by
+        every project-scoped program's rotation, e.g. Spackle)."""
+        return await pick_rotation_target(
+            self.session, projects, source=PEST_CONTROL_SOURCE
         )
-
-    async def _last_explored_at(self) -> dict[UUID, datetime]:
-        """Most recent pest_control exploration task's ``created_at`` per
-        project id — the rotation's memory of which opted-in project went
-        last. Reads the exploration tasks themselves rather than the LEARN
-        ledger (``board_program_cycles``): that ledger is only populated by
-        a ``BoardProgramEngine``-mediated call (``open_program_cycle`` /
-        ``run_due_programs``), so keying off it would leave the rotation
-        blind whenever ``PestControlEngine.run_cycle`` runs directly. Every
-        prior cycle is guaranteed terminal by the time this runs — the
-        one-open-cycle dedup in ``run_cycle`` already refused a new cycle
-        while any project's exploration task was still open."""
-        from sqlalchemy import func, select
-
-        from roboco.db.tables import TaskTable
-
-        result = await self.session.execute(
-            select(TaskTable.project_id, func.max(TaskTable.created_at))
-            .where(TaskTable.source == PEST_CONTROL_SOURCE)
-            .group_by(TaskTable.project_id)
-        )
-        return {pid: created for pid, created in result.all() if pid is not None}
 
     async def evidence_context(self) -> str:
         """Server-assembled evidence for the PO's prompt — rework hotspots +

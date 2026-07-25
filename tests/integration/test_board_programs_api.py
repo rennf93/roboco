@@ -29,6 +29,7 @@ from roboco.services.task import (
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     SENTINEL_SOURCE,
+    SPACKLE_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
 )
 from sqlalchemy import delete, update
@@ -153,6 +154,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     PERISCOPE_SOURCE,
                     CORONER_SOURCE,
                     SENTINEL_SOURCE,
+                    SPACKLE_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -174,11 +176,16 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "periscope",
         "coroner",
         "sentinel",
+        "spackle",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"
     assert pest_control["trigger"] == "cron"
     assert pest_control["scope"] == "project"
+    spackle = next(p for p in body if p["key"] == "spackle")
+    assert spackle["role"] == "product_owner"
+    assert spackle["trigger"] == "cron"
+    assert spackle["scope"] == "project"
     roadmap = next(p for p in body if p["key"] == "roadmap")
     assert roadmap["role"] == "product_owner"
     assert roadmap["trigger"] == "cron"

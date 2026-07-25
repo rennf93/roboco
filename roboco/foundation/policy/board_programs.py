@@ -110,6 +110,17 @@ PROGRAMS: dict[str, BoardProgram] = {
             # scope, same as periscope.
             scope="org",
         ),
+        BoardProgram(
+            key="spackle",
+            role="product_owner",
+            trigger=TriggerKind.CRON,
+            source="board_spackle",
+            default_interval_seconds=2 * WEEK_SECONDS,
+            max_items_per_cycle=5,
+            # Gap-fill audit of one repo's half-shipped surface area (spec
+            # §4) — project-scoped, same as pest_control.
+            scope="project",
+        ),
     )
 }
 

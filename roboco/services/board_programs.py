@@ -26,10 +26,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from roboco.config import settings
-from roboco.db.tables import BoardProgramCycleTable, ProjectTable
+from roboco.db.tables import BoardProgramCycleTable, ProjectTable, TaskTable
 from roboco.foundation.policy.board_programs import (
     PROGRAMS,
     TriggerKind,
@@ -47,7 +47,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import TaskTable
     from roboco.foundation.policy.board_programs import BoardProgram
 
 _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
@@ -95,11 +94,18 @@ async def _originate_sentinel(session: AsyncSession) -> TaskTable | None:
     return await get_sentinel_engine(session).run_cycle()
 
 
+async def _originate_spackle(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.spackle_engine import get_spackle_engine
+
+    return await get_spackle_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
-# PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE) so the two can't drift.
+# PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE) so the
+# two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
@@ -107,7 +113,57 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "periscope": _originate_periscope,
     "coroner": _originate_coroner,
     "sentinel": _originate_sentinel,
+    "spackle": _originate_spackle,
 }
+
+
+# Sentinel "last explored" timestamp for a project a rotation has never
+# targeted — older than any real ``opened_at``, so it always sorts first.
+_NEVER_EXPLORED = datetime.min.replace(tzinfo=UTC)
+
+
+async def pick_rotation_target(
+    session: AsyncSession, projects: list[ProjectTable], *, source: str
+) -> ProjectTable:
+    """The opted-in project due this cycle for a project-scoped program's
+    round-robin: never-explored beats explored, else the oldest
+    last-explored timestamp wins — ties (including every never-explored
+    project) break by ``projects``' own deterministic order
+    (``BoardProgramEngine.opted_in_projects``' ORDER BY). ``source`` is the
+    program's own exploration-task source tag (e.g. ``PEST_CONTROL_SOURCE``),
+    read via ``_last_explored_at`` rather than the LEARN ledger — see that
+    function's docstring. Shared by every project-scoped program's rotation
+    (Pest Control, Spackle) so they rotate identically."""
+    if len(projects) == 1:
+        return projects[0]
+    last_explored = await _last_explored_at(session, source)
+    return min(
+        projects,
+        key=lambda p: (
+            p.id in last_explored,
+            last_explored.get(cast("UUID", p.id), _NEVER_EXPLORED),
+        ),
+    )
+
+
+async def _last_explored_at(session: AsyncSession, source: str) -> dict[UUID, datetime]:
+    """Most recent exploration task's ``created_at`` per project id, for a
+    given task ``source`` — a project-scoped rotation's memory of which
+    opted-in project went last. Reads the exploration tasks themselves
+    rather than the LEARN ledger (``board_program_cycles``): that ledger is
+    only populated by a ``BoardProgramEngine``-mediated call
+    (``open_program_cycle`` / ``run_due_programs``), so keying off it would
+    leave the rotation blind whenever an engine's own ``run_cycle`` runs
+    directly. Every prior cycle is guaranteed terminal by the time this
+    runs — the one-open-cycle dedup in each engine's ``run_cycle`` already
+    refused a new cycle while any project's exploration task was still
+    open."""
+    result = await session.execute(
+        select(TaskTable.project_id, func.max(TaskTable.created_at))
+        .where(TaskTable.source == source)
+        .group_by(TaskTable.project_id)
+    )
+    return {pid: created for pid, created in result.all() if pid is not None}
 
 
 async def _pest_control_rework_spike(session: AsyncSession) -> bool:

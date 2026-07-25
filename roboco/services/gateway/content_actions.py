@@ -335,6 +335,10 @@ _ROADMAP_ROLES: frozenset[str] = frozenset({"product_owner"})
 # _ROADMAP_ROLES.
 _PEST_ROLES: frozenset[str] = frozenset({"product_owner"})
 
+# Spackle (Board Program) gap-fill audits are Product-Owner-only, mirroring
+# _PEST_ROLES.
+_GAP_FILL_ROLES: frozenset[str] = frozenset({"product_owner"})
+
 # Feature spotlights are HoM-authored — the Product Owner stays out of this
 # cycle (mirrors _ROADMAP_ROLES's PO-only symmetry, reversed).
 _FEATURE_SPOTLIGHT_ROLES: frozenset[str] = frozenset({"head_marketing"})
@@ -397,6 +401,20 @@ _PEST_HUNT_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("evidence", 20),
 )
 _PEST_HUNT_EVIDENCE_MAX_CHARS = 2000
+
+# Text fields on a gap-fill item draft. ``evidence`` is the load-bearing one
+# (spec §4: evidence must name BOTH sides of the gap — e.g. the route that
+# exists and the panel surface that doesn't) — required, substantive, and
+# capped so a runaway dump can't blow out the marker payload. Mirrors
+# _PEST_HUNT_ITEM_TEXT_FIELDS.
+_GAP_FILL_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_GAP_FILL_EVIDENCE_MAX_CHARS = 2000
 
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 # The Auditor is deliberately NOT in this set — "auditor curates but does not
@@ -473,6 +491,29 @@ def _normalize_roadmap_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
 def _normalize_pest_hunt_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce a validated raw pest-hunt item dict into the stored marker
     shape. Mirrors ``_normalize_roadmap_item`` — ``id`` is server-assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_gap_fill_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw gap-fill item dict into the stored marker
+    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned."""
     priority = raw.get("priority")
     try:
         priority = int(priority) if priority is not None else 2
@@ -1794,6 +1835,232 @@ class ContentActions:
             except Exception as exc:
                 logger.warning(
                     "pest-control telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @classmethod
+    def _reject_gap_fill_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one gap-fill item dict. Mirrors
+        ``_reject_pest_hunt_item_text_fields``."""
+        for field, min_chars in _GAP_FILL_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_gap_fill_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        gap-fill item dict — split from the text-fields loop above to keep
+        ``_reject_gap_fill_item_fields`` under the xenon complexity budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _GAP_FILL_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_GAP_FILL_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_GAP_FILL_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_gap_fill_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one gap-fill item dict. Mirrors ``_reject_pest_hunt_item_fields``."""
+        if rej := cls._reject_gap_fill_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_gap_fill_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_gap_fill_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw gap-fill item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for every item kind."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_gap_fill_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_gap_fill_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw gap-fill item dict; None when clean. Mirrors
+        ``_reject_pest_hunt_item``."""
+        if rej := self._reject_gap_fill_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_spackle_project(raw, idx)
+
+    async def _reject_unparticipating_spackle_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        spackle program (``"spackle"`` absent from its ``board_programs``) —
+        mirrors ``_reject_unparticipating_pest_control_project``.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as pest_control's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["spackle"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the spackle program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "spackle on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_gap_fill(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Spackle gap-fill audit (1-N evidence-backed
+        item drafts, N = the registry's ``max_items_per_cycle``).
+
+        Persists the audit onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the spackle queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_bug_hunt`` — no top-level theme goal
+        here, just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _GAP_FILL_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a gap-fill audit; only "
+                    "the Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["spackle"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a gap-fill audit needs 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_gap_fill_item(raw, idx):
+                return rej
+            normalized.append(_normalize_gap_fill_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_spackle_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_gap_fill(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open spackle exploration task assigned to you",
+                remediate=(
+                    "propose_gap_fill only runs against an active exploration "
+                    "cycle spawned by the spackle engine; wait for the next "
+                    "cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_gap_fill(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_gap_fill_items(task, normalized)
+        return Envelope.ok(
+            status="gap_fill_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the spackle queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_gap_fill_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_pest_hunt_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="spackle",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "spackle telegram notify failed (best-effort)",
                     error=str(exc),
                 )
 

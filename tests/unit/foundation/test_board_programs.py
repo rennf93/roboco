@@ -86,6 +86,19 @@ def test_registry_carries_sentinel() -> None:
     assert s.default_interval_seconds == WEEK_SECONDS
 
 
+_SPACKLE_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_spackle() -> None:
+    sp = PROGRAMS["spackle"]
+    assert sp.role == "product_owner"
+    assert sp.source == "board_spackle"
+    assert sp.trigger is TriggerKind.CRON
+    assert sp.scope == "project"
+    assert sp.max_items_per_cycle == _SPACKLE_MAX_ITEMS_PER_CYCLE
+    assert sp.default_interval_seconds == 2 * WEEK_SECONDS
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

@@ -148,6 +148,28 @@ class ProposeBugHuntRequest(BaseModel):
     items: list[PestHuntItemInput] = Field(..., min_length=1)
 
 
+class GapFillItemInput(BaseModel):
+    """One evidence-backed gap-fill item draft within a Product Owner's
+    Spackle audit. Mirrors ``PestHuntItemInput`` — ``evidence`` must name
+    both sides of the gap (e.g. the route that exists and the panel surface
+    that doesn't)."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeGapFillRequest(BaseModel):
+    """Product Owner's Spackle gap-fill audit: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[GapFillItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a

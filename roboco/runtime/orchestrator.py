@@ -83,6 +83,7 @@ from roboco.services.task import (
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
     SENTINEL_SOURCE,
+    SPACKLE_SOURCE,
     VIDEO_HELD_SOURCES,
     VIDEO_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -912,8 +913,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
-    ``board_sentinel``) that ``_dispatch_pm_work`` owns. One flat call keeps
-    the dev loop's skip out of a long per-source ``if`` chain (xenon budget)."""
+    ``board_sentinel`` / ``board_spackle``) that ``_dispatch_pm_work`` owns.
+    One flat call keeps the dev loop's skip out of a long per-source ``if``
+    chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -923,6 +925,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         PERISCOPE_SOURCE,
         CORONER_SOURCE,
         SENTINEL_SOURCE,
+        SPACKLE_SOURCE,
     )
 
 
@@ -951,6 +954,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         PERISCOPE_SOURCE: orch._dispatch_periscope_exploration,
         CORONER_SOURCE: orch._dispatch_coroner_exploration,
         SENTINEL_SOURCE: orch._dispatch_sentinel_exploration,
+        SPACKLE_SOURCE: orch._dispatch_spackle_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -12951,6 +12955,41 @@ Start now: evidence(task_id="{task_id}")
             logger.warning("coroner: incident-context read failed (best-effort)")
             return ""
 
+    async def _dispatch_spackle_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        same "already authored" marker pre-check — ``propose_gap_fill`` marks
+        it via the ``gap_fill`` marker, not this dispatcher). Unlike Pest
+        Control there is no server-assembled evidence context — the spec
+        deliberately keeps Spackle free of a heavy server-side inventory
+        engine; the inventory diffing is the PO's own read-tool work, ordered
+        explicitly by ``_build_spackle_prompt``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.GAP_FILL) is not None:
+            return  # already authored — the CEO spackle queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("spackle")
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_spackle_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_spackle_exploration",
+        )
+
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
     ) -> None:
@@ -13351,7 +13390,7 @@ Start now: evidence(task_id="{task_id}")
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 # Every registered Board Program (roadmap / x_feature /
-                # pest_control / periscope / coroner / sentinel) is
+                # pest_control / periscope / coroner / sentinel / spackle) is
                 # solo-authored and bypasses the two-reviewer board-review
                 # gate — routed via the module-level dict dispatch table so
                 # this chain stays flat as new programs register (xenon
@@ -16093,6 +16132,66 @@ INCIDENT: {title!r} ({incident_task_id}) — {kind}
 
 Do NOT message the fleet about this — you stay silent to other agents; your
 output is this postmortem and your journal, both CEO-facing.
+"""
+
+    def _build_spackle_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Spackle exploration.
+
+        Unlike Pest Control there is no server-assembled evidence context
+        (spec: Spackle carries no heavy server-side inventory engine) — the
+        inventory diffing (API routes vs panel surfaces, armed flags vs
+        docs, docs claims vs code, coverage holes, dead-end panel tabs) is
+        the PO's own read-tool work, ordered explicitly below. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["spackle"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Product Owner. It's time for your periodic Spackle exploration.
+
+TASK: {task_id}
+
+Audit the target project's half-shipped surface area — the gaps between what
+was built and what was finished. Propose evidence-backed gap-fill tasks for
+the CEO to review; you author this alone.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Compare inventories against each other, citing `file:line` for every
+   claimed gap:
+   a. API routes (roboco/api/routes/) with no panel surface that exposes
+      them, and vice versa — a panel page calling an endpoint that doesn't
+      exist or was removed.
+   b. Armed feature flags (roboco/config.py, the feature-flags panel card)
+      with no docs describing them.
+   c. Docs-site / docs/map/ promises the code doesn't actually keep.
+   d. Coverage holes by module, if a coverage report is available.
+   e. Dead-end panel tabs — a page/tab with no working action or data.
+3. For each candidate, confirm it's a REAL, LIVE gap (not already fixed, not
+   already tracked as a task) before drafting an item.
+4. propose_gap_fill(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — must name BOTH sides of the
+       gap, e.g. the route that exists and the panel surface that doesn't;
+       no evidence, no item).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the spackle queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
 """
 
     def _build_feature_spotlight_prompt(

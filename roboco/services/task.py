@@ -774,6 +774,21 @@ async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
 # CEO decision, so no separate materialized-item source exists for it.
 SENTINEL_SOURCE = "board_sentinel"
 
+# Source tag for a Spackle (Board Program) exploration cycle: a PENDING task
+# the spackle engine opens for the Product Owner to audit an opted-in
+# project's half-shipped surface area (API routes with no panel surface and
+# vice versa, armed flags with no docs, docs promises the code doesn't keep,
+# coverage holes, dead-end panel tabs) and author evidence-backed gap-fill
+# drafts (the ``propose_gap_fill`` content verb). Mirrors PEST_CONTROL_SOURCE
+# exactly: IS dispatched (one-shot PO spawn) but never rides the delivery
+# lifecycle; items materialize into BACKLOG only via the CEO's per-item
+# approve (source=SPACKLE_ITEM_SOURCE below).
+SPACKLE_SOURCE = "board_spackle"
+
+# Source tag stamped on a task MATERIALIZED from an approved gap-fill item
+# (distinct from SPACKLE_SOURCE, which tags the held exploration cycle).
+SPACKLE_ITEM_SOURCE = "spackle"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -2026,6 +2041,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == CORONER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_spackle_cycles(self) -> list[TaskTable]:
+        """Non-terminal spackle exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_gap_fill``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SPACKLE_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

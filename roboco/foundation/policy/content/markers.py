@@ -51,6 +51,7 @@ MARKET_BRIEF = "market_brief"
 CORONER_INCIDENT = "coroner_incident"
 CORONER_POSTMORTEM = "coroner_postmortem"
 QUALITY_REPORT = "quality_report"
+GAP_FILL = "gap_fill"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -288,6 +289,23 @@ def get_pest_hunt(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_pest_hunt(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, PEST_HUNT, payload)
+
+
+# --- board spackle gap-fill audit -------------------------------------------
+# The evidence-backed gap-fill item drafts the Product Owner authors via
+# ``propose_gap_fill`` onto the exploration task the spackle engine opened.
+# Mirrors PEST_HUNT exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject.
+
+
+def get_gap_fill(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, GAP_FILL)
+    return val if isinstance(val, dict) else None
+
+
+def set_gap_fill(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, GAP_FILL, payload)
 
 
 # --- Periscope market brief --------------------------------------------------

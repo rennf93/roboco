@@ -608,6 +608,27 @@ def propose_bug_hunt(items: list[dict[str, Any]]) -> dict[str, Any]:
     return _post("/api/v1/do/propose_bug_hunt", {"items": items})
 
 
+def propose_gap_fill(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Spackle gap-fill audit (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after auditing half-shipped
+    surface area in the target project: API routes with no panel surface (and
+    vice versa), armed flags with no docs, docs promises the code doesn't
+    keep, coverage holes by module, dead-end panel tabs. The CEO reviews and
+    approves/rejects each item individually; approved items land in the
+    backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — must name BOTH sides of the gap, e.g. the
+            route that exists and the panel surface that doesn't; no
+            evidence, no item).
+    """
+    return _post("/api/v1/do/propose_gap_fill", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -1131,6 +1152,7 @@ _TOOLS: dict[str, Any] = {
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
     "propose_bug_hunt": propose_bug_hunt,
+    "propose_gap_fill": propose_gap_fill,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_postmortem": propose_postmortem,
