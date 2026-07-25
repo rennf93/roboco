@@ -42,6 +42,7 @@ from roboco.models.base import (
 from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
+    PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -80,7 +81,12 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
         update(TaskTable)
         .where(
             TaskTable.source.in_(
-                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+                [
+                    ROADMAP_SOURCE,
+                    X_FEATURE_EXPLORATION_SOURCE,
+                    PEST_CONTROL_SOURCE,
+                    PERISCOPE_SOURCE,
+                ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
         )
@@ -453,6 +459,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["roadmap"].source == ROADMAP_SOURCE
     assert PROGRAMS["x_feature"].source == X_FEATURE_EXPLORATION_SOURCE
     assert PROGRAMS["pest_control"].source == PEST_CONTROL_SOURCE
+    assert PROGRAMS["periscope"].source == PERISCOPE_SOURCE
 
 
 # ---------------------------------------------------------------------------

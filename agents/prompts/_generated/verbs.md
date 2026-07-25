@@ -235,6 +235,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
 | `propose_feature_spotlight` | `propose_feature_spotlight(feature_slug: str = '', feature_title: str = '', body: str = '', wants_video: bool = False, video_script: str = '', skip: bool = False, skip_reason: str = '')` |
+| `propose_market_brief` | `propose_market_brief(headline: str, findings: list[MarketBriefFindingInput], threats: list[str] | None = None, opportunities: list[str] | None = None, positioning_note: str = '')` |
 
 ## auditor
 

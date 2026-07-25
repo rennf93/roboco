@@ -165,6 +165,27 @@ class ProposeFeatureSpotlightRequest(BaseModel):
     skip_reason: str = ""
 
 
+class MarketBriefFindingInput(BaseModel):
+    """One cited market finding within a Head of Marketing's Periscope brief.
+    ``source_url`` is REQUIRED — an uncited market claim is noise."""
+
+    claim: str = Field(..., min_length=1)
+    source_url: str = Field(..., min_length=1)
+    relevance: str = Field(..., min_length=1)
+
+
+class ProposeMarketBriefRequest(BaseModel):
+    """Head of Marketing's Periscope weekly market-research brief: a
+    headline + 1-7 cited findings, plus optional threats/opportunities/
+    positioning notes. Delivered as a held report — no per-item CEO queue."""
+
+    headline: str = Field(..., min_length=1)
+    findings: list[MarketBriefFindingInput] = Field(..., min_length=1)
+    threats: list[str] | None = None
+    opportunities: list[str] | None = None
+    positioning_note: str = ""
+
+
 class ProposeVideoRequest(BaseModel):
     """UX/UI dev's video metadata draft: a composition ref + per-platform
     captions. Metadata only — no render."""

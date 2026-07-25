@@ -137,6 +137,7 @@ _VALIDATORS = {
     "board_program.roadmap.enabled": _validate_bool,
     "board_program.x_feature.enabled": _validate_bool,
     "board_program.pest_control.enabled": _validate_bool,
+    "board_program.periscope.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

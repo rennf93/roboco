@@ -28,6 +28,7 @@ from roboco.api.schemas.v1.do import (
     ProgressRequest,
     ProposeBugHuntRequest,
     ProposeFeatureSpotlightRequest,
+    ProposeMarketBriefRequest,
     ProposeRoadmapRequest,
     ProposeVideoRequest,
     PRUpdateRequest,
@@ -200,6 +201,29 @@ async def do_propose_feature_spotlight(
         video_script=body.video_script,
         skip=body.skip,
         skip_reason=body.skip_reason,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_market_brief")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_market_brief(
+    request: Request,
+    body: ProposeMarketBriefRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_market_brief(
+        agent_id=x_agent_id,
+        headline=body.headline,
+        findings=[f.model_dump() for f in body.findings],
+        threats=body.threats,
+        opportunities=body.opportunities,
+        positioning_note=body.positioning_note,
     )
     return envelope_to_response(env, request)
 

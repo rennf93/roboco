@@ -71,15 +71,22 @@ async def _originate_pest_control(session: AsyncSession) -> TaskTable | None:
     return await get_pest_control_engine(session).run_cycle()
 
 
+async def _originate_periscope(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.periscope_engine import get_periscope_engine
+
+    return await get_periscope_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
-# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE) so the
-# two can't drift.
+# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
+# PERISCOPE_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
     "pest_control": _originate_pest_control,
+    "periscope": _originate_periscope,
 }
 
 

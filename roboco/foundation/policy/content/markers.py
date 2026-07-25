@@ -47,6 +47,7 @@ X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
 X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
 PEST_HUNT = "pest_hunt"
+MARKET_BRIEF = "market_brief"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -284,6 +285,25 @@ def get_pest_hunt(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_pest_hunt(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, PEST_HUNT, payload)
+
+
+# --- Periscope market brief --------------------------------------------------
+# The Head of Marketing's weekly market-research report, authored via
+# ``propose_market_brief`` onto the exploration task the Periscope engine
+# opened: {headline, findings (list of {id, claim, source_url, relevance}),
+# threats, opportunities, positioning_note, injection_hits}. Unlike
+# ROADMAP_CYCLE/PEST_HUNT there is no per-item CEO decision — the verb
+# completes the exploration task in the same call (mirrors X_FEATURE_REF's
+# complete-at-propose asymmetry), so this marker is set exactly once.
+
+
+def get_market_brief(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, MARKET_BRIEF)
+    return val if isinstance(val, dict) else None
+
+
+def set_market_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, MARKET_BRIEF, payload)
 
 
 # --- video draft ------------------------------------------------------------

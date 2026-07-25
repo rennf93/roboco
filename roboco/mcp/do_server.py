@@ -661,6 +661,44 @@ def propose_feature_spotlight(
     )
 
 
+def propose_market_brief(
+    headline: str,
+    findings: list[dict[str, Any]],
+    threats: list[str] | None = None,
+    opportunities: list[str] | None = None,
+    positioning_note: str = "",
+) -> dict[str, Any]:
+    """Head of Marketing: file the Periscope weekly market-research brief.
+
+    Call this exactly ONCE per exploration cycle, after researching
+    competitors, adjacent-tool releases, and positioning shifts (web_search /
+    web_fetch + the knowledge base). This is a REPORT, not a task queue: the
+    CEO reads it in the panel — nothing materializes, and there is no
+    per-item approve/reject.
+
+    Args:
+        headline: One-line summary of the cycle's biggest signal (<=200 chars).
+        findings: 1-7 dicts, each with: claim (<=500 chars), source_url
+            (REQUIRED, a real http(s) URL — an uncited claim is noise and the
+            verb rejects it), relevance (<=300 chars — why this matters to us).
+        threats: Optional list of up to 5 short threat notes (<=300 chars each).
+        opportunities: Optional list of up to 5 short opportunity notes
+            (<=300 chars each).
+        positioning_note: Optional note (<=500 chars) on a positioning shift
+            worth acting on.
+    """
+    return _post(
+        "/api/v1/do/propose_market_brief",
+        {
+            "headline": headline,
+            "findings": findings,
+            "threats": threats,
+            "opportunities": opportunities,
+            "positioning_note": positioning_note,
+        },
+    )
+
+
 def propose_video(
     composition_id: str,
     x_caption: str,
@@ -1023,6 +1061,7 @@ _TOOLS: dict[str, Any] = {
     "propose_roadmap": propose_roadmap,
     "propose_bug_hunt": propose_bug_hunt,
     "propose_feature_spotlight": propose_feature_spotlight,
+    "propose_market_brief": propose_market_brief,
     "propose_video": propose_video,
     "dm": dm,
     "notify": notify,

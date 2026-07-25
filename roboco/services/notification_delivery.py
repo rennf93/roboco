@@ -1199,6 +1199,51 @@ class NotificationDeliveryService(BaseService):
             text=text, reply_markup=None, disable_link_preview=True
         )
 
+    async def notify_ceo_of_periscope_brief(
+        self, *, task: TaskTable, task_id: UUID, headline: str
+    ) -> None:
+        """Best-effort CEO nudge the moment a Periscope market brief lands.
+
+        A report, not a queue item: no approve/reject verb exists for it, so
+        this reuses ``notify_ceo_of_queue_item``'s styled-text SHAPE
+        (``render_queue_item_text`` — "periscope" is a display-only
+        ``_KIND_DISPLAY`` entry, never added to ``_VALID_KINDS``/the
+        approve-reject callback surface) but skips ``build_action_keyboard``
+        entirely: no callback exists for a kind ``parse_callback`` never
+        accepts, so no button is ever rendered to tap. The in-app
+        notification is a normal ALERT (mirrors ``notify_ceo_of_completion``),
+        not an APPROVAL — nothing here needs a CEO decision through a queue.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=f"Market brief: {headline[:100]}",
+            body=(
+                "The Head of Marketing filed this week's market-research "
+                f"brief.\n\n{headline}\n\n"
+                "Read the full brief in the panel's Market Briefs tab "
+                "(Business page)."
+            ),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+        )
+        await self._persist_and_deliver(notification)
+        from roboco.services.telegram_inbound import render_queue_item_text
+
+        text = render_queue_item_text("periscope", str(task_id)[:8], "", headline)
+        if settings.panel_base_url:
+            link = f"{settings.panel_base_url.rstrip('/')}/business?tab=market-briefs"
+            text += f'\n<a href="{_esc_attr(link)}">Open in panel</a>'
+        await self._send_telegram_deferred(
+            text=text, reply_markup=None, disable_link_preview=True
+        )
+
     async def notify_ceo_of_budget_breach(
         self,
         *,

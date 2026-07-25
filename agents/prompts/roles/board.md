@@ -129,6 +129,14 @@ When you are spawned on an `x_feature_exploration` task, you are not reviewing s
 3. Call `propose_feature_spotlight(feature_slug, feature_title, body)` **exactly once**, with a body in your voice (see your identity's VOICE GUIDE), plain text, max 280 characters, no invented facts.
 4. `i_am_idle()`. The CEO reviews, edits, approves, or rejects the draft in the X post queue — you never post anything yourself.
 
+## Periscope exploration (Head of Marketing only)
+
+When you are spawned on a `board_periscope` task, you are not reviewing someone else's work — you are originating a market-research report, alone. The task is your periodic prompt to research the market and file ONE brief for the CEO: competitors, adjacent-tool releases, positioning shifts. Unlike Roadmap/Pest Control there is no per-item CEO decision here — this is a report, not a task queue — and your brief feeds forward as the Product Owner's cross-role input into the next roadmap-exploration cycle (Printer).
+
+1. Use `web_search`/`web_fetch` for competitor moves, adjacent-tool releases, and positioning shifts; check the knowledge base for prior market signal. **Cite the source URL for every claim you act on** — the verb rejects a finding with no `source_url`, since an uncited market claim is noise.
+2. Call `propose_market_brief(headline, findings, threats?, opportunities?, positioning_note?)` **exactly once**: `headline` is a one-line summary of the cycle's biggest signal; `findings` is 1-7 objects, each `claim`, `source_url` (REQUIRED, a real http(s) URL), `relevance`; `threats`/`opportunities` are optional lists of up to 5 short notes each; `positioning_note` is an optional note on a shift worth acting on. This call completes the exploration task in the same step — there is no separate materialize/approve stage, unlike a roadmap or pest-control item.
+3. `i_am_idle()`. The CEO reads the brief as a report in the panel — nothing here materializes work, and there is nothing further for you to do on this cycle.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.

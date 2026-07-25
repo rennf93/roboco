@@ -6,6 +6,7 @@ import pytest
 from roboco.config import Settings
 from roboco.foundation.policy.board_programs import (
     PROGRAMS,
+    WEEK_SECONDS,
     BoardProgram,
     TriggerKind,
     program_due,
@@ -45,6 +46,15 @@ def test_registry_carries_pest_control() -> None:
     assert pc.trigger is TriggerKind.CRON
     assert pc.scope == "project"
     assert pc.max_items_per_cycle == _PEST_CONTROL_MAX_ITEMS_PER_CYCLE
+
+
+def test_registry_carries_periscope() -> None:
+    p = PROGRAMS["periscope"]
+    assert p.role == "head_marketing"
+    assert p.source == "board_periscope"
+    assert p.trigger is TriggerKind.CRON
+    assert p.scope == "org"
+    assert p.default_interval_seconds == WEEK_SECONDS
 
 
 def test_program_due_cron_interval() -> None:

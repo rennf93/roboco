@@ -711,6 +711,15 @@ PEST_CONTROL_SOURCE = "board_pest_control"
 # (distinct from PEST_CONTROL_SOURCE, which tags the held exploration cycle).
 PEST_CONTROL_ITEM_SOURCE = "pest_control"
 
+# Source tag for a Periscope (Board Program) exploration cycle: a PENDING task
+# the periscope engine opens for the Head of Marketing to research the market
+# (competitors, adjacent-tool releases, positioning shifts) and author a brief
+# via the ``propose_market_brief`` content verb. Org-scoped (no project
+# targeting — it reads the market, not a repo) and, like X_FEATURE_
+# EXPLORATION_SOURCE, complete-at-propose: a report has no per-item CEO
+# decision, so no separate materialized-item source exists for it.
+PERISCOPE_SOURCE = "board_periscope"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -1906,6 +1915,37 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_periscope_cycles(self) -> list[TaskTable]:
+        """Non-terminal Periscope exploration tasks — the one-open-cycle dedup
+        + ``propose_market_brief``'s task lookup. Mirrors
+        ``list_open_feature_explorations``: complete-at-propose, so a task
+        found here is always pre-brief (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_periscope_briefs(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Periscope exploration tasks (each carries a ``market_
+        brief`` marker) — the panel's Market Briefs list + the roadmap
+        prompt's "latest brief" injection basis. Newest-first, bounded by
+        ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
         )
         return list(result.scalars().all())
 

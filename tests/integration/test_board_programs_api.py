@@ -24,6 +24,7 @@ from roboco.foundation import identity as _foundation
 from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
 from roboco.services.task import (
+    PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
@@ -143,7 +144,12 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
         update(TaskTable)
         .where(
             TaskTable.source.in_(
-                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+                [
+                    ROADMAP_SOURCE,
+                    X_FEATURE_EXPLORATION_SOURCE,
+                    PEST_CONTROL_SOURCE,
+                    PERISCOPE_SOURCE,
+                ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
@@ -157,7 +163,12 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
     resp = await ceo_client.get("/api/board-programs")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
-    assert {p["key"] for p in body} == {"roadmap", "x_feature", "pest_control"}
+    assert {p["key"] for p in body} == {
+        "roadmap",
+        "x_feature",
+        "pest_control",
+        "periscope",
+    }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"
     assert pest_control["trigger"] == "cron"

@@ -72,6 +72,17 @@ PROGRAMS: dict[str, BoardProgram] = {
             # opt-in before a cycle is worth opening at all.
             scope="project",
         ),
+        BoardProgram(
+            key="periscope",
+            role="head_marketing",
+            trigger=TriggerKind.CRON,
+            source="board_periscope",
+            default_interval_seconds=WEEK_SECONDS,
+            # It reads the market, not a repo (spec §4) — org scope, same as
+            # roadmap: runs org-wide by default, never needs a per-project
+            # opt-in to fire.
+            scope="org",
+        ),
     )
 }
 

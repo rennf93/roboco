@@ -149,7 +149,11 @@ _STATUS_ORDER: tuple[TaskStatus, ...] = (
     TaskStatus.CANCELLED,
 )
 
-# /queue + push-DM item rendering — (emoji, label) per kind.
+# /queue + push-DM item rendering — (emoji, label) per kind. "periscope" is
+# display-only (render_queue_item_text's styled text, reused by
+# notify_ceo_of_periscope_brief) — it is deliberately absent from
+# _VALID_KINDS/_DEEP_LINK_PATH below: a market brief is a report, not an
+# approve/reject queue item, so no callback/button ever exists for it.
 _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "release": ("🚀", "Release"),
     "video": ("🎬", "Video"),
@@ -157,6 +161,7 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "roadmap": ("🗺️", "Roadmap"),
     "pest_control": ("🐛", "Bug hunt"),
     "task": ("📋", "Task"),
+    "periscope": ("🔭", "Market brief"),
 }
 
 # The bot's command menu — single source for /help AND the Bot API

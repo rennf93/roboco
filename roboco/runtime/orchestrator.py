@@ -75,6 +75,7 @@ from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
+    PERISCOPE_SOURCE,
     PEST_CONTROL_SOURCE,
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
@@ -908,15 +909,16 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
     Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
-    / ``board_pest_control``) that ``_dispatch_pm_work`` owns. One flat call
-    keeps the dev loop's skip out of a long per-source ``if`` chain (xenon
-    budget)."""
+    / ``board_pest_control`` / ``board_periscope``) that ``_dispatch_pm_work``
+    owns. One flat call keeps the dev loop's skip out of a long per-source
+    ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
         ROADMAP_SOURCE,
         X_FEATURE_EXPLORATION_SOURCE,
         PEST_CONTROL_SOURCE,
+        PERISCOPE_SOURCE,
     )
 
 
@@ -12749,10 +12751,13 @@ Start now: evidence(task_id="{task_id}")
         self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("roadmap")
+        market_brief_context = await self._periscope_brief_context()
         await self.spawn_agent(
             agent_id=po_slug,
             task_id=task["id"],
-            initial_prompt=self._build_roadmap_prompt(task, prior_context),
+            initial_prompt=self._build_roadmap_prompt(
+                task, prior_context, market_brief_context
+            ),
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_roadmap_exploration",
         )
@@ -12865,6 +12870,55 @@ Start now: evidence(task_id="{task_id}")
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_feature_spotlight_exploration",
         )
+
+    async def _dispatch_periscope_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to research the market and file a
+        Periscope brief.
+
+        Mirrors ``_dispatch_feature_spotlight_exploration``: no "already
+        authored" marker pre-check is needed — ``propose_market_brief``
+        completes this task atomically (the x_feature complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
+        breaker every other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for periscope exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("periscope")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_periscope_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_periscope_exploration",
+        )
+
+    async def _periscope_brief_context(self) -> str:
+        """Best-effort "latest market brief" read for the roadmap exploration
+        prompt's cross-role injection (spec §4) — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block the roadmap spawn, only drop
+        the brief section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.periscope_engine import get_periscope_engine
+
+            async with get_db_context() as db:
+                return await get_periscope_engine(db).latest_brief_context()
+        except Exception:
+            logger.warning("periscope: latest-brief read failed (best-effort)")
+            return ""
 
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
@@ -13145,6 +13199,11 @@ Start now: evidence(task_id="{task_id}")
                     # bypasses the two-reviewer board-review gate; never rides
                     # _handle_board_assigned_task.
                     await self._dispatch_pest_control_exploration(task)
+                elif task.get("source") == PERISCOPE_SOURCE:
+                    # HoM-solo (mirrors the X_FEATURE_EXPLORATION_SOURCE
+                    # branch above) — bypasses the two-reviewer board-review
+                    # gate; never rides _handle_board_assigned_task.
+                    await self._dispatch_periscope_exploration(task)
                 elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
@@ -15713,7 +15772,10 @@ those, and a substantive recorded note IS your job here.
 """
 
     def _build_roadmap_prompt(
-        self, task: dict[str, Any], prior_context: str = ""
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        market_brief_context: str = "",
     ) -> str:
         """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
 
@@ -15722,11 +15784,19 @@ those, and a substantive recorded note IS your job here.
         then idle. No claim/plan/delegate/complete — those verbs aren't the
         Product Owner's. ``prior_context`` is the LEARN rendering of the last
         closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
-        when none exist yet."""
+        when none exist yet. ``market_brief_context`` is Periscope's latest
+        filed market brief (spec §4: "its brief is Printer's cross-role
+        input") — empty when no brief has ever been filed; never blocks."""
         task_id = task.get("id", "unknown")
         min_items = settings.roadmap_min_items_per_cycle
         max_items = settings.roadmap_max_items_per_cycle
         prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        brief_block = (
+            f"\n## Head of Marketing's latest market brief (Periscope)\n"
+            f"{market_brief_context}\n"
+            if market_brief_context
+            else ""
+        )
         return f"""\
 You are the Product Owner. It's time for your periodic roadmap exploration.
 
@@ -15735,7 +15805,7 @@ TASK: {task_id}
 Explore the company's projects and propose ONE themed cycle of roadmap items
 for the CEO to review — you author this alone. The Head of Marketing is not
 involved in this cycle.
-{prior_block}
+{brief_block}{prior_block}
 == WHAT TO DO ==
 
 1. triage() — see your board-level context.
@@ -15880,6 +15950,57 @@ RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
+"""
+
+    def _build_periscope_prompt(
+        self, task: dict[str, Any], prior_context: str = ""
+    ) -> str:
+        """Prompt for the Head of Marketing's one-shot Periscope market-
+        research cycle.
+
+        HoM-solo, complete-at-propose (mirrors the feature-spotlight prompt's
+        shape): research the market, file ONE brief, then idle. ``prior_
+        context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``) — empty when none exist
+        yet."""
+        task_id = task.get("id", "unknown")
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_findings = PROGRAMS["periscope"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        return f"""\
+You are the Head of Marketing. It's time for your periodic Periscope
+market-research cycle.
+
+TASK: {task_id}
+
+Research the market — competitors, adjacent-tool releases, positioning
+shifts — and file ONE brief for the CEO. This is a REPORT, not a task queue:
+nothing you file here materializes work, and there is no per-item CEO
+decision to wait on. Your brief also becomes the Product Owner's cross-role
+input for the next roadmap-exploration cycle (Printer), so ground every
+claim in a real source.
+{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Research: use web_search/web_fetch for competitor moves, adjacent-tool
+   releases, and positioning shifts; check the knowledge base for prior
+   market signal. Cite the source URL for every claim you act on — a claim
+   without a source is noise, and the verb rejects an uncited finding.
+3. Pick a one-line headline naming this cycle's biggest signal.
+4. propose_market_brief(headline="<one-line summary>", findings=[...],
+   threats=[...], opportunities=[...], positioning_note="<optional>")
+     — call this EXACTLY ONCE with 1-{max_findings} cited findings. Each
+       finding is an object with: claim, source_url (REQUIRED — a real
+       http(s) URL), relevance (why this matters to us). threats/
+       opportunities are optional lists of up to 5 short notes each;
+       positioning_note is an optional note on a shift worth acting on.
+5. i_am_idle() — once filed. The CEO reads the brief as a report in the
+   panel; nothing here needs your further attention.
+
+Do NOT claim, plan, delegate, or attempt to act on anything you find
+yourself — that is not your job here, and the gateway will reject those.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

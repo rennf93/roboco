@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import urlparse
 
 import structlog
 
@@ -29,7 +30,9 @@ from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.foundation.policy.injection_guard import screen_external_text
 from roboco.foundation.policy.journaling import Scope as _Scope
+from roboco.models.base import TaskStatus
 from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.commit_validator import validate_commit_message
@@ -336,6 +339,19 @@ _PEST_ROLES: frozenset[str] = frozenset({"product_owner"})
 # cycle (mirrors _ROADMAP_ROLES's PO-only symmetry, reversed).
 _FEATURE_SPOTLIGHT_ROLES: frozenset[str] = frozenset({"head_marketing"})
 
+# Periscope market briefs are HoM-authored, mirroring _FEATURE_SPOTLIGHT_ROLES.
+_PERISCOPE_ROLES: frozenset[str] = frozenset({"head_marketing"})
+
+# Market-brief free-text caps (spec §4 / Task 2). ``source_url`` is validated
+# separately (a URL, not soup-checked prose) — see _reject_market_brief_url.
+_MARKET_BRIEF_HEADLINE_MAX_CHARS = 200
+_MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS = 500
+_MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS = 300
+_MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS = 300
+_MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS = 500
+_MARKET_BRIEF_LIST_MAX_ITEMS = 5  # threats / opportunities cap
+_MARKET_BRIEF_LIST_ITEM_MAX_CHARS = 300
+
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("title", 5),
@@ -441,6 +457,38 @@ def _normalize_pest_hunt_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
         "reject_reason": None,
         "materialized_task_id": None,
     }
+
+
+def _normalize_market_brief_finding(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw market-brief finding into the stored marker
+    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned."""
+    return {
+        "id": f"finding-{idx}",
+        "claim": str(raw["claim"]).strip(),
+        "source_url": str(raw["source_url"]).strip(),
+        "relevance": str(raw["relevance"]).strip(),
+    }
+
+
+def _render_market_brief_for_screening(
+    headline: str,
+    findings: list[dict[str, Any]],
+    threats: list[str],
+    opportunities: list[str],
+    positioning_note: str,
+) -> str:
+    """One line per content piece — every line is independently checked by
+    ``screen_external_text``, so a single injected line among otherwise-clean
+    web-derived content is flagged without dropping the rest of the brief."""
+    lines = [f"Headline: {headline}"]
+    for f in findings:
+        lines.append(f"Finding: {f['claim']} (source: {f['source_url']})")
+        lines.append(f"Relevance: {f['relevance']}")
+    lines.extend(f"Threat: {t}" for t in threats)
+    lines.extend(f"Opportunity: {o}" for o in opportunities)
+    if positioning_note:
+        lines.append(f"Positioning: {positioning_note}")
+    return "\n".join(lines)
 
 
 class ContentActions:
@@ -1869,6 +1917,398 @@ class ContentActions:
                 "feature_title": feature_title,
             },
         )
+
+    @staticmethod
+    def _reject_market_brief_url(url: str, idx: int) -> Envelope | None:
+        """An uncited market claim is noise (spec Task 2) — validate
+        ``source_url`` parses as a real http(s) URL rather than soup-checking
+        it as prose."""
+        if len(url) > _MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} source_url is {len(url)} chars, over the "
+                    f"{_MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s source_url",
+                context_briefing={},
+            )
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            return Envelope.invalid_state(
+                message=f"finding {idx} source_url {url!r} is not a valid http(s) URL",
+                remediate=(
+                    f"provide a real http(s) URL finding {idx}'s claim came from"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_finding(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw market-brief finding dict; None when clean."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"finding {idx} is not an object",
+                remediate="each finding needs claim/source_url/relevance",
+                context_briefing={},
+            )
+        if rej := cls._reject_market_brief_finding_claim(raw, idx):
+            return rej
+        if rej := cls._reject_market_brief_finding_source(raw, idx):
+            return rej
+        return cls._reject_market_brief_finding_relevance(raw, idx)
+
+    @classmethod
+    def _reject_market_brief_finding_claim(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        claim = raw.get("claim")
+        if not isinstance(claim, str) or not claim.strip():
+            return Envelope.invalid_state(
+                message=f"finding {idx} is missing 'claim'",
+                remediate=f"provide a substantive claim for finding {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(claim, field=f"finding {idx} claim", min_chars=8):
+            return rej
+        if len(claim) > _MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} claim is {len(claim)} chars, over the "
+                    f"{_MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s claim",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_finding_source(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        source_url = raw.get("source_url")
+        if not isinstance(source_url, str) or not source_url.strip():
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} is missing 'source_url' — an uncited "
+                    "market claim is noise"
+                ),
+                remediate=(
+                    f"provide the http(s) source URL finding {idx}'s claim came from"
+                ),
+                context_briefing={},
+            )
+        return cls._reject_market_brief_url(source_url, idx)
+
+    @classmethod
+    def _reject_market_brief_finding_relevance(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Split out of ``_reject_market_brief_finding`` to keep its
+        return-statement count under the xenon/PLR0911 budget."""
+        relevance = raw.get("relevance")
+        if not isinstance(relevance, str) or not relevance.strip():
+            return Envelope.invalid_state(
+                message=f"finding {idx} is missing 'relevance'",
+                remediate=f"provide a substantive relevance for finding {idx}",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(
+            relevance, field=f"finding {idx} relevance", min_chars=8
+        ):
+            return rej
+        if len(relevance) > _MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"finding {idx} relevance is {len(relevance)} chars, over "
+                    f"the {_MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten finding {idx}'s relevance",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_market_brief_text_list(
+        cls, values: Any, *, field: str
+    ) -> Envelope | None:
+        """Validate an optional ``threats``/``opportunities`` list: at most
+        ``_MARKET_BRIEF_LIST_MAX_ITEMS`` substantive strings, each capped at
+        ``_MARKET_BRIEF_LIST_ITEM_MAX_CHARS``. ``None`` (omitted) is clean."""
+        if values is None:
+            return None
+        if not isinstance(values, list) or len(values) > _MARKET_BRIEF_LIST_MAX_ITEMS:
+            return Envelope.invalid_state(
+                message=(
+                    f"{field} must be a list of at most "
+                    f"{_MARKET_BRIEF_LIST_MAX_ITEMS} strings"
+                ),
+                remediate=f"provide at most {_MARKET_BRIEF_LIST_MAX_ITEMS} {field}",
+                context_briefing={},
+            )
+        for i, v in enumerate(values):
+            if rej := cls._reject_market_brief_list_item(v, field=field, idx=i):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_market_brief_list_item(
+        cls, value: Any, *, field: str, idx: int
+    ) -> Envelope | None:
+        """One ``threats``/``opportunities`` entry — split out of
+        ``_reject_market_brief_text_list`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        if not isinstance(value, str) or not value.strip():
+            return Envelope.invalid_state(
+                message=f"{field}[{idx}] is empty",
+                remediate=f"provide substantive text for {field}[{idx}] or drop it",
+                context_briefing={},
+            )
+        if rej := cls._reject_soup(value, field=f"{field}[{idx}]", min_chars=4):
+            return rej
+        if len(value) > _MARKET_BRIEF_LIST_ITEM_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"{field}[{idx}] is {len(value)} chars, over the "
+                    f"{_MARKET_BRIEF_LIST_ITEM_MAX_CHARS}-char cap"
+                ),
+                remediate=f"shorten {field}[{idx}]",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_market_brief(
+        self,
+        *,
+        agent_id: UUID,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None = None,
+        opportunities: list[str] | None = None,
+        positioning_note: str = "",
+    ) -> Envelope:
+        """Head of Marketing files ONE Periscope weekly market-research brief
+        — competitors, adjacent-tool releases, positioning shifts — delivered
+        as a held REPORT to the CEO.
+
+        Unlike ``propose_roadmap``/``propose_bug_hunt`` (a per-item CEO queue
+        that keeps the exploration task open until every item is decided),
+        this mirrors ``propose_feature_spotlight``'s complete-at-propose
+        asymmetry: a report has no per-item decision, so the exploration task
+        completes in this same call. The brief is screened through
+        ``injection_guard.screen_external_text`` before persisting — it is
+        web-derived content that later reaches the roadmap exploration
+        prompt, same untrusted-text posture as X mentions / vault notes
+        (screen-and-flag, never drop).
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _PERISCOPE_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a market brief; only the "
+                    "Head of Marketing authors one"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_market_brief_fields(
+            headline, findings, threats, opportunities, positioning_note
+        ):
+            return rej
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_periscope_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_market_brief(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open periscope exploration task assigned to you",
+                remediate=(
+                    "propose_market_brief only runs against an active "
+                    "exploration cycle spawned by the periscope engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+
+        await self._persist_market_brief(
+            task,
+            headline=headline,
+            findings=findings,
+            threats=threats,
+            opportunities=opportunities,
+            positioning_note=positioning_note,
+        )
+        await self._notify_periscope_brief(task, headline.strip())
+        return Envelope.ok(
+            status="market_brief_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reads the brief as a report in the panel",
+            context_briefing={
+                "headline": headline.strip(),
+                "finding_count": len(findings),
+            },
+        )
+
+    async def _persist_market_brief(
+        self,
+        task: Any,
+        *,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None,
+        opportunities: list[str] | None,
+        positioning_note: str,
+    ) -> None:
+        """Normalize, screen, persist, and complete — split out of
+        ``propose_market_brief`` to keep its own cyclomatic complexity under
+        the xenon budget. Complete-at-propose: a report has no per-item CEO
+        decision to wait on (the x_feature asymmetry, not the roadmap/
+        pest-control per-item flow) — BoardProgramEngine's dedup ledger
+        auto-closes the cycle row the moment it next checks this now-terminal
+        exploration task.
+        """
+        normalized_findings = [
+            _normalize_market_brief_finding(idx, raw)
+            for idx, raw in enumerate(findings)
+        ]
+        normalized_threats = [str(t).strip() for t in (threats or [])]
+        normalized_opportunities = [str(o).strip() for o in (opportunities or [])]
+        normalized_note = positioning_note.strip()
+        screened = screen_external_text(
+            _render_market_brief_for_screening(
+                headline,
+                normalized_findings,
+                normalized_threats,
+                normalized_opportunities,
+                normalized_note,
+            ),
+            source=f"periscope_brief:{task.id}",
+        )
+        if screened.flagged:
+            logger.warning(
+                "periscope: injection pattern detected in market brief",
+                task_id=str(task.id),
+                hits=screened.hits,
+            )
+        markers.set_market_brief(
+            task,
+            {
+                "headline": headline.strip(),
+                "findings": normalized_findings,
+                "threats": normalized_threats,
+                "opportunities": normalized_opportunities,
+                "positioning_note": normalized_note,
+                "injection_hits": screened.hits,
+            },
+        )
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+
+    @classmethod
+    def _reject_market_brief_findings_list(
+        cls, findings: list[dict[str, Any]]
+    ) -> Envelope | None:
+        """The count cap + per-finding validation loop, split out of
+        ``_reject_market_brief_fields`` to keep its own return-statement
+        count under the xenon/PLR0911 budget."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        max_findings = PROGRAMS["periscope"].max_items_per_cycle
+        if not (1 <= len(findings) <= max_findings):
+            return Envelope.invalid_state(
+                message=(
+                    f"a brief needs 1-{max_findings} cited findings, got "
+                    f"{len(findings)}"
+                ),
+                remediate=f"propose between 1 and {max_findings} cited findings",
+                context_briefing={},
+            )
+        for idx, raw in enumerate(findings):
+            if rej := cls._reject_market_brief_finding(raw, idx):
+                return rej
+        return None
+
+    @classmethod
+    def _reject_market_brief_fields(
+        cls,
+        headline: str,
+        findings: list[dict[str, Any]],
+        threats: list[str] | None,
+        opportunities: list[str] | None,
+        positioning_note: str,
+    ) -> Envelope | None:
+        """Full field validation for ``propose_market_brief``, split out to
+        keep the verb's own return-statement count under the xenon/PLR0911
+        budget."""
+        if rej := cls._reject_soup(headline, field="headline", min_chars=8):
+            return rej
+        if len(headline) > _MARKET_BRIEF_HEADLINE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"headline is {len(headline)} chars, over the "
+                    f"{_MARKET_BRIEF_HEADLINE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the headline",
+                context_briefing={},
+            )
+        if rej := cls._reject_market_brief_findings_list(findings):
+            return rej
+        if rej := cls._reject_market_brief_text_list(threats, field="threats"):
+            return rej
+        if rej := cls._reject_market_brief_text_list(
+            opportunities, field="opportunities"
+        ):
+            return rej
+        return cls._reject_market_brief_positioning_note(positioning_note)
+
+    @classmethod
+    def _reject_market_brief_positioning_note(cls, value: str) -> Envelope | None:
+        """Split out of ``_reject_market_brief_fields`` to keep its own
+        return-statement count under the xenon/PLR0911 budget. Optional —
+        empty is clean; only a non-empty value is soup/length-checked."""
+        if not value or not value.strip():
+            return None
+        if rej := cls._reject_soup(value, field="positioning_note", min_chars=8):
+            return rej
+        if len(value) > _MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"positioning_note is {len(value)} chars, over the "
+                    f"{_MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten positioning_note",
+                context_briefing={},
+            )
+        return None
+
+    async def _notify_periscope_brief(self, task: Any, headline: str) -> None:
+        """Best-effort CEO nudge the moment a market brief lands — ONE call
+        per cycle (a report, not N queue items), so unlike
+        ``_notify_pest_hunt_items``/``_notify_roadmap_items`` this fires once,
+        not per-finding."""
+        if self._deps.notification_delivery is None:
+            return
+        try:
+            await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
+                task=task, task_id=task.id, headline=headline
+            )
+        except Exception as exc:
+            logger.warning(
+                "periscope telegram notify failed (best-effort)", error=str(exc)
+            )
 
     @classmethod
     def _reject_caption(

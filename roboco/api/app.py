@@ -32,6 +32,7 @@ from roboco.api.routes.kanban import router as kanban_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.periscope import router as periscope_router
 from roboco.api.routes.pest_control import router as pest_control_router
 from roboco.api.routes.pitch import router as pitch_router
 from roboco.api.routes.playbooks import router as playbooks_router
@@ -481,6 +482,14 @@ def create_app() -> FastAPI:
         pest_control_router,
         prefix=f"{api_prefix}/pest-control",
         tags=["Pest Control"],
+    )
+
+    # Periscope (Board Program) — the CEO reads filed market-research briefs.
+    # Read-only: a brief is a report, not a queue item; nothing to approve.
+    app.include_router(
+        periscope_router,
+        prefix=f"{api_prefix}/periscope",
+        tags=["Periscope"],
     )
 
     # Video engine — the CEO requests an on-demand marketing video; the
