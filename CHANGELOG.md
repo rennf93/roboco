@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **release-post drafts stop parroting changelog bullets.** The X announcement drafter fed the changelog's bold leads to the local model in document order — Security first, so the WAF plumbing line became the tweeted headline — and its deterministic fallback template quoted the first raw bullet verbatim. Highlights now reorder to marketing order (Added/Changed features before Fixed/Security plumbing), the prompt bans verbatim highlight copying and internal jargon, and the fallback is a generic ships-announcement that can never quote a bullet.
+
 ## [0.27.0] - 2026-07-25
 
 ### Security
@@ -37,7 +41,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **release-post drafts stop parroting changelog bullets.** The X announcement drafter fed the changelog's bold leads to the local model in document order — Security first, so the WAF plumbing line became the tweeted headline — and its deterministic fallback template quoted the first raw bullet verbatim. Highlights now reorder to marketing order (Added/Changed features before Fixed/Security plumbing), the prompt bans verbatim highlight copying and internal jargon, and the fallback is a generic ships-announcement that can never quote a bullet.
 - **docs-redirects-only commits fire a CI run so the release gate gets a verdict.** The CI paths filter covered docs/panel/motion-only slave commits but not `docs-redirects/**`, so a redirect-stub commit landing as the slave tip produced no CI run at all — and the fail-closed release-readiness gate read the missing conclusion as "unknown", silently holding back every release proposal until an unrelated code commit happened to land.
 - **Mix-mode routing gained its escape hatch (#663).** A fully-pinned fleet had no way back to a global mode: mode switches deliberately spare per-agent pins, but the server refused an empty mix map and the panel refused an empty save — so with every agent pinned, the mode buttons were permanent no-ops behind a success toast and the mode label read "mix" forever. An empty per-agent map is now the explicit clear-all, Save mix with nothing picked confirms and clears instead of erroring, a Clear-all button resets every agent to inherit-global in one click, and the Routing-mode section warns when per-agent overrides outrank the mode buttons.
 - **The lazy DB engine rebinds per event loop (#663).** The global engine cache was loop-agnostic while its pooled connections are loop-bound, so a second event loop touching it (a test's `asyncio.run`, a second server thread, the eval bench's disposable stack) eventually drew a foreign-loop connection and died with "Future attached to a different loop" — the eval-bench smoke's flaky CI timeout. The engine/factory accessors now stamp the owning loop and discard-and-rebuild on cross-loop access; production runs one loop, so nothing changes there.
