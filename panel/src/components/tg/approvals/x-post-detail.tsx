@@ -19,6 +19,7 @@ const SOURCE_LABELS: Record<XPost["source"], string> = {
   x_post: "Release post",
   x_reply: "Reply",
   x_feature: "Feature spotlight",
+  x_editorial: "Editorial post",
 };
 
 /** Focused X draft: editable body with the live 280 counter, the mention

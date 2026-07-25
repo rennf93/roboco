@@ -20,7 +20,7 @@ export interface XFeatureRef {
 
 export interface XPost {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature";
+  source: "x_post" | "x_reply" | "x_feature" | "x_editorial";
   title: string;
   status: string;
   body: string;
@@ -42,7 +42,7 @@ export interface XPostExecuteResult {
 // One acted-on draft (posted or rejected) — the CEO's history view.
 export interface XPostHistoryEntry {
   task_id: string;
-  source: "x_post" | "x_reply" | "x_feature";
+  source: "x_post" | "x_reply" | "x_feature" | "x_editorial";
   title: string;
   status: string; // "completed" | "cancelled"
   body: string;

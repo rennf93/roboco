@@ -25,7 +25,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { HelpTip } from "@/components/ui/help-tip";
 import { ProjectBadge } from "@/components/dashboard/project-badge";
-import { AtSign, CheckCircle2, Rocket, Sparkles, XCircle } from "lucide-react";
+import {
+  AtSign,
+  CheckCircle2,
+  Megaphone,
+  Rocket,
+  Sparkles,
+  XCircle,
+} from "lucide-react";
 import { toast } from "sonner";
 
 const MAX_TWEET_CHARS = 280;
@@ -43,6 +50,12 @@ function sourceMeta(source: XPost["source"]) {
       label: "Feature spotlight",
       icon: Sparkles,
       hint: "Drafted periodically by the Head of Marketing's feature-spotlight sweep",
+    };
+  if (source === "x_editorial")
+    return {
+      label: "Editorial post",
+      icon: Megaphone,
+      hint: "Drafted periodically by the Head of Marketing's Megaphone editorial cycle",
     };
   return {
     label: "Mention reply",
