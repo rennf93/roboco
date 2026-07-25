@@ -91,6 +91,9 @@ vi.mock("../pest-control-review-queue", () => ({
 vi.mock("../spackle-review-queue", () => ({
   SpackleReviewQueue: () => <div>SpackleReviewQueueStub</div>,
 }));
+vi.mock("../scales-review-queue", () => ({
+  ScalesReviewQueue: () => <div>ScalesReviewQueueStub</div>,
+}));
 vi.mock("../strategy-signals-panel", () => ({
   StrategySignalsPanel: () => <div>StrategySignalsPanelStub</div>,
 }));
@@ -133,6 +136,7 @@ describe("CommandCenter", () => {
       "RoadmapReviewQueueStub",
       "PestControlReviewQueueStub",
       "SpackleReviewQueueStub",
+      "ScalesReviewQueueStub",
       "ActiveBlockersPanelStub",
       "RecentActivityFeedStub",
     ]) {

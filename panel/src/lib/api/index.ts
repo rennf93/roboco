@@ -51,6 +51,12 @@ export type {
   PestHuntItem,
   PestHuntItemActionResult,
 } from "./pest-control";
+export { scalesApi } from "./scales";
+export type {
+  RebalanceCycle,
+  RebalanceItem,
+  RebalanceItemActionResult,
+} from "./scales";
 export { boardProgramsApi } from "./board-programs";
 export type { BoardProgram } from "./board-programs";
 export { periscopeApi } from "./periscope";
