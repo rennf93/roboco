@@ -22,7 +22,12 @@ from roboco.db.tables import (
     TaskTable,
 )
 from roboco.foundation import identity as _foundation
-from roboco.foundation.policy.board_programs import PROGRAMS, BoardProgram, TriggerKind
+from roboco.foundation.policy.board_programs import (
+    PROGRAMS,
+    WEEK_SECONDS,
+    BoardProgram,
+    TriggerKind,
+)
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -37,6 +42,7 @@ from roboco.models.base import (
 from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
+    PEST_CONTROL_SOURCE,
     ROADMAP_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     TaskCreateRequest,
@@ -73,7 +79,9 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
     await db_session.execute(
         update(TaskTable)
         .where(
-            TaskTable.source.in_([ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE]),
+            TaskTable.source.in_(
+                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+            ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
         )
         .values(status=TS.CANCELLED)
@@ -444,6 +452,7 @@ def test_originators_cover_exactly_the_registry() -> None:
 def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["roadmap"].source == ROADMAP_SOURCE
     assert PROGRAMS["x_feature"].source == X_FEATURE_EXPLORATION_SOURCE
+    assert PROGRAMS["pest_control"].source == PEST_CONTROL_SOURCE
 
 
 # ---------------------------------------------------------------------------
@@ -557,3 +566,195 @@ async def test_run_due_programs_originates_project_scoped_program_with_opt_in(
     engine = BoardProgramEngine(db_session)
     opened = await engine.run_due_programs()
     assert opened == ["pest_control"]
+
+
+# ---------------------------------------------------------------------------
+# Pest Control's metric-predicate accelerator (spec §4: "weekly cron OR
+# rework-rate spike") — the predicate opens a cycle off-schedule, still gated
+# by enabled + scope + dedup exactly like the cron path.
+# ---------------------------------------------------------------------------
+
+# A far-future cron cadence so the cron pass never fires within these tests —
+# only the metric predicate can open the cycle.
+_NEVER_DUE = BoardProgram(
+    key="pest_control",
+    role="product_owner",
+    trigger=TriggerKind.CRON,
+    source="board_pest_control",
+    default_interval_seconds=WEEK_SECONDS * 100,
+    scope="project",
+)
+
+
+async def _seed_recently_closed_cycle(session: AsyncSession) -> None:
+    """A CLOSED ledger row opened just now — makes the CRON pass genuinely
+    NOT due (recent + a huge interval) so a test can isolate the metric-
+    predicate path. Needs no linked task: ``_dedup_state`` never runs the
+    auto-close reconciliation on a row whose ``closed_at`` is already set."""
+    session.add(
+        BoardProgramCycleTable(
+            program_key="pest_control",
+            exploration_task_id=None,
+            opened_at=datetime.now(UTC),
+            closed_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_metric_predicate_opens_cycle_off_schedule_when_it_fires(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.board_programs = ["pest_control"]
+    monkeypatch.setitem(bp_module.PROGRAMS, "pest_control", _NEVER_DUE)
+    _arm_setting(db_session, "board_program.pest_control.enabled")
+    await _seed_recently_closed_cycle(db_session)
+    new_task = await _make_exploration(db_session, source="board_pest_control")
+    holder: dict[str, TaskTable | None] = {"task": new_task}
+    monkeypatch.setitem(
+        bp_module._ORIGINATORS, "pest_control", _fake_originator(holder)
+    )
+    monkeypatch.setitem(
+        bp_module._METRIC_PREDICATES,
+        "pest_control",
+        _fake_predicate(True),
+    )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert opened == ["pest_control"]
+
+
+@pytest.mark.asyncio
+async def test_metric_predicate_below_threshold_opens_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.board_programs = ["pest_control"]
+    monkeypatch.setitem(bp_module.PROGRAMS, "pest_control", _NEVER_DUE)
+    _arm_setting(db_session, "board_program.pest_control.enabled")
+    await _seed_recently_closed_cycle(db_session)
+    monkeypatch.setitem(
+        bp_module._METRIC_PREDICATES,
+        "pest_control",
+        _fake_predicate(False),
+    )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_metric_predicate_never_consulted_when_disabled(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disabled program's predicate must never even run (cheap, isolated —
+    no wasted MetricsService query on a dormant program)."""
+    await _seed(db_session)
+    monkeypatch.setitem(bp_module.PROGRAMS, "pest_control", _NEVER_DUE)
+    called = {"n": 0}
+
+    async def _boom(_session: AsyncSession) -> bool:
+        called["n"] += 1
+        raise AssertionError("predicate must not run while disabled")
+
+    monkeypatch.setitem(bp_module._METRIC_PREDICATES, "pest_control", _boom)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert opened == []
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_metric_predicate_never_evaluated_when_dedup_blocked(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An already-open cycle blocks the metric predicate from ever running —
+    the cheap dedup gate must run BEFORE the (8-11 query) rework-rate check,
+    so an open cycle costs the metrics service nothing on every tick."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.board_programs = ["pest_control"]
+    monkeypatch.setitem(bp_module.PROGRAMS, "pest_control", _NEVER_DUE)
+    _arm_setting(db_session, "board_program.pest_control.enabled")
+    open_task = await _make_exploration(db_session, source="board_pest_control")
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="pest_control",
+            exploration_task_id=open_task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    called = {"n": 0}
+
+    async def _boom(_session: AsyncSession) -> bool:
+        called["n"] += 1
+        raise AssertionError("predicate must not run while dedup-blocked")
+
+    monkeypatch.setitem(bp_module._METRIC_PREDICATES, "pest_control", _boom)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert opened == []
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_metric_predicate_never_evaluated_when_scope_empty(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No project opted into pest_control — the cheap scope gate blocks the
+    metric predicate from ever running (no project ever opts SLUG in here,
+    unlike the sibling tests)."""
+    await _seed(db_session)
+    monkeypatch.setitem(bp_module.PROGRAMS, "pest_control", _NEVER_DUE)
+    _arm_setting(db_session, "board_program.pest_control.enabled")
+    called = {"n": 0}
+
+    async def _boom(_session: AsyncSession) -> bool:
+        called["n"] += 1
+        raise AssertionError("predicate must not run with no project opted in")
+
+    monkeypatch.setitem(bp_module._METRIC_PREDICATES, "pest_control", _boom)
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert opened == []
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_real_rework_predicate_fires_above_threshold(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises the REAL predicate (not a fake) against MetricsService's
+    rework rate — proves the threshold wiring, not just the engine seam."""
+    monkeypatch.setattr(cfg, "pest_rework_threshold", 0.3)
+    result = await bp_module._pest_control_rework_spike(db_session)
+    assert result is False  # no completed/reworked tasks seeded -> rate 0.0
+
+
+def _fake_predicate(
+    verdict: bool,
+) -> Callable[[AsyncSession], Awaitable[bool]]:
+    async def _predicate(_session: AsyncSession) -> bool:
+        return verdict
+
+    return _predicate

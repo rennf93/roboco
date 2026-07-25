@@ -53,6 +53,7 @@ from roboco.models.base import TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services import telegram_bridge as bridge
 from roboco.services.base import BaseService, ValidationError
+from roboco.services.pest_control_service import get_pest_control_service
 from roboco.services.project import get_project_service
 from roboco.services.release_proposal import TaskAlreadyCompletedError as _ReleaseDone
 from roboco.services.release_proposal import (
@@ -95,15 +96,31 @@ _CEO_UUID = UUID(AGENT_UUIDS["ceo"])
 _QUEUE_ITEM_CAP = 10
 _MESSAGE_CHAR_LIMIT = 4096  # Telegram's own sendMessage text cap
 
-_VALID_KINDS = ("task", "release", "xpost", "video", "roadmap", "intake", "proj")
+_VALID_KINDS = (
+    "task",
+    "release",
+    "xpost",
+    "video",
+    "roadmap",
+    "pest_control",
+    "intake",
+    "proj",
+)
 # "sel" is the project-picker tap for /newtask; apv/rej stay the approve/
 # reject pair everywhere else.
 _VALID_ACTIONS = ("apv", "rej", "sel")
 # Per-kind reject-reason floor, mirroring each HTTP route's request schema
 # (ReleaseRejectRequest min_length=10, XPostRejectRequest/VideoPostRejectRequest/
-# RoadmapRejectRequest min_length=4; ceo_reject has no route-level floor beyond
-# TaskService.ceo_reject's own reject_trivial default).
-_REJECT_MIN_CHARS = {"task": 1, "release": 10, "xpost": 4, "video": 4, "roadmap": 4}
+# RoadmapRejectRequest/PestHuntRejectRequest min_length=4; ceo_reject has no
+# route-level floor beyond TaskService.ceo_reject's own reject_trivial default).
+_REJECT_MIN_CHARS = {
+    "task": 1,
+    "release": 10,
+    "xpost": 4,
+    "video": 4,
+    "roadmap": 4,
+    "pest_control": 4,
+}
 _DEFAULT_REJECT_MIN_CHARS = (
     4  # defense-in-depth fallback; every valid kind is listed above
 )
@@ -138,6 +155,7 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "video": ("🎬", "Video"),
     "xpost": ("✕", "Post"),
     "roadmap": ("🗺️", "Roadmap"),
+    "pest_control": ("🐛", "Bug hunt"),
     "task": ("📋", "Task"),
 }
 
@@ -263,7 +281,7 @@ class ParsedCallback:
 
 _CALLBACK_DATA_MAX_BYTES = 64  # Telegram's own callback_data cap
 _CALLBACK_PARTS_NO_EXTRA = 3  # action:kind:id8
-_CALLBACK_PARTS_WITH_EXTRA = 4  # action:kind:id8:extra (roadmap's item id)
+_CALLBACK_PARTS_WITH_EXTRA = 4  # action:kind:id8:extra (roadmap/pest_control's item id)
 
 
 def build_callback(action: str, kind: str, id8: str, extra: str = "") -> str:
@@ -316,6 +334,7 @@ _DEEP_LINK_PATH = {
     "xpost": "/social",
     "video": "/social",
     "roadmap": "/overview",
+    "pest_control": "/overview",
 }
 
 
@@ -1108,6 +1127,7 @@ class TelegramInboundEngine(BaseService):
             "xpost": self._approve_xpost,
             "video": self._approve_video,
             "roadmap": self._approve_roadmap,
+            "pest_control": self._approve_pest_control,
         }.get(kind)
         if handler is None:
             return False, f"Unknown kind: {kind}"
@@ -1198,6 +1218,20 @@ class TelegramInboundEngine(BaseService):
         ok = result.status in ("approved", "already_approved")
         return ok, f"Roadmap item {result.status}: {result.detail}"
 
+    async def _approve_pest_control(
+        self, task: TaskTable, id8: str, extra: str, _notes: str | None
+    ) -> tuple[bool, str]:
+        task_id = cast("UUID", task.id)
+        result = await get_pest_control_service(self.session).approve_item(
+            task_id, extra, created_by=_CEO_UUID
+        )
+        if result is None:
+            return False, f"No such bug-hunt item: {id8}:{extra}"
+        self._mark_audit("pest_control", task_id, "approve", item_id=extra)
+        await self.session.commit()
+        ok = result.status in ("approved", "already_approved")
+        return ok, f"Bug-hunt item {result.status}: {result.detail}"
+
     async def _dispatch_reject(
         self, kind: str, id8: str, extra: str, reason: str
     ) -> tuple[bool, str]:
@@ -1218,6 +1252,7 @@ class TelegramInboundEngine(BaseService):
             "xpost": self._reject_xpost,
             "video": self._reject_video,
             "roadmap": self._reject_roadmap,
+            "pest_control": self._reject_pest_control,
         }.get(kind)
         if handler is None:
             return False, f"Unknown kind: {kind}"
@@ -1294,6 +1329,20 @@ class TelegramInboundEngine(BaseService):
         await self.session.commit()
         ok = result.status in ("rejected", "already_rejected")
         return ok, f"Roadmap item {result.status}: {result.detail}"
+
+    async def _reject_pest_control(
+        self, task: TaskTable, id8: str, extra: str, reason: str
+    ) -> tuple[bool, str]:
+        task_id = cast("UUID", task.id)
+        result = await get_pest_control_service(self.session).reject_item(
+            task_id, extra, reason
+        )
+        if result is None:
+            return False, f"No such bug-hunt item: {id8}:{extra}"
+        self._mark_audit("pest_control", task_id, "reject", item_id=extra)
+        await self.session.commit()
+        ok = result.status in ("rejected", "already_rejected")
+        return ok, f"Bug-hunt item {result.status}: {result.detail}"
 
 
 def get_telegram_inbound_engine(

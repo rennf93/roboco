@@ -60,6 +60,18 @@ PROGRAMS: dict[str, BoardProgram] = {
             # apart again.
             default_interval_seconds=86400,
         ),
+        BoardProgram(
+            key="pest_control",
+            role="product_owner",
+            trigger=TriggerKind.CRON,
+            source="board_pest_control",
+            default_interval_seconds=WEEK_SECONDS,
+            max_items_per_cycle=5,
+            # The first project-scoped program (spec §4): it reads one repo's
+            # findings ledger / rework history, so it needs a per-project
+            # opt-in before a cycle is worth opening at all.
+            scope="project",
+        ),
     )
 }
 

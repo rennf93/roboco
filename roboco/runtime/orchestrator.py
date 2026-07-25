@@ -75,6 +75,7 @@ from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
+    PEST_CONTROL_SOURCE,
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
@@ -906,12 +907,17 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
 
 def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
-    Board exploration cycles (``board_roadmap`` / feature-spotlight exploration)
-    that ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
-    of a long per-source ``if`` chain (xenon budget)."""
+    Board exploration cycles (``board_roadmap`` / feature-spotlight exploration
+    / ``board_pest_control``) that ``_dispatch_pm_work`` owns. One flat call
+    keeps the dev loop's skip out of a long per-source ``if`` chain (xenon
+    budget)."""
     if _is_held_ceo_source(task):
         return True
-    return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
+    return task.get("source") in (
+        ROADMAP_SOURCE,
+        X_FEATURE_EXPLORATION_SOURCE,
+        PEST_CONTROL_SOURCE,
+    )
 
 
 # Cap on findings rendered inline in a dispatch prompt (REVISION_REQUIRED /
@@ -12771,6 +12777,59 @@ Start now: evidence(task_id="{task_id}")
             )
             return ""
 
+    async def _dispatch_pest_control_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Pest Control bug hunt.
+
+        Mirrors ``_dispatch_roadmap_exploration`` exactly (PO-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_bug_hunt`` marks it
+        via the ``pest_hunt`` marker, not this dispatcher). The extra step is
+        the server-assembled evidence context (rework hotspots + findings-
+        ledger aggregates) the PO cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.PEST_HUNT) is not None:
+            return  # already authored — the CEO pest-control queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Product Owner for pest-control exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("pest_control")
+        evidence_context = await self._pest_control_evidence_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_pest_control_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_pest_control_exploration",
+        )
+
+    async def _pest_control_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_board_program_prior_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.pest_control_engine import get_pest_control_engine
+
+            async with get_db_context() as db:
+                return await get_pest_control_engine(db).evidence_context()
+        except Exception:
+            logger.warning("pest-control: evidence-context read failed (best-effort)")
+            return ""
+
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
     ) -> None:
@@ -13081,6 +13140,11 @@ Start now: evidence(task_id="{task_id}")
                     # Product Owner and fire the Approve & Start handoff, both
                     # wrong for a feature-spotlight cycle).
                     await self._dispatch_feature_spotlight_exploration(task)
+                elif task.get("source") == PEST_CONTROL_SOURCE:
+                    # PO-solo (mirrors the ROADMAP_SOURCE branch above) —
+                    # bypasses the two-reviewer board-review gate; never rides
+                    # _handle_board_assigned_task.
+                    await self._dispatch_pest_control_exploration(task)
                 elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
@@ -15691,6 +15755,67 @@ involved in this cycle.
 
 Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
 that is not your job here, and the gateway will reject those verbs.
+"""
+
+    def _build_pest_control_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+        evidence_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Pest Control exploration.
+
+        Unlike the two-reviewer board-review prompt, this is PO-solo: hunt
+        latent defects, author up to 5 evidence-backed bug drafts, then idle.
+        ``prior_context`` is the LEARN rendering of the last closed cycles
+        (``BoardProgramEngine.prior_cycle_context``); ``evidence_context`` is
+        the server-assembled rework/findings evidence
+        (``PestControlEngine.evidence_context``) — both empty when none
+        exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["pest_control"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        evidence_block = (
+            f"\n## Evidence gathered for you\n{evidence_context}\n"
+            if evidence_context
+            else ""
+        )
+        return f"""\
+You are the Product Owner. It's time for your periodic Pest Control exploration.
+
+TASK: {task_id}
+
+Hunt LATENT defects — bugs the org already recorded but nobody read, not
+whatever CI happens to be red on right now (that's self-heal/CI-watch's job,
+not yours). Propose evidence-backed bug tasks for the CEO to review; you
+author this alone.
+{evidence_block}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Read the evidence gathered for you above (rework hotspots, recurring/
+   waived findings). It is server-assembled — you cannot re-run those
+   queries yourself, so start from it, don't second-guess it.
+3. Also grep the repo (read-only) for `ponytail:` comments and TODO markers
+   — deliberate shortcuts and deferred debt are exactly the kind of "green
+   but rotten" signal this program exists to surface.
+4. For each candidate, confirm it's a REAL, LIVE bug (not already fixed,
+   not already tracked) before drafting an item.
+5. propose_bug_hunt(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — the file:line / ledger row /
+       metric that justifies this as a real bug; no evidence, no item).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the pest-control queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
 """
 
     def _build_feature_spotlight_prompt(

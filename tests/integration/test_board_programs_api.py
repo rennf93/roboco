@@ -23,7 +23,11 @@ from roboco.db.tables import (
 from roboco.foundation import identity as _foundation
 from roboco.models import AgentRole, AgentStatus, TaskStatus, Team
 from roboco.models.permissions import AgentContext
-from roboco.services.task import ROADMAP_SOURCE
+from roboco.services.task import (
+    PEST_CONTROL_SOURCE,
+    ROADMAP_SOURCE,
+    X_FEATURE_EXPLORATION_SOURCE,
+)
 from sqlalchemy import delete, update
 
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
@@ -123,11 +127,14 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     app.dependency_overrides.clear()
     # run-now's route handler commits explicitly (write-route convention), so
     # anything a test wrote through it (settings-store overrides, an opened
-    # ledger row, the board_roadmap task it originates) would otherwise
-    # outlive this test in the shared, cross-test-persistent DB and poison
-    # every later real-DB roadmap/board-program unit test (dedup checks,
-    # settings-store PK collisions, ledger scalar_one() lookups). Purge
-    # unconditionally — a no-op for the tests here that never wrote anything.
+    # ledger row, the board_roadmap/x_feature_exploration/board_pest_control
+    # task it originates) would otherwise outlive this test in the shared,
+    # cross-test-persistent DB and poison every later real-DB board-program
+    # unit test (dedup checks, settings-store PK collisions, ledger
+    # scalar_one() lookups) — not just roadmap's, so every registered
+    # program's exploration source is swept here, not only the one this
+    # module's own tests happen to exercise today. Purge unconditionally — a
+    # no-op for the tests here that never wrote anything.
     await db_session.execute(
         delete(SystemSettingTable).where(SystemSettingTable.key.like("board_program.%"))
     )
@@ -135,7 +142,9 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     await db_session.execute(
         update(TaskTable)
         .where(
-            TaskTable.source == ROADMAP_SOURCE,
+            TaskTable.source.in_(
+                [ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE]
+            ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
         .values(status=TaskStatus.CANCELLED)
@@ -144,11 +153,15 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
 
 
 @pytest.mark.asyncio
-async def test_list_returns_both_migrated_programs(ceo_client: AsyncClient) -> None:
+async def test_list_returns_every_registered_program(ceo_client: AsyncClient) -> None:
     resp = await ceo_client.get("/api/board-programs")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
-    assert {p["key"] for p in body} == {"roadmap", "x_feature"}
+    assert {p["key"] for p in body} == {"roadmap", "x_feature", "pest_control"}
+    pest_control = next(p for p in body if p["key"] == "pest_control")
+    assert pest_control["role"] == "product_owner"
+    assert pest_control["trigger"] == "cron"
+    assert pest_control["scope"] == "project"
     roadmap = next(p for p in body if p["key"] == "roadmap")
     assert roadmap["role"] == "product_owner"
     assert roadmap["trigger"] == "cron"

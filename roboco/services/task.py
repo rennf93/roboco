@@ -698,6 +698,19 @@ ROADMAP_SOURCE = "board_roadmap"
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
 
+# Source tag for a Pest Control (Board Program) exploration cycle: a PENDING
+# task the pest-control engine opens for the Product Owner to hunt latent
+# defects (findings-ledger clusters, rework hotspots) in an opted-in project
+# and author evidence-backed bug drafts (the ``propose_bug_hunt`` content
+# verb). Mirrors ROADMAP_SOURCE: IS dispatched (one-shot PO spawn) but never
+# rides the delivery lifecycle; items materialize into BACKLOG only via the
+# CEO's per-item approve (source=PEST_CONTROL_ITEM_SOURCE below).
+PEST_CONTROL_SOURCE = "board_pest_control"
+
+# Source tag stamped on a task MATERIALIZED from an approved pest-hunt item
+# (distinct from PEST_CONTROL_SOURCE, which tags the held exploration cycle).
+PEST_CONTROL_ITEM_SOURCE = "pest_control"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -1862,6 +1875,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == ROADMAP_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
+        """Non-terminal pest-control exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_bug_hunt``); ordered oldest-first.
+        Mirrors ``list_open_roadmap_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PEST_CONTROL_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

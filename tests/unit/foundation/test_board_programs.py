@@ -25,7 +25,7 @@ def test_x_feature_default_interval_matches_settings_field_default() -> None:
 
 
 def test_registry_carries_the_two_migrated_programs() -> None:
-    assert set(PROGRAMS) == {"roadmap", "x_feature"}
+    assert {"roadmap", "x_feature"} <= set(PROGRAMS)
     rm = PROGRAMS["roadmap"]
     assert rm.role == "product_owner"
     assert rm.source == "board_roadmap"
@@ -33,6 +33,18 @@ def test_registry_carries_the_two_migrated_programs() -> None:
     xf = PROGRAMS["x_feature"]
     assert xf.role == "head_marketing"
     assert xf.source == "x_feature_exploration"
+
+
+_PEST_CONTROL_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_pest_control() -> None:
+    pc = PROGRAMS["pest_control"]
+    assert pc.role == "product_owner"
+    assert pc.source == "board_pest_control"
+    assert pc.trigger is TriggerKind.CRON
+    assert pc.scope == "project"
+    assert pc.max_items_per_cycle == _PEST_CONTROL_MAX_ITEMS_PER_CYCLE
 
 
 def test_program_due_cron_interval() -> None:

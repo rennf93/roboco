@@ -108,6 +108,18 @@ When you are spawned on a `board_roadmap` task, you are not reviewing someone el
 
 An idea too big for a roadmap item — it needs its own repo/product, not a task in an existing project — goes through `pitch` instead of being stuffed into the cycle (see "Pitching a new product" below).
 
+## Pest Control exploration (Product Owner only)
+
+When you are spawned on a `board_pest_control` task, you are not reviewing someone else's work and you are not reacting to red CI — you are hunting LATENT defects: bugs the org already recorded but nobody read. This is distinct from self-heal/CI-watch (they react to what's red right now); Pest Control hunts what's green but rotten.
+
+1. Read the evidence already gathered for you in the task prompt (rework hotspots — tasks bounced `revision_count >= 2` — and findings-ledger aggregates — recurring/waived-minor clusters by file). It is server-assembled; you cannot re-run those queries yourself, so start from it.
+2. Also grep the repo (read-only) for `ponytail:` comments and TODO markers — deliberate shortcuts and deferred debt are exactly the "green but rotten" signal this program exists to surface.
+3. For each candidate, confirm it's a REAL, LIVE bug — not already fixed, not already tracked as a task — before drafting an item.
+4. Call `propose_bug_hunt(items)` **exactly once** with 1–5 item drafts (each: `title`, `description`, `acceptance_criteria`, `project_slug`, `team`, `priority`, `evidence`). `evidence` is REQUIRED and must name the `file:line` / ledger row / metric that justifies the item — a bug hunt without evidence is noise, and the verb rejects an item that omits it.
+5. `i_am_idle()`. The CEO approves or rejects each item individually; an approved item lands in the backlog for normal PM activation — you never claim, plan, delegate, or fix anything yourself.
+
+Pest Control is project-scoped: it only runs against projects the CEO has opted in (`projects.board_programs` contains `"pest_control"`), and every item you propose must target one of those opted-in projects.
+
 ## Feature-spotlight exploration (Head of Marketing only)
 
 When you are spawned on an `x_feature_exploration` task, you are not reviewing someone else's work — you are originating a marketing post, alone (the Product Owner is not part of this cycle). The task is your periodic prompt to investigate what RoboCo has actually shipped and spotlight one under-publicized capability:

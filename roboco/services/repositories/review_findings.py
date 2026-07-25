@@ -163,6 +163,43 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         await self.session.flush()
         return True
 
+    async def recurring_file_counts(
+        self, *, min_count: int = 2, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        """Files named by >= ``min_count`` findings across the WHOLE ledger,
+        highest first — Pest Control's "what keeps breaking" evidence signal."""
+        stmt = (
+            select(TaskReviewFindingTable.file, func.count())
+            .where(TaskReviewFindingTable.file.isnot(None))
+            .group_by(TaskReviewFindingTable.file)
+            .having(func.count() >= min_count)
+            .order_by(func.count().desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return [(file, count) for file, count in result.all()]
+
+    async def waived_minor_file_counts(
+        self, *, min_count: int = 2, limit: int = 10
+    ) -> list[tuple[str, int]]:
+        """Files carrying >= ``min_count`` waived-minor findings, highest
+        first — a cluster of "not worth blocking on" is itself a Pest Control
+        signal (repeatedly waived, never actually fixed)."""
+        stmt = (
+            select(TaskReviewFindingTable.file, func.count())
+            .where(
+                TaskReviewFindingTable.file.isnot(None),
+                TaskReviewFindingTable.severity == "minor",
+                TaskReviewFindingTable.status == STATUS_WAIVED,
+            )
+            .group_by(TaskReviewFindingTable.file)
+            .having(func.count() >= min_count)
+            .order_by(func.count().desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return [(file, count) for file, count in result.all()]
+
     async def list_open_findings(
         self, *, limit: int = 20
     ) -> list[TaskReviewFindingTable]:

@@ -1384,6 +1384,23 @@ class Settings(BaseSettings):
         description="Maximum roadmap item drafts a themed cycle may propose.",
     )
 
+    # Pest Control (Board Program, project-scoped) — the Product Owner hunts
+    # latent defects the org records but nobody reads (findings-ledger
+    # clusters, rework hotspots) and proposes evidence-backed bug tasks.
+    # Weekly cron by default; also accelerated off-schedule by a rework-rate
+    # spike (BoardProgramEngine's metric-predicate seam) — see
+    # roboco.services.board_programs._METRIC_PREDICATES. No master enable
+    # flag: arming is settings-store-only (board_program.pest_control.enabled).
+    pest_rework_threshold: float = Field(
+        default=0.3,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "7-day rework rate (MetricsService.get_rework_metrics) above "
+            "which Pest Control's metric predicate opens a cycle off-schedule."
+        ),
+    )
+
     # ==========================================================================
     # Fable-mode (opus-fable-playbook + ponytail build-laziness adoption) — DEFAULT OFF
     # ==========================================================================

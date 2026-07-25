@@ -46,6 +46,7 @@ X_SEEN_FEATURES = "x_seen_features"
 X_SPOTLIGHT_BRIEF = "x_spotlight_brief"
 X_SPOTLIGHT_SKIP_REASON = "x_spotlight_skip_reason"
 ROADMAP_CYCLE = "roadmap_cycle"
+PEST_HUNT = "pest_hunt"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -266,6 +267,23 @@ def get_roadmap_cycle(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_roadmap_cycle(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, ROADMAP_CYCLE, payload)
+
+
+# --- board pest control hunt -------------------------------------------------
+# The evidence-backed bug-item drafts the Product Owner authors via
+# ``propose_bug_hunt`` onto the exploration task the pest-control engine
+# opened. Mirrors ROADMAP_CYCLE exactly — no top-level theme goal, just items,
+# each carrying its own status (proposed/approved/rejected) for the CEO's
+# per-item approve/reject.
+
+
+def get_pest_hunt(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, PEST_HUNT)
+    return val if isinstance(val, dict) else None
+
+
+def set_pest_hunt(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, PEST_HUNT, payload)
 
 
 # --- video draft ------------------------------------------------------------

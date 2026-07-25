@@ -65,13 +65,42 @@ async def _originate_x_feature(session: AsyncSession) -> TaskTable | None:
     return await get_x_engine(session).open_feature_spotlight_exploration()
 
 
+async def _originate_pest_control(session: AsyncSession) -> TaskTable | None:
+    from roboco.services.pest_control_engine import get_pest_control_engine
+
+    return await get_pest_control_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
-# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE) so the two can't drift.
+# (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE) so the
+# two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
+    "pest_control": _originate_pest_control,
+}
+
+
+async def _pest_control_rework_spike(session: AsyncSession) -> bool:
+    """True when the trailing-7-day rework rate crosses
+    ``settings.pest_rework_threshold`` — the "metric" half of Pest Control's
+    "weekly cron OR rework-rate spike" trigger (spec §4). Mirrors the
+    strategy-engine idle-trigger pattern rather than a new TriggerKind: the
+    program's own trigger stays CRON, and this predicate lets a cycle open
+    off-schedule on top of that cadence."""
+    from roboco.services.metrics import get_metrics_service
+
+    report = await get_metrics_service(session).get_rework_metrics(days=7)
+    return report.rate > settings.pest_rework_threshold
+
+
+# Metric-predicate bindings, mirroring ``_ORIGINATORS`` — one entry per
+# program that wants an off-schedule accelerator on top of its CRON cadence.
+# Absent from this dict = cron-only (every program but pest_control today).
+_METRIC_PREDICATES: dict[str, Callable[[AsyncSession], Awaitable[bool]]] = {
+    "pest_control": _pest_control_rework_spike,
 }
 
 
@@ -122,10 +151,14 @@ class BoardProgramEngine(BaseService):
         return await program_armed(self.session, key)
 
     async def run_due_programs(self) -> list[str]:
-        """Originate a cycle for every enabled, due CRON program.
+        """Originate a cycle for every enabled, due CRON program, PLUS every
+        program whose metric predicate (``_METRIC_PREDICATES``) fires this
+        tick even off-schedule.
 
-        Returns the keys that opened a new cycle. One program's failure is
-        logged and never blocks the rest — mirrors the CI-watch sweep.
+        Returns the keys that opened a new cycle. One program's failure — cron
+        or metric — is logged and never blocks the rest, mirrors the CI-watch
+        sweep. A metric hit for a program already opened by the cron pass is
+        a cheap no-op (``open_program_cycle`` re-checks dedup itself).
         """
         opened: list[str] = []
         now = datetime.now(UTC)
@@ -137,7 +170,38 @@ class BoardProgramEngine(BaseService):
                     opened.append(key)
             except Exception:
                 self.log.exception("board-program cycle failed", program=key)
+        await self._run_due_metric_predicates(opened)
         return opened
+
+    async def _run_due_metric_predicates(self, opened: list[str]) -> None:
+        """Append to ``opened`` any program whose metric predicate fires this
+        tick, off-schedule — split out of ``run_due_programs`` to keep its
+        complexity down (xenon budget).
+
+        Cheap gates first: scope (any project opted in?) and dedup (already
+        an open cycle?) are checked BEFORE the predicate runs, so a predicate
+        that costs several queries (e.g. the rework-rate check's 8-11 query
+        ``MetricsService`` call) is never evaluated on a tick that would have
+        been rejected anyway — a spike-prone metric shouldn't pay full price
+        every tick just to be discarded by a guard it was always going to
+        fail.
+        """
+        for key, predicate in _METRIC_PREDICATES.items():
+            if key in opened or not await self.enabled(key):
+                continue
+            program = PROGRAMS[key]
+            try:
+                if not await self._scope_gate(program):
+                    continue
+                blocked, _ = await self._dedup_state(key)
+                if blocked:
+                    continue
+                if await predicate(self.session) and (
+                    await self.open_program_cycle(key) is not None
+                ):
+                    opened.append(key)
+            except Exception:
+                self.log.exception("board-program metric predicate failed", program=key)
 
     async def _run_due_one(self, key: str, now: datetime) -> bool:
         if not await self.enabled(key):
@@ -184,9 +248,15 @@ class BoardProgramEngine(BaseService):
         return False
 
     async def opted_in_projects(self, program: BoardProgram) -> list[ProjectTable]:
-        """Active projects where ``project_participates(program, ...)`` holds."""
+        """Active projects where ``project_participates(program, ...)`` holds,
+        deterministically ordered (created_at, then id) — callers that pick
+        a single project out of this list (e.g. ``PestControlEngine``'s
+        rotation) need a stable order, not whatever Postgres happens to
+        return without an ORDER BY."""
         result = await self.session.execute(
-            select(ProjectTable).where(ProjectTable.is_active.is_(True))
+            select(ProjectTable)
+            .where(ProjectTable.is_active.is_(True))
+            .order_by(ProjectTable.created_at, ProjectTable.id)
         )
         return [
             p

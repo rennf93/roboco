@@ -128,6 +128,26 @@ class ProposeRoadmapRequest(BaseModel):
     items: list[RoadmapItemInput] = Field(..., min_length=1)
 
 
+class PestHuntItemInput(BaseModel):
+    """One evidence-backed bug item draft within a Product Owner's Pest
+    Control hunt."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeBugHuntRequest(BaseModel):
+    """Product Owner's Pest Control bug hunt: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[PestHuntItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a

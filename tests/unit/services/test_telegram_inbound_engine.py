@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.models.base import TaskStatus
 from roboco.services import telegram_inbound as ti
+from roboco.services.pest_control_service import PestHuntItemResult
 from roboco.services.roadmap_service import RoadmapItemResult
 from roboco.services.telegram_credentials import TelegramCredentialsData
 from roboco.services.video_post_service import VideoPostExecuteResult
@@ -717,6 +718,56 @@ async def test_dispatch_reject_roadmap_calls_service_with_reason(
 
 
 @pytest.mark.asyncio
+async def test_dispatch_approve_pest_control_calls_service_with_ceo_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    task = _fake_task()
+    _stub_resolve(monkeypatch, engine, task)
+    pest_svc = AsyncMock()
+    pest_svc.approve_item = AsyncMock(
+        return_value=PestHuntItemResult(
+            status="approved", item_id="item-1", materialized_task_id="x", detail="ok"
+        )
+    )
+    monkeypatch.setattr(ti, "get_pest_control_service", lambda _session: pest_svc)
+
+    ok, _text = await engine._dispatch_approve(
+        "pest_control", "a1b2c3d4", "item-1", notes=None
+    )
+
+    pest_svc.approve_item.assert_awaited_once_with(
+        task.id, "item-1", created_by=CEO_UUID
+    )
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reject_pest_control_calls_service_with_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine()
+    task = _fake_task()
+    _stub_resolve(monkeypatch, engine, task)
+    pest_svc = AsyncMock()
+    pest_svc.reject_item = AsyncMock(
+        return_value=PestHuntItemResult(
+            status="rejected", item_id="item-1", materialized_task_id=None, detail="ok"
+        )
+    )
+    monkeypatch.setattr(ti, "get_pest_control_service", lambda _session: pest_svc)
+
+    ok, _text = await engine._dispatch_reject(
+        "pest_control", "a1b2c3d4", "item-1", "not a real bug, already fixed"
+    )
+
+    pest_svc.reject_item.assert_awaited_once_with(
+        task.id, "item-1", "not a real bug, already fixed"
+    )
+    assert ok is True
+
+
+@pytest.mark.asyncio
 async def test_dispatch_approve_unresolved_task_short_circuits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -727,6 +778,24 @@ async def test_dispatch_approve_unresolved_task_short_circuits(
 
     assert ok is False
     assert "No such" in text
+
+
+@pytest.mark.asyncio
+async def test_dispatch_approve_unknown_kind_is_graceful(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuinely unrecognized kind (not one of the wired handlers, unlike
+    pest_control above) degrades to a reported failure, never an exception —
+    the handler-dict lookup's own fallback, unrelated to pest_control's
+    wiring."""
+    engine = _engine()
+    task = _fake_task()
+    _stub_resolve(monkeypatch, engine, task)
+
+    ok, text = await engine._dispatch_approve("bogus", "a1b2c3d4", "", notes=None)
+
+    assert ok is False
+    assert "Unknown kind" in text
 
 
 # ---------------------------------------------------------------------------

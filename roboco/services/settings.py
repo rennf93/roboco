@@ -136,6 +136,7 @@ _VALIDATORS = {
     # (roadmap_engine_enabled / x_engine_enabled+x_feature_spotlight_enabled).
     "board_program.roadmap.enabled": _validate_bool,
     "board_program.x_feature.enabled": _validate_bool,
+    "board_program.pest_control.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

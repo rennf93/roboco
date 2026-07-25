@@ -26,3 +26,4 @@
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
 | `propose_roadmap` | `propose_roadmap(cycle_goal: str, items: list[RoadmapItemInput])` |
+| `propose_bug_hunt` | `propose_bug_hunt(items: list[PestHuntItemInput])` |

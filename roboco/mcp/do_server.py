@@ -589,6 +589,25 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
     )
 
 
+def propose_bug_hunt(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Pest Control bug hunt (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after hunting through the
+    findings ledger, rework hotspots (revision_count), and TODO/ponytail debt
+    for latent defects the org records but nobody reads. The CEO reviews and
+    approves/rejects each item individually; approved items land in the
+    backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — the file:line / ledger row / metric that
+            justifies this as a real, live bug; no evidence, no item).
+    """
+    return _post("/api/v1/do/propose_bug_hunt", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -1002,6 +1021,7 @@ _TOOLS: dict[str, Any] = {
     "note": note,
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
+    "propose_bug_hunt": propose_bug_hunt,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_video": propose_video,
     "dm": dm,

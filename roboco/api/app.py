@@ -32,6 +32,7 @@ from roboco.api.routes.kanban import router as kanban_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.pest_control import router as pest_control_router
 from roboco.api.routes.pitch import router as pitch_router
 from roboco.api.routes.playbooks import router as playbooks_router
 from roboco.api.routes.product import router as product_router
@@ -471,6 +472,15 @@ def create_app() -> FastAPI:
         board_programs_router,
         prefix=f"{api_prefix}/board-programs",
         tags=["Board Programs"],
+    )
+
+    # Pest Control (Board Program) — the CEO approves/rejects items within a
+    # held bug-hunt cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(
+        pest_control_router,
+        prefix=f"{api_prefix}/pest-control",
+        tags=["Pest Control"],
     )
 
     # Video engine — the CEO requests an on-demand marketing video; the

@@ -126,10 +126,11 @@ _BOARD_DO = (
 
 # Product Owner only (v1 — HoM stays a reviewer via the normal board gate when
 # an approved roadmap item later ships as real work; see the roadmap spec's
-# non-goals).
+# non-goals). ``propose_bug_hunt`` (Pest Control) is likewise Product-Owner-only.
 _PRODUCT_OWNER_DO = (
     *_BOARD_DO,
     "propose_roadmap",
+    "propose_bug_hunt",
 )
 
 # Head of Marketing only (mirrors _PRODUCT_OWNER_DO's propose_roadmap grant).
