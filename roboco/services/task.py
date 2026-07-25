@@ -887,6 +887,22 @@ LIBRARIAN_SOURCE = "board_librarian"
 # queue.
 BARFLY_SOURCE = "board_barfly"
 
+# Source tag for a Dogfood (Board Program) exploration cycle: a PENDING task
+# the dogfood engine opens for the Product Owner to walk an opted-in
+# project's live surfaces (panel via Playwright, docs site, Telegram flow) as
+# a user and author evidence-backed UX-friction drafts (the
+# ``propose_friction_fixes`` content verb). Mirrors SPACKLE_SOURCE exactly:
+# IS dispatched (one-shot PO spawn) but never rides the delivery lifecycle;
+# items materialize into BACKLOG only via the CEO's per-item approve
+# (source=DOGFOOD_ITEM_SOURCE below). EVENT-triggered (a release-publish hook
+# or a CEO "run now"), never cron — the one program whose spawn also gets the
+# playwright MCP (see AgentOrchestrator._is_dogfood_spawn).
+DOGFOOD_SOURCE = "board_dogfood"
+
+# Source tag stamped on a task MATERIALIZED from an approved friction-fix
+# item (distinct from DOGFOOD_SOURCE, which tags the held exploration cycle).
+DOGFOOD_ITEM_SOURCE = "dogfood"
+
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -2169,6 +2185,21 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == MIRROR_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
+        """Non-terminal dogfood exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_friction_fixes``); ordered oldest-first.
+        Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == DOGFOOD_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

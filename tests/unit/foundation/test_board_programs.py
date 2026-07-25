@@ -174,6 +174,32 @@ def test_war_room_is_never_cron_due() -> None:
     )
 
 
+_DOGFOOD_MAX_ITEMS_PER_CYCLE = 5
+
+
+def test_registry_carries_dogfood() -> None:
+    d = PROGRAMS["dogfood"]
+    assert d.role == "product_owner"
+    assert d.source == "board_dogfood"
+    assert d.trigger is TriggerKind.EVENT
+    assert d.scope == "project"
+    assert d.max_items_per_cycle == _DOGFOOD_MAX_ITEMS_PER_CYCLE
+
+
+def test_dogfood_is_never_cron_due() -> None:
+    """An EVENT program is never cron-due regardless of how long it's been
+    since the last cycle opened — mirrors test_coroner_is_never_cron_due,
+    but against Dogfood: unlike Coroner it DOES have a real originator (see
+    roboco.services.board_programs._originate_dogfood), so this asserts the
+    cron loop's own gate refuses it, not that no originator exists."""
+    assert not program_due(
+        PROGRAMS["dogfood"],
+        now=datetime(2026, 7, 24, tzinfo=UTC),
+        last_opened_at=None,
+        interval_override=None,
+    )
+
+
 _BARFLY_MAX_ITEMS_PER_CYCLE = 5
 
 
@@ -187,7 +213,7 @@ def test_registry_carries_barfly() -> None:
     assert b.default_interval_seconds == 2 * 24 * 3600
 
 
-def test_registry_carries_thirteen_programs() -> None:
+def test_registry_carries_fourteen_programs() -> None:
     """Locks the union so a future addition/removal is deliberate — matches
     the count-whatever-your-base-has-plus-war_room shape the other
     registry-parity tests already exercise per-key."""
@@ -205,6 +231,7 @@ def test_registry_carries_thirteen_programs() -> None:
         "librarian",
         "war_room",
         "barfly",
+        "dogfood",
     }
 
 

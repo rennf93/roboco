@@ -276,6 +276,7 @@ class ReleaseProposalService(BaseService):
                 await self._draft_war_room(report, release_project_id)
                 await self._draft_video(report, release_project_id)
                 await self._draft_docs_update(report)
+                await self._draft_dogfood_walk()
             return result
         finally:
             await self._finalize_release_lock(
@@ -370,6 +371,21 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("docs-sync task origination failed (best-effort): %s", exc)
+
+    async def _draft_dogfood_walk(self) -> None:
+        """Trigger a Dogfood board-program cycle off a just-published release
+        (best-effort — never raises into approve(); a trigger failure must
+        not affect the release's already-succeeded publish). Armed, scope,
+        and one-open-cycle dedup all live in ``BoardProgramEngine.
+        open_program_cycle`` — a Dogfood cycle rotates across opted-in
+        projects on its own (see ``DogfoodEngine.run_cycle``), so this hook
+        carries no project targeting, unlike the release-scoped drafts above."""
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            await get_board_program_engine(self.session).open_program_cycle("dogfood")
+        except Exception as exc:
+            logger.warning("dogfood walk trigger failed (best-effort): %s", exc)
 
     async def _finalize_release_lock(
         self,

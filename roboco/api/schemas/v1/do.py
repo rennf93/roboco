@@ -210,6 +210,28 @@ class ProposeMessagingFixesRequest(BaseModel):
     items: list[MessagingFixItemInput] = Field(..., min_length=1)
 
 
+class FrictionFixItemInput(BaseModel):
+    """One evidence-backed UX-friction item draft within a Product Owner's
+    Dogfood walk. Mirrors ``MessagingFixItemInput`` — ``evidence`` must name
+    the walked path (the actual clicks/pages) and what broke or felt wrong,
+    prose only, no screenshots."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    evidence: str = Field(..., min_length=1)
+
+
+class ProposeFrictionFixesRequest(BaseModel):
+    """Product Owner's Dogfood friction audit: 1-N evidence-backed item
+    drafts (no top-level theme, unlike the roadmap cycle)."""
+
+    items: list[FrictionFixItemInput] = Field(..., min_length=1)
+
+
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
     ready-to-post body, plus an optional companion-video request — or a

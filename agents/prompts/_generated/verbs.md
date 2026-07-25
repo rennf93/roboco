@@ -211,6 +211,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `propose_bug_hunt` | `propose_bug_hunt(items: list[PestHuntItemInput])` |
 | `propose_gap_fill` | `propose_gap_fill(items: list[GapFillItemInput])` |
 | `propose_rebalance` | `propose_rebalance(items: list[RebalanceItemInput])` |
+| `propose_friction_fixes` | `propose_friction_fixes(items: list[FrictionFixItemInput])` |
 
 ## head_marketing
 

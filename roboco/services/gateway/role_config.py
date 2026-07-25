@@ -128,13 +128,16 @@ _BOARD_DO = (
 # an approved roadmap item later ships as real work; see the roadmap spec's
 # non-goals). ``propose_bug_hunt`` (Pest Control), ``propose_gap_fill``
 # (Spackle), and ``propose_rebalance`` (Scales) are likewise
-# Product-Owner-only.
+# Product-Owner-only. ``propose_friction_fixes`` (Dogfood) is likewise
+# Product-Owner-only — the one program whose spawn also gets the playwright
+# MCP (task-scoped, not role-blanket — see AgentOrchestrator._is_dogfood_spawn).
 _PRODUCT_OWNER_DO = (
     *_BOARD_DO,
     "propose_roadmap",
     "propose_bug_hunt",
     "propose_gap_fill",
     "propose_rebalance",
+    "propose_friction_fixes",
 )
 
 # Head of Marketing only (mirrors _PRODUCT_OWNER_DO's propose_roadmap grant).

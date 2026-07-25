@@ -44,6 +44,7 @@ from roboco.services.board_programs import BoardProgramEngine
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
+    DOGFOOD_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
@@ -104,6 +105,7 @@ async def _purge_board_program_pollution(db_session: AsyncSession) -> None:
                     LIBRARIAN_SOURCE,
                     WAR_ROOM_SOURCE,
                     BARFLY_SOURCE,
+                    DOGFOOD_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TS.COMPLETED, TS.CANCELLED]),
@@ -485,6 +487,7 @@ def test_program_sources_match_service_layer_constants() -> None:
     assert PROGRAMS["librarian"].source == LIBRARIAN_SOURCE
     assert PROGRAMS["war_room"].source == WAR_ROOM_SOURCE
     assert PROGRAMS["barfly"].source == BARFLY_SOURCE
+    assert PROGRAMS["dogfood"].source == DOGFOOD_SOURCE
 
 
 @pytest.mark.asyncio
@@ -554,6 +557,31 @@ async def test_run_due_programs_never_opens_war_room_even_when_armed(
 
 
 @pytest.mark.asyncio
+async def test_run_due_programs_never_opens_dogfood_even_when_armed(
+    db_session: AsyncSession,
+) -> None:
+    """EVENT programs are opened only by their own hooks/run-now, never the
+    cron loop — ``run_due_programs`` must skip ``dogfood`` entirely
+    regardless of arming, mirroring ``test_run_due_programs_never_opens_
+    coroner_even_when_armed``. Unlike Coroner, Dogfood DOES have a real
+    project-scoped originator (see ``test_open_program_cycle_originates_
+    dogfood_for_real`` below) — this proves the cron loop's own trigger-kind
+    gate is what blocks it, not a missing opt-in."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.board_programs = ["dogfood"]
+    db_session.add(
+        SystemSettingTable(key="board_program.dogfood.enabled", value="true")
+    )
+    await db_session.flush()
+    engine = BoardProgramEngine(db_session)
+    opened = await engine.run_due_programs()
+    assert "dogfood" not in opened
+
+
+@pytest.mark.asyncio
 async def test_open_program_cycle_drives_war_room_via_real_originator(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -589,6 +617,32 @@ async def test_open_program_cycle_drives_war_room_via_real_originator(
         .all()
     )
     assert len(rows) == ONE
+
+
+@pytest.mark.asyncio
+async def test_open_program_cycle_originates_dogfood_for_real(
+    db_session: AsyncSession,
+) -> None:
+    """Unlike Coroner's never-firing stub, Dogfood registers a REAL
+    originator (``roboco.services.board_programs._originate_dogfood``) — a
+    CEO "run now" (and the release-publish hook, which calls the exact same
+    ``open_program_cycle`` path) must actually open a cycle when armed and
+    an opted-in project exists."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.board_programs = ["dogfood"]
+    db_session.add(
+        SystemSettingTable(key="board_program.dogfood.enabled", value="true")
+    )
+    await db_session.flush()
+
+    engine = BoardProgramEngine(db_session)
+    task = await engine.open_program_cycle("dogfood")
+    assert task is not None
+    assert task.source == DOGFOOD_SOURCE
+    assert task.project_id == project.id
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from roboco.models.permissions import AgentContext
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
+    DOGFOOD_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
@@ -207,6 +208,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
                     LIBRARIAN_SOURCE,
                     WAR_ROOM_SOURCE,
                     BARFLY_SOURCE,
+                    DOGFOOD_SOURCE,
                 ]
             ),
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
@@ -235,6 +237,7 @@ async def test_list_returns_every_registered_program(ceo_client: AsyncClient) ->
         "librarian",
         "war_room",
         "barfly",
+        "dogfood",
     }
     pest_control = next(p for p in body if p["key"] == "pest_control")
     assert pest_control["role"] == "product_owner"

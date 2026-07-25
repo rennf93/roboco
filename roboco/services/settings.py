@@ -143,7 +143,11 @@ _VALIDATORS = {
     "board_program.spackle.enabled": _validate_bool,
     "board_program.scales.enabled": _validate_bool,
     "board_program.mirror.enabled": _validate_bool,
+    "board_program.megaphone.enabled": _validate_bool,
+    "board_program.librarian.enabled": _validate_bool,
+    "board_program.war_room.enabled": _validate_bool,
     "board_program.barfly.enabled": _validate_bool,
+    "board_program.dogfood.enabled": _validate_bool,
     **dict.fromkeys(_FEATURE_FLAG_KEYS, _validate_bool),
 }
 

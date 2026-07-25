@@ -198,6 +198,26 @@ PROGRAMS: dict[str, BoardProgram] = {
             # not a repo — no per-project opt-in gate, mirrors periscope.
             scope="org",
         ),
+        BoardProgram(
+            key="dogfood",
+            role="product_owner",
+            trigger=TriggerKind.EVENT,
+            source="board_dogfood",
+            # EVENT programs are never cron-due (see program_due below) — this
+            # is a harmless placeholder, not a live cadence, mirroring
+            # coroner's. Unlike coroner, a Dogfood cycle DOES have a real
+            # ``_ORIGINATORS`` entry (see roboco.services.board_programs) —
+            # it needs no external incident id to target, just the next
+            # opted-in project in rotation, so both the release-publish hook
+            # and a CEO "run now" can open a cycle through the ordinary
+            # ``BoardProgramEngine.open_program_cycle`` path.
+            default_interval_seconds=WEEK_SECONDS,
+            max_items_per_cycle=5,
+            # Project-scoped (spec §3/§4): it walks one project's live
+            # surfaces (panel, docs site) as a user, same as
+            # pest_control/spackle/mirror.
+            scope="project",
+        ),
     )
 }
 

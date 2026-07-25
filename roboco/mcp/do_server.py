@@ -670,6 +670,26 @@ def propose_messaging_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
     return _post("/api/v1/do/propose_messaging_fixes", {"items": items})
 
 
+def propose_friction_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a Dogfood friction audit (1-5 evidence-backed items).
+
+    Call this exactly ONCE per exploration cycle, after walking the target
+    project's live surfaces as a real user would (the panel via Playwright,
+    the docs site, the Telegram flow when reachable) and filing what broke or
+    felt wrong. The CEO reviews and approves/rejects each item individually;
+    approved items land in the backlog (nothing auto-starts).
+
+    Args:
+        items: 1-5 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            evidence (REQUIRED — the walked path, the actual clicks/pages,
+            and what broke or felt wrong; prose only, no screenshots; no
+            evidence, no item).
+    """
+    return _post("/api/v1/do/propose_friction_fixes", {"items": items})
+
+
 def propose_feature_spotlight(
     feature_slug: str = "",
     feature_title: str = "",
@@ -1282,6 +1302,7 @@ _TOOLS: dict[str, Any] = {
     "propose_gap_fill": propose_gap_fill,
     "propose_rebalance": propose_rebalance,
     "propose_messaging_fixes": propose_messaging_fixes,
+    "propose_friction_fixes": propose_friction_fixes,
     "propose_feature_spotlight": propose_feature_spotlight,
     "propose_market_brief": propose_market_brief,
     "propose_editorial_post": propose_editorial_post,

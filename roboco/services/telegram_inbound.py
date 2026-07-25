@@ -53,6 +53,7 @@ from roboco.models.base import TaskStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services import telegram_bridge as bridge
 from roboco.services.base import BaseService, ValidationError
+from roboco.services.dogfood_service import get_dogfood_service
 from roboco.services.mirror_service import get_mirror_service
 from roboco.services.pest_control_service import get_pest_control_service
 from roboco.services.project import get_project_service
@@ -109,6 +110,7 @@ _VALID_KINDS = (
     "spackle",
     "scales",
     "mirror",
+    "dogfood",
     "intake",
     "proj",
 )
@@ -118,9 +120,9 @@ _VALID_ACTIONS = ("apv", "rej", "sel")
 # Per-kind reject-reason floor, mirroring each HTTP route's request schema
 # (ReleaseRejectRequest min_length=10, XPostRejectRequest/VideoPostRejectRequest/
 # RoadmapRejectRequest/PestHuntRejectRequest/GapFillRejectRequest/
-# RebalanceRejectRequest/MessagingFixRejectRequest min_length=4; ceo_reject
-# has no route-level floor beyond TaskService.ceo_reject's own
-# reject_trivial default).
+# RebalanceRejectRequest/MessagingFixRejectRequest/FrictionFixRejectRequest
+# min_length=4; ceo_reject has no route-level floor beyond TaskService.
+# ceo_reject's own reject_trivial default).
 _REJECT_MIN_CHARS = {
     "task": 1,
     "release": 10,
@@ -131,6 +133,7 @@ _REJECT_MIN_CHARS = {
     "spackle": 4,
     "scales": 4,
     "mirror": 4,
+    "dogfood": 4,
 }
 _DEFAULT_REJECT_MIN_CHARS = (
     4  # defense-in-depth fallback; every valid kind is listed above
@@ -174,6 +177,7 @@ _KIND_DISPLAY: dict[str, tuple[str, str]] = {
     "spackle": ("🧱", "Gap fill"),
     "scales": ("⚖️", "Rebalance"),
     "mirror": ("🪞", "Messaging fix"),
+    "dogfood": ("🐕", "Friction fix"),
     "task": ("📋", "Task"),
     "periscope": ("🔭", "Market brief"),
     # "sentinel" is display-only, mirroring "periscope" above — it never
@@ -366,6 +370,7 @@ _DEEP_LINK_PATH = {
     "spackle": "/overview",
     "scales": "/overview",
     "mirror": "/overview",
+    "dogfood": "/overview",
 }
 
 
@@ -1162,6 +1167,7 @@ class TelegramInboundEngine(BaseService):
             "spackle": self._approve_spackle,
             "scales": self._approve_scales,
             "mirror": self._approve_mirror,
+            "dogfood": self._approve_dogfood,
         }.get(kind)
         if handler is None:
             return False, f"Unknown kind: {kind}"
@@ -1308,6 +1314,20 @@ class TelegramInboundEngine(BaseService):
         ok = result.status in ("approved", "already_approved")
         return ok, f"Messaging-fix item {result.status}: {result.detail}"
 
+    async def _approve_dogfood(
+        self, task: TaskTable, id8: str, extra: str, _notes: str | None
+    ) -> tuple[bool, str]:
+        task_id = cast("UUID", task.id)
+        result = await get_dogfood_service(self.session).approve_item(
+            task_id, extra, created_by=_CEO_UUID
+        )
+        if result is None:
+            return False, f"No such friction-fix item: {id8}:{extra}"
+        self._mark_audit("dogfood", task_id, "approve", item_id=extra)
+        await self.session.commit()
+        ok = result.status in ("approved", "already_approved")
+        return ok, f"Friction-fix item {result.status}: {result.detail}"
+
     async def _dispatch_reject(
         self, kind: str, id8: str, extra: str, reason: str
     ) -> tuple[bool, str]:
@@ -1332,6 +1352,7 @@ class TelegramInboundEngine(BaseService):
             "spackle": self._reject_spackle,
             "scales": self._reject_scales,
             "mirror": self._reject_mirror,
+            "dogfood": self._reject_dogfood,
         }.get(kind)
         if handler is None:
             return False, f"Unknown kind: {kind}"
@@ -1464,6 +1485,20 @@ class TelegramInboundEngine(BaseService):
         await self.session.commit()
         ok = result.status in ("rejected", "already_rejected")
         return ok, f"Messaging-fix item {result.status}: {result.detail}"
+
+    async def _reject_dogfood(
+        self, task: TaskTable, id8: str, extra: str, reason: str
+    ) -> tuple[bool, str]:
+        task_id = cast("UUID", task.id)
+        result = await get_dogfood_service(self.session).reject_item(
+            task_id, extra, reason
+        )
+        if result is None:
+            return False, f"No such friction-fix item: {id8}:{extra}"
+        self._mark_audit("dogfood", task_id, "reject", item_id=extra)
+        await self.session.commit()
+        ok = result.status in ("rejected", "already_rejected")
+        return ok, f"Friction-fix item {result.status}: {result.detail}"
 
 
 def get_telegram_inbound_engine(

@@ -145,13 +145,26 @@ async def _originate_barfly(session: AsyncSession) -> TaskTable | None:
     return await get_barfly_engine(session).run_cycle()
 
 
+async def _originate_dogfood(session: AsyncSession) -> TaskTable | None:
+    """Unlike Coroner's never-firing stub, this is a REAL originator: a
+    Dogfood cycle needs no external incident id, just the next opted-in
+    project in rotation, so both the release-publish hook and a CEO "run
+    now" call open a cycle through the ordinary ``open_program_cycle`` path.
+    The cron loop still never reaches this — ``program_due`` refuses any
+    non-CRON trigger before ``_run_due_one`` would call it — see
+    ``roboco.services.dogfood_engine``'s module docstring."""
+    from roboco.services.dogfood_engine import get_dogfood_engine
+
+    return await get_dogfood_engine(session).run_cycle()
+
+
 # Origination bindings live here, not in the pure foundation registry — one
 # entry per PROGRAMS key, asserted by tests. Each program's ``source`` is
 # separately asserted equal to the service-layer constant it duplicates
 # (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE, PEST_CONTROL_SOURCE,
 # PERISCOPE_SOURCE, CORONER_SOURCE, SENTINEL_SOURCE, SPACKLE_SOURCE,
 # SCALES_SOURCE, MIRROR_SOURCE, MEGAPHONE_SOURCE, LIBRARIAN_SOURCE,
-# WAR_ROOM_SOURCE, BARFLY_SOURCE) so the two can't drift.
+# WAR_ROOM_SOURCE, BARFLY_SOURCE, DOGFOOD_SOURCE) so the two can't drift.
 _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] = {
     "roadmap": _originate_roadmap,
     "x_feature": _originate_x_feature,
@@ -166,6 +179,7 @@ _ORIGINATORS: dict[str, Callable[[AsyncSession], Awaitable[TaskTable | None]]] =
     "librarian": _originate_librarian,
     "war_room": _originate_war_room,
     "barfly": _originate_barfly,
+    "dogfood": _originate_dogfood,
 }
 
 

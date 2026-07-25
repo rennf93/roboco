@@ -25,6 +25,7 @@ from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.coroner import router as coroner_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
+from roboco.api.routes.dogfood import router as dogfood_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
@@ -381,6 +382,10 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     # messaging-fixes cycle. Approving materializes a BACKLOG docs task;
     # nothing auto-starts.
     app.include_router(mirror_router, prefix=f"{api_prefix}/mirror", tags=["Mirror"])
+    # Dogfood (Board Program) — the CEO approves/rejects items within a held
+    # friction-fix cycle. Approving materializes a BACKLOG task; nothing
+    # auto-starts.
+    app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
 
 
 def create_app() -> FastAPI:

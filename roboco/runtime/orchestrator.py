@@ -77,6 +77,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
+    DOGFOOD_SOURCE,
     LIBRARIAN_SOURCE,
     MEGAPHONE_SOURCE,
     MIRROR_SOURCE,
@@ -921,9 +922,9 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     / ``board_pest_control`` / ``board_periscope`` / ``board_coroner`` /
     ``board_sentinel`` / ``board_spackle`` / ``board_scales`` /
     ``board_mirror`` / ``board_megaphone`` / ``board_librarian`` /
-    ``board_war_room`` / ``board_barfly``) that ``_dispatch_pm_work`` owns.
-    One flat call keeps the dev loop's skip out of a long per-source ``if``
-    chain (xenon budget)."""
+    ``board_war_room`` / ``board_barfly`` / ``board_dogfood``) that
+    ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
+    of a long per-source ``if`` chain (xenon budget)."""
     if _is_held_ceo_source(task):
         return True
     return task.get("source") in (
@@ -940,6 +941,7 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
         LIBRARIAN_SOURCE,
         WAR_ROOM_SOURCE,
         BARFLY_SOURCE,
+        DOGFOOD_SOURCE,
     )
 
 
@@ -948,8 +950,8 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
     exploration dispatcher, keyed by ``task['source']``. Every registered
     program (roadmap / x_feature / pest_control / periscope / coroner /
     sentinel / spackle / scales / mirror / megaphone / librarian /
-    war_room / barfly) is solo-authored (PO/HoM/Auditor alone) — this
-    bypasses the two-reviewer board-review gate; none of these ever ride
+    war_room / barfly / dogfood) is solo-authored (PO/HoM/Auditor alone) —
+    this bypasses the two-reviewer board-review gate; none of these ever ride
     ``_handle_board_assigned_task`` (that would also spawn a second board
     role and fire the Approve & Start handoff, both wrong for a cycle with
     one author). Module-level (not a method, so it always dispatches to the
@@ -977,6 +979,7 @@ async def _dispatch_board_program_exploration(orch: Any, task: dict[str, Any]) -
         LIBRARIAN_SOURCE: orch._dispatch_librarian_exploration,
         WAR_ROOM_SOURCE: orch._dispatch_war_room_exploration,
         BARFLY_SOURCE: orch._dispatch_barfly_exploration,
+        DOGFOOD_SOURCE: orch._dispatch_dogfood_exploration,
     }
     source = task.get("source")
     handler = dispatch.get(source) if isinstance(source, str) else None
@@ -3828,6 +3831,37 @@ class AgentOrchestrator:
             )
             return False
 
+    async def _is_dogfood_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A Product Owner spawned onto a source=board_dogfood task — the
+        ONLY board-role case that gets the playwright MCP, so the PO can walk
+        the product as a user (spec §4). Task-scoped, not role-blanket: a PO
+        spawned for roadmap/pest_control/scales/any other cycle must NOT get
+        browser tools. Mirrors ``_is_video_authoring_spawn``'s shape exactly
+        — fail-closed: any lookup error means no browser, never a broken
+        spawn."""
+        if agent_role != "product_owner" or not task_id:
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import DOGFOOD_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == DOGFOOD_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "dogfood spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
     async def _generate_mcp_config(
         self,
         agent_id: str,
@@ -3845,8 +3879,9 @@ class AgentOrchestrator:
         - roboco-git-readonly status, log, diff, branch list
         - roboco-optimal      knowledge base, RAG, semantic search
         - roboco-docs         documentation file management (panel docs)
-        - playwright          browser tools (fe-qa/ux-qa, and the ux-dev on
-                              a video-authoring task — see below)
+        - playwright          browser tools (fe-qa/ux-qa, the ux-dev on
+                              a video-authoring task, and the PO on a
+                              dogfood-walk task — see below)
 
         The agent's role is asserted by the orchestrator API on every
         verb/tool call, so all roles get the same MCP surface from this
@@ -3948,6 +3983,7 @@ class AgentOrchestrator:
         video_authoring = await self._is_video_authoring_spawn(
             agent_id, agent_role, task_id
         )
+        dogfood_walk = await self._is_dogfood_spawn(agent_id, agent_role, task_id)
         self._append_role_scoped_mcp_servers(
             mcp_servers,
             agent_id,
@@ -3955,6 +3991,7 @@ class AgentOrchestrator:
             agent_uuid,
             mcp_env,
             video_authoring=video_authoring,
+            dogfood_walk=dogfood_walk,
         )
 
         config: dict[str, Any] = {"mcpServers": mcp_servers}
@@ -3987,6 +4024,7 @@ class AgentOrchestrator:
         mcp_env: dict[str, str],
         *,
         video_authoring: bool = False,
+        dogfood_walk: bool = False,
     ) -> None:
         """Register the role-scoped MCP servers (docs, research, playwright).
 
@@ -4042,18 +4080,23 @@ class AgentOrchestrator:
             }
 
         # Playwright MCP — structured browser tools (navigate/click/snapshot/
-        # screenshot). Two cases: fe-qa/ux-qa browser verification, and a
+        # screenshot). Three cases: fe-qa/ux-qa browser verification, a
         # ux-dev authoring a source=video task (``video_authoring``, probed
         # at spawn) so the composition author can preview their HTML in a
-        # real browser while iterating. Both run images that bake the
-        # binary + wrapper entrypoint (docker/agent-qa-fe.Dockerfile,
-        # docker/agent-ux.Dockerfile); registering it for any other role
-        # would reference a command that doesn't exist in that image.
+        # real browser while iterating, and a product_owner spawned onto a
+        # source=board_dogfood task (``dogfood_walk``, probed at spawn via
+        # ``_is_dogfood_spawn``) so the PO can walk the panel as a user —
+        # task-scoped, not role-blanket: a PO spawned for any other board
+        # program must NOT get browser tools. All three run images that bake
+        # the binary + wrapper entrypoint (docker/agent-qa-fe.Dockerfile,
+        # docker/agent-ux.Dockerfile, docker/agent-pm.Dockerfile); registering
+        # it for any other role would reference a command that doesn't exist
+        # in that image.
         playwright_mcp_teams = ("frontend", "ux_ui")
         browser_qa = (
             agent_role == "qa" and get_agent_team(agent_id) in playwright_mcp_teams
         )
-        if browser_qa or video_authoring:
+        if browser_qa or video_authoring or dogfood_walk:
             mcp_servers["playwright"] = {
                 "command": "/app/scripts/playwright-mcp-entrypoint.sh",
                 "args": [],
@@ -13156,6 +13199,43 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_mirror_exploration",
         )
 
+    async def _dispatch_dogfood_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to walk the product and author a
+        Dogfood friction audit.
+
+        Mirrors ``_dispatch_spackle_exploration`` exactly (PO-solo, the same
+        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        "already authored" marker pre-check — ``propose_friction_fixes``
+        marks it via the ``friction_fixes`` marker, not this dispatcher).
+        There is no server-assembled evidence context — walking the product
+        live is the PO's own tool work, ordered explicitly by
+        ``_build_dogfood_prompt``. This is the ONE spawn (task-scoped, keyed
+        on ``task["source"] == DOGFOOD_SOURCE``) that also gets the
+        playwright MCP mounted — see ``_is_dogfood_spawn``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.FRICTION_FIXES) is not None:
+            return  # already authored — the CEO dogfood queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for dogfood exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("dogfood")
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_dogfood_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_dogfood_exploration",
+        )
+
     async def _dispatch_feature_spotlight_exploration(
         self, task: dict[str, Any]
     ) -> None:
@@ -13700,8 +13780,8 @@ Start now: evidence(task_id="{task_id}")
                 # Every registered Board Program (roadmap / x_feature /
                 # pest_control / periscope / coroner / sentinel / spackle /
                 # scales / mirror / megaphone / librarian / war_room /
-                # barfly) is solo-authored and bypasses the two-reviewer
-                # board-review gate — routed via the module-level dict
+                # barfly / dogfood) is solo-authored and bypasses the
+                # two-reviewer board-review gate — routed via the module-level dict
                 # dispatch table so this chain stays flat as new programs
                 # register (xenon budget). Falls through to the generic
                 # board/PM-assigned handlers only for a non-program task.
@@ -16685,6 +16765,74 @@ review; you author this alone.
 5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
    item individually in the mirror queue; an approved item lands in BACKLOG
    as a docs task for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
+of the items — that is not your job here, and the gateway will reject those
+verbs.
+"""
+
+    def _build_dogfood_prompt(
+        self,
+        task: dict[str, Any],
+        prior_context: str = "",
+    ) -> str:
+        """Prompt for the Product Owner's one-shot Dogfood walk.
+
+        The ONE board-program spawn that also gets the playwright MCP (see
+        ``_is_dogfood_spawn`` — task-scoped on this exact task, not a
+        role-blanket grant), so this is the only prompt that references
+        browser tools. ``prior_context`` is the LEARN rendering of the last
+        closed cycles (``BoardProgramEngine.prior_cycle_context``) — empty
+        when none exist yet."""
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task_id = task.get("id", "unknown")
+        max_items = PROGRAMS["dogfood"].max_items_per_cycle
+        prior_block = f"\n## Prior cycles\n{prior_context}\n" if prior_context else ""
+        panel_line = ""
+        self_slug = settings.self_heal_project_slug or "roboco-api"
+        if task.get("project_slug") == self_slug and settings.panel_base_url:
+            panel_line = (
+                f"\nThe panel is reachable at {settings.panel_base_url} — start "
+                "your walk there.\n"
+            )
+        return f"""\
+You are the Product Owner. It's time for your periodic Dogfood walk.
+
+TASK: {task_id}
+
+Walk the target project's live surfaces as a real USER would, not as a code
+reviewer — the panel (browser tools: browser_navigate, browser_snapshot,
+browser_click, browser_type, browser_take_screenshot, etc. are mounted for
+THIS task only), the docs site, and the Telegram flow when a live URL is
+reachable. File UX friction: what broke, what confused you, what felt slow
+or wrong. You author this alone.
+{panel_line}{prior_block}
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Find a live URL for each surface: the panel (see above, when this cycle's
+   target is RoboCo's own project) and the docs site (check the target
+   project's README/docs for a published URL). If NO live URL is reachable
+   for a surface, do NOT fabricate a walk — fall back to an honest read-tool
+   review of that surface's source instead, and say so explicitly in the
+   item's evidence (e.g. "docs site URL unreachable; reviewed docs/ source
+   instead").
+3. Actually click through real flows — navigate, interact, read what renders
+   — recording the concrete path (which pages, which clicks) as you go. A
+   friction item without a walked path is not dogfooding, it's guessing.
+4. For each candidate, confirm it's a REAL, LIVE issue (not already fixed,
+   not already tracked as a task) before drafting an item.
+5. propose_friction_fixes(items=[...])
+     — call this EXACTLY ONCE with 1-{max_items} item drafts. Each item is an
+       object with: title, description, acceptance_criteria (list of
+       strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
+       (1-4, default 2), evidence (REQUIRED — the actual walked path: which
+       pages, which clicks, what broke or felt wrong, in prose; NEVER a
+       screenshot; no evidence, no item).
+6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the dogfood queue; an approved item lands in
+   BACKLOG for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those

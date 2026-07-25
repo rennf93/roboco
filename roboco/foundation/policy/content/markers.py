@@ -55,6 +55,7 @@ CORONER_POSTMORTEM = "coroner_postmortem"
 QUALITY_REPORT = "quality_report"
 GAP_FILL = "gap_fill"
 MESSAGING_FIXES = "messaging_fixes"
+FRICTION_FIXES = "friction_fixes"
 VIDEO_DRAFT = "video_draft"
 VIDEO_REJECT_REASON = "video_reject_reason"
 RENDER_PREVIEW = "render_preview"
@@ -497,6 +498,24 @@ def get_barfly_reply_ref(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_barfly_reply_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
     set_marker(task, BARFLY_REPLY_REF, ref)
+
+
+# --- board dogfood friction fixes --------------------------------------------
+# The evidence-backed UX-friction item drafts the Product Owner authors via
+# ``propose_friction_fixes`` onto the exploration task the dogfood engine
+# opened. Mirrors GAP_FILL exactly — no top-level theme goal, just items, each
+# carrying its own status (proposed/approved/rejected) for the CEO's per-item
+# approve/reject. ``evidence`` on each item is the walked path (the actual
+# clicks/pages) plus what broke or felt wrong — not a screenshot.
+
+
+def get_friction_fixes(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, FRICTION_FIXES)
+    return val if isinstance(val, dict) else None
+
+
+def set_friction_fixes(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, FRICTION_FIXES, payload)
 
 
 # --- video draft ------------------------------------------------------------

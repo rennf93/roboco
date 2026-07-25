@@ -474,6 +474,24 @@ _CAMPAIGN_NAME_MAX_CHARS = 100
 _CAMPAIGN_MIN_POSTS = 2
 _CAMPAIGN_MAX_POSTS = 6
 
+# Dogfood (Board Program) friction-fix audits are Product-Owner-only,
+# mirroring _GAP_FILL_ROLES.
+_DOGFOOD_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Text fields on a friction-fix item draft. ``evidence`` is the load-bearing
+# one (spec §4: the actual walked path — clicks/pages — plus what broke or
+# felt wrong, prose, no screenshots) — required, substantive, and capped so
+# a runaway dump can't blow out the marker payload. Mirrors
+# _GAP_FILL_ITEM_TEXT_FIELDS.
+_FRICTION_FIXES_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("evidence", 20),
+)
+_FRICTION_FIXES_EVIDENCE_MAX_CHARS = 2000
+
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 # The Auditor is deliberately NOT in this set — "auditor curates but does not
 # draft" is an enforced invariant (test_playbook_verbs.py). A Coroner
@@ -618,6 +636,30 @@ def _normalize_scales_item(
 def _normalize_messaging_fix_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce a validated raw messaging-fix item dict into the stored marker
     shape. Mirrors ``_normalize_gap_fill_item`` — ``id`` is server-assigned."""
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "evidence": str(raw["evidence"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
+
+
+def _normalize_friction_fix_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw friction-fix item dict into the stored marker
+    shape. Mirrors ``_normalize_messaging_fix_item`` — ``id`` is server-
+    assigned."""
     priority = raw.get("priority")
     try:
         priority = int(priority) if priority is not None else 2
@@ -2619,6 +2661,233 @@ class ContentActions:
             except Exception as exc:
                 logger.warning(
                     "mirror telegram notify failed (best-effort)",
+                    error=str(exc),
+                )
+
+    @classmethod
+    def _reject_friction_fix_item_text_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the plain text fields (title/description/project_slug/
+        team/evidence) of one friction-fix item dict. Mirrors
+        ``_reject_messaging_fix_item_text_fields``."""
+        for field, min_chars in _FRICTION_FIXES_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        return None
+
+    @staticmethod
+    def _reject_friction_fix_item_evidence_and_ac(
+        raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the evidence char-cap and acceptance_criteria list of one
+        friction-fix item dict — split from the text-fields loop above to
+        keep ``_reject_friction_fix_item_fields`` under the xenon complexity
+        budget."""
+        evidence = str(raw.get("evidence", ""))
+        if len(evidence) > _FRICTION_FIXES_EVIDENCE_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} evidence is {len(evidence)} chars, over the "
+                    f"{_FRICTION_FIXES_EVIDENCE_MAX_CHARS}-char cap"
+                ),
+                remediate=(
+                    f"shorten item {idx}'s evidence to "
+                    f"{_FRICTION_FIXES_EVIDENCE_MAX_CHARS} characters or fewer"
+                ),
+                context_briefing={},
+            )
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_friction_fix_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + evidence-cap + acceptance-criteria fields of
+        one friction-fix item dict. Mirrors ``_reject_messaging_fix_item_fields``."""
+        if rej := cls._reject_friction_fix_item_text_fields(raw, idx):
+            return rej
+        return cls._reject_friction_fix_item_evidence_and_ac(raw, idx)
+
+    @classmethod
+    def _reject_friction_fix_item_shape(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw friction-fix item dict's shape/fields; None when
+        clean. Reuses ``_reject_roadmap_item_team`` — the cell-team check is
+        identical for every item kind."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/evidence"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_friction_fix_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def _reject_friction_fix_item(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate one raw friction-fix item dict; None when clean. Mirrors
+        ``_reject_messaging_fix_item``."""
+        if rej := self._reject_friction_fix_item_shape(raw, idx):
+            return rej
+        return await self._reject_unparticipating_dogfood_project(raw, idx)
+
+    async def _reject_unparticipating_dogfood_project(
+        self, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Reject an item targeting a project that has NOT opted into the
+        dogfood program (``"dogfood"`` absent from its ``board_programs``) —
+        mirrors ``_reject_unparticipating_mirror_project``.
+
+        An unresolvable ``project_slug`` is NOT rejected here; that surfaces
+        downstream at approve/materialize time, same posture as mirror's
+        check.
+        """
+        from roboco.foundation.policy.board_programs import (
+            PROGRAMS,
+            project_participates,
+        )
+        from roboco.services.project import get_project_service
+
+        slug = str(raw.get("project_slug", "")).strip()
+        project = await get_project_service(self.task.session).get_by_slug(slug)
+        if project is None:
+            return None
+        if not project_participates(PROGRAMS["dogfood"], project.board_programs):
+            return Envelope.invalid_state(
+                message=(
+                    f"item {idx} targets project {slug!r}, which has not "
+                    "opted into the dogfood program"
+                ),
+                remediate=(
+                    f"drop item {idx} or ask the CEO to opt {slug!r} into "
+                    "dogfood on its project settings page"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    async def propose_friction_fixes(
+        self,
+        *,
+        agent_id: UUID,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a Dogfood friction audit (1-N evidence-backed
+        item drafts, N = the registry's ``max_items_per_cycle``).
+
+        Persists the audit onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the dogfood queue. One call per cycle: the exploration
+        task stays open (and this verb keeps refusing) until every item is
+        terminal. Mirrors ``propose_messaging_fixes`` — no top-level theme
+        goal here, just the items.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        role = await self._caller_role(agent_id)
+        if role not in _DOGFOOD_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose friction fixes; only "
+                    "the Product Owner authors this audit"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        max_items = PROGRAMS["dogfood"].max_items_per_cycle
+        if not (1 <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a friction audit needs 1-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between 1 and {max_items} evidence-backed items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := await self._reject_friction_fix_item(raw, idx):
+                return rej
+            normalized.append(_normalize_friction_fix_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_dogfood_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_friction_fixes(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open dogfood exploration task assigned to you",
+                remediate=(
+                    "propose_friction_fixes only runs against an active "
+                    "exploration cycle spawned by the dogfood engine; wait "
+                    "for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_friction_fixes(task, {"items": normalized})
+        await self.task.session.flush()
+        await self._notify_friction_fix_items(task, normalized)
+        return Envelope.ok(
+            status="friction_fixes_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the dogfood queue",
+            context_briefing={"item_count": len(normalized)},
+        )
+
+    async def _notify_friction_fix_items(
+        self, task: Any, items: list[dict[str, Any]]
+    ) -> None:
+        """Best-effort push DM per proposed item — mirrors
+        ``_notify_messaging_fix_items``."""
+        if self._deps.notification_delivery is None:
+            return
+        id8 = str(task.id)[:8]
+        for item in items:
+            try:
+                await self._deps.notification_delivery.notify_ceo_of_queue_item(
+                    kind="dogfood",
+                    id8=id8,
+                    extra=str(item.get("id") or ""),
+                    title=item.get("title") or "untitled",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dogfood telegram notify failed (best-effort)",
                     error=str(exc),
                 )
 

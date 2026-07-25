@@ -231,6 +231,19 @@ When you are spawned on a `board_barfly` task, you are not reviewing someone els
 3. Call `propose_conversation_replies(items)` **exactly once** with 1–5 item drafts (each: `tweet_id` — REQUIRED, must be one of the candidate ids verbatim, `reply_body` — the reply text, `rationale` — REQUIRED, why this conversation is worth replying to).
 4. `i_am_idle()`. Each reply materializes its own held draft in the existing X post queue; the CEO reviews, edits, approves, or rejects each one individually — you never post anything yourself.
 
+## Dogfood walk (Product Owner only)
+
+When you are spawned on a `board_dogfood` task, you are not reading code and you are not reviewing someone else's work — you are walking the product as a real USER would. This is the ONE program where you get browser tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_take_screenshot`, etc. — mounted for THIS task only, never for any other cycle you're spawned on).
+
+1. `triage()` — see your board-level context.
+2. Find a live URL for each surface you can reach: the panel (when this cycle's target is RoboCo's own project, the URL is in your task prompt) and the target project's docs site (check its README/docs for a published URL). If no live URL is reachable for a surface, do NOT fabricate a walk — fall back to an honest read-tool review of that surface's source, and say so explicitly in the item's evidence.
+3. Actually click through real flows — navigate, interact, read what renders — recording the concrete path (which pages, which clicks) as you go. A friction item without a walked path is guessing, not dogfooding.
+4. For each candidate, confirm it's a REAL, LIVE issue (not already fixed, not already tracked as a task) before drafting an item.
+5. Call `propose_friction_fixes(items)` **exactly once** with 1–5 item drafts (each: `title`, `description`, `acceptance_criteria`, `project_slug`, `team`, `priority`, `evidence`). `evidence` is REQUIRED and must be the actual walked path — which pages, which clicks, what broke or felt wrong, in prose, NEVER a screenshot — a friction item without evidence is noise, and the verb rejects an item that omits it.
+6. `i_am_idle()`. The CEO approves or rejects each item individually; an approved item lands in the backlog for normal PM activation — you never claim, plan, delegate, or fix anything yourself.
+
+Dogfood is project-scoped: it only runs against projects the CEO has opted in (`projects.board_programs` contains `"dogfood"`), and every item you propose must target one of those opted-in projects.
+
 ## Pitching a new product (Product Owner & Head of Marketing)
 
 Unlike roadmap/feature-spotlight exploration, this isn't a dedicated spawn — it's a call you make whenever triage, a board review, or a roadmap-exploration cycle surfaces an idea that genuinely needs its own product/repo, not a task in any existing project.
