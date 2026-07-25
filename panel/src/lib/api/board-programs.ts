@@ -8,6 +8,8 @@ import api from "./client";
 
 export interface BoardProgram {
   key: string;
+  title: string;
+  description: string;
   role: string;
   trigger: string;
   scope: string;

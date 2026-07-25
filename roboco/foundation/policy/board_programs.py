@@ -40,6 +40,12 @@ class BoardProgram:
     # roadmap cycle) runs org-wide by default and is only ever excluded per
     # project as an OUTPUT target. See project_participates below.
     scope: str = "org"
+    # Human-facing name + one-sentence "what does enabling/running this do"
+    # — the panel renders these, never the raw key. Registry entries MUST
+    # fill both (test-enforced); the defaults exist only so synthetic
+    # test programs stay one-liners.
+    title: str = ""
+    description: str = ""
 
 
 PROGRAMS: dict[str, BoardProgram] = {
@@ -51,6 +57,12 @@ PROGRAMS: dict[str, BoardProgram] = {
             trigger=TriggerKind.CRON,
             source="board_roadmap",
             default_interval_seconds=WEEK_SECONDS,
+            title="Roadmap Cycle",
+            description=(
+                "Weekly: the Product Owner explores the charter, releases, and "
+                "metrics, then proposes a themed cycle of roadmap items for "
+                "your per-item approval — approved items land in the backlog."
+            ),
         ),
         BoardProgram(
             key="x_feature",
@@ -62,6 +74,12 @@ PROGRAMS: dict[str, BoardProgram] = {
             # settings_field_default, which guards the two from drifting
             # apart again.
             default_interval_seconds=86400,
+            title="Feature Spotlight",
+            description=(
+                "Daily check: the Head of Marketing investigates what actually "
+                "shipped and drafts one X post spotlighting an under-publicized "
+                "feature, held in the X queue for your approval."
+            ),
         ),
         BoardProgram(
             key="pest_control",
@@ -74,6 +92,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # findings ledger / rework history, so it needs a per-project
             # opt-in before a cycle is worth opening at all.
             scope="project",
+            title="Pest Control",
+            description=(
+                "Weekly bug hunt (accelerated when the rework rate spikes): "
+                "the Product Owner mines the findings ledger and rework "
+                "hotspots of an opted-in project and proposes up to five "
+                "evidence-backed bug tasks for your per-item approval."
+            ),
         ),
         BoardProgram(
             key="periscope",
@@ -85,6 +110,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # roadmap: runs org-wide by default, never needs a per-project
             # opt-in to fire.
             scope="org",
+            title="Periscope",
+            description=(
+                "Weekly market brief: the Head of Marketing researches "
+                "competitors and adjacent tools (every claim source-cited) and "
+                "files a read-only report that also feeds the next roadmap "
+                "exploration."
+            ),
         ),
         BoardProgram(
             key="coroner",
@@ -101,6 +133,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # whichever project it landed in, not a repo it reads on a
             # schedule — no per-project opt-in gate.
             scope="org",
+            title="Coroner",
+            description=(
+                "Event-triggered postmortem: when a task bounces three times, "
+                "is cancelled after work started, or blows its budget, the "
+                "Auditor autopsies it and proposes one process change — often "
+                "a draft playbook for the curation queue."
+            ),
         ),
         BoardProgram(
             key="sentinel",
@@ -112,6 +151,12 @@ PROGRAMS: dict[str, BoardProgram] = {
             # conventions violations, budget), not one repo (spec §4) — org
             # scope, same as periscope.
             scope="org",
+            title="Sentinel",
+            description=(
+                "Weekly drift watch: the Auditor reviews waiver trends, open "
+                "findings, and budget anomalies and files a read-only "
+                "state-of-quality report naming systemic issues."
+            ),
         ),
         BoardProgram(
             key="spackle",
@@ -123,6 +168,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # Gap-fill audit of one repo's half-shipped surface area (spec
             # §4) — project-scoped, same as pest_control.
             scope="project",
+            title="Spackle",
+            description=(
+                "Biweekly gap-fill audit: the Product Owner hunts an opted-in "
+                "project's half-shipped surface area — routes without UI, "
+                "flags without docs, dead-end tabs — and proposes fixes for "
+                "your per-item approval."
+            ),
         ),
         BoardProgram(
             key="scales",
@@ -135,6 +187,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # project against the charter, not one repo's own findings ledger
             # — no per-project opt-in gate, mirrors periscope/roadmap.
             scope="org",
+            title="Scales",
+            description=(
+                "Monthly portfolio rebalance: the Product Owner reviews stale "
+                "backlog against the charter and proposes re-prioritizations "
+                "and cancellations — approving an item executes the change on "
+                "the live task."
+            ),
         ),
         BoardProgram(
             key="mirror",
@@ -147,6 +206,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # docs-site, website) against the charter + shipped reality (spec
             # §4) — project-scoped, same as pest_control/spackle.
             scope="project",
+            title="Mirror",
+            description=(
+                "Quarterly positioning audit: the Head of Marketing checks an "
+                "opted-in project's README and docs claims against shipped "
+                "reality and proposes documentation fixes for your per-item "
+                "approval."
+            ),
         ),
         BoardProgram(
             key="megaphone",
@@ -159,6 +225,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # org's own shipped-task/changelog history, not a repo it audits
             # on a schedule. Org scope, same as periscope/x_feature.
             scope="org",
+            title="Megaphone",
+            description=(
+                "Standing editorial calendar (every 3 days): the Head of "
+                "Marketing drafts a dev-log or changelog-highlight post from "
+                "what the fleet actually shipped, held in the X queue for your "
+                "approval."
+            ),
         ),
         BoardProgram(
             key="librarian",
@@ -170,6 +243,12 @@ PROGRAMS: dict[str, BoardProgram] = {
             # Org-scoped (spec §4): it mines journals/learnings org-wide, not
             # one repo — no per-project opt-in gate, mirrors sentinel/periscope.
             scope="org",
+            title="Librarian",
+            description=(
+                "Biweekly playbook mining: the Auditor turns recurring lessons "
+                "from agent journals into up to three draft playbooks for the "
+                "normal curation queue."
+            ),
         ),
         BoardProgram(
             key="war_room",
@@ -186,6 +265,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # on-demand marketing push, not one repo's own state — no
             # per-project opt-in gate.
             scope="org",
+            title="War Room",
+            description=(
+                "Release campaigns: on publish (or run-now) the Head of "
+                "Marketing designs a 2-6 post arc with recommended timing; "
+                "each post is a held X draft you approve at its moment — "
+                "nothing auto-posts."
+            ),
         ),
         BoardProgram(
             key="barfly",
@@ -197,6 +283,12 @@ PROGRAMS: dict[str, BoardProgram] = {
             # Org-scoped (spec §4): it searches X for adjacent conversations,
             # not a repo — no per-project opt-in gate, mirrors periscope.
             scope="org",
+            title="Barfly",
+            description=(
+                "Every two days: the Head of Marketing searches X for relevant "
+                "conversations RoboCo isn't in (screened for prompt injection) "
+                "and drafts replies, held in the X queue for your approval."
+            ),
         ),
         BoardProgram(
             key="dogfood",
@@ -217,6 +309,13 @@ PROGRAMS: dict[str, BoardProgram] = {
             # surfaces (panel, docs site) as a user, same as
             # pest_control/spackle/mirror.
             scope="project",
+            title="Dogfood",
+            description=(
+                "After a release (or run-now): the Product Owner walks an "
+                "opted-in project's live surfaces like a user — browser tools, "
+                "panel, docs — and files UX-friction tasks for your per-item "
+                "approval."
+            ),
         ),
     )
 }

@@ -235,6 +235,21 @@ def test_registry_carries_fourteen_programs() -> None:
     }
 
 
+_MIN_DESCRIPTION_CHARS = 40
+
+
+def test_every_registry_entry_has_human_title_and_description() -> None:
+    """The panel renders title/description, never the raw key — a registry
+    entry shipping without them regresses the card to unreadable keys."""
+    for key, program in PROGRAMS.items():
+        assert program.title.strip(), f"{key} has no title"
+        assert len(program.description.strip()) >= _MIN_DESCRIPTION_CHARS, (
+            f"{key} description too thin"
+        )
+    titles = [p.title for p in PROGRAMS.values()]
+    assert len(set(titles)) == len(titles), "duplicate program titles"
+
+
 def test_program_due_cron_interval() -> None:
     now = datetime(2026, 7, 24, tzinfo=UTC)
     p = PROGRAMS["roadmap"]

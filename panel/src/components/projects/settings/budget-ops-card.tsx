@@ -226,13 +226,13 @@ export function BudgetOpsCard({ project }: { project: Project }) {
             {projectScopedPrograms.map((p) => (
               <div key={p.key} className="flex items-center justify-between">
                 <HelpTip
-                  label={`Explored by the ${p.role} role, ${p.trigger} trigger.`}
+                  label={`${p.description || `Explored by the ${p.role} role.`} (${p.trigger} trigger)`}
                 >
                   <Label
                     htmlFor={`board_program_${p.key}`}
                     className="text-sm font-normal"
                   >
-                    {p.key}
+                    {p.title || p.key}
                   </Label>
                 </HelpTip>
                 <Switch
@@ -257,13 +257,13 @@ export function BudgetOpsCard({ project }: { project: Project }) {
               return (
                 <div key={p.key} className="flex items-center justify-between">
                   <HelpTip
-                    label={`Excludes this project as a ${p.key} output target only; ${p.key} keeps running org-wide.`}
+                    label={`${p.description || ""} Excludes this project as a ${p.title || p.key} output target only; the program keeps running org-wide.`}
                   >
                     <Label
                       htmlFor={`board_program_excl_${p.key}`}
                       className="text-sm font-normal"
                     >
-                      {p.key}
+                      {p.title || p.key}
                     </Label>
                   </HelpTip>
                   <Switch

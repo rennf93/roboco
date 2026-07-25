@@ -11,6 +11,8 @@ const { resolveListRef } = vi.hoisted(() => ({
 function buildProgram(overrides: Partial<BoardProgram> = {}): BoardProgram {
   return {
     key: "roadmap",
+    title: "Roadmap Cycle",
+    description: "Weekly PO exploration proposing roadmap items.",
     role: "product_owner",
     trigger: "cron",
     scope: "org",
@@ -115,7 +117,7 @@ describe("BoardProgramsCard", () => {
 
     await waitFor(() => expect(runNow).toHaveBeenCalledWith("roadmap"));
     await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith("roadmap cycle opened"),
+      expect(toast.success).toHaveBeenCalledWith("Roadmap Cycle cycle opened"),
     );
   });
 

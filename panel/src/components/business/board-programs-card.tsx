@@ -48,7 +48,7 @@ function ProgramRow({ program }: { program: BoardProgram }) {
   const runNowMutation = useMutation({
     mutationFn: () => boardProgramsApi.runNow(program.key),
     onSuccess: () => {
-      toast.success(`${program.key} cycle opened`);
+      toast.success(`${program.title || program.key} cycle opened`);
       void qc.invalidateQueries({ queryKey: ["board-programs"] });
     },
     onError: (e) => toast.error(getErrorMessage(e)),
@@ -59,7 +59,12 @@ function ProgramRow({ program }: { program: BoardProgram }) {
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{program.key}</span>
+            <HelpTip label={program.description || `The ${program.key} program.`}>
+              <span className="font-medium">{program.title || program.key}</span>
+            </HelpTip>
+            <span className="font-mono text-xs text-muted-foreground">
+              {program.key}
+            </span>
             <HelpTip label={`Explored by the ${program.role} role.`}>
               <Badge variant="outline">{program.role}</Badge>
             </HelpTip>
@@ -93,7 +98,7 @@ function ProgramRow({ program }: { program: BoardProgram }) {
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex items-center gap-2">
             <HelpTip
-              label={`Toggle the ${program.key} program on/off. Persists immediately; the background loop picks it up on its next tick.`}
+              label={`Toggle ${program.title || program.key} on/off. ${program.description} Persists immediately; the background loop picks it up on its next tick.`}
             >
               <Label
                 htmlFor={`board-program-${program.key}`}

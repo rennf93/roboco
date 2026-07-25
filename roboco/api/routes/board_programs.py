@@ -30,6 +30,8 @@ class BoardProgramResponse(BaseModel):
     dialog's opt-in controls both read this shape."""
 
     key: str
+    title: str
+    description: str
     role: str
     trigger: str
     scope: str
@@ -48,6 +50,8 @@ async def _to_response(engine: BoardProgramEngine, key: str) -> BoardProgramResp
     opted_in = await engine.opted_in_projects(program)
     return BoardProgramResponse(
         key=key,
+        title=program.title or key,
+        description=program.description,
         role=program.role,
         trigger=program.trigger.value,
         scope=program.scope,
