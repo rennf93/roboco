@@ -208,3 +208,57 @@ Same schema as prior releases: one `captions.json` next to the HTML with self-ve
 ### Smoke-test invariants
 
 `release-0.26.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the exact titles ("Off the public net", "3 forges, 1 API", "Telegram cockpit", "Guard mode: active"), the stats overlay renders the three-line receipt (1 release / 3 forges / 0 leaks), the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, and no em dashes slip into on-screen copy or captions.
+
+## Release-specific example: `release-0.27.0`
+
+`compositions/release-0.27.0/` is a panel-demo kit clip for the RoboCo v0.27.0 release, mirroring the structure and pacing of `release-0.25.0`/`release-0.26.0`. It builds on the `kit/` register instead of the text-card style, so it has no `theme.css` of its own.
+
+The composition runs **40 seconds** total. The story is "four brains, zero bans" (the hero tagline and the panel intake text): the CEO types "Four brains, zero bans" into the panel intake at 3.6s, then four shipped feature cards enter the kanban column one per scene and flip from `in progress` to `completed`:
+
+1. **WAF knows the real IP** — enters at 5.0s, completes at 6.6s ("Tailscale hops don't get banned anymore."). The WAF now resolves the real client behind host-proxy hops via `ClientIpResolutionMiddleware`, instead of banning the operator's own Tailscale-tunneled device.
+2. **Telegram Mini App V6** — enters at 10.5s, completes at 12.1s ("Real chat scopes, wallet-style metrics."). The Mini App gets a native-type premium overhaul: borderless cards, a wallet-style metrics tab, honest Chat scopes, and a live Board decide sheet.
+3. **Codex and Gemini join** — enters at 16.9s, completes at 18.5s ("Four model providers, one gateway now."). `ModelProvider.OPENAI` (Codex CLI) and `ModelProvider.GEMINI` (Gemini CLI) join Anthropic and Grok on the agent-provider roster.
+4. **Cost-tiered routing** — enters at 22.2s, completes at 23.8s ("Save a routing mix, restore it anytime."). Cost-tiered model routing plus saved routing presets let an operator snapshot and restore a full routing configuration.
+
+Unlike `release-0.25.0`/`release-0.26.0`'s uniform 5.0s card-beat gaps, this composition deliberately varies the spacing (5.5s/6.4s/5.3s between successive card entrances — delays 5.0/10.5/16.9/22.2s) per the craft bar's anti-metronome rule in "Beat density and pacing variation" above; the camera shots, cursor waypoints, and the stats/toast/outro tail are all re-warped with a shared piecewise-linear time function so nothing desyncs against the shifted beats. A cursor clicks the intake at 4.8s (submit), then witnesses each card completing without further clicks, the stats overlay shows "1 release / 4 providers / 0 bans" from 25.7s to 33.0s, the toast "v0.27.0 shipped / I approved once. 25 agents shipped it." runs from 31.0s, and the "roboco.tech" outro lands at 36.3s and holds through the end.
+
+The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern to replace the `in progress` pill with `completed` on the same beat.
+
+### Preview / test this composition
+
+```bash
+npx hyperframes preview compositions/release-0.27.0/vertical.html
+npx hyperframes preview compositions/release-0.27.0/square.html
+pnpm test   # release-0.27.0.test.js is picked up by vitest
+```
+
+### `props.js` shape
+
+```js
+{
+  introText: string,   // text that types into the panel intake field
+  toastTitle: string, // headline inside the shipping toast
+  toastBody: string,   // sub-line inside the shipping toast
+}
+```
+
+`window.__ORIENTATION__` is set for local preview only; the sidecar overwrites both globals at render time.
+
+### `captions.json`
+
+Same schema as prior releases: one `captions.json` next to the HTML with self-verified X and TikTok captions. The X caption totals **234 characters** (within the 280 limit); the TikTok caption **499 characters** (within the 2200 limit):
+
+```json
+{
+  "composition_id": "release-0.27.0",
+  "occasion": "release: RoboCo v0.27.0",
+  "platforms": {
+    "x":      { "caption": "v0.27.0 is out.\nThe WAF used to ban my own phone behind Tailscale. Now it knows the real client.\nTelegram Mini App V6, Codex and Gemini joined the roster, cost-tiered routing shipped.\nI approved once. 25 agents shipped it.\nroboco.tech", "char_count": 234, "limit": 280,  "within_limit": true },
+    "tiktok": { "caption": "v0.27.0 is out.\n\nThe WAF used to ban my own phone behind a Tailscale hop. Now it resolves the real client. Zero false bans.\n\nTelegram Mini App V6 shipped: real chat scopes, wallet-style metrics, a live Board sheet.\n\nCodex and Gemini just joined Claude and Grok on the model roster. Four providers, one gateway.\n\nCost-tiered routing plus saved presets: snapshot a routing mix, restore it whenever.\n\nI approved once. 25 agents shipped it.\n\nroboco.tech\n\n#buildinpublic #aiagents #devtools #indiehackers", "char_count": 499, "limit": 2200, "within_limit": true }
+  }
+}
+```
+
+### Smoke-test invariants
+
+`release-0.27.0.test.js` extends the panel-demo register checks: both `vertical.html` (1080×1920) and `square.html` (1080×1080) parse with `data-duration="40"` and the HyperFrames params, the kit CSS/JS wiring is present, **four** feature cards each carry a progress-to-completed pill swap and include the exact titles ("WAF knows the real IP", "Telegram Mini App V6", "Codex and Gemini join", "Cost-tiered routing"), the stats overlay renders the three-line receipt (1 release / 4 providers / 0 bans), the cursor and toast appear, the outro shows "roboco.tech", no external scripts are loaded, no em dashes slip into on-screen copy or captions, and — the finding a prior revision cycle on this composition caught — the four card-beat gaps are asserted non-uniform (`new Set(gaps).size > 1`), regression-guarding against silently reusing `release-0.26.0`'s identical 5.0s/5.0s/5.0s spacing.
