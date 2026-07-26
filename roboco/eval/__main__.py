@@ -3,15 +3,14 @@
     python -m roboco.eval run --role <slug> --cohort <name> \\
         [--fixtures a,b] [--json-out path]
 
-NOT YET FUNCTIONAL: the real-spawn path (``OrchestratorStageSpawner``) is
-deliberately cut — see ``roboco/eval/runner.py``'s module docstring's
-"Real-spawn status" section — because a real container spawn's MCP wiring
-would authenticate against the REAL production orchestrator, not this
-harness's disposable one. ``run`` will raise ``NotImplementedError`` once it
-reaches the first fixture. The only working path today is driving
-``EvalRunner`` with an injected scripted ``StageSpawner`` from Python (see
-``tests/e2e_smoke/test_eval_bench.py``); this CLI is wired for the day the
-follow-up lands, not for use today.
+Replays the golden-task fixtures against one agent through the REAL delivery
+lifecycle: ``OrchestratorStageSpawner`` drives a real ``AgentOrchestrator``
+container spawn per turn, and ``_generate_mcp_config`` honors the patched
+``settings.api_url`` so spawned MCP servers resolve to the harness's
+disposable orchestrator, never the real production one. Needs a Docker daemon
++ built agent images. The injectable scripted ``StageSpawner`` (see
+``tests/e2e_smoke/test_eval_bench.py``) remains the unit-test fallback that
+proves the runner's plumbing without touching Docker.
 
 Offline dev/ops tool: no panel surface, no feature flag. Also runs from a
 source checkout only (needs ``tests/e2e_smoke``, not shipped in containers
@@ -35,10 +34,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
     run = subparsers.add_parser(
         "run",
-        help=(
-            "Replay the golden-task fixtures against one agent "
-            "[NOT YET FUNCTIONAL — real-spawn path is cut, see module docstring]"
-        ),
+        help="Replay the golden-task fixtures against one agent",
     )
     run.add_argument(
         "--role", required=True, help="Agent slug under test (e.g. be-dev-1)"

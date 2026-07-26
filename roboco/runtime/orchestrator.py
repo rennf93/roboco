@@ -3889,8 +3889,16 @@ class AgentOrchestrator:
         not-authorized error rather than 404. Git context is forwarded
         only as a fallback for tools that resolve project/branch from env.
         """
-        # MCP servers run inside agent containers, need to connect via Docker network
-        if PROJECT_HOST_PATH:
+        # MCP servers run inside agent containers, need to connect to the
+        # orchestrator API. Prefer an explicit settings.api_url override —
+        # production sets it to the container hostname, and the eval harness
+        # patches it to its disposable in-process stack (see runner.py's
+        # _bench_environment) so a spawned container's MCP servers resolve to
+        # the throwaway orchestrator, never the real production one. Fall back
+        # to the PROJECT_HOST_PATH / settings.port logic when it is unset.
+        if settings.api_url:
+            api_url = settings.api_url
+        elif PROJECT_HOST_PATH:
             api_url = "http://roboco-orchestrator:8000"
         else:
             api_url = f"http://127.0.0.1:{settings.port}"
