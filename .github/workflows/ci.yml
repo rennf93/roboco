@@ -53,6 +53,14 @@ on:
   pull_request:
     branches:
       - master
+      # Every fleet PR targets the dev branch, not master (cell->root and
+      # root->slave alike). Listing master alone meant `pull_request` never
+      # fired for them, so their ONLY coverage was the `push` trigger above
+      # — which is branch-PREFIX gated, silently leaving any head outside
+      # feature/bug/chore/docs/hotfix with zero checks rather than a red
+      # one. Basing on the target branch (what the PR merges INTO) instead
+      # of the head's name makes coverage independent of branch naming.
+      - slave
     paths:
       - 'roboco/**'
       - 'agents/**'
