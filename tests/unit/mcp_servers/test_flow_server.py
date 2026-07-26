@@ -192,7 +192,7 @@ def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
-        flow_module.i_will_work_on("task-uuid", plan="my plan")
+        flow_module.i_will_work_on(task_id="task-uuid", plan="my plan")
 
     args, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {
@@ -210,7 +210,7 @@ def test_i_will_work_on_plan_defaults_to_none(flow_module: types.ModuleType) -> 
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
-        flow_module.i_will_work_on("task-uuid")
+        flow_module.i_will_work_on(task_id="task-uuid")
 
     _, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {
@@ -234,7 +234,7 @@ def test_i_will_work_on_passes_steps(flow_module: types.ModuleType) -> None:
     ]
 
     with patch("httpx.Client", return_value=fake_client):
-        flow_module.i_will_work_on("task-uuid", plan="p", steps=steps)
+        flow_module.i_will_work_on(task_id="task-uuid", plan="p", steps=steps)
 
     _, kwargs = fake_client.post.call_args
     assert kwargs["json"] == {

@@ -418,6 +418,7 @@ async def get_git_diff(
 
 @router.get("/file", response_model=GitFileContentResponse)
 async def get_git_file(
+    *,
     db: DbSession,
     agent: CurrentAgentContext,
     branch: str = Query(..., description="Task branch holding the file"),

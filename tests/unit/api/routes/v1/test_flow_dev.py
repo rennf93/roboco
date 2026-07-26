@@ -77,9 +77,9 @@ async def test_i_will_work_on_dispatches_task_id() -> None:
     assert body["status"] == "in_progress"
     mock_chore.i_will_work_on.assert_awaited_once()
     call_args = mock_chore.i_will_work_on.call_args
-    # second positional arg is task_id (UUID), third is plan
-    assert str(call_args.args[1]) == _TASK_ID
-    assert call_args.args[2] == "implement the feature"
+    # the verb's params are keyword-only past agent_id, so read the kwargs
+    assert str(call_args.kwargs["task_id"]) == _TASK_ID
+    assert call_args.kwargs["plan"] == "implement the feature"
 
 
 @pytest.mark.asyncio

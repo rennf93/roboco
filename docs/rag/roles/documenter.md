@@ -68,13 +68,15 @@ roboco_kb_search("similar documentation")
 Use `roboco_docs_write()` — handles paths and deduplication automatically:
 
 ```python
-roboco_docs_write({
-    "task_id": "your-task-uuid",
-    "filename": "feature-api.md",
-    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
-    "title": "Feature API Documentation",
-    "content": "# Feature API\n\n..."
-})
+roboco_docs_write(
+    {
+        "task_id": "your-task-uuid",
+        "filename": "feature-api.md",
+        "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+        "title": "Feature API Documentation",
+        "content": "# Feature API\n\n...",
+    }
+)
 ```
 
 **SMART DEDUPLICATION**: RAG searches for similar existing docs.

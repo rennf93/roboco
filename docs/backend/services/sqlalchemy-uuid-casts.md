@@ -3,7 +3,7 @@
 When casting SQLAlchemy `Mapped[UUID]` primary-key columns to the runtime `uuid.UUID` type for typing purposes, use the string-literal form:
 
 ```python
-cast('UUID', child.id)
+cast("UUID", child.id)
 ```
 
 not the runtime symbol form:

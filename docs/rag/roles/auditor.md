@@ -129,9 +129,9 @@ Biweekly cron, org-scoped. Playbook curation is otherwise reactive — you only 
 propose_playbook_drafts(
     drafts=[
         {
-            "title": "...",              # <=200 chars, must not duplicate an existing playbook (case-insensitive)
-            "body": "...",                # <=4000 chars, the procedure itself
-            "pattern_evidence": "...",    # REQUIRED, <=500 chars — which repeated journal/learning pattern justifies this
+            "title": "...",  # <=200 chars, must not duplicate an existing playbook (case-insensitive)
+            "body": "...",  # <=4000 chars, the procedure itself
+            "pattern_evidence": "...",  # REQUIRED, <=500 chars — which repeated journal/learning pattern justifies this
         },
         # 1-3 drafts
     ],

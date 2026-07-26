@@ -170,6 +170,7 @@ class NotificationService:
 
     async def send_oscillation_blocked_notification(
         self,
+        *,
         task_id: str,
         strikes: int,
         escalator: str | UUID | None,
@@ -422,6 +423,7 @@ class NotificationService:
 
     async def send_external_pr_reviewed_notification(
         self,
+        *,
         task_id: str,
         pr_number: int,
         pr_url: str,
@@ -466,6 +468,7 @@ class NotificationService:
 
     async def send_reassignment_notification(
         self,
+        *,
         task_id: str,
         previous_assignee: str | None,
         new_assignee: str | None,
@@ -513,6 +516,7 @@ class NotificationService:
 
     async def send_collision_sequencing_notification(
         self,
+        *,
         held_back_task_id: str,
         blocking_task_id: str,
         held_back_assignee: str | None,
@@ -557,6 +561,7 @@ class NotificationService:
 
     async def send_unblock_notification(
         self,
+        *,
         task_id: str,
         restored_owner: str | None,
         from_agent: str | None = None,
@@ -600,6 +605,7 @@ class NotificationService:
 
     async def send_dependency_revival_notification(
         self,
+        *,
         task_id: str,
         assignee: str | None,
         completed_dependency_id: str,
@@ -654,6 +660,7 @@ class NotificationService:
 
     async def send_stale_claim_reaped_notification(
         self,
+        *,
         task_id: str,
         reaped_agent: str | None,
         last_heartbeat: str | None = None,

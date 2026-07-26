@@ -312,19 +312,19 @@ Major tasks are escalated to CEO for final approval:
 
 ```python
 # Git configuration (all tasks follow git workflow)
-task_type: TaskType      # code, documentation, research, planning, design, administrative
-project_id: UUID         # Project this task works on (required)
-branch_name: str         # Branch for this task (auto-created on claim)
-work_session_id: UUID    # Active work session
+task_type: TaskType  # code, documentation, research, planning, design, administrative
+project_id: UUID  # Project this task works on (required)
+branch_name: str  # Branch for this task (auto-created on claim)
+work_session_id: UUID  # Active work session
 
 # PR tracking (parallel execution in awaiting_documentation)
-pr_number: int           # GitHub/GitLab PR number
-pr_url: str              # Full URL to PR
-docs_complete: bool      # Documenter has finished
-pr_created: bool         # Developer has created PR
+pr_number: int  # GitHub/GitLab PR number
+pr_url: str  # Full URL to PR
+docs_complete: bool  # Documenter has finished
+pr_created: bool  # Developer has created PR
 
 # Commits linked to task
-commits: list[CommitRef] # All commits made for this task
+commits: list[CommitRef]  # All commits made for this task
 ```
 
 ## Communication Model

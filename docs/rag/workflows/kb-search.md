@@ -25,9 +25,9 @@ It searches ALL knowledge sources and supports follow-up questions.
 ```python
 roboco_kb_search(
     query="rate limiting redis implementation",
-    top_k=5,                      # Results to return
-    project="roboco-api",         # Optional project filter
-    index_types=["code", "docs"]  # Filter by type
+    top_k=5,  # Results to return
+    project="roboco-api",  # Optional project filter
+    index_types=["code", "docs"],  # Filter by type
 )
 ```
 
@@ -36,10 +36,7 @@ Returns similar content - not just keyword matches.
 ## RAG Query (AI Answer)
 
 ```python
-roboco_rag_query(
-    query="How does authentication work in this codebase?",
-    top_k=5
-)
+roboco_rag_query(query="How does authentication work in this codebase?", top_k=5)
 ```
 
 Returns AI-synthesized answer with citations.
@@ -54,14 +51,12 @@ Good for:
 ```python
 # First question
 response = roboco_ask_mentor(
-    question="How do I handle authentication?",
-    domain="coding"
+    question="How do I handle authentication?", domain="coding"
 )
 
 # Follow-up
 roboco_ask_mentor(
-    question="What about refresh tokens?",
-    conversation_id=response["conversation_id"]
+    question="What about refresh tokens?", conversation_id=response["conversation_id"]
 )
 ```
 

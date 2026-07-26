@@ -16,6 +16,7 @@ Use pytest-asyncio:
 ```python
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_fetch_user() -> None:
     user = await fetch_user("test-123")
@@ -48,11 +49,12 @@ Use factory-boy for test data:
 ```python
 from factory import Factory, Faker, LazyAttribute
 
+
 class TaskFactory(Factory):
     class Meta:
         model = Task
 
-    title = Faker('sentence')
+    title = Faker("sentence")
     status = TaskStatus.PENDING
     created_at = LazyAttribute(lambda _: datetime.now(UTC))
 ```
@@ -84,7 +86,7 @@ When you assign `None` to an attribute inside a test function, mypy narrows that
 def test_example() -> None:
     t = _Task()
     t.notes = None  # mypy narrows type to None
-    process(t)      # Even though process may write to t.notes
+    process(t)  # Even though process may write to t.notes
     assert t.notes is not None  # [unreachable] — mypy sees this as always False
 ```
 
@@ -94,11 +96,12 @@ def test_example() -> None:
 # ✅ GOOD: Annotation-typed class preserves union type
 class _TaskWithNoNotes:
     """Variant where notes starts as None (no prior state)."""
-    
+
     def __init__(self) -> None:
         self.id = uuid4()
         self.notes: dict[str, Any] | None = None  # Declared as union, not narrowed
-        
+
+
 def test_example() -> None:
     t = _TaskWithNoNotes()  # Use the helper instead
     process(t)

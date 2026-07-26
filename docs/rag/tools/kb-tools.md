@@ -16,31 +16,24 @@ roboco_kb_search(
     query="rate limiting redis",
     top_k=5,
     project="roboco-api",
-    index_types=["code", "docs"]
+    index_types=["code", "docs"],
 )
 ```
 
 ## AI-Generated Answers
 
 ```python
-roboco_rag_query(
-    query="How does authentication work?",
-    top_k=5
-)
+roboco_rag_query(query="How does authentication work?", top_k=5)
 ```
 
 ## Mentor (Conversational)
 
 ```python
-response = roboco_ask_mentor(
-    question="How do I handle auth?",
-    domain="coding"
-)
+response = roboco_ask_mentor(question="How do I handle auth?", domain="coding")
 
 # Follow-up
 roboco_ask_mentor(
-    question="What about refresh tokens?",
-    conversation_id=response["conversation_id"]
+    question="What about refresh tokens?", conversation_id=response["conversation_id"]
 )
 ```
 
@@ -48,13 +41,15 @@ roboco_ask_mentor(
 
 ```python
 # Write/update documentation (auto-dedup via RAG)
-roboco_docs_write({
-    "task_id": "task-uuid",
-    "filename": "api-endpoints.md",
-    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
-    "title": "API Endpoints",
-    "content": "# API Endpoints\n\n..."
-})
+roboco_docs_write(
+    {
+        "task_id": "task-uuid",
+        "filename": "api-endpoints.md",
+        "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+        "title": "API Endpoints",
+        "content": "# API Endpoints\n\n...",
+    }
+)
 
 # List docs for a task
 roboco_docs_list(task_id="task-uuid")
@@ -69,33 +64,24 @@ roboco_docs_read(path="backend/api/endpoints.md")
 
 ```python
 # Index code (PM, Developer)
-roboco_kb_index_code(
-    sources=["src/**/*.py"],
-    project="roboco-api"
-)
+roboco_kb_index_code(sources=["src/**/*.py"], project="roboco-api")
 
 # Index docs (PM, Documenter) - for bulk/explicit indexing
 # Note: roboco_docs_write() auto-indexes when writing
-roboco_kb_index_docs(
-    sources=["docs/**/*.md"],
-    project="roboco-api"
-)
+roboco_kb_index_docs(sources=["docs/**/*.md"], project="roboco-api")
 ```
 
 ## Error Tracking
 
 ```python
 # Search for similar errors
-roboco_search_error(
-    error_message="Redis connection timed out",
-    context="startup"
-)
+roboco_search_error(error_message="Redis connection timed out", context="startup")
 
 # Record solution
 roboco_record_error_solution(
     error_message="Redis connection timed out",
     solution="Added retry with backoff",
-    worked=True
+    worked=True,
 )
 ```
 
@@ -106,11 +92,9 @@ roboco_record_error_solution(
 roboco_check_decision(topic="session storage")
 
 # Record decision
-roboco_record_decision(params={
-    topic: "Session storage",
-    decision: "Use Redis",
-    rationale: "Sub-ms reads"
-})
+roboco_record_decision(
+    params={topic: "Session storage", decision: "Use Redis", rationale: "Sub-ms reads"}
+)
 ```
 
 ## Standards & Validation
@@ -135,7 +119,7 @@ def create_user(email, password):
     user = User(email=email, password=password)
     db.add(user)
     return user
-"""
+""",
 )
 ```
 
@@ -172,7 +156,7 @@ def create_user(email, password):
 roboco_review_code(
     code="def handle(...):",
     file_path="src/api/auth.py",
-    change_type="modify"  # add, modify, delete
+    change_type="modify",  # add, modify, delete
 )
 ```
 

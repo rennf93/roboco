@@ -420,8 +420,8 @@ async def test_dev_full_chain_through_awaiting_qa(
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -906,8 +906,8 @@ async def test_block_then_unblock_restore(
 
     # Drive into in_progress via the real claim+start sequence.
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -969,8 +969,8 @@ async def test_pause_then_resume(
     c = _build_choreographer(db_session, task, task_service)
 
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

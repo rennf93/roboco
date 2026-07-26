@@ -69,9 +69,9 @@ propose_market_brief(
         {"claim": "...", "source_url": "https://...", "relevance": "..."},
         # 1-7 findings, source_url REQUIRED per finding — an uncited claim is rejected
     ],
-    threats=["..."],          # optional, up to 5
-    opportunities=["..."],    # optional, up to 5
-    positioning_note="...",   # optional
+    threats=["..."],  # optional, up to 5
+    opportunities=["..."],  # optional, up to 5
+    positioning_note="...",  # optional
 )
 ```
 
@@ -99,8 +99,12 @@ Quarterly cron, project-scoped (`projects.board_programs` contains `"mirror"`). 
 propose_messaging_fixes(
     items=[
         {
-            "title": "...", "description": "...", "acceptance_criteria": ["..."],
-            "project_slug": "roboco-website", "team": "backend", "priority": 2,
+            "title": "...",
+            "description": "...",
+            "acceptance_criteria": ["..."],
+            "project_slug": "roboco-website",
+            "team": "backend",
+            "priority": 2,
             "evidence": "BOTH the drifted claim and the reality it contradicts — REQUIRED",
         },
         # 1-5 items
@@ -138,8 +142,8 @@ Cron every 2 days, org-scoped. The task carries a set of SCREENED candidate X co
 propose_conversation_replies(
     items=[
         {
-            "tweet_id": "...",     # REQUIRED — must be one of the candidate ids verbatim
-            "reply_body": "...",   # your voice, <=280 chars, no invented facts
+            "tweet_id": "...",  # REQUIRED — must be one of the candidate ids verbatim
+            "reply_body": "...",  # your voice, <=280 chars, no invented facts
             "rationale": "why this conversation is worth replying to",  # REQUIRED
         },
         # up to 5 items
@@ -166,7 +170,11 @@ The CEO acts via the panel/UI; you idle until the CEO decides.
 ## A2A
 
 ```python
-dm(recipient="product-owner", text="Market analysis for the launch — ...", task_id="...")
+dm(
+    recipient="product-owner",
+    text="Market analysis for the launch — ...",
+    task_id="...",
+)
 ```
 
 Skills: market_analysis

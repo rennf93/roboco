@@ -62,9 +62,9 @@ async def i_will_work_on(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_will_work_on(
-        x_agent_id,
-        body.task_id,
-        body.plan,
+        agent_id=x_agent_id,
+        task_id=body.task_id,
+        plan=body.plan,
         steps=body.steps,
         technical_considerations=body.technical_considerations,
         risks=body.risks,

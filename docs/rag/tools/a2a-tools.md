@@ -6,10 +6,10 @@ A2A is direct peer-to-peer messaging between agents. There is **no** `roboco_age
 
 ```python
 dm(
-    recipient="be-qa",          # target agent slug
+    recipient="be-qa",  # target agent slug
     text="Please review my changes",
-    task_id="abc123...",        # auto-filled from your active task if omitted
-    skill=None,                 # optional skill slug to scope the conversation
+    task_id="abc123...",  # auto-filled from your active task if omitted
+    skill=None,  # optional skill slug to scope the conversation
 )
 ```
 
@@ -37,7 +37,7 @@ Same-cell peers (e.g. `be-dev-1` alongside `be-dev-2`/`be-qa`/`be-doc`/`be-pm`) 
 When another agent messages you, your claim briefing surfaces it under `unread_a2a` — each entry shows the sender and a preview of their latest incoming message. To read the full bodies (and clear them), call:
 
 ```python
-read_a2a()      # -> {"messages": [{from_agent, content, created_at}, ...]}
+read_a2a()  # -> {"messages": [{from_agent, content, created_at}, ...]}
 ```
 
 `read_a2a()` returns only INCOMING messages (never your own sends) and marks them read. `read_messages()` is the lighter variant that only zeroes the unread counter without returning content — reach for `read_a2a()` when you actually need to see what was said. Either clears `i_am_idle()`'s unread-A2A soft-block.
@@ -45,9 +45,9 @@ read_a2a()      # -> {"messages": [{from_agent, content, created_at}, ...]}
 Formal, ack-required notifications are a separate inbox — see `docs/rag/tools/messaging-tools.md`:
 
 ```python
-notify_list(unread_only=True)   # list pending items
-notify_get(notification_id)     # read one (marks it read)
-notify_ack(notification_id)     # acknowledge after handling
+notify_list(unread_only=True)  # list pending items
+notify_get(notification_id)  # read one (marks it read)
+notify_ack(notification_id)  # acknowledge after handling
 ```
 
 ## When to use A2A

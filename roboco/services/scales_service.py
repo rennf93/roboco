@@ -31,6 +31,7 @@ from uuid import UUID
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
+from roboco.services.board_programs import learn_ref
 from roboco.services.task import SCALES_SOURCE
 
 if TYPE_CHECKING:
@@ -107,7 +108,7 @@ class ScalesService(BaseService):
         item["executed_detail"] = executed_detail
         markers.set_rebalance_plan(task, payload)
         self._maybe_complete_cycle(task, payload)
-        await self._record_learn(task, item_id, "approved")
+        await self._record_learn(task, learn_ref(item), "approved")
         await self.session.flush()
         return RebalanceItemResult(
             status="approved",
@@ -146,7 +147,7 @@ class ScalesService(BaseService):
         item["reject_reason"] = reason
         markers.set_rebalance_plan(task, payload)
         self._maybe_complete_cycle(task, payload)
-        await self._record_learn(task, item_id, "rejected", reason)
+        await self._record_learn(task, learn_ref(item), "rejected", reason)
         await self.session.flush()
         return RebalanceItemResult(
             status="rejected",
@@ -263,7 +264,7 @@ class ScalesService(BaseService):
             )
 
     async def _record_learn(
-        self, task: TaskTable, item_id: str, verdict: str, reason: str | None = None
+        self, task: TaskTable, item_ref: str, verdict: str, reason: str | None = None
     ) -> None:
         """Best-effort LEARN: a record_decision failure must never break the
         CEO's approve/reject — mirrors ``PestControlService._record_learn``."""
@@ -272,7 +273,7 @@ class ScalesService(BaseService):
 
             await get_board_program_engine(self.session).record_decision(
                 "scales",
-                item_id,
+                item_ref,
                 verdict,
                 reason,
                 exploration_task_id=cast("UUID", task.id),

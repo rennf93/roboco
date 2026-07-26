@@ -57,13 +57,7 @@ class _MockChoreographer:
             next="claim it",
         )
 
-    async def i_will_work_on(
-        self,
-        _agent_id: object,
-        _task_id: object,
-        _plan: object = None,
-        **_kwargs: object,
-    ) -> Envelope:
+    async def i_will_work_on(self, **_kwargs: object) -> Envelope:
         self._state["task_status"] = "in_progress"
         return Envelope.ok(
             status="in_progress",

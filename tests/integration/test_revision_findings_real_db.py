@@ -723,8 +723,8 @@ async def test_i_am_done_full_chain_blocks_then_resolves(
 
     # --- Round 1: no findings exist yet — i_am_done must pass untouched. ---
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -784,8 +784,8 @@ async def test_i_am_done_full_chain_blocks_then_resolves(
     # re-enforces the rich-plan gate for a developer — so the full plan is
     # supplied again here, same as the very first claim. ---
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

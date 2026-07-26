@@ -16,9 +16,9 @@
 give_me_work()
 
 # 2. Claim it. The claim verb is role-specific:
-i_will_work_on(task_id)    # Developer — claims + auto-creates the branch
-claim_review(task_id)      # QA — claims + auto-checks-out the dev's branch
-claim_doc_task(task_id)    # Documenter
+i_will_work_on(task_id)  # Developer — claims + auto-creates the branch
+claim_review(task_id)  # QA — claims + auto-checks-out the dev's branch
+claim_doc_task(task_id)  # Documenter
 
 # Result:
 # - status: claimed (then in_progress)

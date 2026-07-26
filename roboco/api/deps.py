@@ -136,6 +136,7 @@ OrchestratorDep = Annotated[AgentOrchestrator, Depends(get_orchestrator)]
 
 
 async def get_current_agent_id(
+    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -150,13 +151,13 @@ async def get_current_agent_id(
     spoof and is rejected (see _cloud_auth_agent_context)."""
     if settings.cloud_auth_enabled:
         ctx = await _cloud_auth_agent_context(
-            db,
-            response,
-            x_agent_id,
-            x_agent_role,
-            x_agent_team,
-            x_agent_token,
-            roboco_session,
+            db=db,
+            response=response,
+            x_agent_id=x_agent_id,
+            x_agent_role=x_agent_role,
+            x_agent_team=x_agent_team,
+            x_agent_token=x_agent_token,
+            session_cookie=roboco_session,
         )
         return ctx.agent_id
     if not x_agent_id:
@@ -172,6 +173,7 @@ CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
 async def get_current_agent_slug(
+    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -185,13 +187,13 @@ async def get_current_agent_slug(
     slug; a CEO cookie resolves to 'ceo')."""
     if settings.cloud_auth_enabled:
         ctx = await _cloud_auth_agent_context(
-            db,
-            response,
-            x_agent_id,
-            x_agent_role,
-            x_agent_team,
-            x_agent_token,
-            roboco_session,
+            db=db,
+            response=response,
+            x_agent_id=x_agent_id,
+            x_agent_role=x_agent_role,
+            x_agent_team=x_agent_team,
+            x_agent_token=x_agent_token,
+            session_cookie=roboco_session,
         )
         assert ctx.slug is not None  # cloud-auth ctx always carries a slug
         return ctx.slug
@@ -483,6 +485,7 @@ def _should_remint(token: str) -> bool:
 
 
 async def _cloud_auth_agent_context(
+    *,
     db: AsyncSession,
     response: Response,
     x_agent_id: str | None,
@@ -545,6 +548,7 @@ async def _cloud_auth_agent_context(
 
 
 async def get_agent_context(
+    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -574,13 +578,13 @@ async def get_agent_context(
             db, x_agent_id, x_agent_role, x_agent_team, x_agent_token
         )
     return await _cloud_auth_agent_context(
-        db,
-        response,
-        x_agent_id,
-        x_agent_role,
-        x_agent_team,
-        x_agent_token,
-        roboco_session,
+        db=db,
+        response=response,
+        x_agent_id=x_agent_id,
+        x_agent_role=x_agent_role,
+        x_agent_team=x_agent_team,
+        x_agent_token=x_agent_token,
+        session_cookie=roboco_session,
     )
 
 
