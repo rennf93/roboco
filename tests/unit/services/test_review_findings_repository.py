@@ -9,6 +9,7 @@ migration replay here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -49,17 +50,24 @@ async def _seed_agent(session: AsyncSession) -> UUID:
     return UUID(str(agent.id))
 
 
-async def _seed_task(session: AsyncSession, created_by: UUID) -> UUID:
+async def _seed_task(
+    session: AsyncSession,
+    created_by: UUID,
+    *,
+    status: TaskStatus = TaskStatus.NEEDS_REVISION,
+    completed_at: datetime | None = None,
+) -> UUID:
     task = TaskTable(
         id=uuid4(),
         title="ledger seed task",
         description="seed",
         acceptance_criteria=["seeded"],
-        status=TaskStatus.NEEDS_REVISION,
+        status=status,
         priority=2,
         task_type=TaskType.CODE,
         team=Team.BACKEND,
         created_by=created_by,
+        completed_at=completed_at,
     )
     session.add(task)
     await session.flush()
@@ -341,3 +349,168 @@ async def test_list_open_findings_excludes_non_open(
     )
     await repo.mark_waived(UUID(str(rows[0].id)), "nit, skip")
     assert await repo.list_open_findings(limit=20) == []
+
+
+# escaped_defects_since — the Company Scorecard's "0 critical escaped defects"
+# metric: a blocker finding still ADDRESSED (never independently VERIFIED by
+# its own raising origin) on a task that has since gone COMPLETED, in-window.
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_counts_addressed_blocker_on_completed_task(
+    db_session: AsyncSession,
+) -> None:
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(
+        db_session,
+        agent_id,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(UTC),
+    )
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="pr_gate",
+        round=1,
+        author_slug="be-dev-1",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit="abc123", note="fixed")
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == [(task_id, "pr_gate")]
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_excludes_verified_blocker(
+    db_session: AsyncSession,
+) -> None:
+    """A blocker VERIFIED by its raising origin was actually re-confirmed —
+    not an escaped defect."""
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(
+        db_session,
+        agent_id,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(UTC),
+    )
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit=None, note=None)
+    await repo.mark_verified([UUID(str(rows[0].id))])
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_excludes_non_blocker_severity(
+    db_session: AsyncSession,
+) -> None:
+    """Only blocker severity counts — a major finding, however unresolved,
+    is not a "critical escaped defect"."""
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(
+        db_session,
+        agent_id,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(UTC),
+    )
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.MAJOR)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit=None, note=None)
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_excludes_non_terminal_task(
+    db_session: AsyncSession,
+) -> None:
+    """A still-open task hasn't shipped anything yet — nothing has escaped.
+    (This case is actually pinned by the `completed_at IS NOT NULL` condition,
+    since a non-terminal task never has one set — see the sibling test below
+    for a case that isolates the `status == COMPLETED` filter itself.)"""
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(db_session, agent_id)  # default: NEEDS_REVISION
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit=None, note=None)
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_excludes_non_completed_status(
+    db_session: AsyncSession,
+) -> None:
+    """Isolates the `TaskTable.status == COMPLETED` filter: a CANCELLED task
+    with a (synthetic, out-of-band) `completed_at` set inside the window would
+    still pass the two `completed_at` conditions alone — only the status
+    check excludes it. Without this case, deleting the status filter leaves
+    every other test passing (proven by mutation testing)."""
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(
+        db_session,
+        agent_id,
+        status=TaskStatus.CANCELLED,
+        completed_at=datetime.now(UTC),
+    )
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit=None, note=None)
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_escaped_defects_since_excludes_outside_window(
+    db_session: AsyncSession,
+) -> None:
+    """A task completed before the window cutoff doesn't count toward it."""
+    agent_id = await _seed_agent(db_session)
+    task_id = await _seed_task(
+        db_session,
+        agent_id,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime.now(UTC) - timedelta(days=40),
+    )
+    repo = ReviewFindingsRepository(db_session)
+    rows = await repo.insert_many(
+        task_id=task_id,
+        origin="qa",
+        round=1,
+        author_slug="be-qa",
+        findings=[_finding(severity=Severity.BLOCKER)],
+    )
+    await repo.mark_addressed(task_id, str(rows[0].id), commit=None, note=None)
+
+    result = await repo.escaped_defects_since(datetime.now(UTC) - timedelta(days=30))
+    assert result == []

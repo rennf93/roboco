@@ -10,7 +10,7 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 |---|---|---|
 | `roboco/services/metrics.py` | `MetricsService` — velocity, blockers, team/agent metrics, health, cycle-time/bottleneck/rework/scorecard observability | 1521 |
 | `roboco/services/dashboard.py` | `DashboardService` — auditor flags/reports (in-memory singleton), CEO overview, audit queue, agent status, recent activity | 457 |
-| `roboco/services/cockpit.py` | `CockpitService` — read-only CEO "is the business winning?" summary (goals+delivery+spend+signals) | 97 |
+| `roboco/services/cockpit.py` | `CockpitService` — read-only CEO "is the business winning?" summary (goals+delivery+spend+signals), delivery block now carries the 3 charter-objective metrics (`median_lead_time_hours`, `first_pass_yield`, `escaped_defects`) | 104 |
 | `roboco/services/usage.py` | `UsageService` — token usage summary, time-series, by-agent/team/model, projection, cache efficiency, today summary, recent sessions | 478 |
 | `roboco/services/usage_events.py` | `UsageSnapshot` dataclass + `publish_usage_snapshot` — publishes USAGE_SNAPSHOT to the StreamEventBus | 52 |
 | `roboco/services/telemetry/__init__.py` | Re-export of CI telemetry source symbols | 18 |
@@ -58,8 +58,9 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `DashboardService.get_all_agent_status` | method | dashboard.py:365 | Agent counts by status + per-agent snapshot |
 | `DashboardService.get_recent_activity` | method | dashboard.py:398 | Merged messages+task_updates feed, sorted desc |
 | `CockpitService` | class | cockpit.py:36 | Read-only CEO summary + lightweight signals slice |
-| `CockpitService.summary` | method | cockpit.py:41 | goals+counts+delivery+spend+projection+pitches+signals, `basis="proxy"` |
+| `CockpitService.summary` | method | cockpit.py:41 | goals+counts+delivery+spend+projection+pitches+signals, `basis="proxy"`. `delivery.first_pass_yield` is a pass-through of `MetricsService.get_org_scorecard().first_pass_yield` (no new computation); `delivery.escaped_defects` is `len(ReviewFindingsRepository.escaped_defects_since(30d cutoff))` — see the Gotchas entry below for the definition. |
 | `CockpitService.signals` | method | cockpit.py:81 | Strategy-engine signals only (lightweight panel slice) |
+| `ReviewFindingsRepository.escaped_defects_since` | method | `services/repositories/review_findings.py` | `(task_id, origin)` pairs for blocker findings still `addressed` (never `verified`) on a `COMPLETED` task within the window — the Company Scorecard's "0 critical escaped defects" metric. See `docs/map/review-findings.md` and the Gotchas entry below. |
 | `UsageService` | class | usage.py:70 | Token usage analytics over spawn sessions + rollups |
 | `UsageService.get_summary` | method | usage.py:77 | Period totals + trend_pct vs previous period |
 | `UsageService.get_time_series` | method | usage.py:166 | Hourly (24h) / daily (7d/30d) buckets |
@@ -122,9 +123,12 @@ graph LR
   Panel -->|/api/cockpit/*| Cockpit[CockpitService]
   Cockpit --> Goals[company_goals]
   Cockpit --> TaskSvc[TaskService]
+  Cockpit --> MetricsSvc
+  Cockpit --> FindingsRepo[ReviewFindingsRepository.escaped_defects_since]
   Cockpit --> UsageSvc
   Cockpit --> Strategy[strategy_engine]
   Cockpit --> Pitch[pitch service]
+  FindingsRepo --> TaskReviewFindings[task_review_findings]
 
   SelfHeal[self_heal_loop] --> CISrc[GitHubCITelemetrySource]
   CIWatch[ci_watch_loop] --> MultiSrc[MultiProjectCITelemetrySource]
@@ -164,7 +168,7 @@ metrics-observability
 - `roboco.events.stream_bus` — `StreamEventBus` (TYPE_CHECKING only)
 - `roboco.services.base` — `BaseService`
 - `roboco.services.git` — `GitService.get_latest_ci_conclusion` (telemetry)
-- `roboco.services.company_goals`, `pitch`, `strategy_engine`, `task` (cockpit)
+- `roboco.services.company_goals`, `pitch`, `strategy_engine`, `task`, `metrics` (`get_metrics_service`), `repositories.review_findings` (`ReviewFindingsRepository`) (cockpit)
 - `roboco.config` — `settings` (telemetry)
 - `roboco.logging` — `get_logger` (telemetry)
 - `roboco.utils.converters` — `to_python_uuid`, `require_uuid`
@@ -212,7 +216,10 @@ No flags live *inside* this slice's files, but the slice's behavior is gated/par
 - **Cache-efficiency uses hardcoded sonnet pricing** (usage.py:401-404, `_FULL_INPUT_PRICE=3.00`, `_CACHE_READ_PRICE=0.30`) for the savings estimate regardless of the actual model mix — an aggregate approximation, not per-model.
 - **`publish_usage_snapshot` lazy-imports `Event`/`EventType`** (usage_events.py:49) to avoid a circular import — callers must keep the bus passed in, not a module-level reference.
 - **`MultiProjectCITelemetrySource.fetch` swallows per-project exceptions** (source.py:172) — one bad project never aborts the sweep, but also never surfaces beyond a warning log; a persistently failing project silently contributes no sample (treated as "unknown", not "green" — correct, but invisible).
-- **`CockpitService.summary` `basis="proxy"`** (cockpit.py:57) — every payload is stamped proxy; the over_budget flag is only meaningful once the CEO greenlights real launch.
+- **`CockpitService.summary` `basis="proxy"`** (cockpit.py:66) — every payload is stamped proxy; the over_budget flag is only meaningful once the CEO greenlights real launch.
+- **`escaped_defects` definition — why "a finding on a terminal task" is impossible, and what it actually counts.** The Company Scorecard's third charter objective ("0 critical escaped defects per release") looks like it should mean "a blocker-severity finding opened on a task that already reached a terminal state" — but that combination can never occur: every producer of a `task_review_findings` row (`fail_review`, `pr_fail`, `request_changes`, `ceo_reject`) fires as part of a bounce whose lifecycle transition requires the task to be non-terminal at that moment (the transition itself is `* -> needs_revision`). A "terminal-task finding" query would return 0 in every window, forever — a permanently-green scorecard card is worse than none, the exact fabrication PR #704 exists to remove from the panel. The real definition, computed by `ReviewFindingsRepository.escaped_defects_since`: a `blocker`-severity finding still at status `addressed` (**never** `verified`) on a task that has since gone `COMPLETED`, within the 30-day window (`TaskTable.completed_at >= cutoff`; `cancelled` tasks are excluded on purpose — they never set `completed_at` and never ship code, so nothing "escaped" from one). This is reachable because `stamp_addressed_verified` (`services/gateway/choreographer/findings.py:306`) only bulk-verifies findings of its OWN `origin` (`row.origin == origin`) when its matching pass verb runs (`pass_review`→qa, `pr_pass`→pr_gate, `complete`→pm, `ceo_approve`→ceo — `complete` stamps `origin="pm"` via `_stamp_pm_findings_verified_or_rejection` (`services/gateway/choreographer/_impl.py:7431-7456`), a distinct verb+stamp from `ceo_approve` (`services/task.py:7289-7294`), which stamps `origin="ceo"` on its own `awaiting_ceo_approval → completed` transition) — a blocker raised by one origin, marked `addressed` by the developer, and never independently re-confirmed by that SAME origin on a later round (the task's remaining rounds routed through a different reviewer) survives all the way to `completed` still `addressed`. A non-zero value means: at least one blocker-severity concern shipped to `completed` on the developer's own word alone, with no reviewer ever re-checking the fix — a real signal of unverified risk in production, not a fabricated placeholder.
+- **In practice, "pm" is the only origin that can realistically produce a non-zero reading, and even that path is narrow.** `pass_review` and `pr_pass` (qa/pr_gate origins) hard-gate their `stamp_addressed_verified` call — a stamp failure fails the verb itself (qa.py:809-823, pr_gate.py mirrors it), so a qa-origin or pr_gate-origin blocker structurally cannot reach `completed` still `addressed`: passing review IS re-verifying it. The one reachable path is: a PM raises a blocker via `request_changes` (origin=`pm`), the dev addresses it, and the PM then calls `escalate_to_ceo` instead of `complete` — `escalate_to_ceo`'s `ActionSpec` (`foundation/policy/lifecycle.py:657-675`) has no precondition requiring findings be resolved, and `ceo_approve` only bulk-verifies its own `ceo`-origin rows, never touching the still-`addressed` `pm`-origin one. So a fleet that rarely escalates to the CEO (the normal case — most roots complete via a PM's own `complete`) will read 0 on this metric because the triggering path is rare, not because nothing has escaped.
+- **The count is per-finding, not per-task, and the 30-day window is a temporal proxy, not a release boundary.** `escaped_defects_since` returns one `(task_id, origin)` row per qualifying finding with no de-dup/grouping, and `CockpitService.summary` takes `len(escaped)` directly — a single task with three qualifying blockers contributes 3 to the count, not 1. The charter's "0 critical escaped defects per release" phrasing implies release-scoped counting, but this metric has no notion of releases at all: it's a rolling `completed_at >= now - 30d` window that will straddle zero, one, or several actual release cuts depending on cadence, so a spike right after a release and a spike from unrelated day-to-day completions look identical on this card.
 
 ## Drift from CLAUDE.md
 
