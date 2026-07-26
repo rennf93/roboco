@@ -57,8 +57,15 @@ async def test_pest_control_dispatch_spawns_only_product_owner() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pest_control_dispatch_is_one_shot() -> None:
-    """Re-ticking a still-unauthored, still-pending cycle must NOT respawn."""
+async def test_pest_control_dispatch_retries_until_breaker() -> None:
+    """A failed exploration must be retried, not abandoned.
+
+    The explorer has a progression verb (``propose_*``), so a respawn CAN
+    advance the task — unlike the two-reviewer review pass this guard was
+    originally written for. Bounding belongs to
+    ``_pm_respawn_should_gate`` (DB-persisted, reset by a status change),
+    not to a never-expiring in-memory set.
+    """
     orch = _make_orch()
     task = _pest_control_task()
     with (
@@ -69,7 +76,10 @@ async def test_pest_control_dispatch_is_one_shot() -> None:
         await orch._dispatch_pest_control_exploration(task)
         await orch._dispatch_pest_control_exploration(task)
 
-    spawn.assert_awaited_once()
+    ticks = 2
+    assert spawn.await_count == ticks, (
+        "a second tick must re-attempt a failed exploration"
+    )
 
 
 @pytest.mark.asyncio
