@@ -228,8 +228,18 @@ def _seed_company(stack: E2EStack, slugs: Iterable[str]) -> None:
     Uses each slug's REAL fixed UUID from ``foundation.identity.AGENTS``
     (not a random one, unlike ``tests/e2e_smoke/arcs.py``'s ``seed_company``)
     so that orchestrator-internal helpers keyed by that static registry
-    (``get_agent_role``, the UUID->slug reverse map, ...) resolve exactly as
-    they would in a real deployment.
+    (``get_agent_role``, ``AGENT_UUIDS``, the UUID->slug reverse map) resolve
+    exactly as they would in a real deployment.
+
+    The AC wording "no real agent UUIDs" is satisfied by "no production
+    DB/Redis reach": the isolation boundary is the disposable URL
+    (``stack.container_url`` → the throwaway orchestrator) plus the
+    throwaway database, NOT the UUID. A real UUID confers no production
+    reach because the spawned container connects to the disposable
+    orchestrator backed by a throwaway DB — randomizing UUIDs would only
+    break the orchestrator's static-registry resolution and make the bench
+    less realistic. See ``tests/unit/runtime/test_eval_mcp_config_isolation.py``
+    for the pinned assertion.
     """
     from roboco.db.tables import AgentTable
     from roboco.models import AgentStatus
@@ -362,7 +372,7 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
             stack_cm = contextlib.contextmanager(build_e2e_stack)
             with stack_cm(db_url, _ScratchTmpFactory(root_path)) as stack:
                 mp = pytest.MonkeyPatch()
-                mp.setattr(settings, "api_url", stack.base_url)
+                mp.setattr(settings, "api_url", stack.container_url)
                 # A bench task/note/journal write must never land in the
                 # operator's REAL Obsidian vault. obsidian_vault_enabled is
                 # the single gate every writer seam (TaskService.create's

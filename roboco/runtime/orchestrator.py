@@ -3168,6 +3168,13 @@ class AgentOrchestrator:
             container_name,
             "--network",
             AGENT_NETWORK,
+            # Let spawned containers resolve host.docker.internal so the eval
+            # harness's disposable orchestrator (bound 0.0.0.0 on the host) is
+            # reachable via host.docker.internal:<port>. Inert in production
+            # where MCP servers use http://roboco-orchestrator:8000. Docker
+            # 20.10+ (May 2021) supports host-gateway on Linux.
+            "--add-host",
+            "host.docker.internal:host-gateway",
             # Mount Claude auth directory (for API keys, etc.)
             "-v",
             f"{hosts['claude']}:/home/agent/.claude",
