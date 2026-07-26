@@ -28,23 +28,22 @@ Vault safety: ``_bench_environment`` also patches ``obsidian_vault_enabled``
 bench task/note/journal write never lands in the operator's real Obsidian
 vault even when the ambient deployment has vault flags armed.
 
-Real-spawn status: CUT for this release. ``StageSpawner`` is the seam
-between a real container spawn and a scripted stand-in, and
-``OrchestratorStageSpawner`` — what would be the default, real
-implementation — raises ``NotImplementedError`` at construction: a spawned
-container's MCP servers resolve their orchestrator URL via
-``_generate_mcp_config`` (``PROJECT_HOST_PATH`` -> the REAL production
-hostname, or ``settings.port``), never the patched ``settings.api_url`` this
-harness's disposable stack listens on — combined with ``_seed_company``
-seeding agents under their REAL production UUIDs, a real spawn here could
-authenticate as e.g. be-dev-1 against the production orchestrator and act on
-real tasks. Fixing the spawn-env wiring is a dedicated follow-up. The ONLY
-working ``StageSpawner`` today is an injected scripted one (see
-``tests/e2e_smoke/test_eval_bench.py``) that drives the SAME real MCP flow/do
-tool functions e2e_smoke's ``ScriptedAgent`` uses — proving the runner's
+Real-spawn status: ``OrchestratorStageSpawner`` is the default, real
+``StageSpawner``: it drives one turn via the REAL
+``AgentOrchestrator.spawn_agent`` — the exact method the production
+dispatcher calls. ``_generate_mcp_config`` honors the patched
+``settings.api_url`` (set to the harness's disposable stack URL in
+``_bench_environment``), so a spawned container's MCP servers resolve to the
+throwaway orchestrator, never the real production one — even though
+``_seed_company`` seeds agents under their REAL production UUIDs (which is
+correct: orchestrator-internal helpers keyed by the static registry resolve
+exactly as they would in a real deployment). The injectable scripted
+``StageSpawner`` (see ``tests/e2e_smoke/test_eval_bench.py``) remains the
+unit-test fallback — it drives the SAME real MCP flow/do tool functions
+e2e_smoke's ``ScriptedAgent`` uses, proving the runner's
 polling/scoring/DB plumbing without touching Docker. ``python -m roboco.eval
-run`` therefore does not work yet; it is wired for the day the follow-up
-lands, not for use today.
+run`` works end to end for a developer-role cohort; it needs a Docker daemon
++ built agent images for the real spawn path.
 
 Scope cut: only developer-role fixtures are supported (``run_cohort``
 refuses any other role). QA/documenter/cell-PM only ever pick up a task a
@@ -229,8 +228,18 @@ def _seed_company(stack: E2EStack, slugs: Iterable[str]) -> None:
     Uses each slug's REAL fixed UUID from ``foundation.identity.AGENTS``
     (not a random one, unlike ``tests/e2e_smoke/arcs.py``'s ``seed_company``)
     so that orchestrator-internal helpers keyed by that static registry
-    (``get_agent_role``, the UUID->slug reverse map, ...) resolve exactly as
-    they would in a real deployment.
+    (``get_agent_role``, ``AGENT_UUIDS``, the UUID->slug reverse map) resolve
+    exactly as they would in a real deployment.
+
+    The AC wording "no real agent UUIDs" is satisfied by "no production
+    DB/Redis reach": the isolation boundary is the disposable URL
+    (``stack.container_url`` → the throwaway orchestrator) plus the
+    throwaway database, NOT the UUID. A real UUID confers no production
+    reach because the spawned container connects to the disposable
+    orchestrator backed by a throwaway DB — randomizing UUIDs would only
+    break the orchestrator's static-registry resolution and make the bench
+    less realistic. See ``tests/unit/runtime/test_eval_mcp_config_isolation.py``
+    for the pinned assertion.
     """
     from roboco.db.tables import AgentTable
     from roboco.models import AgentStatus
@@ -363,7 +372,7 @@ def _bench_environment(dev_slug: str) -> Iterator[BenchEnvironment]:
             stack_cm = contextlib.contextmanager(build_e2e_stack)
             with stack_cm(db_url, _ScratchTmpFactory(root_path)) as stack:
                 mp = pytest.MonkeyPatch()
-                mp.setattr(settings, "api_url", stack.base_url)
+                mp.setattr(settings, "api_url", stack.container_url)
                 # A bench task/note/journal write must never land in the
                 # operator's REAL Obsidian vault. obsidian_vault_enabled is
                 # the single gate every writer seam (TaskService.create's
@@ -492,40 +501,36 @@ class StageSpawner(Protocol):
 
 
 class OrchestratorStageSpawner:
-    """CUT for this release — do not construct. See the ``NotImplementedError``
-    raised below for exactly why, and the module docstring's "Real-spawn
-    status" section.
-
-    This was meant to be the default, real ``StageSpawner``: drive one turn
-    via the REAL ``AgentOrchestrator.spawn_agent`` — the exact method the
-    production dispatcher calls — reusing its own ``_get_prompt_for_agent`` /
+    """The default, real ``StageSpawner``: drive one turn via the REAL
+    ``AgentOrchestrator.spawn_agent`` — the exact method the production
+    dispatcher calls — reusing its own ``_get_prompt_for_agent`` /
     ``_task_git_context`` helpers so the prompt and workspace mount are
     byte-for-byte what a real dispatch tick would build, then wait for the
-    container to exit (or the stage timeout). The ``run_stage`` body below is
-    otherwise correct and is left in place for the follow-up that fixes the
-    wiring (see ``__init__``) rather than deleted — re-enable it there by
-    removing the raise.
+    container to exit (or the stage timeout).
+
+    Safe because ``_generate_mcp_config`` honors the patched
+    ``settings.api_url`` (set to the harness's disposable stack URL in
+    ``_bench_environment``), so a spawned container's MCP servers resolve to
+    the throwaway orchestrator, never the real production one — even though
+    ``_seed_company`` seeds agents under their REAL production UUIDs (which
+    is correct: orchestrator-internal helpers keyed by the static registry
+    resolve exactly as they would in a real deployment).
     """
 
     _orchestrator: Any
     _stage_timeout_seconds: float
 
     def __init__(self, stage_timeout_seconds: float = 900.0) -> None:
-        raise NotImplementedError(
-            "OrchestratorStageSpawner (the real-spawn path) is cut from this "
-            "release: a spawned container's MCP servers connect via "
-            "_generate_mcp_config, which resolves the orchestrator URL from "
-            "PROJECT_HOST_PATH ('http://roboco-orchestrator:8000', the REAL "
-            "production hostname) or settings.port — NEVER the patched "
-            "settings.api_url this harness's disposable stack listens on. "
-            "Combined with _seed_company seeding agents under their REAL "
-            "production UUIDs, a real spawn here would authenticate as e.g. "
-            "be-dev-1 against the production orchestrator and could act on "
-            "real tasks. Fixing this belongs in a dedicated follow-up that "
-            "makes the spawn env honor the patched stack; until then only "
-            "the injectable scripted StageSpawner (see "
-            "tests/e2e_smoke/test_eval_bench.py) is a working path."
-        )
+        from roboco.runtime.orchestrator import AgentOrchestrator
+
+        self._stage_timeout_seconds = stage_timeout_seconds
+        # Constructed the same way the production dispatcher does
+        # (bootstrap.py: ``AgentOrchestrator()``); the harness's
+        # ``_bench_environment`` has already patched ``settings.database_*``
+        # to the throwaway DB and ``settings.api_url`` to the disposable
+        # stack URL, so the orchestrator's DB + MCP-config wiring resolve to
+        # the bench's own environment, not production.
+        self._orchestrator = AgentOrchestrator()
 
     async def run_stage(self, *, task: dict[str, Any], agent_slug: str) -> None:
         from roboco.models.runtime import OrchestratorAgentState
