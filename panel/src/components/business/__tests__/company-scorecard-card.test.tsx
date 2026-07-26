@@ -68,6 +68,8 @@ function buildSummary(overrides: Partial<CockpitSummary> = {}): CockpitSummary {
     pending_pitches: 0,
     signals: [],
     median_lead_time_hours: null,
+    first_pass_yield: null,
+    escaped_defects: null,
     ...overrides,
   };
 }
@@ -237,7 +239,9 @@ describe("CompanyScorecardCard", () => {
 
     render(<CompanyScorecardCard />);
 
-    expect(screen.getByText("No data yet")).toBeInTheDocument();
+    // Speed section renders 'No data yet' (and so do the objective cards
+    // for the still-absent first_pass_yield / escaped_defects metrics).
+    expect(screen.getAllByText("No data yet").length).toBeGreaterThan(0);
   });
 
   // -------------------------------------------------------------------------
@@ -245,15 +249,105 @@ describe("CompanyScorecardCard", () => {
   // -------------------------------------------------------------------------
   it("shows formatted lead time when median_lead_time_hours is present", () => {
     setQueryState({
-      data: buildSummary({ median_lead_time_hours: 18.7 }),
+      data: buildSummary({
+        median_lead_time_hours: 18.7,
+        first_pass_yield: 0.9,
+        escaped_defects: 0,
+      }),
     });
 
     render(<CompanyScorecardCard />);
 
-    // Component renders `{value.toFixed(1)}h median — target: < 24h`
-    expect(screen.getByText(/18\.7h/)).toBeInTheDocument();
+    // Lead time renders in both the Speed section and the Objectives section
+    expect(screen.getAllByText(/18\.7h/).length).toBeGreaterThanOrEqual(1);
 
-    // 'No data yet' must NOT appear
+    // 'No data yet' must NOT appear when all metrics are present
     expect(screen.queryByText("No data yet")).not.toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Objectives section: three charter objective cards against live metrics
+  // -------------------------------------------------------------------------
+
+  it("renders three objective cards with target values when all metrics are present", () => {
+    setQueryState({
+      data: buildSummary({
+        first_pass_yield: 0.92,
+        median_lead_time_hours: 18.7,
+        escaped_defects: 0,
+        objectives: [
+          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
+          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
+          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
+        ],
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    // Three objective labels from the charter objectives array
+    expect(
+      screen.getByText("Tasks shipped to merge with no human code edits"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Median lead time, intake → merged"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Critical escaped defects per release"),
+    ).toBeInTheDocument();
+
+    // Live metric values: first_pass_yield as a percentage (0.92 → 92%),
+    // median_lead_time_hours as {value}h, escaped_defects as a count.
+    expect(screen.getByText("92%")).toBeInTheDocument();
+    expect(screen.getByText("18.7h")).toBeInTheDocument();
+    expect(screen.getByText("0")).toBeInTheDocument();
+
+    // All three target values render. The '< 24h' target appears in both the
+    // Speed section and the Objectives section, so use getAllByText there.
+    expect(screen.getByText(/target: 90%/)).toBeInTheDocument();
+    expect(screen.getAllByText(/target: < 24h/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/target: 0/)).toBeInTheDocument();
+  });
+
+  it("renders 'No data yet' for missing first_pass_yield and escaped_defects, not fabricated labels", () => {
+    setQueryState({
+      data: buildSummary({
+        first_pass_yield: null,
+        median_lead_time_hours: 18.7,
+        escaped_defects: undefined,
+        objectives: [
+          { metric: "Tasks shipped to merge with no human code edits", target: "90%", status: "Active" },
+          { metric: "Median lead time, intake → merged", target: "< 24h", status: "Active" },
+          { metric: "Critical escaped defects per release", target: "0", status: "Active" },
+        ],
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    // Two 'No data yet' fallbacks: one for first_pass_yield, one for escaped_defects.
+    // median_lead_time_hours is present so its card shows the value, not the fallback.
+    expect(screen.getAllByText("No data yet").length).toBe(2);
+
+    // The fake stub labels must NOT appear anywhere
+    expect(screen.queryByText("Revenue growth")).not.toBeInTheDocument();
+    expect(screen.queryByText("Customer retention")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not tracked yet")).not.toBeInTheDocument();
+  });
+
+  it("does not render the fake 'Revenue growth' or 'Customer retention' stub labels", () => {
+    setQueryState({
+      data: buildSummary({
+        first_pass_yield: 0.9,
+        median_lead_time_hours: 12,
+        escaped_defects: 0,
+      }),
+    });
+
+    render(<CompanyScorecardCard />);
+
+    expect(screen.queryByText("Revenue growth")).not.toBeInTheDocument();
+    expect(screen.queryByText("Customer retention")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not tracked yet")).not.toBeInTheDocument();
   });
 });

@@ -239,32 +239,112 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Stub objectives section
+// Objectives section — three charter objective cards, each showing a live
+// metric against its target.
+//
+// ponytail: The charter `objectives` field is free text
+// (Record<string, unknown>[]) while the three metrics are hardcoded
+// (first_pass_yield, median_lead_time_hours, escaped_defects). The mapping
+// is positional-by-convention, not derived — one card per charter objective
+// only holds until you edit the Goals tab. Stated assumption, not
+// discovered later.
 // ---------------------------------------------------------------------------
 
-function StubObjectivesSection() {
-  const stubs = [
-    { id: "obj-1", label: "Revenue growth" },
-    { id: "obj-2", label: "Customer retention" },
-  ];
+const OBJECTIVE_FALLBACK_LABELS = [
+  "Tasks shipped to merge with no human code edits",
+  "Median lead time, intake → merged",
+  "Critical escaped defects per release",
+] as const;
+
+interface ObjectivesSectionProps {
+  objectives: Record<string, unknown>[];
+  firstPassYield: number | null | undefined;
+  medianLeadTimeHours: number | null | undefined;
+  escapedDefects: number | null | undefined;
+}
+
+function objectiveLabel(
+  objectives: Record<string, unknown>[],
+  index: number,
+): string {
+  const raw = objectives[index]?.metric;
+  return typeof raw === "string" && raw.length > 0
+    ? raw
+    : OBJECTIVE_FALLBACK_LABELS[index];
+}
+
+interface ObjectiveCardProps {
+  label: string;
+  hasData: boolean;
+  formattedValue: string;
+  targetText: string;
+}
+
+function ObjectiveCard({
+  label,
+  hasData,
+  formattedValue,
+  targetText,
+}: ObjectiveCardProps) {
+  return (
+    <div className="rounded-lg border bg-card p-3 space-y-1">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="flex items-center justify-between text-sm">
+        {hasData ? (
+          <span className="font-medium tabular-nums">{formattedValue}</span>
+        ) : (
+          <span className="text-muted-foreground italic">No data yet</span>
+        )}
+        <span className="text-xs text-muted-foreground">
+          target: {targetText}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ObjectivesSection({
+  objectives,
+  firstPassYield,
+  medianLeadTimeHours,
+  escapedDefects,
+}: ObjectivesSectionProps) {
+  // Show 'No data yet' when a metric is null or undefined — never a fabricated
+  // value. Mirrors SpeedSection's hasData guard.
+  const fpyHasData = firstPassYield != null;
+  const ltHasData = medianLeadTimeHours != null;
+  const edHasData = escapedDefects != null;
 
   return (
     <div className="space-y-2">
-      <HelpTip label="Placeholder — not yet wired to the Goals tab's Objectives list">
-        <SectionLabel>Objectives</SectionLabel>
-      </HelpTip>
+      <SectionLabel>Objectives</SectionLabel>
       <div className="space-y-2">
-        {stubs.map((stub) => (
-          <div
-            key={stub.id}
-            className="rounded-lg border border-dashed p-3 flex items-center justify-between"
-          >
-            <span className="text-sm text-muted-foreground">{stub.label}</span>
-            <span className="text-xs text-muted-foreground italic">
-              Not tracked yet
-            </span>
-          </div>
-        ))}
+        <ObjectiveCard
+          label={objectiveLabel(objectives, 0)}
+          hasData={fpyHasData}
+          formattedValue={
+            fpyHasData
+              ? `${((firstPassYield as number) * 100).toFixed(0)}%`
+              : ""
+          }
+          targetText="90%"
+        />
+        <ObjectiveCard
+          label={objectiveLabel(objectives, 1)}
+          hasData={ltHasData}
+          formattedValue={
+            ltHasData
+              ? `${(medianLeadTimeHours as number).toFixed(1)}h`
+              : ""
+          }
+          targetText="< 24h"
+        />
+        <ObjectiveCard
+          label={objectiveLabel(objectives, 2)}
+          hasData={edHasData}
+          formattedValue={edHasData ? `${escapedDefects as number}` : ""}
+          targetText="0"
+        />
       </div>
     </div>
   );
@@ -299,7 +379,12 @@ function ScorecardBody({
           spendTrendLoading={spendTrendLoading}
         />
         <SpeedSection medianLeadTimeHours={data.median_lead_time_hours} />
-        <StubObjectivesSection />
+        <ObjectivesSection
+          objectives={data.objectives}
+          firstPassYield={data.first_pass_yield}
+          medianLeadTimeHours={data.median_lead_time_hours}
+          escapedDefects={data.escaped_defects}
+        />
       </CardContent>
     </Card>
   );
