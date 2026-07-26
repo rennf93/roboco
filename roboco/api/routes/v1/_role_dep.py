@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
+import structlog
 from fastapi import Depends, Header, HTTPException, params, status
 
 from roboco.foundation.identity import Role
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -108,4 +111,32 @@ def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:
     cid = getattr(request.state, "correlation_id", None)
     if cid is not None and env.correlation_id is None:
         env.correlation_id = cid
-    return env.as_dict()
+    payload = env.as_dict()
+    _log_rejection(payload, request)
+    return payload
+
+
+def _log_rejection(payload: dict[str, Any], request: Request) -> None:
+    """Log a rejected envelope's reason at the single wire chokepoint.
+
+    Rejections used to leave NO server-side trace: the access log records
+    ``POST /api/v1/do/<verb> 200`` (an error envelope is still a 200), the
+    envelope body is never logged, and there is no trace table — so a verb
+    an agent could not satisfy was indistinguishable in the logs from one
+    that succeeded. Four Board Programs died that way on 2026-07-25 and the
+    reason was unrecoverable after the fact.
+    """
+    error = payload.get("error")
+    if not error:
+        return
+    logger.warning(
+        "verb rejected",
+        verb=request.url.path.rsplit("/", 1)[-1],
+        error=error,
+        detail=payload.get("message"),
+        remediate=payload.get("remediate"),
+        missing=payload.get("missing"),
+        agent_id=request.headers.get("X-Agent-ID"),
+        agent_role=request.headers.get("X-Agent-Role"),
+        task_id=payload.get("task_id"),
+    )
