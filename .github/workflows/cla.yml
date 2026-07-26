@@ -41,4 +41,15 @@ jobs:
           # the emails map to no GitHub account, so CLA Assistant identifies
           # them by display name — allowlist those names, wildcarded per team
           # family, mirroring roboco/seeds/initial_data.py's roster.
-          allowlist: "dependabot[bot],rennf93,Backend *,Frontend *,UX/UI *,Main PM,Product Owner,Head of Marketing,Auditor,Intake,Secretary,PR Reviewer,RoboCo Agent"
+          #
+          # roboco-app[bot] is the GitHub App the fleet pushes and opens PRs
+          # under. It authors the sync/merge commits GitService creates when a
+          # task branch is brought up to date with its base, so it is a
+          # committer on essentially every fleet PR — and unlike the agent
+          # identities it DOES map to a real GitHub account, so CLA Assistant
+          # demands a signature it can never give: an App cannot post the
+          # sign-off comment as itself. Exempting it is also correct on the
+          # merits, since the CLA exists to obtain copyright assignment from
+          # human contributors and the App commits on the copyright holder's
+          # own behalf. Same form as dependabot[bot] above.
+          allowlist: "dependabot[bot],roboco-app[bot],rennf93,Backend *,Frontend *,UX/UI *,Main PM,Product Owner,Head of Marketing,Auditor,Intake,Secretary,PR Reviewer,RoboCo Agent"
