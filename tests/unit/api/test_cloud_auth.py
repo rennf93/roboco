@@ -68,8 +68,8 @@ async def test_off_mode_ceo_header_spoof_still_works(
         new=AsyncMock(return_value=(aid, "ceo")),
     ):
         ctx = await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id=CEO_AGENT_ID,
             x_agent_role="ceo",
         )
@@ -89,8 +89,8 @@ async def test_off_mode_developer_header_trust_unchanged(
         new=AsyncMock(return_value=(aid, "be-dev-1")),
     ):
         ctx = await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role="developer",
             x_agent_team="backend",
@@ -111,8 +111,8 @@ async def test_on_mode_spoofed_ceo_header_without_token_or_session_401(
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id=CEO_AGENT_ID,
             x_agent_role="ceo",
         )
@@ -127,7 +127,7 @@ async def test_on_mode_no_headers_no_cookie_401(
     401s without a valid session — never silently falls back to anything."""
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
     with pytest.raises(HTTPException) as exc:
-        await get_agent_context(MagicMock(), MagicMock())
+        await get_agent_context(db=MagicMock(), response=MagicMock())
     assert exc.value.status_code == _HTTP_401
 
 
@@ -154,9 +154,7 @@ async def test_on_mode_valid_session_yields_ceo_context_and_slides_cookie(
     response = Response()
 
     ctx = await get_agent_context(
-        db_session,
-        response,
-        roboco_session=token,
+        db=db_session, response=response, roboco_session=token
     )
 
     assert ctx.role == AgentRole.CEO
@@ -174,7 +172,9 @@ async def test_on_mode_invalid_session_cookie_401(
 ) -> None:
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
     with pytest.raises(HTTPException) as exc:
-        await get_agent_context(db_session, Response(), roboco_session="not-a-real-jwt")
+        await get_agent_context(
+            db=db_session, response=Response(), roboco_session="not-a-real-jwt"
+        )
     assert exc.value.status_code == _HTTP_401
 
 
@@ -192,8 +192,8 @@ async def test_on_mode_agent_hmac_still_works(
         new=AsyncMock(return_value=(aid, "be-dev-1")),
     ):
         ctx = await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id=str(aid),
             x_agent_role="developer",
             x_agent_team="backend",
@@ -212,8 +212,8 @@ async def test_on_mode_system_self_patch_still_works(
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     token = issue_agent_token(_SYSTEM_AGENT_ID, "system", "")
     ctx = await get_agent_context(
-        MagicMock(),
-        MagicMock(),
+        db=MagicMock(),
+        response=MagicMock(),
         x_agent_id=_SYSTEM_AGENT_ID,
         x_agent_role="system",
         x_agent_token=token,
@@ -228,8 +228,8 @@ async def test_on_mode_forged_agent_token_401(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role="developer",
             x_agent_token="forged",
@@ -248,8 +248,8 @@ async def test_on_mode_spoofed_non_ceo_role_without_token_401(
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id="main-pm",
             x_agent_role="main_pm",
         )

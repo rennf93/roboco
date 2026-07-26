@@ -67,7 +67,12 @@ async def test_superseded_closes_pr_and_completes_without_merge(
     )
 
     env = await choreo._resolve_merge_conflict_on_complete(
-        uuid4(), uuid4(), t, "feature/frontend/root--cell", "notes", _EXC
+        pm_agent_id=uuid4(),
+        task_id=uuid4(),
+        t=t,
+        target="feature/frontend/root--cell",
+        notes="notes",
+        exc=_EXC,
     )
 
     git.close_pull_request.assert_awaited_once()
@@ -100,7 +105,12 @@ async def test_rebased_retries_merge_and_completes(
     )
 
     await choreo._resolve_merge_conflict_on_complete(
-        uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC
+        pm_agent_id=uuid4(),
+        task_id=uuid4(),
+        t=t,
+        target="feature/backend/root--cell",
+        notes="notes",
+        exc=_EXC,
     )
 
     git.pr_merge.assert_awaited_once()
@@ -133,7 +143,12 @@ async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop(
     )
 
     env = await choreo._resolve_merge_conflict_on_complete(
-        uuid4(), tid, t, "feature/backend/root--cell", "notes", _EXC
+        pm_agent_id=uuid4(),
+        task_id=tid,
+        t=t,
+        target="feature/backend/root--cell",
+        notes="notes",
+        exc=_EXC,
     )
 
     task.admin_set_status.assert_awaited_once()
@@ -171,7 +186,12 @@ async def test_diverged_rebase_outcome_escalates_rather_than_completing(
     )
 
     await choreo._resolve_merge_conflict_on_complete(
-        uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC
+        pm_agent_id=uuid4(),
+        task_id=uuid4(),
+        t=t,
+        target="feature/backend/root--cell",
+        notes="notes",
+        exc=_EXC,
     )
 
     task.admin_set_status.assert_awaited_once()
@@ -198,7 +218,12 @@ async def test_unknown_rebase_outcome_escalates_rather_than_completing(
     )
 
     await choreo._resolve_merge_conflict_on_complete(
-        uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC
+        pm_agent_id=uuid4(),
+        task_id=uuid4(),
+        t=t,
+        target="feature/backend/root--cell",
+        notes="notes",
+        exc=_EXC,
     )
 
     task.admin_set_status.assert_awaited_once()

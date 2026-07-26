@@ -107,8 +107,12 @@ Biweekly cron, project-scoped (`projects.board_programs` contains `"spackle"`). 
 propose_gap_fill(
     items=[
         {
-            "title": "...", "description": "...", "acceptance_criteria": ["..."],
-            "project_slug": "roboco-api", "team": "backend", "priority": 2,
+            "title": "...",
+            "description": "...",
+            "acceptance_criteria": ["..."],
+            "project_slug": "roboco-api",
+            "team": "backend",
+            "priority": 2,
             "evidence": "BOTH sides of the gap — REQUIRED",
         },
         # 1-5 items
@@ -146,8 +150,12 @@ Event-triggered only (a release-publish hook, or the CEO's "run now") — no cro
 propose_friction_fixes(
     items=[
         {
-            "title": "...", "description": "...", "acceptance_criteria": ["..."],
-            "project_slug": "roboco-api", "team": "frontend", "priority": 2,
+            "title": "...",
+            "description": "...",
+            "acceptance_criteria": ["..."],
+            "project_slug": "roboco-api",
+            "team": "frontend",
+            "priority": 2,
             "evidence": "the walked path (which pages, which clicks) — prose only, never a screenshot — REQUIRED",
         },
         # 1-5 items

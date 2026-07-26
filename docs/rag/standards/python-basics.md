@@ -33,12 +33,11 @@ All functions MUST have type hints:
 
 ```python
 # Good
-async def fetch_user(user_id: UUID) -> User | None:
-    ...
+async def fetch_user(user_id: UUID) -> User | None: ...
+
 
 # Bad - no type hints
-def fetch_user(user_id):
-    ...
+def fetch_user(user_id): ...
 ```
 
 ## Naming Conventions
@@ -78,6 +77,7 @@ ALL I/O operations must be async:
 # Good
 async def fetch_user(user_id: str) -> User:
     return await db.users.get(user_id)
+
 
 # Bad - blocking
 def fetch_user(user_id: str) -> User:

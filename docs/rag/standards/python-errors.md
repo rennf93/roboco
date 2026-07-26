@@ -29,11 +29,14 @@ Define domain-specific exceptions:
 class TaskError(Exception):
     """Base exception for task operations."""
 
+
 class TaskNotFoundError(TaskError):
     """Task does not exist."""
 
+
 class TaskAlreadyClaimedError(TaskError):
     """Task is already claimed."""
+
 
 # Usage
 if task is None:
@@ -62,6 +65,7 @@ Use structlog, NEVER print:
 
 ```python
 import structlog
+
 logger = structlog.get_logger(__name__)
 
 # Good
@@ -85,6 +89,7 @@ Validate external input at API boundaries:
 async def create_task(request: TaskCreate) -> TaskResponse:
     # Pydantic validates automatically
     ...
+
 
 # Internal service - trust validated data
 async def process_task(task: Task) -> None:

@@ -74,7 +74,7 @@ def test_note_default_scope_note(do_module: Any) -> None:
     fake_client.post.return_value = fake_response
 
     with patch("httpx.Client", return_value=fake_client):
-        do_module.note("hello world")
+        do_module.note(text="hello world")
 
     _args, kwargs = fake_client.post.call_args
     assert kwargs["json"]["scope"] == "note"
@@ -88,7 +88,7 @@ def test_note_with_scope_reflect(do_module: Any) -> None:
     fake_client.post.return_value = fake_response
 
     with patch("httpx.Client", return_value=fake_client):
-        do_module.note("did x", scope="reflect")
+        do_module.note(text="did x", scope="reflect")
 
     _args, kwargs = fake_client.post.call_args
     assert kwargs["json"]["scope"] == "reflect"

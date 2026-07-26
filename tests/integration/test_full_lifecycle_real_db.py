@@ -352,8 +352,8 @@ async def test_dev_can_claim_pending_task_via_gateway(
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -401,8 +401,8 @@ async def test_dev_full_chain_through_awaiting_qa(
 
     # 1. Claim
     env = await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -480,8 +480,8 @@ async def test_full_chain_through_doc_handoff(
 
     # Drive the dev side first (same as test_dev_full_chain_through_awaiting_qa).
     await c.i_will_work_on(
-        dev_agent.id,
-        task.id,
+        agent_id=dev_agent.id,
+        task_id=task.id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

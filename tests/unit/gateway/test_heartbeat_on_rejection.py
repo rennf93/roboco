@@ -95,7 +95,7 @@ async def test_heartbeat_fires_on_rejection_not_authorized() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(aid, tid, plan="x")
+    env = await c.i_will_work_on(agent_id=aid, task_id=tid, plan="x")
 
     assert env.error == "not_authorized"
     task_svc.heartbeat.assert_awaited_with(tid)

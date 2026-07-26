@@ -167,8 +167,8 @@ async def test_i_will_work_on_pending_with_plan() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -213,7 +213,7 @@ async def test_i_will_work_on_pending_no_plan_returns_tracing_gap() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, plan=None)
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id, plan=None)
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "plan" in body["missing"]
@@ -263,8 +263,8 @@ async def test_i_will_work_on_needs_revision_re_starts() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -283,7 +283,7 @@ async def test_i_will_work_on_task_not_found_returns_not_found() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id)
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id)
     body = env.as_dict()
     assert body["error"] == "not_found"
 
@@ -316,7 +316,7 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id)
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id)
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     # Spec produces "task is in 'completed', 'claim' requires: ..."
@@ -376,8 +376,8 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

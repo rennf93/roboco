@@ -466,6 +466,7 @@ def commit(message: str, files: list[str] | None = None) -> dict[str, Any]:
 
 
 def note(
+    *,
     text: str,
     scope: str = "note",
     task_id: str | None = None,
@@ -691,6 +692,7 @@ def propose_friction_fixes(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def propose_feature_spotlight(
+    *,
     feature_slug: str = "",
     feature_title: str = "",
     body: str = "",

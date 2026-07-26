@@ -149,9 +149,9 @@ Each finding is inserted onto the task's revision-findings ledger (`origin=pm`) 
 ## Monitoring Your Cell
 
 ```python
-triage()                       # surfaces tasks waiting on you
-roboco_git_status(...)          # workspace state
-roboco_git_log(...)             # cell branch history
+triage()  # surfaces tasks waiting on you
+roboco_git_status(...)  # workspace state
+roboco_git_log(...)  # cell branch history
 note(text="...", scope="reflect")  # journal observations
 ```
 
@@ -159,12 +159,20 @@ note(text="...", scope="reflect")  # journal observations
 
 ```python
 # Cross-cell coordination
-dm(recipient="fe-pm", text="Need to align on shared schema; task X.",
-   task_id="...", skill="api_design")
+dm(
+    recipient="fe-pm",
+    text="Need to align on shared schema; task X.",
+    task_id="...",
+    skill="api_design",
+)
 
 # Ack-required notification (PMs / Board only)
-notify(target="be-dev-1", text="Please prioritise task X by EOD.",
-       priority="high", task_id="...")
+notify(
+    target="be-dev-1",
+    text="Please prioritise task X by EOD.",
+    priority="high",
+    task_id="...",
+)
 ```
 
 ## Assembling + Submitting Finished Work
@@ -206,7 +214,9 @@ Use `escalate_up(task_id, reason)` when:
 - A non-cell agent is blocking you
 
 ```python
-escalate_up(task_id="<task>",
-            reason="Frontend cell needs the new auth endpoint we own; "
-                   "they're blocked. Want to confirm priority swap.")
+escalate_up(
+    task_id="<task>",
+    reason="Frontend cell needs the new auth endpoint we own; "
+    "they're blocked. Want to confirm priority swap.",
+)
 ```

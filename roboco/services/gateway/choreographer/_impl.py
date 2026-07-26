@@ -511,6 +511,7 @@ class Choreographer:
 
     async def _handle_pm_reentry(
         self,
+        *,
         ctx: _ClaimPlanStartContext,
         t: Any,
         pm_agent_id: UUID,
@@ -1707,6 +1708,7 @@ class Choreographer:
 
     async def i_will_work_on(
         self,
+        *,
         agent_id: UUID,
         task_id: UUID,
         plan: str | None = None,
@@ -1784,24 +1786,30 @@ class Choreographer:
             verb_name="i_will_work_on",
         )
         if reentry := await self._dev_reentry(
-            ctx, t, agent_id, task_id, role_str, briefing
+            ctx=ctx,
+            t=t,
+            agent_id=agent_id,
+            task_id=task_id,
+            role_str=role_str,
+            briefing=briefing,
         ):
             return reentry
         return await self._fresh_dev_claim(
-            ctx,
-            role,
-            spec_ctx,
-            agent,
-            rich_plan,
-            role_str,
-            t,
-            agent_id,
-            task_id,
-            briefing,
+            ctx=ctx,
+            role=role,
+            spec_ctx=spec_ctx,
+            agent=agent,
+            rich_plan=rich_plan,
+            role_str=role_str,
+            t=t,
+            agent_id=agent_id,
+            task_id=task_id,
+            briefing=briefing,
         )
 
     async def _dev_reentry(
         self,
+        *,
         ctx: _ClaimPlanStartContext,
         t: Any,
         agent_id: UUID,
@@ -1838,6 +1846,7 @@ class Choreographer:
 
     async def _fresh_dev_claim(
         self,
+        *,
         ctx: _ClaimPlanStartContext,
         role: Any,
         spec_ctx: Any,
@@ -2019,7 +2028,12 @@ class Choreographer:
             original_developer_slug=_extract_original_developer(t),
         )
         if rejection := self._open_pr_preflight_rejection(
-            agent_id, task_id, t, role_str, briefing, spec_ctx
+            agent_id=agent_id,
+            task_id=task_id,
+            t=t,
+            role_str=role_str,
+            briefing=briefing,
+            spec_ctx=spec_ctx,
         ):
             return await self._emit_rejection(
                 rejection, agent_id=agent_id, task_id=task_id, verb="open_pr"
@@ -2041,6 +2055,7 @@ class Choreographer:
 
     def _open_pr_preflight_rejection(
         self,
+        *,
         agent_id: UUID,
         task_id: UUID,
         t: Any,
@@ -3811,6 +3826,7 @@ class Choreographer:
 
     async def _run_i_am_blocked_intent(
         self,
+        *,
         agent_id: UUID,
         task_id: UUID,
         t: Any,
@@ -3877,6 +3893,7 @@ class Choreographer:
 
     async def _handle_rate_limited_parking(
         self,
+        *,
         agent_id: UUID,
         task_id: UUID,
         t: Any,
@@ -4065,7 +4082,13 @@ class Choreographer:
             )
 
         t, rejection = await self._run_i_am_blocked_intent(
-            agent_id, task_id, t, agent, spec_ctx, role_str, briefing
+            agent_id=agent_id,
+            task_id=task_id,
+            t=t,
+            agent=agent,
+            spec_ctx=spec_ctx,
+            role_str=role_str,
+            briefing=briefing,
         )
         if rejection is not None:
             return rejection
@@ -4614,7 +4637,12 @@ class Choreographer:
         # protected-base. Returns the rejection (None when all clear) AND the
         # resolved base_branch the git op needs (empty when rejected).
         rejection, base_branch = await self._sync_branch_preflight_rejection(
-            agent_id, task_id, t, agent, role_str, briefing
+            agent_id=agent_id,
+            task_id=task_id,
+            t=t,
+            agent=agent,
+            role_str=role_str,
+            briefing=briefing,
         )
         if rejection is not None:
             return await self._emit_rejection(
@@ -4707,6 +4735,7 @@ class Choreographer:
 
     async def _sync_branch_preflight_rejection(
         self,
+        *,
         agent_id: UUID,
         task_id: UUID,
         t: Any,
@@ -5279,7 +5308,12 @@ class Choreographer:
         # Re-entry check runs first — a respawned PM with thin args ("resume",
         # no sub_tasks) must short-circuit here before any gate.
         if reentry := await self._handle_pm_reentry(
-            ctx, t, pm_agent_id, task_id, role_str, briefing
+            ctx=ctx,
+            t=t,
+            pm_agent_id=pm_agent_id,
+            task_id=task_id,
+            role_str=role_str,
+            briefing=briefing,
         ):
             return reentry
         # Lifecycle spec gate runs BEFORE the sub_tasks gate so wrong-state
@@ -7485,7 +7519,12 @@ class Choreographer:
                     # instead of letting the failure re-block the task and
                     # respawn the PM forever.
                     return await self._resolve_merge_conflict_on_complete(
-                        pm_agent_id, task_id, t, target, notes, exc
+                        pm_agent_id=pm_agent_id,
+                        task_id=task_id,
+                        t=t,
+                        target=target,
+                        notes=notes,
+                        exc=exc,
                     )
         return await self._finalize_cell_complete(
             pm_agent_id, task_id, t, notes, merge_commit
@@ -7563,6 +7602,7 @@ class Choreographer:
 
     async def _resolve_merge_conflict_on_complete(
         self,
+        *,
         pm_agent_id: UUID,
         task_id: UUID,
         t: Any,
@@ -8466,7 +8506,13 @@ class Choreographer:
         # check — the ledger ids don't exist until after insert, below.
         notes = findings_lib.render_findings_summary([(None, f) for f in validated])
         rejection, spec_gate = await self._request_changes_spec_gate(
-            pm_agent_id, task_id, t, agent, role_str, notes, []
+            pm_agent_id=pm_agent_id,
+            task_id=task_id,
+            t=t,
+            agent=agent,
+            role_str=role_str,
+            notes=notes,
+            issues=[],
         )
         if rejection is not None:
             return rejection
@@ -8510,6 +8556,7 @@ class Choreographer:
 
     async def _request_changes_spec_gate(
         self,
+        *,
         pm_agent_id: UUID,
         task_id: UUID,
         t: Any,

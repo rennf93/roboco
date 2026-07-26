@@ -115,7 +115,7 @@ async def test_dev_fresh_claim_without_steps_is_rejected() -> None:
     task_id = uuid4()
     c = Choreographer(_make_deps(task=_dev_task_svc(task_id)))
 
-    env = await c.i_will_work_on(dev_id, task_id, plan="do the thing")
+    env = await c.i_will_work_on(agent_id=dev_id, task_id=task_id, plan="do the thing")
     body = env.as_dict()
     assert body["error"] == "incomplete_input", body
     assert "steps" in (body.get("missing") or []), body
@@ -128,8 +128,8 @@ async def test_dev_thin_step_description_is_rejected() -> None:
     c = Choreographer(_make_deps(task=_dev_task_svc(task_id)))
 
     env = await c.i_will_work_on(
-        dev_id,
-        task_id,
+        agent_id=dev_id,
+        task_id=task_id,
         plan="do the thing",
         steps=[{"title": "Edit README", "description": "edit it"}],
     )
@@ -162,7 +162,9 @@ async def test_dev_with_substantive_steps_passes_gate_and_persists_checklist() -
         {"title": "Edit README", "description": _GOOD_STEP_DESC},
         {"title": "Commit + open PR", "description": _GOOD_STEP_DESC},
     ]
-    env = await c.i_will_work_on(dev_id, task_id, **_full_plan_kwargs(steps_in))
+    env = await c.i_will_work_on(
+        agent_id=dev_id, task_id=task_id, **_full_plan_kwargs(steps_in)
+    )
     body = env.as_dict()
     assert body.get("error") != "incomplete_input", body
     # The full rich plan was layered into the panel-shaped dict and persisted,
@@ -188,8 +190,8 @@ async def test_dev_fresh_claim_missing_considerations_and_risks_rejected() -> No
     c = Choreographer(_make_deps(task=_dev_task_svc(task_id)))
 
     env = await c.i_will_work_on(
-        dev_id,
-        task_id,
+        agent_id=dev_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=[{"title": "Edit README", "description": _GOOD_STEP_DESC}],
     )
@@ -210,7 +212,9 @@ async def test_dev_reentry_in_progress_short_circuits_before_steps_gate() -> Non
     svc.get.return_value.assigned_to = dev_id
     c = Choreographer(_make_deps(task=svc))
 
-    env = await c.i_will_work_on(dev_id, task_id, plan="resume: keep going")
+    env = await c.i_will_work_on(
+        agent_id=dev_id, task_id=task_id, plan="resume: keep going"
+    )
     body = env.as_dict()
     assert body.get("error") is None, body
     assert body.get("status") == "in_progress", body

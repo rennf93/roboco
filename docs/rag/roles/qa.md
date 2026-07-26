@@ -143,10 +143,11 @@ The system blocks QA from reviewing their own dev work. The `original_developer`
 `escalate_up` is **not** in your manifest. Use `dm` to your Cell PM if something needs attention beyond pass/fail:
 
 ```python
-dm(recipient="be-pm",
-   text="Task X — security concern, can you take a look before we "
-        "merge?",
-   task_id="...")
+dm(
+    recipient="be-pm",
+    text="Task X — security concern, can you take a look before we merge?",
+    task_id="...",
+)
 ```
 
 For an external blocker (test environment broken, can't reproduce, missing infra), use `i_am_blocked(task_id, reason="...")` — your Cell PM is notified and `unblock`s you. If the work itself is wrong, `fail(task_id, findings=[...])` with the full context is the right move; the Cell PM picks it up from `needs_revision`.

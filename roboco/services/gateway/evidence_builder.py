@@ -216,6 +216,7 @@ def _typed(value: Any, expected: type | tuple[type, ...], default: Any) -> Any:
 
 
 def _has_prior_work(
+    *,
     commits: list,
     acceptance: list,
     highlights: list,
@@ -292,18 +293,18 @@ def build_task_handoff(
     pm_review = _extract_pm_review(notes_structured)
     open_findings = list(open_findings or [])
     if not _has_prior_work(
-        commits,
-        acceptance,
-        highlights,
-        pr_number,
-        dev_summary,
-        completed_deps,
-        pr_review,
-        qa_review,
-        pm_review,
-        open_findings,
-        description,
-        parent_context,
+        commits=commits,
+        acceptance=acceptance,
+        highlights=highlights,
+        pr_number=pr_number,
+        dev_summary=dev_summary,
+        completed_deps=completed_deps,
+        pr_review=pr_review,
+        qa_review=qa_review,
+        pm_review=pm_review,
+        open_findings=open_findings,
+        description=description,
+        parent_context=parent_context,
     ):
         return None
     handoff: dict[str, Any] = {

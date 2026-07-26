@@ -17,13 +17,13 @@ Each takes `findings: list[dict]` — a list of structured findings. The legacy 
 
 ```python
 {
-    "file": "roboco/api/routes/rate_limit.py",   # optional; repo-relative, no ".."
-    "line": 88,                                   # optional; >= 1
-    "severity": "blocker",                        # required: blocker | major | minor | nit
+    "file": "roboco/api/routes/rate_limit.py",  # optional; repo-relative, no ".."
+    "line": 88,  # optional; >= 1
+    "severity": "blocker",  # required: blocker | major | minor | nit
     "criterion": "<acceptance-criterion id or exact text>",  # optional
-    "expected": "429 on the 101st request",       # required, <=300 chars
-    "actual": "the 100th request also 429s",      # required, <=300 chars
-    "fix": "use > not >= on the window limit",    # optional, <=500 chars — describe the change, never a literal patch
+    "expected": "429 on the 101st request",  # required, <=300 chars
+    "actual": "the 100th request also 429s",  # required, <=300 chars
+    "fix": "use > not >= on the window limit",  # optional, <=500 chars — describe the change, never a literal patch
     "evidence": "<failing test output / CI lines / diff hunk>",  # optional, <=2000 chars
 }
 ```
