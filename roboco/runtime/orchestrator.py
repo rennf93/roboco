@@ -1230,6 +1230,17 @@ class AgentOrchestrator:
         # review pass per assigned task: they have no verb to claim, plan,
         # delegate, or complete, so a respawn cannot advance the task and would
         # just loop. Tracks (agent_slug, task_id) already dispatched.
+        #
+        # Scope is the two-reviewer board REVIEW pass (plus vault curation's
+        # same-process race guard, which has its own durable marker behind it)
+        # — NOT the solo Board Program exploration cycles. Those used it too
+        # until 2026-07-26, and because the set never expires and lives only in
+        # memory, an exploration whose propose verb rejected was never retried
+        # for the life of the process: Periscope, Sentinel, Scales and Barfly
+        # each spawned once, failed, and sat PENDING until a restart. They now
+        # rely on ``_pm_respawn_should_gate`` alone, which is the guard that
+        # actually bounds a loop — DB-persisted, reset by a status change, and
+        # cooled down so a deploy that fixes the cause lets the work resume.
         self._board_dispatched: set[tuple[str, str]] = set()
         # Cross-tick damper for notification-triggered spawns (escalation /
         # approval / audit / a2a). Those dispatchers carry no task_id, so the
@@ -12878,7 +12889,7 @@ Start now: evidence(task_id="{task_id}")
         "Approve & Start" notification fires. ``propose_roadmap`` (not this
         dispatcher) marks the cycle authored (a ``roadmap_cycle`` marker); this
         only ever spawns once per task while that marker is absent, reusing the
-        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        respawn breaker every
         other board dispatch uses.
         """
         task_id = str(task.get("id"))
@@ -12888,12 +12899,8 @@ Start now: evidence(task_id="{task_id}")
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
-        key = (po_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(po_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("roadmap")
         market_brief_context = await self._periscope_brief_context()
@@ -12931,7 +12938,7 @@ Start now: evidence(task_id="{task_id}")
         """One-shot Product-Owner spawn to author a Pest Control bug hunt.
 
         Mirrors ``_dispatch_roadmap_exploration`` exactly (PO-solo, the same
-        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        respawn breaker
         "already authored" marker pre-check — ``propose_bug_hunt`` marks it
         via the ``pest_hunt`` marker, not this dispatcher). The extra step is
         the server-assembled evidence context (rework hotspots + findings-
@@ -12944,12 +12951,8 @@ Start now: evidence(task_id="{task_id}")
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
-        key = (po_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(po_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Product Owner for pest-control exploration", task_id=task_id
         )
@@ -12984,7 +12987,7 @@ Start now: evidence(task_id="{task_id}")
         """One-shot Product-Owner spawn to author a Scales rebalance plan.
 
         Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
-        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        respawn breaker the
         same "already authored" marker pre-check — ``propose_rebalance``
         marks it via the ``rebalance_plan`` marker, not this dispatcher). The
         extra step is the server-assembled stale-backlog snapshot the PO
@@ -12997,12 +13000,8 @@ Start now: evidence(task_id="{task_id}")
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
-        key = (po_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(po_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("scales")
         evidence_context = await self._scales_evidence_context()
@@ -13039,8 +13038,7 @@ Start now: evidence(task_id="{task_id}")
         pest-control "already authored" marker shape): no pre-check is
         needed — ``propose_postmortem`` completes this task atomically, so a
         successful call stops it matching the PENDING fetch on the next
-        tick. Reuses the same one-shot ``_board_dispatched`` tracker +
-        respawn breaker every other board dispatch uses. EVENT-triggered
+        tick. Reuses respawn breaker every other board dispatch uses. EVENT-triggered
         (spec §4): this task only ever exists because
         ``CoronerEngine.open_for_incident`` opened it — there is no LEARN
         "prior cycles" injection here (no cron cadence to have learned from).
@@ -13049,12 +13047,8 @@ Start now: evidence(task_id="{task_id}")
         auditor_slug = "auditor"
         if self._is_agent_active(auditor_slug):
             return
-        key = (auditor_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(auditor_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
         incident_context = await self._coroner_incident_context(task)
         await self.spawn_agent(
@@ -13095,7 +13089,7 @@ Start now: evidence(task_id="{task_id}")
         "already authored" marker shape): no pre-check is needed —
         ``propose_campaign`` completes this task atomically, so a successful
         call stops it matching the PENDING fetch on the next tick. Reuses the
-        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        respawn breaker every
         other board dispatch uses. EVENT-triggered (spec §4): this task only
         ever exists because a release just published or the CEO called "run
         now" — there is no LEARN "prior cycles" injection here (no cron
@@ -13108,12 +13102,8 @@ Start now: evidence(task_id="{task_id}")
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for War Room campaign planning",
             task_id=task_id,
@@ -13130,7 +13120,7 @@ Start now: evidence(task_id="{task_id}")
         """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
 
         Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
-        same one-shot ``_board_dispatched`` tracker + respawn breaker, the
+        respawn breaker the
         same "already authored" marker pre-check — ``propose_gap_fill`` marks
         it via the ``gap_fill`` marker, not this dispatcher). Unlike Pest
         Control there is no server-assembled evidence context — the spec
@@ -13145,12 +13135,8 @@ Start now: evidence(task_id="{task_id}")
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
-        key = (po_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(po_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("spackle")
         await self.spawn_agent(
@@ -13166,7 +13152,7 @@ Start now: evidence(task_id="{task_id}")
         audit.
 
         Mirrors ``_dispatch_spackle_exploration`` exactly (HoM-solo, the same
-        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        respawn breaker
         "already authored" marker pre-check — ``propose_messaging_fixes``
         marks it via the ``messaging_fixes`` marker, not this dispatcher).
         Like Spackle there is no server-assembled evidence context — the
@@ -13181,12 +13167,8 @@ Start now: evidence(task_id="{task_id}")
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for mirror exploration", task_id=task_id
         )
@@ -13204,7 +13186,7 @@ Start now: evidence(task_id="{task_id}")
         Dogfood friction audit.
 
         Mirrors ``_dispatch_spackle_exploration`` exactly (PO-solo, the same
-        one-shot ``_board_dispatched`` tracker + respawn breaker, the same
+        respawn breaker
         "already authored" marker pre-check — ``propose_friction_fixes``
         marks it via the ``friction_fixes`` marker, not this dispatcher).
         There is no server-assembled evidence context — walking the product
@@ -13220,12 +13202,8 @@ Start now: evidence(task_id="{task_id}")
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
-        key = (po_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(po_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Product Owner for dogfood exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("dogfood")
         await self.spawn_agent(
@@ -13246,19 +13224,14 @@ Start now: evidence(task_id="{task_id}")
         completes this task atomically (it stops matching the PENDING fetch on the
         next tick) — unlike the roadmap cycle, which stays open across the CEO's
         per-item decisions and needs the marker check to avoid re-spawning the PO
-        after authoring. Reuses the same one-shot _board_dispatched tracker +
-        respawn breaker every other board dispatch uses.
+        after authoring. Reuses the respawn breaker every other board dispatch uses.
         """
         task_id = str(task.get("id"))
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for feature-spotlight exploration",
             task_id=task_id,
@@ -13280,19 +13253,14 @@ Start now: evidence(task_id="{task_id}")
         authored" marker pre-check is needed — ``propose_market_brief``
         completes this task atomically (the x_feature complete-at-propose
         asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
-        breaker every other board dispatch uses.
+        Reuses respawn breaker every other board dispatch uses.
         """
         task_id = str(task.get("id"))
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for periscope exploration", task_id=task_id
         )
@@ -13314,19 +13282,15 @@ Start now: evidence(task_id="{task_id}")
         completes this task atomically (the x_feature/periscope complete-at-
         propose asymmetry, multiplied across every materialized reply), so
         it stops matching the PENDING fetch on the next tick. Reuses the
-        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        respawn breaker every
         other board dispatch uses.
         """
         task_id = str(task.get("id"))
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for barfly exploration", task_id=task_id
         )
@@ -13363,8 +13327,7 @@ Start now: evidence(task_id="{task_id}")
         marker pre-check is needed — ``propose_quality_report`` completes
         this task atomically (the x_feature/periscope complete-at-propose
         asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
-        breaker every other board dispatch uses. The extra step is the
+        Reuses respawn breaker every other board dispatch uses. The extra step is the
         server-assembled drift evidence (waived-findings trend, open-
         findings-by-severity, conventions hotspots, budget snapshot) the
         Auditor cannot gather itself — mirrors
@@ -13374,12 +13337,8 @@ Start now: evidence(task_id="{task_id}")
         auditor_slug = "auditor"
         if self._is_agent_active(auditor_slug):
             return
-        key = (auditor_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(auditor_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("sentinel")
         evidence_context = await self._sentinel_evidence_context()
@@ -13416,8 +13375,7 @@ Start now: evidence(task_id="{task_id}")
         marker pre-check is needed — ``propose_editorial_post`` completes
         this task atomically (the x_feature/periscope complete-at-propose
         asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses the same one-shot ``_board_dispatched`` tracker + respawn
-        breaker every other board dispatch uses. The extra step is the
+        Reuses respawn breaker every other board dispatch uses. The extra step is the
         server-assembled shipped-this-week digest (completed tasks +
         CHANGELOG Unreleased bullets) the Head of Marketing cannot gather
         itself — mirrors ``_dispatch_pest_control_exploration``'s
@@ -13427,12 +13385,8 @@ Start now: evidence(task_id="{task_id}")
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
-        key = (hom_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(hom_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info(
             "Spawning Head of Marketing for megaphone exploration", task_id=task_id
         )
@@ -13471,8 +13425,8 @@ Start now: evidence(task_id="{task_id}")
         marker pre-check is needed — ``propose_playbook_drafts`` completes
         this task atomically (the x_feature/periscope/sentinel complete-at-
         propose asymmetry), so it stops matching the PENDING fetch on the
-        next tick. Reuses the same one-shot ``_board_dispatched`` tracker +
-        respawn breaker every other board dispatch uses. The extra step is
+        next tick. Reuses the respawn breaker every other board dispatch
+        uses. The extra step is
         the server-assembled mining context (recurring learning-journal
         topics + existing playbook titles) the Auditor cannot gather itself
         — mirrors ``_dispatch_sentinel_exploration``'s evidence-context
@@ -13482,12 +13436,8 @@ Start now: evidence(task_id="{task_id}")
         auditor_slug = "auditor"
         if self._is_agent_active(auditor_slug):
             return
-        key = (auditor_slug, task_id)
-        if key in self._board_dispatched:
-            return
         if await self._pm_respawn_should_gate(auditor_slug, task):
             return
-        self._board_dispatched.add(key)
         logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
         prior_context = await self._board_program_prior_context("librarian")
         mining_context = await self._librarian_mining_context()
