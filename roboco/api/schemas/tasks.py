@@ -944,6 +944,12 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         pm_notes=getattr(task, "pm_notes", None),
         quick_context=task.quick_context,
         notes_structured=task.notes_structured,
+        # Declared on TaskResponse but never assigned here, so every response
+        # carried null: the orchestrator fetches its work over GET /tasks and
+        # builds prompts from this dict, so every marker read went to `{}` —
+        # a Barfly explorer saw "(none)" candidates the engine had actually
+        # gathered, and the same blindness hit every other marker consumer.
+        orchestration_markers=task.orchestration_markers,
         self_verified=task.self_verified,
         qa_verified=task.qa_verified,
         revision_count=getattr(task, "revision_count", 0) or 0,

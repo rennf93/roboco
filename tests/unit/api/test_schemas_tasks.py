@@ -42,7 +42,7 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.product import ProductCellMapping
-from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.runtime.orchestrator import AgentOrchestrator, _format_barfly_candidates
 
 _ORDER_DEFAULT = 0
 
@@ -312,7 +312,9 @@ def test_task_update_budget_usd_rejects_negative() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stub_task(*, with_project: bool = False) -> Any:
+def _stub_task(
+    *, with_project: bool = False, markers: dict[str, Any] | None = None
+) -> Any:
     """Build a TaskTable stand-in that matches task_to_response's reads."""
     return SimpleNamespace(
         id=uuid4(),
@@ -360,12 +362,51 @@ def _stub_task(*, with_project: bool = False) -> Any:
         doc_notes=None,
         quick_context=None,
         notes_structured=None,
+        orchestration_markers=markers,
         self_verified=False,
         qa_verified=None,
         branch_name=None,
         pr_number=None,
         pr_url=None,
     )
+
+
+def _response_for(stub: Any) -> Any:
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = {"project"}
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        return task_to_response(stub)
+
+
+def test_task_to_response_carries_orchestration_markers() -> None:
+    """The field is declared on TaskResponse, so omitting it from the builder
+    served null instead of failing loudly."""
+    stub = _stub_task(markers={"barfly_candidates": [{"id": "1"}]})
+    assert _response_for(stub).orchestration_markers == {
+        "barfly_candidates": [{"id": "1"}]
+    }
+
+
+def test_task_to_response_markers_reach_a_board_program_prompt() -> None:
+    """The regression this closes end-to-end: the orchestrator fetches work
+    over GET /tasks and renders prompts from that dict, so a dropped marker
+    showed a Barfly explorer "(none)" for candidates its engine HAD gathered
+    — and since the engine opens no task at all when the candidate list is
+    empty, the explorer could only ever conclude there was nothing to do."""
+    candidate = {
+        "id": "1955",
+        "author_handle": "someone",
+        "text": "how do you keep AI agents from stepping on each other?",
+        "engagement_note": "42 likes",
+    }
+    stub = _stub_task(markers={"barfly_candidates": [candidate]})
+    dispatched = _response_for(stub).model_dump()
+
+    rendered = _format_barfly_candidates(dispatched["orchestration_markers"] or {})
+
+    assert rendered != "(none)"
+    assert "id=1955" in rendered
+    assert "how do you keep AI agents" in rendered
 
 
 def test_task_to_response_omits_slug_when_project_not_loaded() -> None:
