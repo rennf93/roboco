@@ -424,6 +424,11 @@ async def test_propose_market_brief_persists_and_completes_the_exploration_task(
     assert payload["headline"] == "A rival tool shipped agentic PR review this week"
     assert len(payload["findings"]) == len(findings)
     assert payload["findings"][0]["id"] == "finding-0"
+    # Each finding still carries its own per-item CEO decision (Periscope
+    # Service.approve_finding/reject_finding) even though the exploration
+    # task completes here.
+    assert payload["findings"][0]["status"] == "proposed"
+    assert payload["findings"][0]["materialized_task_id"] is None
     assert payload["threats"] == ["Feature parity gap"]
     assert payload["opportunities"] == ["Lean into structured findings"]
     assert payload["positioning_note"] == "Emphasize the findings ledger in messaging"

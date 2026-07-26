@@ -682,25 +682,39 @@ def _normalize_friction_fix_item(idx: int, raw: dict[str, Any]) -> dict[str, Any
 
 def _normalize_market_brief_finding(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce a validated raw market-brief finding into the stored marker
-    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned."""
+    shape. Mirrors ``_normalize_pest_hunt_item`` — ``id`` is server-assigned.
+
+    ``status``/``reject_reason``/``materialized_task_id`` mirror the roadmap/
+    pest-hunt item shape even though the exploration task itself completes
+    at propose time — the finding still carries its OWN per-item CEO
+    decision (``PeriscopeService.approve_finding``/``reject_finding``),
+    orthogonal to the task's own terminal status.
+    """
     return {
         "id": f"finding-{idx}",
         "claim": str(raw["claim"]).strip(),
         "source_url": str(raw["source_url"]).strip(),
         "relevance": str(raw["relevance"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
     }
 
 
 def _normalize_quality_report_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce a validated raw quality-report item into the stored marker
     shape. Mirrors ``_normalize_market_brief_finding`` — ``id`` is
-    server-assigned."""
+    server-assigned, and the same per-item ``status`` triple applies (see
+    ``SentinelService.approve_item``/``reject_item``)."""
     return {
         "id": f"item-{idx}",
         "area": str(raw["area"]).strip(),
         "observation": str(raw["observation"]).strip(),
         "evidence": str(raw["evidence"]).strip(),
         "suggested_action": str(raw["suggested_action"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
     }
 
 
@@ -4892,6 +4906,19 @@ class ContentActions:
                 "process_change": {
                     "kind": process_change["kind"],
                     "description": str(process_change["description"]).strip(),
+                    # A "playbook" kind already routed straight into the
+                    # playbook curation queue above — nothing left for the
+                    # CEO to decide on THIS process change, so it never
+                    # enters the proposed/approved/rejected per-item flow
+                    # (CoronerService.approve_process_change/
+                    # reject_process_change refuse it outright).
+                    "status": (
+                        "not_applicable"
+                        if process_change["kind"] == "playbook"
+                        else "proposed"
+                    ),
+                    "reject_reason": None,
+                    "materialized_task_id": None,
                 },
                 "playbook_id": playbook_id,
             },

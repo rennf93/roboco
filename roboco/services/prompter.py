@@ -76,7 +76,17 @@ _MIN_MEGATASK_PROJECTS = 2
 # "release_manager", which would even wedge the real release engine's
 # one-open-proposal dedup).
 _ALLOWED_DRAFT_SOURCES = frozenset(
-    {"prompter", "roadmap", "pest_control", "spackle", "mirror", "dogfood"}
+    {
+        "prompter",
+        "roadmap",
+        "pest_control",
+        "spackle",
+        "mirror",
+        "dogfood",
+        "periscope",
+        "sentinel",
+        "coroner",
+    }
 )
 
 # A draft whose per-cell map covers at least this many cells targets the ad-hoc
@@ -110,6 +120,11 @@ class BatchPlacement:
     owning team for the whole batch; ``parent_task_id`` is the umbrella (or None
     for the umbrella itself); ``batch_id`` is the shared batch identity; and
     ``sequence`` is the item's wave index.
+
+    ``team_override`` alone (the other three left at their batch-less
+    defaults) is also the seam Board Program materialization uses — e.g.
+    ``RoadmapService._materialize`` — to force ``team=Team.MAIN_PM`` on a
+    materialized coordination root without it being part of any real batch.
     """
 
     parent_task_id: UUID | None = None

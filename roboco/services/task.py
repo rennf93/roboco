@@ -746,19 +746,37 @@ PEST_CONTROL_ITEM_SOURCE = "pest_control"
 # (competitors, adjacent-tool releases, positioning shifts) and author a brief
 # via the ``propose_market_brief`` content verb. Org-scoped (no project
 # targeting — it reads the market, not a repo) and, like X_FEATURE_
-# EXPLORATION_SOURCE, complete-at-propose: a report has no per-item CEO
-# decision, so no separate materialized-item source exists for it.
+# EXPLORATION_SOURCE, complete-at-propose: the exploration task itself
+# completes the moment the brief is filed, but each cited finding still
+# carries its OWN proposed/approved/rejected status the CEO decides
+# per-finding after the fact (source=PERISCOPE_ITEM_SOURCE below) — the report
+# and the per-item queue are orthogonal, unlike roadmap/pest-control where
+# they're the same open-vs-closed task.
 PERISCOPE_SOURCE = "board_periscope"
+
+# Source tag stamped on a task MATERIALIZED from an approved Periscope
+# finding (distinct from PERISCOPE_SOURCE, which tags the already-completed
+# exploration task the finding lives on).
+PERISCOPE_ITEM_SOURCE = "periscope"
 
 # Source tag for a Coroner (Board Program) postmortem-exploration task: the
 # EVENT-triggered autopsy the Auditor authors (spec §4) when an incident task
 # bounces >=3x, is cancelled after work started, or is budget-blocked.
-# Dispatched (one-shot Auditor spawn), never rides the delivery lifecycle, and
-# — unlike ROADMAP_SOURCE/PEST_CONTROL_SOURCE — has no separate materialized-
-# item source: a single ``propose_postmortem`` call completes it in place
-# (mirrors X_FEATURE_EXPLORATION_SOURCE's atomic-complete shape, not the
-# stays-open-for-per-item-decisions roadmap/pest-control shape).
+# Dispatched (one-shot Auditor spawn), never rides the delivery lifecycle.
+# The exploration task completes atomically the moment ``propose_postmortem``
+# lands (mirrors X_FEATURE_EXPLORATION_SOURCE's atomic-complete shape, not the
+# stays-open-for-per-item-decisions roadmap/pest-control shape) — but unlike
+# a report, a postmortem's single ``process_change`` still carries its own
+# proposed/approved/rejected status for the CEO's after-the-fact decision
+# (source=CORONER_ITEM_SOURCE below), except when its kind is "playbook"
+# (already routed straight into the playbook curation queue, nothing left to
+# decide here).
 CORONER_SOURCE = "board_coroner"
+
+# Source tag stamped on a task MATERIALIZED from an approved Coroner
+# process-change (distinct from CORONER_SOURCE, which tags the
+# already-completed postmortem exploration task it lives on).
+CORONER_ITEM_SOURCE = "coroner"
 
 # Source tag for a Scales (Board Program) portfolio-rebalance exploration
 # cycle: a PENDING task the scales engine opens for the Product Owner to
@@ -822,9 +840,15 @@ async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
 # (waiver-accumulation trends, conventions-violation hotspots, docs/map
 # staleness, budget anomalies) and file ONE "state of quality" report via the
 # ``propose_quality_report`` content verb. Org-scoped (no project targeting)
-# and, like PERISCOPE_SOURCE, complete-at-propose: a report has no per-item
-# CEO decision, so no separate materialized-item source exists for it.
+# and, like PERISCOPE_SOURCE, complete-at-propose — but each drift item still
+# carries its own proposed/approved/rejected status for the CEO's per-item
+# decision after the report is filed (source=SENTINEL_ITEM_SOURCE below).
 SENTINEL_SOURCE = "board_sentinel"
+
+# Source tag stamped on a task MATERIALIZED from an approved Sentinel drift
+# item (distinct from SENTINEL_SOURCE, which tags the already-completed
+# exploration task the item lives on).
+SENTINEL_ITEM_SOURCE = "sentinel"
 
 # Source tag for a Spackle (Board Program) exploration cycle: a PENDING task
 # the spackle engine opens for the Product Owner to audit an opted-in

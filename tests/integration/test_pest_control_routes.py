@@ -25,6 +25,7 @@ from sqlalchemy import update
 _SEED_GIT_URL = "https://example.com/backend-svc.git"
 
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
+MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -74,10 +75,40 @@ async def _seed_ceo(session: AsyncSession) -> None:
     await session.flush()
 
 
+async def _seed_main_pm(session: AsyncSession) -> None:
+    """The Main PM row matching ``MAIN_PM_UUID`` — approving an item now
+    assigns this id to the materialized task (an FK to ``agents``). The
+    slug must be the exact ``"main-pm"`` (not a randomized suffix like the
+    other seed helpers here use): ``TaskService.approve_and_start`` and
+    other call sites resolve the Main PM by an EXACT slug lookup, and this
+    row's id is the fixed, cross-test-shared foundation UUID — a wrong slug
+    here would permanently squat that id with an unresolvable row for every
+    other test in the shared suite run."""
+    if await session.get(AgentTable, MAIN_PM_UUID) is not None:
+        return
+    session.add(
+        AgentTable(
+            id=MAIN_PM_UUID,
+            name="main-pm",
+            slug="main-pm",
+            role=AgentRole.MAIN_PM,
+            team=Team.MAIN_PM,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="x",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+    )
+    await session.flush()
+
+
 async def _seed_cycle(session: AsyncSession) -> tuple[TaskTable, ProjectTable]:
     system = await _seed_agent(session, AgentRole.SYSTEM, "system")
     po = await _seed_agent(session, AgentRole.PRODUCT_OWNER, "product-owner")
     await _seed_ceo(session)
+    await _seed_main_pm(session)
     project = ProjectTable(
         id=uuid4(),
         name="Backend Service",
@@ -190,9 +221,10 @@ async def test_list_cycles_returns_authored_cycle(
 
 
 @pytest.mark.asyncio
-async def test_approve_item_materializes_backlog_task(
+async def test_approve_item_materializes_main_pm_owned_task(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
+    """Defect fix: see test_roadmap_routes.py's identical assertion update."""
     task, _project = await _seed_cycle(db_session)
     resp = await ceo_client.post(
         f"/api/pest-control/cycles/{task.id}/items/item-0/approve"
@@ -204,7 +236,9 @@ async def test_approve_item_materializes_backlog_task(
 
     materialized = await db_session.get(TaskTable, UUID(body["materialized_task_id"]))
     assert materialized is not None
-    assert materialized.status == TaskStatus.BACKLOG
+    assert materialized.status == TaskStatus.PENDING
+    assert materialized.assigned_to == MAIN_PM_UUID
+    assert materialized.parent_task_id is None
 
 
 @pytest.mark.asyncio

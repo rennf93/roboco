@@ -6,11 +6,14 @@ the Product Owner authors the gap-fill audit onto it via ``propose_gap_fill``
 (1-5 evidence-backed item drafts, persisted as a marker payload — see
 ``roboco.foundation.policy.content.markers.get_gap_fill``). This service is
 what the CEO-gated routes call: ``approve_item`` materializes one item as a
-BACKLOG task (``source=spackle``, via ``PrompterService.
-create_task_from_draft`` — CEO approval IS the confirmation); ``reject_item``
-records the reason. Once every item on the cycle is terminal
-(approved/rejected) the exploration task itself completes. Both actions are
-idempotent per item. Mirrors ``PestControlService`` exactly.
+PENDING, Main-PM-owned root task (``source=spackle``, ``assigned_to=main-pm``,
+via ``PrompterService.create_task_from_draft`` — CEO approval IS the
+confirmation); ``reject_item`` records the reason. Once every item on the
+cycle is terminal (approved/rejected) the exploration task itself completes.
+Both actions are idempotent per item. Mirrors ``PestControlService`` exactly.
+
+A materialized item is NEVER an unowned BACKLOG task — see
+``RoadmapService._materialize``'s docstring for why.
 """
 
 from __future__ import annotations
@@ -18,17 +21,16 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from roboco.foundation.policy.board_programs import PROGRAMS, project_participates
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import TaskStatus, Team
 from roboco.services.base import BaseService
 from roboco.services.board_programs import learn_ref
 from roboco.services.task import SPACKLE_ITEM_SOURCE, SPACKLE_SOURCE
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import TaskTable
@@ -175,9 +177,14 @@ class SpackleService(BaseService):
     async def _materialize(
         self, item: dict[str, Any], *, created_by: UUID
     ) -> TaskTable:
-        """Turn one approved item draft into a real BACKLOG task."""
+        """Turn one approved item draft into a Main-PM-owned root task.
+        Mirrors ``RoadmapService._materialize`` — PENDING + main-pm and
+        ``team=Team.MAIN_PM`` (via ``BatchPlacement.team_override``), not a
+        parentless BACKLOG task and not left on the item's own cell team; the
+        item's own cell survives as a Notes delegation hint instead."""
+        from roboco.seeds.initial_data import AGENT_UUIDS
         from roboco.services.project import get_project_service
-        from roboco.services.prompter import get_prompter_service
+        from roboco.services.prompter import BatchPlacement, get_prompter_service
 
         project = await get_project_service(self.session).get_by_slug(
             item["project_slug"]
@@ -196,7 +203,11 @@ class SpackleService(BaseService):
         draft = {
             "title": item["title"],
             "objective": item["description"],
-            "notes": [f"Evidence: {item['evidence']}"],
+            "notes": [
+                f"Evidence: {item['evidence']}",
+                f"Delegation hint: originated as a {item['team']} item — "
+                f"delegate into the {item['team']} cell.",
+            ],
             "acceptance_criteria": item["acceptance_criteria"],
             "project_id": str(project.id),
             "team": item["team"],
@@ -206,7 +217,9 @@ class SpackleService(BaseService):
         return await get_prompter_service(self.session).create_task_from_draft(
             draft,
             created_by,
-            status=TaskStatus.BACKLOG,
+            status=TaskStatus.PENDING,
+            assigned_to=UUID(AGENT_UUIDS["main-pm"]),
+            placement=BatchPlacement(team_override=Team.MAIN_PM),
         )
 
     def _maybe_complete_cycle(self, task: TaskTable, payload: dict[str, Any]) -> None:

@@ -57,6 +57,12 @@ def _seed_system_hom_ceo_and_project(stack: E2EStack) -> str:
                 Team.BOARD,
             ),
             (_foundation.AGENTS["ceo"].uuid, "ceo", AgentRole.CEO, None),
+            (
+                _foundation.AGENTS["main-pm"].uuid,
+                "main-pm",
+                AgentRole.MAIN_PM,
+                Team.MAIN_PM,
+            ),
         ):
             if await session.get(AgentTable, agent_uuid) is not None:
                 continue

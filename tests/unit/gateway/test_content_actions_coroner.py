@@ -200,6 +200,10 @@ async def test_propose_postmortem_completes_the_task_and_stamps_marker() -> None
     assert payload is not None
     assert payload["failed_stage"] == "awaiting_qa"
     assert payload["process_change"]["kind"] == "prompt_fix"
+    # A non-playbook process change stays "proposed" — the CEO's per-item
+    # approve/dismiss decision (CoronerService) is still open.
+    assert payload["process_change"]["status"] == "proposed"
+    assert payload["process_change"]["materialized_task_id"] is None
     assert payload["playbook_id"] is None
     assert task.status == TaskStatus.COMPLETED
 
@@ -244,6 +248,9 @@ async def test_propose_postmortem_drafts_playbook_when_kind_is_playbook() -> Non
     playbook_svc.draft.assert_awaited_once()
     payload = engine.complete_with_postmortem.await_args.args[1]
     assert payload["playbook_id"] == str(drafted.id)
+    # A "playbook" kind already routed into the curation queue above —
+    # CoronerService refuses to act on it (see its own test module).
+    assert payload["process_change"]["status"] == "not_applicable"
 
 
 @pytest.mark.asyncio

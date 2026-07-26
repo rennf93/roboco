@@ -25,6 +25,7 @@ from roboco.db.tables import (
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.lifecycle import _next_hint_pr_fail
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
+MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 ONE = 1
 TWO = 2
 
@@ -109,6 +111,7 @@ async def _seed_agents(session: AsyncSession) -> None:
         (SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
         (PO_UUID, "product-owner", AgentRole.PRODUCT_OWNER, Team.BOARD),
         (CEO_UUID, "ceo", AgentRole.CEO, None),
+        (MAIN_PM_UUID, "main-pm", AgentRole.MAIN_PM, Team.MAIN_PM),
     ):
         if await session.get(AgentTable, uuid) is None:
             session.add(
@@ -187,7 +190,12 @@ def _id(task: TaskTable) -> UUID:
 
 
 @pytest.mark.asyncio
-async def test_approve_materializes_backlog_task(db_session: AsyncSession) -> None:
+async def test_approve_materializes_main_pm_owned_task(
+    db_session: AsyncSession,
+) -> None:
+    """Defect fix: mirrors test_roadmap_service.py's identical assertion
+    update — approval materializes PENDING + assigned_to=main-pm, never an
+    unowned BACKLOG task (see RoadmapService._materialize's docstring)."""
     await _seed_project(db_session, "backend-svc")
     task = await _seed_cycle(db_session, project_slug="backend-svc")
     result = await _svc(db_session).approve_item(
@@ -199,9 +207,24 @@ async def test_approve_materializes_backlog_task(db_session: AsyncSession) -> No
 
     materialized = await db_session.get(TaskTable, result.materialized_task_id)
     assert materialized is not None
-    assert materialized.status == TS.BACKLOG
+    assert materialized.status == TS.PENDING
+    assert materialized.assigned_to == MAIN_PM_UUID
+    assert materialized.parent_task_id is None
     assert materialized.source == SPACKLE_ITEM_SOURCE
-    assert materialized.team == Team.BACKEND
+    # team is forced to Team.MAIN_PM (not the item's own cell) — see
+    # test_roadmap_service.py's identical assertion for why: every "is this
+    # a coordination root" consumer keys on team, not assigned_to.
+    assert materialized.team == Team.MAIN_PM
+    # main_pm can never own a code task — see test_roadmap_service.py's
+    # identical assertion for the coercion rationale.
+    assert materialized.task_type == TT.PLANNING
+    # The item's own cell survives as a Notes delegation hint instead.
+    assert "backend cell" in (materialized.description or "")
+
+    materialized.branch_name = "feature/main_pm/deadbeef"
+    hint = _next_hint_pr_fail(materialized)
+    assert "re-delegate" in hint
+    assert "do NOT re-submit" in hint
 
     await db_session.refresh(task)
     payload = markers.get_gap_fill(task)

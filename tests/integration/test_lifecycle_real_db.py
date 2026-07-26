@@ -35,6 +35,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
@@ -825,20 +826,28 @@ async def test_pm_escalate_to_ceo_path(
     project = lifecycle_setup["project"]
     system_agent = lifecycle_setup["system_agent"]
 
-    main_pm_agent = AgentTable(
-        id=uuid4(),
-        name="Main PM",
-        slug="main-pm",
-        role=AgentRole.MAIN_PM,
-        team=None,
-        status=AgentStatus.ACTIVE,
-        model_config={},
-        system_prompt="main_pm",
-        capabilities=["coord"],
-        permissions={},
-        metrics={},
-    )
-    db_session.add(main_pm_agent)
+    # Keyed on the fixed foundation UUID + an existence check (mirrors
+    # test_task_service_transitions.py's identical seeding pattern): the
+    # cross-test-shared DB already has other tests seeding this exact
+    # "main-pm" slug, and an unconditional insert with a fresh random id
+    # would collide on the slug's unique index.
+    main_pm_id = UUID(AGENT_UUIDS["main-pm"])
+    if await db_session.get(AgentTable, main_pm_id) is None:
+        db_session.add(
+            AgentTable(
+                id=main_pm_id,
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="main_pm",
+                capabilities=["coord"],
+                permissions={},
+                metrics={},
+            )
+        )
     await db_session.flush()
     del project, system_agent  # only needed for fixture wiring above.
 
@@ -849,7 +858,7 @@ async def test_pm_escalate_to_ceo_path(
     task.qa_verified = True
     task.docs_complete = True
     task.parent_task_id = None  # explicit — escalate_to_ceo refuses subtasks.
-    task.assigned_to = main_pm_agent.id
+    task.assigned_to = main_pm_id
     task.commits = [
         {"sha": uuid4().hex[:40], "message": "feat: /healthz", "task_id": str(task.id)}
     ]
@@ -862,7 +871,7 @@ async def test_pm_escalate_to_ceo_path(
     # cast for mypy under the project's strict config — the values are
     # already real ``uuid.UUID`` at runtime.
     env = await c.complete(
-        UUID(str(main_pm_agent.id)),
+        main_pm_id,
         UUID(str(task.id)),
         notes="Root task ready for CEO approval — escalating.",
     )
