@@ -18,6 +18,7 @@ from roboco.eval.runner import (
     OrchestratorStageSpawner,
     _build_judge_prompt,
 )
+from roboco.runtime.orchestrator import AgentOrchestrator
 
 _EXPECTED_TOTAL_TOKENS = 180
 _HALF_PASS_RATE = 0.5
@@ -25,6 +26,7 @@ _COHORT_TOTAL_TOKENS = 600
 _COHORT_MEAN_CYCLE_SECONDS = 20.0
 _COHORT_MEAN_JUDGE_SCORE = 5.0
 _PASSING_JUDGE_SCORE = 4
+_DEFAULT_STAGE_TIMEOUT_SECONDS = 900.0
 
 
 def _metrics(
@@ -213,9 +215,13 @@ def test_build_judge_prompt_handles_empty_diff_and_notes() -> None:
     assert "(no notes)" in prompt
 
 
-def test_orchestrator_stage_spawner_is_cut_and_refuses_to_construct() -> None:
-    """The real-spawn path is deliberately disabled this release (its MCP
-    wiring would authenticate against the REAL production orchestrator) —
-    this is the one runnable check that the cut stays in place."""
-    with pytest.raises(NotImplementedError, match="cut from this release"):
-        OrchestratorStageSpawner()
+def test_orchestrator_stage_spawner_constructs_real_orchestrator() -> None:
+    """The real-spawn path is wired: OrchestratorStageSpawner() constructs
+    without raising, holds a real AgentOrchestrator (built the same way the
+    production dispatcher builds one), and defaults its stage timeout to
+    900.0 seconds. The isolation boundary is the disposable orchestrator
+    URL + throwaway DB wired in _bench_environment, not the spawner itself."""
+    spawner = OrchestratorStageSpawner()
+
+    assert isinstance(spawner._orchestrator, AgentOrchestrator)
+    assert spawner._stage_timeout_seconds == _DEFAULT_STAGE_TIMEOUT_SECONDS
