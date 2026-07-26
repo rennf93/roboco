@@ -44,7 +44,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `TaskReviewFindingTable` | ORM class | `roboco/db/tables.py` | The append-only ledger row: `task_id`, `origin`, `round`, `author_slug`, `file`/`line`/`severity`/`criterion`/`expected`/`actual`/`fix`/`evidence`, `status`, `addressed_by_commit`, `resolution_note`. `origin`/`severity`/`status` are plain `String` columns, not a native Postgres enum. |
 | `Finding` | Pydantic model | `roboco/foundation/policy/content/models.py:92` | One structured finding, shared by `post_pr_review` (external PRs) and the four internal producers. Caps: `file` ≤300 (repo-relative, no `..`), `line` ≥1, `expected`/`actual` ≤300, `fix` ≤500, `evidence` ≤2000. `criterion` has **no Pydantic `max_length`** despite the DB column being `String(500)` — see Regression Risks. `file` is additionally shape-gated (`_PATH_SHAPE_RE`, #687): a value that doesn't look like a repo-relative path (prose like a PR reference, which used to validate and then doomed the panel's code-snippet fetch) is rejected with a remediate naming the file-less option for cross-cutting findings; the class admits `+`/`@` (SvelteKit route files, `@types` dirs, `@2x` assets) but excludes spaces, the prose signal. `file` remains OPTIONAL for the `issues` shim's file-less findings. |
 | `PmReviewContent` | Pydantic model | `roboco/foundation/policy/content/models.py` | New content type `"pm_review"` (`summary` + `findings`, no separate `verdict` — the transition to `needs_revision` IS the verdict); mirrors to the new `tasks.pm_notes` column via `_MIRROR_COLUMN`. |
-| `ReviewFindingsRepository` | class | `roboco/services/repositories/review_findings.py:32` | `insert_many` (append rows, one flush, no independent commit), `list_for_task` (default cap 500, newest round first), `status_counts_for_task` (SQL `GROUP BY (origin, status)`, whole ledger — independent of the 500 cap), `mark_addressed` (8-char-prefix match against OPEN rows, no-op on 0 or >1 matches, never raises), `mark_verified` (bulk, by full id), `mark_waived` (exists, unwired — no verb calls it). |
+| `ReviewFindingsRepository` | class | `roboco/services/repositories/review_findings.py:32` | `insert_many` (append rows, one flush, no independent commit), `list_for_task` (default cap 500, newest round first), `status_counts_for_task` (SQL `GROUP BY (origin, status)`, whole ledger — independent of the 500 cap), `mark_addressed` (8-char-prefix match against OPEN rows, no-op on 0 or >1 matches, never raises), `mark_verified` (bulk, by full id), `mark_waived` (exists, unwired — no verb calls it), `escaped_defects_since` (`(task_id, origin)` for blocker findings still `addressed`, never `verified`, on a task that has since gone `COMPLETED` within a window — the Company Scorecard's `escaped_defects` metric; see `docs/map/metrics-observability.md`). |
 | `findings_count_guard` / `findings_count_hint` | functions | `roboco/services/gateway/choreographer/findings.py:98,115` | Hard-reject `Envelope` above `FINDINGS_HARD_CAP=10`; non-blocking hint above `FINDINGS_NUDGE_COUNT=5`. |
 | `issues_to_findings` / `merge_findings_and_issues` | functions | `roboco/services/gateway/choreographer/findings.py:57,81` | Legacy `issues: list[str]` shim → file-less `severity=major` findings (deprecation-logged); merges with any `findings` sent in the same call rather than one silently dropping the other. |
 | `next_round` | function | `roboco/services/gateway/choreographer/findings.py:43` | `(task.revision_count or 0) + 1`, read BEFORE the transition — the round a finding written during this call belongs to. |
@@ -136,7 +136,7 @@ review-findings slice
 - `roboco.services.gateway.envelope` — `Envelope`
 - `roboco.services.gateway.evidence_builder` — `BRIEFING_LIST_CAP`
 - `roboco.db.tables` — `TaskReviewFindingTable`, `TaskTable.pm_notes`
-- Consumed by: `roboco.services.metrics` (`MetricsService`), `roboco.services.vault_assembly`/`vault_writer`, `roboco.runtime.orchestrator`, `roboco.mcp.flow_server`, `roboco.api.routes.tasks`/`v1.flow_*`, the panel's `task-detail`/`metrics` components
+- Consumed by: `roboco.services.metrics` (`MetricsService`), `roboco.services.cockpit` (`CockpitService.summary`'s `escaped_defects` field), `roboco.services.vault_assembly`/`vault_writer`, `roboco.runtime.orchestrator`, `roboco.mcp.flow_server`, `roboco.api.routes.tasks`/`v1.flow_*`, the panel's `task-detail`/`metrics` components
 
 ## Entry Points
 
@@ -171,7 +171,7 @@ None as of this doc's authoring — CLAUDE.md was updated in the same pass to ad
 
 - `docs/map/task-service.md` — `ceo_reject`, `_audit_events_for`
 - `docs/map/pr-gate-review.md` — `pr_fail` findings wiring, gate evidence, verify-stamp
-- `docs/map/metrics-observability.md` — rework-by-agent event widening, per-task findings counts
+- `docs/map/metrics-observability.md` — rework-by-agent event widening, per-task findings counts, `escaped_defects` Company Scorecard metric
 - `docs/map/vault.md` — task note `## Findings` section
 - `docs/map/panel.md` — Findings tab, `bounced xN` chip, findings route
 - `docs/internal/specs/2026-07-11-revision-findings-ledger.md` — the design spec this slice implements

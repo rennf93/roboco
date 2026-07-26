@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
-from roboco.db.tables import TaskReviewFindingTable
+from roboco.db.tables import TaskReviewFindingTable, TaskTable
+from roboco.models.base import TaskStatus
 from roboco.services.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
+    from datetime import datetime
     from uuid import UUID
 
     from roboco.foundation.policy.content import Finding
@@ -199,6 +201,45 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
         )
         result = await self.session.execute(stmt)
         return [(file, count) for file, count in result.all()]
+
+    async def escaped_defects_since(self, since: datetime) -> list[tuple[UUID, str]]:
+        """``(task_id, origin)`` for each blocker finding that shipped unverified:
+        still ``addressed`` (never independently ``verified``) on a task that
+        has since gone ``completed``, within the window.
+
+        ``verified`` is deliberately excluded, not just ``open``/``waived`` —
+        see ``stamp_addressed_verified``, which only bulk-verifies its OWN
+        origin's rows. A blocker raised by one origin (e.g. ``pr_gate``),
+        marked ``addressed`` by the developer, and never re-checked by that
+        same origin (the task's later rounds routed through QA/PM instead)
+        survives to completion still ``addressed`` — shipped without the
+        raiser ever confirming the fix. That's the escaped defect; see
+        docs/map/metrics-observability.md for the full rationale.
+
+        Scoped to ``COMPLETED`` (not every terminal state): ``cancelled``
+        tasks never set ``completed_at`` and never ship code, so nothing
+        "escaped" from one. The explicit ``status == COMPLETED`` check is
+        belt-and-braces on top of the ``completed_at`` conditions: today
+        every site that sets ``completed_at`` also transitions the task to
+        ``COMPLETED`` in the same call (``TaskService.complete`` and
+        ``TaskService.ceo_approve``), so the two are redundant in practice —
+        but that pairing is an invariant of those call sites, not something
+        this query can see, so keep the status check rather than "simplify"
+        it away.
+        """
+        stmt = (
+            select(TaskReviewFindingTable.task_id, TaskReviewFindingTable.origin)
+            .join(TaskTable, TaskTable.id == TaskReviewFindingTable.task_id)
+            .where(
+                TaskReviewFindingTable.severity == "blocker",
+                TaskReviewFindingTable.status == STATUS_ADDRESSED,
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.completed_at.is_not(None),
+                TaskTable.completed_at >= since,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return [(task_id, origin) for task_id, origin in result.all()]
 
     async def list_open_findings(
         self, *, limit: int = 20

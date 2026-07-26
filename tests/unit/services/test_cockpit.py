@@ -25,6 +25,8 @@ _BUDGET = 100.0
 _SPEND_30D = 150.0
 _COMPLETED_30D = 5
 _MEDIAN_LEAD_TIME = 12.5
+_FIRST_PASS_YIELD = 0.92
+_ESCAPED_DEFECTS = 2
 
 
 def _agent(role: AgentRole) -> AgentContext:
@@ -58,6 +60,24 @@ def _patch(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda _s: MagicMock(
             count_by_status=AsyncMock(return_value=counts),
             get_delivery_stats_30d=AsyncMock(return_value=delivery_stats),
+        ),
+    )
+    monkeypatch.setattr(
+        cm,
+        "get_metrics_service",
+        lambda _s: MagicMock(
+            get_org_scorecard=AsyncMock(
+                return_value=MagicMock(first_pass_yield=_FIRST_PASS_YIELD)
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        cm,
+        "ReviewFindingsRepository",
+        lambda _s: MagicMock(
+            escaped_defects_since=AsyncMock(
+                return_value=[(uuid4(), "qa"), (uuid4(), "pr_gate")]
+            )
         ),
     )
     usage = MagicMock(
@@ -95,6 +115,8 @@ async def test_summary_aggregates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out["delivery"]["blocked"] == _BLOCKED
     assert out["delivery"]["completed_30d"] == _COMPLETED_30D
     assert out["delivery"]["median_lead_time_hours"] == _MEDIAN_LEAD_TIME
+    assert out["delivery"]["first_pass_yield"] == _FIRST_PASS_YIELD
+    assert out["delivery"]["escaped_defects"] == _ESCAPED_DEFECTS
     assert out["spend"]["spend_30d_usd"] == _SPEND_30D
     assert out["spend"]["over_budget"] is True
     assert out["pending_pitches"] == 1
@@ -121,6 +143,8 @@ async def test_route_ok_for_ceo(monkeypatch: pytest.MonkeyPatch) -> None:
             "awaiting_ceo": 0,
             "completed_30d": 0,
             "median_lead_time_hours": None,
+            "first_pass_yield": None,
+            "escaped_defects": 0,
         },
         "spend": {
             "spend_30d_usd": 0.0,

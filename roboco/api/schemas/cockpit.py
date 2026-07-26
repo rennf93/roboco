@@ -12,6 +12,8 @@ class DeliverySummary(BaseModel):
     awaiting_ceo: int
     completed_30d: int = 0
     median_lead_time_hours: float | None = None
+    first_pass_yield: float | None = None
+    escaped_defects: int | None = None
 
 
 class SpendSummary(BaseModel):

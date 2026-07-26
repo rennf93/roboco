@@ -11,11 +11,14 @@ CEO greenlights real external launches — every payload is stamped
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.metrics import get_metrics_service
 from roboco.services.pitch import get_pitch_service
+from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.strategy_engine import get_strategy_engine
 from roboco.services.task import get_task_service
 from roboco.services.usage import get_usage_service
@@ -43,6 +46,12 @@ class CockpitService(BaseService):
         goals = await get_company_goals_service(self.session).get()
         counts = await task_svc.count_by_status()
         delivery_stats = await task_svc.get_delivery_stats_30d()
+        # get_org_scorecard() defaults to the same 30d/org scope as everything
+        # else in this block — one round trip for first_pass_yield, no new math.
+        scorecard = await get_metrics_service(self.session).get_org_scorecard()
+        escaped = await ReviewFindingsRepository(self.session).escaped_defects_since(
+            datetime.now(UTC) - timedelta(days=30)
+        )
         usage_svc = get_usage_service(self.session)
         spend = await usage_svc.get_summary("30d")
         projection = await usage_svc.get_projection()
@@ -64,6 +73,8 @@ class CockpitService(BaseService):
                 "awaiting_ceo": counts.get("awaiting_ceo_approval", 0),
                 "completed_30d": delivery_stats["completed_30d"],
                 "median_lead_time_hours": delivery_stats["median_lead_time_hours"],
+                "first_pass_yield": scorecard.first_pass_yield,
+                "escaped_defects": len(escaped),
             },
             "spend": {
                 "spend_30d_usd": round(spend_30d, 2),
