@@ -7,12 +7,13 @@ on:
     # merge API (see ci.yml for the live-proven receipts); `push` does, so
     # it's the redundant trigger for a required check that must not go
     # ABSENT on a fleet-authored PR revision.
-    branches: [master, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
+    branches: [master, slave, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
     paths:
       - 'panel/**'
       - '.github/workflows/codeql-js-ts.yml'
   pull_request:
-    branches: [master]
+    # Fleet PRs target the dev branch — see ci.yml's pull_request note.
+    branches: [master, slave]
     paths:
       - 'panel/**'
       - '.github/workflows/codeql-js-ts.yml'

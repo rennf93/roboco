@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+      # The dev branch: every fleet PR merges here, so without it the smoke
+      # suite never ran on the trunk that master is cut from.
+      - slave
       # Fleet task branches: `pull_request`'s synchronize trigger doesn't
       # reliably fire when a revision lands on a PR head via the merge API
       # (see ci.yml for the live-proven receipts); `push` does.
@@ -23,6 +26,8 @@ on:
   pull_request:
     branches:
       - master
+      # Fleet PRs target the dev branch — see ci.yml's pull_request note.
+      - slave
     paths:
       - 'roboco/**'
       - 'alembic/**'

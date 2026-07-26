@@ -20,7 +20,7 @@ import tarfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from urllib.parse import urlparse
 
 import structlog
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from roboco.foundation.identity import Team
+    from roboco.foundation.policy.board_programs import BoardProgram
 
 
 logger = structlog.get_logger()
@@ -491,6 +492,15 @@ _FRICTION_FIXES_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
     ("evidence", 20),
 )
 _FRICTION_FIXES_EVIDENCE_MAX_CHARS = 2000
+
+# nothing_to_propose is registry-driven, not role-frozenset-gated like every
+# verb above — it resolves the caller's NAMED task, derives the program from
+# that task's own source, then requires the caller's role to equal THAT
+# program's declared explorer role
+# (roboco.foundation.policy.board_programs.PROGRAMS), so a program registered
+# later needs no edit here.
+_NOTHING_TO_PROPOSE_REASON_MIN_CHARS = 15
+_NOTHING_TO_PROPOSE_REASON_MAX_CHARS = 800
 
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 # The Auditor is deliberately NOT in this set — "auditor curates but does not
@@ -4954,6 +4964,152 @@ class ContentActions:
                 "coroner postmortem telegram notify failed (best-effort)",
                 error=str(exc),
             )
+
+    async def _resolve_nothing_to_propose_task(
+        self, agent_id: UUID, task_id: UUID
+    ) -> Envelope | tuple[Any, BoardProgram]:
+        """Resolve + validate ``task_id`` for ``nothing_to_propose``: exists,
+        its ``source`` is a registered Board Program, it is assigned to the
+        caller, it is non-terminal, and the caller's role matches that
+        program's declared explorer role. Returns the first failing check's
+        envelope, else ``(task, program)`` — split out of the verb itself
+        purely to keep its own return count under the lint ceiling.
+        """
+        from roboco.foundation.policy.board_programs import PROGRAMS
+
+        task = await self.task.get(task_id)
+        if task is None:
+            return Envelope.not_found(message=f"task {task_id} not found")
+        program = next((p for p in PROGRAMS.values() if p.source == task.source), None)
+        if program is None:
+            return Envelope.invalid_state(
+                message=(
+                    f"task {task_id} source {task.source!r} is not a registered "
+                    "Board Program"
+                ),
+                remediate="this task is not a Board Program exploration cycle",
+                context_briefing={},
+            )
+        if task.assigned_to != agent_id:
+            return Envelope.not_authorized(
+                message=f"task {task_id} is not assigned to you",
+                remediate=(
+                    "nothing_to_propose only completes the caller's own "
+                    "exploration task — pass the task_id printed as "
+                    "'TASK: <id>' at the top of your prompt"
+                ),
+                context_briefing={},
+            )
+        if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+            return Envelope.invalid_state(
+                message=f"task {task_id} is already {task.status.value}",
+                remediate="this exploration cycle is already closed; nothing to do",
+                context_briefing={},
+            )
+        role = await self._caller_role(agent_id)
+        if role != program.role:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot resolve {program.key!r}'s exploration "
+                    f"task; only {program.role!r} does"
+                ),
+                remediate=(
+                    f"nothing_to_propose only completes a {program.role} "
+                    "explorer's own cycle"
+                ),
+                context_briefing={},
+            )
+        return task, program
+
+    async def nothing_to_propose(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        reason: str,
+    ) -> Envelope:
+        """The explicit "this cycle found nothing worth proposing" exit for
+        ANY Board Program exploration task, named explicitly by ``task_id``.
+
+        Every ``propose_*`` verb requires at least one item (or a single
+        substantive report), so an explorer that legitimately has nothing —
+        Barfly found no worthwhile X conversations, Coroner has no autopsy
+        subject worth a process change — had no way to complete its task; it
+        correctly declined and called ``i_am_idle()``, leaving the task
+        PENDING forever: a permanent, expensive respawn loop, and (worse)
+        ``BoardProgramEngine``'s one-open-cycle dedup wedges that whole
+        program shut, since the ledger row never closes.
+
+        ``task_id`` is REQUIRED, not inferred: one explorer role owns several
+        independently-cadenced programs at once (e.g. head_marketing owns
+        x_feature/periscope/mirror/megaphone/war_room/barfly), each assigning
+        its own exploration task to the same agent — so several of one
+        agent's exploration tasks can be open simultaneously by design, and
+        guessing (e.g. "the oldest one") completes the WRONG cycle and
+        stamps its LEARN reason onto the wrong ledger row. The exploration
+        prompt always prints "TASK: <id>", so the caller has it in hand
+        (mirrors ``curate_vault``'s explicit ``task_id`` convention). See
+        ``_resolve_nothing_to_propose_task`` for the resolution + validation
+        (exists, registered program, assigned to caller, non-terminal, role
+        matches) — registry-driven, not a hardcoded role set, so a program
+        registered later needs no edit here.
+
+        Completes the task (mirrors ``propose_conversation_replies``'/
+        ``propose_postmortem``'s complete-at-propose pattern) and records the
+        reason onto the LEARN ledger row so the next cycle's exploration
+        prompt sees WHY, not just a bare "proposed 0, approved 0".
+        """
+        if rej := self._reject_soup(
+            reason,
+            field="reason",
+            min_chars=_NOTHING_TO_PROPOSE_REASON_MIN_CHARS,
+        ):
+            return rej
+        if len(reason) > _NOTHING_TO_PROPOSE_REASON_MAX_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"reason is {len(reason)} chars, over the "
+                    f"{_NOTHING_TO_PROPOSE_REASON_MAX_CHARS}-char cap"
+                ),
+                remediate="shorten the reason",
+                context_briefing={},
+            )
+
+        resolved = await self._resolve_nothing_to_propose_task(agent_id, task_id)
+        if isinstance(resolved, Envelope):
+            return resolved
+        task, program = resolved
+
+        reason = reason.strip()
+        task.status = TaskStatus.COMPLETED
+        await self.task.session.flush()
+
+        from roboco.services.board_programs import get_board_program_engine
+
+        try:
+            # Isolated in its own savepoint: record_nothing_to_propose does
+            # its own flush() on this SAME session, and a bare try/except
+            # around a same-session flush is not enough — a genuine DB
+            # failure there leaves the session pending-rollback, so the
+            # completion flushed just above would be silently discarded at
+            # the outer commit despite this except swallowing the error.
+            async with self.task.session.begin_nested():
+                await get_board_program_engine(
+                    self.task.session
+                ).record_nothing_to_propose(program.key, cast("UUID", task.id), reason)
+        except Exception:
+            logger.warning(
+                "nothing_to_propose: LEARN record failed (best-effort)",
+                program=program.key,
+                task_id=str(task.id),
+            )
+
+        return Envelope.ok(
+            status="nothing_to_propose",
+            task_id=str(task.id),
+            next="i_am_idle()",
+            context_briefing={"program": program.key, "reason": reason},
+        )
 
     async def dm(
         self,

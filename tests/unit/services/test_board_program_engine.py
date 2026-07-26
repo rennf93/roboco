@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -41,6 +42,7 @@ from roboco.models.base import (
 )
 from roboco.services import board_programs as bp_module
 from roboco.services.board_programs import BoardProgramEngine
+from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 from roboco.services.task import (
     BARFLY_SOURCE,
     CORONER_SOURCE,
@@ -57,9 +59,10 @@ from roboco.services.task import (
     WAR_ROOM_SOURCE,
     X_FEATURE_EXPLORATION_SOURCE,
     TaskCreateRequest,
+    TaskService,
     get_task_service,
 )
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -178,6 +181,169 @@ async def _make_exploration(
         task.status = status
     await session.flush()
     return task
+
+
+# ---------------------------------------------------------------------------
+# ContentActions.nothing_to_propose's task resolution — a real-DB regression
+# suite. ``task_id`` is now REQUIRED and resolved by a direct fetch-by-id
+# (mirrors ``curate_vault``), replacing the old ``get_open_board_program_
+# exploration_task`` oldest-wins-across-programs query, which was unsound:
+# one explorer role owns SEVERAL independently-cadenced programs at once
+# (e.g. product_owner owns roadmap/pest_control/spackle/scales/dogfood), so
+# several of an agent's exploration tasks are open simultaneously by design.
+# The mock-based per-check envelope tests (reason validation, role gate,
+# LEARN recording, best-effort failure) live in
+# tests/unit/gateway/test_content_actions_nothing_to_propose.py; this suite
+# proves the real DB resolution instead.
+# ---------------------------------------------------------------------------
+
+
+def _nothing_to_propose_actions(session: AsyncSession) -> ContentActions:
+    return ContentActions(
+        ContentActionsDeps(
+            task=TaskService(session),
+            git=None,
+            a2a=None,
+            journal=None,
+            workspace=None,
+            notifications=None,
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_propose_resolves_named_task_not_older_sibling(
+    db_session: AsyncSession,
+) -> None:
+    """DEFECT regression: the SAME agent has two open exploration tasks from
+    two DIFFERENT programs at once (product_owner owns both roadmap and
+    pest_control) — nothing_to_propose(task_id=...) must complete the task
+    NAMED, never an older sibling from an unrelated program."""
+    await _seed(db_session)
+    older = await _make_exploration(db_session, source=ROADMAP_SOURCE)
+    older.created_at = datetime.now(UTC) - timedelta(hours=1)
+    await db_session.flush()
+    newer = await _make_exploration(db_session, source=PEST_CONTROL_SOURCE)
+
+    env = await _nothing_to_propose_actions(db_session).nothing_to_propose(
+        agent_id=PO_UUID,
+        task_id=cast("UUID", newer.id),
+        reason="checked recent rework/findings evidence; nothing rose to a bug",
+    )
+
+    assert env.error is None, env.message
+    assert env.task_id == str(newer.id)
+    assert env.context_briefing["program"] == "pest_control"
+    await db_session.refresh(newer)
+    await db_session.refresh(older)
+    assert newer.status == TS.COMPLETED
+    assert older.status == TS.PENDING
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_propose_rejects_task_not_assigned_to_caller(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    task = await _make_exploration(db_session, source=PEST_CONTROL_SOURCE)
+    other_agent = uuid4()
+
+    env = await _nothing_to_propose_actions(db_session).nothing_to_propose(
+        agent_id=other_agent,
+        task_id=cast("UUID", task.id),
+        reason="reviewed the candidate list; none were worth a reply",
+    )
+
+    assert env.error == "not_authorized"
+    await db_session.refresh(task)
+    assert task.status == TS.PENDING
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_propose_rejects_terminal_task(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    task = await _make_exploration(
+        db_session, source=PEST_CONTROL_SOURCE, status=TS.COMPLETED
+    )
+
+    env = await _nothing_to_propose_actions(db_session).nothing_to_propose(
+        agent_id=PO_UUID,
+        task_id=cast("UUID", task.id),
+        reason="reviewed the candidate list; none were worth a reply",
+    )
+
+    assert env.error == "invalid_state"
+    assert "completed" in (env.message or "")
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_propose_missing_task_is_not_found(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+
+    env = await _nothing_to_propose_actions(db_session).nothing_to_propose(
+        agent_id=PO_UUID,
+        task_id=uuid4(),
+        reason="reviewed the candidate list; none were worth a reply",
+    )
+
+    assert env.error == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_propose_learn_failure_does_not_poison_completion(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT 2 regression: a genuine DB-level failure inside the LEARN
+    write's own flush() must not poison the outer transaction — the task
+    completion flushed just before it must still survive the real commit
+    that follows (mirrors DbCommitMiddleware's post-response commit).
+
+    Uses an actual failing SQL statement, not a bare ``raise RuntimeError``
+    — a plain Python exception never touches the DBAPI connection, so it
+    would pass even without the ``begin_nested()`` savepoint fix and prove
+    nothing. Only a real aborted transaction exercises the isolation.
+
+    A real commit is unavoidable here — every other test in this module
+    relies on ``db_session``'s teardown rollback for isolation, so this test
+    deletes its own committed rows afterward (the ``_seed``-created project
+    has no idempotent-reuse guard, so a leaked commit collides with the next
+    test's ``_seed`` call on the unique project slug)."""
+    await _seed(db_session)
+    task = await _make_exploration(db_session, source=PEST_CONTROL_SOURCE)
+
+    class _PoisonedEngine:
+        async def record_nothing_to_propose(self, *_a: object, **_kw: object) -> None:
+            await db_session.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr(
+        bp_module, "get_board_program_engine", lambda _s: _PoisonedEngine()
+    )
+
+    env = await _nothing_to_propose_actions(db_session).nothing_to_propose(
+        agent_id=PO_UUID,
+        task_id=cast("UUID", task.id),
+        reason="reviewed the candidate list; none were worth a reply",
+    )
+    assert env.error is None, env.message
+
+    try:
+        # Without the savepoint, this commit would raise (the connection is
+        # still in Postgres's aborted-transaction state) and everything
+        # above, including the task completion, would be lost.
+        await db_session.commit()
+
+        refetched = await get_task_service(db_session).get(cast("UUID", task.id))
+        assert refetched is not None
+        assert refetched.status == TS.COMPLETED
+    finally:
+        await db_session.execute(delete(TaskTable).where(TaskTable.id == task.id))
+        await db_session.execute(delete(ProjectTable).where(ProjectTable.slug == SLUG))
+        await db_session.commit()
 
 
 def _fake_originator(
@@ -469,6 +635,83 @@ async def test_prior_cycle_context_renders_rejections_with_reasons(
     context = await BoardProgramEngine(db_session).prior_cycle_context("roadmap")
     assert "proposed 2, approved 1" in context
     assert "item-2 — too risky" in context
+
+
+# ---------------------------------------------------------------------------
+# record_nothing_to_propose — the nothing_to_propose verb's LEARN write.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_nothing_to_propose_sets_reason_without_touching_counters(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    task = await _make_exploration(
+        db_session, source=BARFLY_SOURCE, status=TS.COMPLETED
+    )
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="barfly",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+        )
+    )
+    await db_session.flush()
+    engine = BoardProgramEngine(db_session)
+    await engine.record_nothing_to_propose(
+        "barfly", cast("UUID", task.id), "no worthwhile conversations this cycle"
+    )
+
+    row = await engine._latest_cycle("barfly")
+    assert row is not None
+    assert row.nothing_to_propose_reason == "no worthwhile conversations this cycle"
+    assert row.items_proposed == 0
+    assert row.items_approved == 0
+    assert row.items_rejected == 0
+    assert row.decisions == []
+    # Does not close the row itself — that's still _maybe_close's job.
+    assert row.closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_record_nothing_to_propose_noop_when_no_cycle_row(
+    db_session: AsyncSession,
+) -> None:
+    """No cycle row exists for this program/task at all — a best-effort
+    no-op, mirroring record_decision's own producers' best-effort wrapping."""
+    engine = BoardProgramEngine(db_session)
+    await engine.record_nothing_to_propose("barfly", uuid4(), "no candidates")
+
+
+@pytest.mark.asyncio
+async def test_prior_cycle_context_renders_nothing_to_propose_reason(
+    db_session: AsyncSession,
+) -> None:
+    """The load-bearing render: a proposed-0 closed cycle with a recorded
+    reason shows WHY in the next cycle's LEARN context, not a bare
+    "proposed 0, approved 0"."""
+    await _seed(db_session)
+    task = await _make_exploration(
+        db_session, source=BARFLY_SOURCE, status=TS.COMPLETED
+    )
+    db_session.add(
+        BoardProgramCycleTable(
+            program_key="barfly",
+            exploration_task_id=task.id,
+            opened_at=datetime.now(UTC),
+            closed_at=datetime.now(UTC),
+            nothing_to_propose_reason="no worthwhile conversations this cycle",
+        )
+    )
+    await db_session.flush()
+
+    context = await BoardProgramEngine(db_session).prior_cycle_context("barfly")
+    assert (
+        "proposed 0 — nothing to propose: no worthwhile conversations this cycle"
+        in context
+    )
+    assert "proposed 0, approved 0" not in context
 
 
 def test_learn_ref_names_the_item_not_its_per_cycle_index() -> None:

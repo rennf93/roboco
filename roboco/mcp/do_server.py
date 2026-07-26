@@ -984,6 +984,29 @@ def propose_video(
     )
 
 
+def nothing_to_propose(task_id: str, reason: str) -> dict[str, Any]:
+    """Board explorer: this cycle genuinely found nothing worth proposing.
+
+    Call this instead of the program's own propose_* verb when you've done
+    the real exploration and there is truly nothing that qualifies — every
+    propose_* verb requires at least one item, so without this your task
+    would stay stuck open forever. Completes your open exploration task
+    immediately (no per-item CEO queue); your reason is carried into the
+    next cycle's briefing so the org remembers what you already checked.
+
+    Args:
+        task_id: The exploration task's own id — printed as "TASK: <id>" at
+            the top of your prompt. Pass it verbatim; one board role can own
+            several open exploration cycles from different programs at once,
+            so this call only ever completes THIS task, never a guess.
+        reason: What you looked at and why none of it qualified this cycle
+            (>=15 chars, substantive — not a placeholder).
+    """
+    return _post(
+        "/api/v1/do/nothing_to_propose", {"task_id": task_id, "reason": reason}
+    )
+
+
 def dm(
     recipient: str,
     text: str,
@@ -1314,6 +1337,7 @@ _TOOLS: dict[str, Any] = {
     "propose_playbook_drafts": propose_playbook_drafts,
     "propose_campaign": propose_campaign,
     "propose_video": propose_video,
+    "nothing_to_propose": nothing_to_propose,
     "dm": dm,
     "notify": notify,
     "evidence": evidence,

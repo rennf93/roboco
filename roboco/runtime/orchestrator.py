@@ -16366,9 +16366,15 @@ involved in this cycle.
        item is an object with: title, description, acceptance_criteria (list
        of strings), project_slug, team ('backend'|'frontend'|'ux_ui'),
        priority (1-4, default 2), rationale (why this, why now).
-5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the roadmap queue; an approved item lands in BACKLOG
-   for normal PM activation — nothing here auto-starts.
+
+   If nothing you explored is worth a themed cycle at all this week, call
+   nothing_to_propose(task_id="{task_id}", reason="<what you explored and
+   why none of it warranted a cycle>") instead — a forced, thin cycle is
+   worse than an honest skip, and the next cycle's briefing will see your
+   reason.
+5. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the roadmap queue; an approved item
+   lands in BACKLOG for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
 that is not your job here, and the gateway will reject those verbs.
@@ -16426,9 +16432,14 @@ author this alone.
        strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
        (1-4, default 2), evidence (REQUIRED — the file:line / ledger row /
        metric that justifies this as a real bug; no evidence, no item).
-6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the pest-control queue; an approved item lands in
-   BACKLOG for normal PM activation — nothing here auto-starts.
+
+   If the evidence above and your own grep turned up no REAL, LIVE bug this
+   cycle, call nothing_to_propose(task_id="{task_id}", reason="<what you
+   checked and why nothing qualified>") instead — an invented bug is worse
+   than an honest miss.
+6. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the pest-control queue; an approved
+   item lands in BACKLOG for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
@@ -16487,9 +16498,14 @@ deletions. You author this alone.
        action ('reprioritize' or 'cancel'), new_priority (int 0-3, REQUIRED
        iff action is 'reprioritize' — 0 is P0/highest, 3 is P3/lowest),
        rationale (REQUIRED — why this task should change).
-6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the Scales queue; approval MUTATES the live task in
-   place — nothing here changes anything itself.
+
+   If the stale-backlog snapshot has nothing genuinely worth rebalancing
+   this cycle, call nothing_to_propose(task_id="{task_id}", reason="<what
+   you reviewed and why nothing warranted a change>") instead — churning
+   the backlog for its own sake is worse than leaving it alone.
+6. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the Scales queue; approval MUTATES the
+   live task in place — nothing here changes anything itself.
 
 Do NOT cancel, reprioritize, claim, plan, or delegate anything yourself —
 that is not your job here, and the gateway will reject those verbs. You only
@@ -16542,8 +16558,14 @@ INCIDENT: {title!r} ({incident_task_id}) — {kind}
        into the pending-playbook curation queue), 'prompt_fix',
        'conventions_rule', or 'other'. Propose ONE change — the smallest
        thing that would have caught or prevented this.
-6. i_am_idle() — once proposed. This completes the autopsy immediately and
-   notifies the CEO; there is no per-item queue to leave open.
+
+   If the evidence genuinely supports no systemic process change — a true
+   one-off with no lesson the org can act on — call nothing_to_propose(
+   task_id="{task_id}", reason="<what you found and why no process change
+   is warranted>") instead of forcing one.
+6. i_am_idle() — once proposed (or declined). This completes the autopsy
+   immediately and notifies the CEO; there is no per-item queue to leave
+   open.
 
 Do NOT message the fleet about this — you stay silent to other agents; your
 output is this postmortem and your journal, both CEO-facing.
@@ -16606,8 +16628,13 @@ follow-up -> spotlight) — for the CEO to review. You author this alone.
        see the VOICE GUIDE), publish_after (ISO 8601 datetime, future,
        strictly ascending across posts), stage_label (one of 'teaser',
        'launch', 'follow_up', 'spotlight', 'other').
-6. i_am_idle() — once proposed. This completes your planning cycle
-   immediately; the CEO reviews, edits, approves, or rejects each post
+
+   If there is genuinely nothing this cycle worth a campaign — no real
+   highlights on a release trigger, nothing fresh on an on-demand run —
+   call nothing_to_propose(task_id="{task_id}", reason="<what you checked
+   and why no campaign qualifies>") instead of forcing a weak arc.
+6. i_am_idle() — once proposed (or declined). This completes your planning
+   cycle immediately; the CEO reviews, edits, approves, or rejects each post
    individually in the X post queue — you never post anything yourself.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
@@ -16665,9 +16692,14 @@ the CEO to review; you author this alone.
        (1-4, default 2), evidence (REQUIRED — must name BOTH sides of the
        gap, e.g. the route that exists and the panel surface that doesn't;
        no evidence, no item).
-5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the spackle queue; an approved item lands in
-   BACKLOG for normal PM activation — nothing here auto-starts.
+
+   If your inventory comparison turned up no REAL, LIVE gap this cycle,
+   call nothing_to_propose(task_id="{task_id}", reason="<what you compared
+   and why nothing qualified>") instead — a manufactured gap is worse than
+   an honest miss.
+5. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the spackle queue; an approved item
+   lands in BACKLOG for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
@@ -16727,9 +16759,15 @@ review; you author this alone.
        strings), project_slug, team ('backend'|'frontend'|'ux_ui'), priority
        (1-4, default 2), evidence (REQUIRED — must name BOTH the drifted
        claim and the reality it contradicts; no evidence, no item).
-5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the mirror queue; an approved item lands in BACKLOG
-   as a docs task for normal PM activation — nothing here auto-starts.
+
+   If the messaging matches shipped reality with no drift worth a fix this
+   cycle, call nothing_to_propose(task_id="{task_id}", reason="<what you
+   compared and why nothing qualified>") instead — a manufactured drift is
+   worse than an honest miss.
+5. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the mirror queue; an approved item
+   lands in BACKLOG as a docs task for normal PM activation — nothing here
+   auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
@@ -16795,9 +16833,14 @@ or wrong. You author this alone.
        (1-4, default 2), evidence (REQUIRED — the actual walked path: which
        pages, which clicks, what broke or felt wrong, in prose; NEVER a
        screenshot; no evidence, no item).
-6. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
-   item individually in the dogfood queue; an approved item lands in
-   BACKLOG for normal PM activation — nothing here auto-starts.
+
+   If your walk turned up nothing genuinely broken or confusing this cycle,
+   call nothing_to_propose(task_id="{task_id}", reason="<what you walked
+   and why nothing qualified>") instead — a manufactured friction item is
+   worse than an honest "it worked fine".
+6. i_am_idle() — once proposed (or declined). The CEO reviews and approves/
+   rejects each item individually in the dogfood queue; an approved item
+   lands in BACKLOG for normal PM activation — nothing here auto-starts.
 
 Do NOT claim, plan, delegate, fix anything yourself, or attempt to start any
 of the items — that is not your job here, and the gateway will reject those
@@ -16859,7 +16902,10 @@ RECENTLY REJECTED BY THE CEO — avoid repeating these angles: {rejected_line}
    propose_feature_spotlight(skip=True, skip_reason="<why nothing qualifies>")
    instead — a weak, forced spotlight is worse than skipping a cycle, and the
    next cycle will see this skip as recent activity (the cadence won't just
-   re-fire into the same quiet period tomorrow).
+   re-fire into the same quiet period tomorrow). nothing_to_propose(
+   task_id="{task_id}", reason="<same explanation>") does the identical job
+   and is the standard exit every other board program uses — either call is
+   fine for this cycle.
 6. i_am_idle() — once proposed (or skipped). The CEO reviews, edits, approves,
    or rejects the draft in the X post queue; nothing posts without that
    explicit approval.
@@ -16912,8 +16958,13 @@ claim in a real source.
        http(s) URL), relevance (why this matters to us). threats/
        opportunities are optional lists of up to 5 short notes each;
        positioning_note is an optional note on a shift worth acting on.
-5. i_am_idle() — once filed. The CEO reads the brief as a report in the
-   panel; nothing here needs your further attention.
+
+   If your research turned up no citable finding worth a brief this cycle,
+   call nothing_to_propose(task_id="{task_id}", reason="<what you
+   researched and why nothing was citable>") instead — an uncited or
+   invented finding is worse than filing nothing.
+5. i_am_idle() — once filed (or declined). The CEO reads the brief as a
+   report in the panel; nothing here needs your further attention.
 
 Do NOT claim, plan, delegate, or attempt to act on anything you find
 yourself — that is not your job here, and the gateway will reject those.
@@ -16967,9 +17018,14 @@ SCREENED CANDIDATES:
        object with: tweet_id (REQUIRED — must be one of the candidate ids
        above, verbatim), reply_body (the reply text, <=280 chars), rationale
        (REQUIRED — why this conversation is worth replying to).
-5. i_am_idle() — once proposed. Each reply materializes its own held draft in
-   the X post queue; the CEO reviews, edits, approves, or rejects each one
-   individually — nothing here posts anything itself.
+
+   If none of the screened candidates are genuinely worth a reply this
+   cycle, call nothing_to_propose(task_id="{task_id}", reason="<what you
+   reviewed and why none qualified>") instead — a forced, low-value reply
+   is worse than no reply.
+5. i_am_idle() — once proposed (or declined). Each reply materializes its
+   own held draft in the X post queue; the CEO reviews, edits, approves, or
+   rejects each one individually — nothing here posts anything itself.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
@@ -17031,8 +17087,13 @@ You stay silent to the fleet throughout — this report goes to the CEO only.
        (the ledger row / metric / file that backs it), suggested_action
        (what should happen next — a later "convert to task" step, not
        something you do yourself).
-6. i_am_idle() — once filed. The CEO reads the report in the panel; nothing
-   here needs your further attention.
+
+   If the evidence above shows no real drift worth naming this cycle, call
+   nothing_to_propose(task_id="{task_id}", reason="<what you reviewed and
+   why nothing rose to a finding>") instead — a manufactured drift signal
+   is worse than an honest "no drift this cycle".
+6. i_am_idle() — once filed (or declined). The CEO reads the report in the
+   panel; nothing here needs your further attention.
 
 Do NOT claim, plan, delegate, fix anything yourself, message any other
 agent, or attempt to act on anything you find — that is not your job here,
@@ -17088,9 +17149,13 @@ there is no separate approval surface.
 5. propose_editorial_post(angle="<one of the four above>", body="<the post>",
    rationale="<why this angle, this cycle>")
      — call this EXACTLY ONCE.
-6. i_am_idle() — once proposed. The CEO reviews, edits, approves, or rejects
-   the draft in the X post queue; nothing posts without that explicit
-   approval.
+
+   If the digest above has genuinely nothing worth an editorial post this
+   cycle, call nothing_to_propose(task_id="{task_id}", reason="<what you
+   reviewed and why no angle qualified>") instead of forcing a thin post.
+6. i_am_idle() — once proposed (or declined). The CEO reviews, edits,
+   approves, or rejects the draft in the X post queue; nothing posts
+   without that explicit approval.
 
 Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
 not your job here, and the gateway will reject those.
@@ -17159,8 +17224,14 @@ cycle curates them, never this same call).
    (REQUIRED, <=500 chars — which repeated journal/learning pattern
    justifies this playbook; a draft without it is noise, and the verb
    rejects it).
-6. i_am_idle() — once filed. The drafts sit in the normal pending-playbook
-   curation queue; nothing here needs your further attention this cycle.
+
+   If the mining context above shows no genuinely repeated, undrafted
+   pattern this cycle, call nothing_to_propose(task_id="{task_id}",
+   reason="<what you mined and why nothing qualified>") instead — a one-off
+   dressed up as a pattern is worse than an honest miss.
+6. i_am_idle() — once filed (or declined). The drafts sit in the normal
+   pending-playbook curation queue; nothing here needs your further
+   attention this cycle.
 
 Do NOT claim, plan, delegate, fix anything yourself, message any other
 agent, or call draft_playbook (you don't have it — use
