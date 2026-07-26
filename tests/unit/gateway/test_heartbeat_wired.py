@@ -86,7 +86,7 @@ async def test_i_will_work_on_calls_heartbeat() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    await c.i_will_work_on(aid, tid, plan="go")
+    await c.i_will_work_on(agent_id=aid, task_id=tid, plan="go")
 
     task_svc.heartbeat.assert_awaited_with(tid)
 

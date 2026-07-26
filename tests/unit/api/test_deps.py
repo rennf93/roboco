@@ -113,7 +113,9 @@ def test_get_orchestrator_raises_503_when_unset() -> None:
 @pytest.mark.asyncio
 async def test_get_current_agent_id_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_id(MagicMock(), MagicMock(), x_agent_id=None)
+        await get_current_agent_id(
+            db=MagicMock(), response=MagicMock(), x_agent_id=None
+        )
     assert exc.value.status_code == _HTTP_401
 
 
@@ -125,7 +127,7 @@ async def test_get_current_agent_id_returns_uuid() -> None:
         new=AsyncMock(return_value=expected),
     ):
         out = await get_current_agent_id(
-            MagicMock(), MagicMock(), x_agent_id="be-dev-1"
+            db=MagicMock(), response=MagicMock(), x_agent_id="be-dev-1"
         )
     assert out == expected
 
@@ -133,13 +135,17 @@ async def test_get_current_agent_id_returns_uuid() -> None:
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id=None)
+        await get_current_agent_slug(
+            db=MagicMock(), response=MagicMock(), x_agent_id=None
+        )
     assert exc.value.status_code == _HTTP_401
 
 
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_returns_header() -> None:
-    out = await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id="be-dev-1")
+    out = await get_current_agent_slug(
+        db=MagicMock(), response=MagicMock(), x_agent_id="be-dev-1"
+    )
     assert out == "be-dev-1"
 
 
@@ -494,8 +500,8 @@ def test_coerce_agent_team_empty_returns_none() -> None:
 async def test_get_agent_context_missing_id_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id=None,
             x_agent_role="developer",
         )
@@ -506,8 +512,8 @@ async def test_get_agent_context_missing_id_raises() -> None:
 async def test_get_agent_context_missing_role_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role=None,
         )
@@ -523,8 +529,8 @@ async def test_get_agent_context_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
         new=AsyncMock(return_value=(aid, "be-dev-1")),
     ):
         ctx = await get_agent_context(
-            MagicMock(),
-            MagicMock(),
+            db=MagicMock(),
+            response=MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role="developer",
             x_agent_team="backend",

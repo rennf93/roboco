@@ -94,13 +94,15 @@ Fix all issues before submitting.
 **Solution**: Use `roboco_docs_write()` - system handles paths automatically
 
 ```python
-roboco_docs_write({
-    "task_id": "your-task-uuid",
-    "filename": "feature.md",
-    "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
-    "title": "Feature Documentation",
-    "content": "..."
-})
+roboco_docs_write(
+    {
+        "task_id": "your-task-uuid",
+        "filename": "feature.md",
+        "doc_type": "api",  # api, qa, guide, readme, changelog, architecture, design
+        "title": "Feature Documentation",
+        "content": "...",
+    }
+)
 ```
 
 - Team folder: Determined from your agent ID

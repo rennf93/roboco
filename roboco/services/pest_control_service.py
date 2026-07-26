@@ -25,6 +25,7 @@ from roboco.foundation.policy.board_programs import PROGRAMS, project_participat
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
+from roboco.services.board_programs import learn_ref
 from roboco.services.task import PEST_CONTROL_ITEM_SOURCE, PEST_CONTROL_SOURCE
 
 if TYPE_CHECKING:
@@ -103,7 +104,7 @@ class PestControlService(BaseService):
         item["materialized_task_id"] = str(new_task.id)
         markers.set_pest_hunt(task, payload)
         self._maybe_complete_cycle(task, payload)
-        await self._record_learn(task, item_id, "approved")
+        await self._record_learn(task, learn_ref(item), "approved")
         await self.session.flush()
         return PestHuntItemResult(
             status="approved",
@@ -142,7 +143,7 @@ class PestControlService(BaseService):
         item["reject_reason"] = reason
         markers.set_pest_hunt(task, payload)
         self._maybe_complete_cycle(task, payload)
-        await self._record_learn(task, item_id, "rejected", reason)
+        await self._record_learn(task, learn_ref(item), "rejected", reason)
         await self.session.flush()
         return PestHuntItemResult(
             status="rejected",
@@ -231,7 +232,7 @@ class PestControlService(BaseService):
             )
 
     async def _record_learn(
-        self, task: TaskTable, item_id: str, verdict: str, reason: str | None = None
+        self, task: TaskTable, item_ref: str, verdict: str, reason: str | None = None
     ) -> None:
         """Best-effort LEARN: a record_decision failure must never break the
         CEO's approve/reject — mirrors ``RoadmapService._record_learn``."""
@@ -240,7 +241,7 @@ class PestControlService(BaseService):
 
             await get_board_program_engine(self.session).record_decision(
                 "pest_control",
-                item_id,
+                item_ref,
                 verdict,
                 reason,
                 exploration_task_id=cast("UUID", task.id),

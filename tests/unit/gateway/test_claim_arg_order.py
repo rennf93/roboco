@@ -148,8 +148,8 @@ async def test_i_will_work_on_pending_calls_claim_with_task_id_first() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -207,8 +207,8 @@ async def test_i_will_work_on_needs_revision_calls_start_with_task_id_first() ->
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -261,7 +261,7 @@ async def test_i_will_work_on_claimed_resumption_calls_start_with_task_id_first(
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, steps=_STEPS)
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id, steps=_STEPS)
 
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
     assert env.error is None

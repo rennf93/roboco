@@ -90,7 +90,7 @@ def _check_intent_preconditions(
     spec_intent: IntentSpec, task: Any, ctx: Context
 ) -> Decision | None:
     """Verb-level extra_preconditions gate.
-    
+
     If the first failing precondition has rejection_kind='not_authorized',
     return Decision.reject(kind='not_authorized').
     All other failures return Decision.tracing_gap.
@@ -102,12 +102,11 @@ def _check_intent_preconditions(
     ]
     if not missing:
         return None
-    
+
     first_missing = next(
-        p for p in spec_intent.extra_preconditions 
-        if p.missing_token == missing[0]
+        p for p in spec_intent.extra_preconditions if p.missing_token == missing[0]
     )
-    
+
     # Check the rejection_kind of the first failing precondition
     if first_missing.rejection_kind == "not_authorized":
         return Decision.reject(
@@ -115,12 +114,9 @@ def _check_intent_preconditions(
             message=first_missing.remediate,
             remediate=first_missing.remediate,
         )
-    
+
     # Default: tracing_gap with missing tokens
-    return Decision.tracing_gap(
-        missing=missing, 
-        remediate=first_missing.remediate
-    )
+    return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
 ```
 
 The key insight: **Only the first failing precondition's `rejection_kind` is checked.** This ensures ownership gates are checked early (they usually are in the preconditions list) so unowned tasks fail fast with `not_authorized` instead of collecting other tracing gaps.

@@ -127,7 +127,7 @@ async def test_i_will_work_on_matches_spec(
     # Per-role claim authority (CLAIM_RULES) is now enforced inside
     # spec.can_invoke_action when action == "claim", dispatched by
     # can_invoke_intent. The verb's single gate is can_invoke_intent.
-    env = await c.i_will_work_on(agent_id, task_id, plan="my plan")
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id, plan="my plan")
     body = env.as_dict()
     if expected.allowed:
         # Verb may still fail downstream of the gate (e.g. claim() returns

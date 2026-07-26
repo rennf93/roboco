@@ -131,7 +131,9 @@ async def test_i_will_work_on_blocks_when_agent_has_in_progress_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=agent_id, task_id=target_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert str(other_id) in body["message"] or str(other_id) in body["remediate"]
@@ -165,7 +167,7 @@ async def test_i_will_work_on_resumption_does_not_self_block() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, task_id, steps=_STEPS)
+    env = await c.i_will_work_on(agent_id=agent_id, task_id=task_id, steps=_STEPS)
     assert env.error is None
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
 
@@ -195,7 +197,9 @@ async def test_i_will_work_on_blocks_when_agent_has_paused_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(agent_id, target_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=agent_id, task_id=target_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert str(paused_id) in body["remediate"]
@@ -226,7 +230,9 @@ async def test_cell_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(pm_id, task_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=pm_id, task_id=task_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     # Spec produces "role 'cell_pm' may not call 'i_will_work_on'".
@@ -253,7 +259,9 @@ async def test_main_pm_cannot_claim_code_task_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(pm_id, task_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=pm_id, task_id=task_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     assert body["error"] == "not_authorized"
 
@@ -403,7 +411,7 @@ async def test_developer_cannot_claim_qa_status_task() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(dev_id, task_id, steps=_STEPS)
+    env = await c.i_will_work_on(agent_id=dev_id, task_id=task_id, steps=_STEPS)
     body = env.as_dict()
     assert body["error"] == "not_authorized"
     assert "developer" in body["message"]
@@ -494,7 +502,9 @@ async def test_non_developer_role_cannot_claim_via_i_will_work_on() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(doc_id, task_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=doc_id, task_id=task_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     # Role-typed claim refuses with not_authorized
     assert body["error"] == "not_authorized"

@@ -148,8 +148,8 @@ async def test_i_will_work_on_calls_ensure_work_session() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,
@@ -290,8 +290,8 @@ async def test_ensure_work_session_not_called_when_start_fails() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

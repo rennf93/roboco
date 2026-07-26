@@ -31,8 +31,11 @@ There is **no** `roboco_git_commit / _push / _checkout / _create_pr / _merge_pr`
 To learn how a project's codebase is laid out or how a subsystem works, query the knowledge base rather than a project tool:
 
 ```python
-roboco_kb_search(query="rate limiting redis", project="roboco-api",
-                 index_types=["code", "documentation"])
+roboco_kb_search(
+    query="rate limiting redis",
+    project="roboco-api",
+    index_types=["code", "documentation"],
+)
 roboco_ask_mentor(question="How is auth wired up in this project?")
 ```
 

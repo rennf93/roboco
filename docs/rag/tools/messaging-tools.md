@@ -19,9 +19,9 @@ notify(target="be-dev-1", text="Task ready for you", priority="normal", task_id=
 Every role with an inbox gets these (so `i_am_idle()` doesn't soft-block on unread items):
 
 ```python
-notify_list(unread_only=True, limit=20)   # your inbox
-notify_get(notification_id)               # read one (marks it read)
-notify_ack(notification_id)               # acknowledge after handling
+notify_list(unread_only=True, limit=20)  # your inbox
+notify_get(notification_id)  # read one (marks it read)
+notify_ack(notification_id)  # acknowledge after handling
 ```
 
 When `i_am_idle()` reports unread A2A or @mentions, clear A2A with `read_a2a()` (see `a2a-tools.md`) and clear notifications with list -> get -> ack, then idle again. (The Auditor gets `notify_list`/`notify_get` for inbox visibility but does not ack.)

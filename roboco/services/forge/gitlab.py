@@ -641,7 +641,7 @@ class GitLabProvider(GitProvider):
         headers: dict[str, str],
         client: httpx.AsyncClient | None,
         timeout: float | None,
-    ) -> int | None | httpx.Response | ShapedResponse:
+    ) -> int | httpx.Response | ShapedResponse | None:
         """The group's numeric id, ``None`` for a personal (404) namespace,
         or the raw error response for anything else."""
         group_resp = await self._send(

@@ -105,7 +105,7 @@ def test_flow_post_returns_envelope_on_400(flow_module: types.ModuleType) -> Non
     }
     client = _fake_client_with(400, body)
     with patch("httpx.Client", return_value=client):
-        result = flow_module.i_will_work_on("task-id", plan="x")
+        result = flow_module.i_will_work_on(task_id="task-id", plan="x")
     assert result["error"] == "not_authorized"
 
 

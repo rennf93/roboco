@@ -68,7 +68,7 @@ notify(target="be-pm", text="New initiative assigned — see task", task_id=subt
 
 Monitor via:
 ```python
-triage_all()      # actionable tasks across all teams (Main PM only)
+triage_all()  # actionable tasks across all teams (Main PM only)
 ```
 
 ## Tool Surface (per-spawn manifest)
