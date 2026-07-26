@@ -482,6 +482,27 @@ class BoardProgramEngine(BaseService):
             await self._maybe_close(cycle)
         await self.session.flush()
 
+    async def record_nothing_to_propose(
+        self, program_key: str, exploration_task_id: UUID, reason: str
+    ) -> None:
+        """Record an explorer's "genuinely nothing worth proposing this
+        cycle" verdict onto the cycle row for THIS exploration task, so the
+        next cycle's LEARN context explains a proposed-0 cycle instead of
+        rendering a bare "proposed 0, approved 0" (see ``_render_cycle``).
+
+        Unlike ``record_decision`` this never touches items_proposed/
+        approved/rejected or ``decisions`` — no item was proposed. Does NOT
+        close the row; that stays ``_maybe_close``'s job once the (already
+        COMPLETED, by the time this runs) exploration task is observed
+        terminal. A best-effort no-op when no cycle row matches — mirrors
+        every ``record_decision`` producer's own best-effort wrapping.
+        """
+        cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
+        if cycle is None:
+            return
+        cycle.nothing_to_propose_reason = reason
+        await self.session.flush()
+
     async def prior_cycle_context(self, program_key: str, limit: int = 2) -> str:
         """Render the last ``limit`` CLOSED cycles for prompt injection, oldest
         first; empty string when none exist yet."""
@@ -500,6 +521,8 @@ class BoardProgramEngine(BaseService):
         return "\n".join(self._render_cycle(c) for c in reversed(cycles))
 
     def _render_cycle(self, cycle: BoardProgramCycleTable) -> str:
+        if cycle.items_proposed == 0 and cycle.nothing_to_propose_reason:
+            return f"proposed 0 — nothing to propose: {cycle.nothing_to_propose_reason}"
         line = f"proposed {cycle.items_proposed}, approved {cycle.items_approved}"
         rejected = [d for d in cycle.decisions if d.get("verdict") == "rejected"]
         reasons = "; ".join(

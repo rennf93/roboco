@@ -121,6 +121,12 @@ _BOARD_DO = (
     "dm",
     "notify",
     "evidence",
+    # Registry-driven "this cycle found nothing worth proposing" exit for
+    # any Board Program exploration task — every board explorer role gets
+    # it (Product Owner / Head of Marketing here; the Auditor separately
+    # below), the runtime role-vs-program check in content_actions.py does
+    # the real gating.
+    "nothing_to_propose",
     *_NOTIFY_RECEIVER,
 )
 
@@ -187,6 +193,9 @@ _AUDITOR_DO = (
     "archive_playbook",
     "curate_vault",
     "propose_postmortem",
+    # See _BOARD_DO's comment — the Auditor owns Coroner/Sentinel/Librarian,
+    # so it needs the same "nothing to propose" exit.
+    "nothing_to_propose",
     "notify_list",
     "notify_get",
     # Sentinel (Board Program): the Auditor's weekly org-wide drift report,

@@ -2596,6 +2596,10 @@ class BoardProgramCycleTable(Base):
     decisions: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list
     )
+    # Set only by the ``nothing_to_propose`` do-verb — an explorer's
+    # "genuinely nothing worth proposing this cycle" verdict, distinct from
+    # ``decisions`` (per-item CEO approve/reject). Read by ``_render_cycle``.
+    nothing_to_propose_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # =============================================================================

@@ -202,6 +202,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
+| `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -232,6 +233,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
+| `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
@@ -267,6 +269,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
 | `curate_vault` | `curate_vault(task_id: UUID, narrative: str)` |
 | `propose_postmortem` | `propose_postmortem(incident_summary: str, root_cause: str, failed_stage: str, process_change: ProcessChangeInput, playbook: PostmortemPlaybookInput | None = None)` |
+| `nothing_to_propose` | `nothing_to_propose(task_id: UUID, reason: str)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `propose_quality_report` | `propose_quality_report(headline: str, items: list[QualityReportItemInput], overall_assessment: str)` |

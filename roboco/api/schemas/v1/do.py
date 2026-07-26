@@ -395,6 +395,17 @@ class ProposeVideoRequest(BaseModel):
     input_props: dict[str, Any] | None = None
 
 
+class NothingToProposeRequest(BaseModel):
+    """Any board explorer's "this cycle found nothing worth proposing" exit
+    — a substantive reason explaining what was looked at and why none of it
+    qualified. ``task_id`` names the caller's own exploration task explicitly
+    (one board role can own several open cycles from different programs at
+    once) — which program/role it resolves against comes from THAT task."""
+
+    task_id: UUID
+    reason: str = Field(..., min_length=1)
+
+
 class DmRequest(BaseModel):
     recipient: str  # agent slug
     text: str = Field(..., min_length=1)
