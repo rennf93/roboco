@@ -40,14 +40,17 @@ def seed_company(stack: E2EStack) -> Company:
         return _COMPANY_CACHE["company"]
 
     from roboco.db.tables import AgentTable
+    from roboco.foundation import identity as _foundation
     from roboco.models import AgentRole, AgentStatus, Team
 
     out = Company()
 
     async def _run(session: AsyncSession) -> None:
-        def agent(slug: str, role: AgentRole, team: Team | None) -> AgentTable:
+        def agent(
+            slug: str, role: AgentRole, team: Team | None, *, agent_id: Any = None
+        ) -> AgentTable:
             row = AgentTable(
-                id=uuid4(),
+                id=agent_id or uuid4(),
                 name=slug,
                 slug=slug,
                 role=role,
@@ -66,7 +69,16 @@ def seed_company(stack: E2EStack) -> Company:
         qa = agent("be-qa", AgentRole.QA, Team.BACKEND)
         doc = agent("be-doc", AgentRole.DOCUMENTER, Team.BACKEND)
         cell_pm = agent("be-pm", AgentRole.CELL_PM, Team.BACKEND)
-        main_pm = agent("main-pm", AgentRole.MAIN_PM, None)
+        # The canonical fixed UUID, not a random one: RoadmapService et al.'s
+        # per-item materialize (and the MegaTask main_pm-route batch confirm)
+        # hardcode AGENT_UUIDS["main-pm"] as the owning assignee, an FK to a
+        # real agents row — the same identity production seeding uses.
+        main_pm = agent(
+            "main-pm",
+            AgentRole.MAIN_PM,
+            None,
+            agent_id=_foundation.AGENTS["main-pm"].uuid,
+        )
         reviewer = agent("pr-reviewer-1", AgentRole.PR_REVIEWER, None)
         ceo = agent("ceo", AgentRole.CEO, None)
         hom = agent("head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD)

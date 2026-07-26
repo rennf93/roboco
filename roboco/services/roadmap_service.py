@@ -6,10 +6,17 @@ the Product Owner authors the cycle onto it via ``propose_roadmap`` (a goal +
 3-7 item drafts, persisted as a marker payload — see
 ``roboco.foundation.policy.content.markers.get_roadmap_cycle``). This service
 is what the CEO-gated routes call: ``approve_item`` materializes one item as a
-BACKLOG task (``source=roadmap``, via ``PrompterService.create_task_from_draft``
-— CEO approval IS the confirmation); ``reject_item`` records the reason. Once
-every item on the cycle is terminal (approved/rejected) the exploration task
-itself completes. Both actions are idempotent per item.
+PENDING, Main-PM-owned root task (``source=roadmap``, ``assigned_to=main-pm``,
+via ``PrompterService.create_task_from_draft`` — CEO approval IS the
+confirmation); ``reject_item`` records the reason. Once every item on the
+cycle is terminal (approved/rejected) the exploration task itself completes.
+Both actions are idempotent per item.
+
+A materialized item is NEVER an unowned BACKLOG task: nothing dispatches
+BACKLOG, and a parentless root a cell PM claims directly would resolve its
+own merge target straight to the project's head rung on ``complete()``,
+bypassing the Main-PM root, the root->master PR, and the CEO's approval gate
+— see ``_materialize``'s docstring.
 """
 
 from __future__ import annotations
@@ -17,17 +24,16 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from roboco.foundation.policy.board_programs import PROGRAMS, project_participates
 from roboco.foundation.policy.content import markers
-from roboco.models.base import TaskStatus
+from roboco.models.base import TaskStatus, Team
 from roboco.services.base import BaseService
 from roboco.services.board_programs import learn_ref
 from roboco.services.task import ROADMAP_ITEM_SOURCE, ROADMAP_SOURCE, get_task_service
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import TaskTable
@@ -177,9 +183,28 @@ class RoadmapService(BaseService):
     async def _materialize(
         self, item: dict[str, Any], *, created_by: UUID
     ) -> TaskTable:
-        """Turn one approved item draft into a real BACKLOG task."""
+        """Turn one approved item draft into a Main-PM-owned root task.
+
+        PENDING + ``assigned_to=main-pm`` — NOT a parentless BACKLOG task.
+        Nothing dispatches BACKLOG, and a parentless task a cell PM claims
+        and completes resolves its merge target (``resolve_parent_branch``)
+        straight to the project's head rung, bypassing the Main-PM root, the
+        root->master PR, and the CEO's approval gate (live proof: PRs
+        #703/#704 merged feature/{team}/... -> slave directly). Pre-assigning
+        the Main PM makes this a real coordination root that dispatches
+        immediately — ``team=Team.MAIN_PM`` (via ``BatchPlacement``'s
+        ``team_override`` seam, the same knob a MegaTask batch uses), matching
+        ``TaskService.approve_and_start`` exactly, since every "is this a
+        coordination root" check (``pr_fail``'s next-hint, the PR-gate steer,
+        delegate's wave-chain branch, the PR labeler) keys on ``team``, not
+        ``assigned_to``. The item's own cell survives as a delegation hint in
+        the task's Notes (part of the composed description, which the Main
+        PM's spawn briefing renders verbatim) rather than in the ``team``
+        column — the same shape intake's "Approve & Start" produces.
+        """
+        from roboco.seeds.initial_data import AGENT_UUIDS
         from roboco.services.project import get_project_service
-        from roboco.services.prompter import get_prompter_service
+        from roboco.services.prompter import BatchPlacement, get_prompter_service
 
         project = await get_project_service(self.session).get_by_slug(
             item["project_slug"]
@@ -197,7 +222,11 @@ class RoadmapService(BaseService):
         draft = {
             "title": item["title"],
             "objective": item["description"],
-            "notes": [f"Rationale: {item['rationale']}"],
+            "notes": [
+                f"Rationale: {item['rationale']}",
+                f"Delegation hint: originated as a {item['team']} item — "
+                f"delegate into the {item['team']} cell.",
+            ],
             "acceptance_criteria": item["acceptance_criteria"],
             "project_id": str(project.id),
             "team": item["team"],
@@ -207,7 +236,9 @@ class RoadmapService(BaseService):
         return await get_prompter_service(self.session).create_task_from_draft(
             draft,
             created_by,
-            status=TaskStatus.BACKLOG,
+            status=TaskStatus.PENDING,
+            assigned_to=UUID(AGENT_UUIDS["main-pm"]),
+            placement=BatchPlacement(team_override=Team.MAIN_PM),
         )
 
     def _maybe_complete_cycle(self, task: TaskTable, payload: dict[str, Any]) -> None:

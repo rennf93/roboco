@@ -23,6 +23,7 @@ from roboco.db.tables import (
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.lifecycle import _next_hint_pr_fail
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 PO_UUID = _foundation.AGENTS["product-owner"].uuid
 CEO_UUID = _foundation.AGENTS["ceo"].uuid
+MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 ONE = 1
 TWO = 2
 
@@ -98,6 +100,7 @@ async def _seed_agents(session: AsyncSession) -> None:
         (SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
         (PO_UUID, "product-owner", AgentRole.PRODUCT_OWNER, Team.BOARD),
         (CEO_UUID, "ceo", AgentRole.CEO, None),
+        (MAIN_PM_UUID, "main-pm", AgentRole.MAIN_PM, Team.MAIN_PM),
     ):
         if await session.get(AgentTable, uuid) is None:
             session.add(
@@ -175,7 +178,20 @@ def _id(task: TaskTable) -> UUID:
 
 
 @pytest.mark.asyncio
-async def test_approve_materializes_backlog_task(db_session: AsyncSession) -> None:
+async def test_approve_materializes_main_pm_owned_task(
+    db_session: AsyncSession,
+) -> None:
+    """Defect fix (#703/#704): approval used to materialize an unowned
+    BACKLOG task — nothing dispatches BACKLOG, and once nudged to PENDING a
+    cell PM could claim + complete it as a bare root, merging straight to
+    the project's head rung and bypassing the Main-PM root / root->master PR
+    / CEO approval gate. It now materializes PENDING + assigned_to=main-pm
+    instead — team is forced to Team.MAIN_PM too (matching
+    TaskService.approve_and_start), since every "is this a coordination
+    root" consumer (pr_fail's next-hint, the PR-gate re-delegate steer,
+    delegate's wave-chain wiring, the PR labeler) keys on team, not
+    assigned_to. Leaving team on the item's own cell was itself the defect:
+    the root looked like a bare cell/dev task to all four."""
     await _seed_project(db_session, "backend-svc")
     task = await _seed_cycle(db_session, project_slug="backend-svc")
     result = await _svc(db_session).approve_item(
@@ -187,9 +203,29 @@ async def test_approve_materializes_backlog_task(db_session: AsyncSession) -> No
 
     materialized = await db_session.get(TaskTable, result.materialized_task_id)
     assert materialized is not None
-    assert materialized.status == TS.BACKLOG
+    assert materialized.status == TS.PENDING
+    assert materialized.assigned_to == MAIN_PM_UUID
+    assert materialized.parent_task_id is None
     assert materialized.source == ROADMAP_ITEM_SOURCE
-    assert materialized.team == Team.BACKEND
+    assert materialized.team == Team.MAIN_PM
+    # main_pm can never own a code task (pm_cannot_own_code) — the intake
+    # coercion in create_task_from_draft retypes it to planning, the same
+    # shape a Main-PM coordination root always carries.
+    assert materialized.task_type == TT.PLANNING
+    # The item's own cell ("backend") didn't just vanish — it survives as a
+    # Notes delegation hint in the composed description, which the Main PM's
+    # spawn briefing (_format_task_briefing_block) renders verbatim.
+    assert "backend cell" in (materialized.description or "")
+
+    # The predicate the four consumers key on: with team=Team.MAIN_PM and a
+    # branch (simulating a claimed root with its assembled PR), pr_fail's
+    # next-hint steers the Main PM to re-delegate rather than the nonsensical
+    # "dev will revise" hint a Main PM (no code-revise verb) can't act on.
+
+    materialized.branch_name = "feature/main_pm/deadbeef"
+    hint = _next_hint_pr_fail(materialized)
+    assert "re-delegate" in hint
+    assert "do NOT re-submit" in hint
 
     await db_session.refresh(task)
     payload = markers.get_roadmap_cycle(task)

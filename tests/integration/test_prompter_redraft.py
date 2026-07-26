@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
+from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.prompter import (
     PrompterService,
@@ -138,9 +139,28 @@ async def redraft_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
             metrics={},
         )
 
-    main_pm = _agent("main-pm", AgentRole.MAIN_PM)
+    # merge() with the fixed AGENT_UUIDS id: idempotent whether or not another
+    # test already committed this exact "main-pm"-slugged row on the shared
+    # session-scoped test DB (mirrors test_prompter.py's identical upsert) —
+    # an unconditional insert with a fresh random id here would collide with
+    # any other test's row on the slug's unique index.
+    main_pm = await db_session.merge(
+        AgentTable(
+            id=UUID(AGENT_UUIDS["main-pm"]),
+            name="main-pm",
+            slug="main-pm",
+            role=AgentRole.MAIN_PM,
+            team=None,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="x",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+    )
     po = _agent(f"product-owner-{uuid4().hex[:4]}", AgentRole.PRODUCT_OWNER)
-    db_session.add_all([main_pm, po])
+    db_session.add(po)
     await db_session.flush()
     project = ProjectTable(
         id=uuid4(),

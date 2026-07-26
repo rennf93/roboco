@@ -393,6 +393,11 @@ async def test_propose_quality_report_persists_and_completes_the_exploration_tas
     assert len(payload["items"]) == len(items)
     assert payload["items"][0]["id"] == "item-0"
     assert payload["items"][0]["area"] == "waivers"
+    # Each item still carries its own per-item CEO decision (SentinelService.
+    # approve_item/reject_item) even though the exploration task completes
+    # here.
+    assert payload["items"][0]["status"] == "proposed"
+    assert payload["items"][0]["materialized_task_id"] is None
     assert (
         payload["overall_assessment"]
         == "Drift is concentrated in one hotspot, not systemic"

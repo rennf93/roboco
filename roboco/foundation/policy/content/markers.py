@@ -355,11 +355,15 @@ def set_messaging_fixes(task: HasMarkers, payload: dict[str, Any]) -> None:
 # --- Periscope market brief --------------------------------------------------
 # The Head of Marketing's weekly market-research report, authored via
 # ``propose_market_brief`` onto the exploration task the Periscope engine
-# opened: {headline, findings (list of {id, claim, source_url, relevance}),
-# threats, opportunities, positioning_note, injection_hits}. Unlike
-# ROADMAP_CYCLE/PEST_HUNT there is no per-item CEO decision — the verb
-# completes the exploration task in the same call (mirrors X_FEATURE_REF's
-# complete-at-propose asymmetry), so this marker is set exactly once.
+# opened: {headline, findings (list of {id, claim, source_url, relevance,
+# status, reject_reason, materialized_task_id}), threats, opportunities,
+# positioning_note, injection_hits}. Unlike ROADMAP_CYCLE/PEST_HUNT the
+# EXPLORATION TASK itself has no per-item decision to wait on — the verb
+# completes it in the same call (mirrors X_FEATURE_REF's complete-at-propose
+# asymmetry), so this marker is set exactly once. Each FINDING still carries
+# its own proposed/approved/rejected status the CEO decides afterward
+# (PeriscopeService.approve_finding/reject_finding), independent of the
+# task's own terminal status.
 
 
 def get_market_brief(task: HasMarkers) -> dict[str, Any] | None:
@@ -375,9 +379,15 @@ def set_market_brief(task: HasMarkers, payload: dict[str, Any]) -> None:
 # The incident ref the CoronerEngine stamps on the postmortem-exploration task
 # it opens ({incident_task_id, kind, revision_count, title}), and the
 # Auditor-authored postmortem ({incident_summary, root_cause, failed_stage,
-# process_change, playbook_id?}) it writes via ``propose_postmortem``. Unlike
-# ROADMAP_CYCLE/PEST_HUNT there is no per-item status — a single call
-# completes the task, so this is set-once, read-only after that.
+# process_change: {kind, description, status, reject_reason,
+# materialized_task_id}, playbook_id?}) it writes via ``propose_postmortem``.
+# A single call completes the EXPLORATION TASK — unlike ROADMAP_CYCLE/
+# PEST_HUNT there is no multi-item queue to keep it open for — but the one
+# ``process_change`` still carries its own proposed/approved/rejected status
+# for the CEO's after-the-fact decision (CoronerService.
+# approve_process_change/reject_process_change), except when its kind is
+# "playbook" (status "not_applicable" — already routed straight into the
+# playbook curation queue, nothing left to decide here).
 
 
 def get_coroner_incident(task: HasMarkers) -> dict[str, Any] | None:
@@ -402,9 +412,11 @@ def set_coroner_postmortem(task: HasMarkers, payload: dict[str, Any]) -> None:
 # The Auditor's weekly org-wide drift report, authored via
 # ``propose_quality_report`` onto the exploration task the sentinel engine
 # opened: {headline, items (list of {id, area, observation, evidence,
-# suggested_action}), overall_assessment}. Mirrors MARKET_BRIEF exactly — no
-# per-item CEO decision, so this marker is set exactly once (complete-at-
-# propose).
+# suggested_action, status, reject_reason, materialized_task_id}),
+# overall_assessment}. Mirrors MARKET_BRIEF exactly — the exploration task
+# is set exactly once (complete-at-propose), but each ITEM still carries its
+# own proposed/approved/rejected status the CEO decides afterward
+# (SentinelService.approve_item/reject_item).
 
 
 def get_quality_report(task: HasMarkers) -> dict[str, Any] | None:

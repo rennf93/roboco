@@ -1,16 +1,25 @@
-"""Periscope (Board Program) engine API — the CEO reads filed market briefs.
-CEO-only throughout. Read-only: a brief is a report, not a queue item — there
-is no approve/reject route here, unlike roadmap/pest_control. Mirrors
-``roboco.api.routes.pest_control``'s CEO-gating shape.
+"""Periscope (Board Program) engine API — the CEO reads filed market briefs
+and approves/dismisses individual findings. CEO-only throughout. The brief
+itself is a report (read-only — the exploration task completes atomically at
+propose time), but each finding carries its own per-item approve/reject,
+mirroring ``roboco.api.routes.roadmap``'s shape.
 """
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
-from roboco.api.schemas.periscope import MarketBriefFindingResponse, MarketBriefResponse
+from roboco.api.schemas.periscope import (
+    MarketBriefFindingActionResponse,
+    MarketBriefFindingRejectRequest,
+    MarketBriefFindingResponse,
+    MarketBriefResponse,
+)
 from roboco.foundation.policy.content import markers
+from roboco.security import guard_deco
+from roboco.services.periscope_service import get_periscope_service
 from roboco.services.task import get_task_service
 
 if TYPE_CHECKING:
@@ -20,7 +29,9 @@ router = APIRouter()
 
 
 def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view the Periscope market-briefs list")
+    require_ceo_role(
+        agent.role, action="view or act on the Periscope market-briefs list"
+    )
 
 
 def _to_response(task: "TaskTable") -> MarketBriefResponse | None:
@@ -50,3 +61,68 @@ async def list_market_briefs(
     _require_ceo(agent)
     tasks = await get_task_service(db).list_periscope_briefs()
     return [r for t in tasks if (r := _to_response(t)) is not None]
+
+
+@router.post(
+    "/briefs/{task_id}/findings/{finding_id}/approve",
+    response_model=MarketBriefFindingActionResponse,
+)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.block_clouds()
+async def approve_market_brief_finding(
+    task_id: UUID,
+    finding_id: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> MarketBriefFindingActionResponse:
+    """Materialize one finding as a Main-PM-owned root task (idempotent)."""
+    _require_ceo(agent)
+    result = await get_periscope_service(db).approve_finding(
+        task_id, finding_id, created_by=agent.agent_id
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such open Periscope finding",
+        )
+    await db.commit()
+    return MarketBriefFindingActionResponse(
+        status=result.status,
+        finding_id=result.finding_id,
+        materialized_task_id=result.materialized_task_id,
+        detail=result.detail,
+    )
+
+
+@router.post(
+    "/briefs/{task_id}/findings/{finding_id}/reject",
+    response_model=MarketBriefFindingActionResponse,
+)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+async def reject_market_brief_finding(
+    task_id: UUID,
+    finding_id: str,
+    data: MarketBriefFindingRejectRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> MarketBriefFindingActionResponse:
+    """Dismiss one finding with a reason (idempotent)."""
+    _require_ceo(agent)
+    result = await get_periscope_service(db).reject_finding(
+        task_id, finding_id, data.reason
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No such open Periscope finding",
+        )
+    await db.commit()
+    return MarketBriefFindingActionResponse(
+        status=result.status,
+        finding_id=result.finding_id,
+        materialized_task_id=result.materialized_task_id,
+        detail=result.detail,
+    )
