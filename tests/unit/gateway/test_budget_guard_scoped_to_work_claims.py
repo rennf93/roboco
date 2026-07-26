@@ -239,7 +239,9 @@ async def test_i_will_work_on_refuses_at_cap() -> None:
     task_svc.project_month_spend_usd = AsyncMock(return_value=999.0)
     c = Choreographer(_make_deps(task_svc))
 
-    env = await c.i_will_work_on(agent_id, task_id, plan="x", steps=_STEPS)
+    env = await c.i_will_work_on(
+        agent_id=agent_id, task_id=task_id, plan="x", steps=_STEPS
+    )
     body = env.as_dict()
     assert body["error"] == "invalid_state", body
     assert "10.00" in body["message"] and "999.00" in body["message"]

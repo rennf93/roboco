@@ -118,7 +118,12 @@ class PRGateMixin(_Base):
         role_str = self._role_str_for_agent(agent)
         briefing = await self._briefing_for(reviewer_agent_id, task_id, full=True)
         role = await self._gate_role_or_rejection(
-            t, role_str, briefing, reviewer_agent_id, task_id, "claim_gate_review"
+            t=t,
+            role_str=role_str,
+            briefing=briefing,
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb="claim_gate_review",
         )
         if isinstance(role, Envelope):
             return role
@@ -242,7 +247,12 @@ class PRGateMixin(_Base):
         role_str = self._role_str_for_agent(agent)
         briefing = await self._briefing_for(reviewer_agent_id, task_id)
         role = await self._gate_role_or_rejection(
-            t, role_str, briefing, reviewer_agent_id, task_id, verb
+            t=t,
+            role_str=role_str,
+            briefing=briefing,
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb=verb,
         )
         if isinstance(role, Envelope):
             return role
@@ -1095,6 +1105,7 @@ class PRGateMixin(_Base):
 
     async def _gate_role_or_rejection(
         self,
+        *,
         t: Any,
         role_str: str,
         briefing: dict[str, Any],

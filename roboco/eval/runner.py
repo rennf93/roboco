@@ -433,6 +433,7 @@ def _fast_forward_branch(stack: E2EStack, branch: str, *, onto: str) -> None:
 
 
 def _create_bench_task(
+    *,
     stack: E2EStack,
     project_id: UUID,
     dev_slug: str,
@@ -996,7 +997,12 @@ class EvalRunner:
         _fast_forward_branch(env.stack, env.cell_branch, onto="master")
         started_at = datetime.now(UTC)
         task_id = _create_bench_task(
-            env.stack, env.project_id, dev_slug, fixture, env.team, env.cell_id
+            stack=env.stack,
+            project_id=env.project_id,
+            dev_slug=dev_slug,
+            fixture=fixture,
+            team=env.team,
+            parent_task_id=env.cell_id,
         )
 
         spawner = self._make_spawner(env.stack)

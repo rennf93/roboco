@@ -484,18 +484,19 @@ class DocMixin(_Base):
             return push_rejection
 
         return await self._finalize_documented(
-            doc_agent_id,
-            task_id,
-            files,
-            owned_task,
-            agent,
-            role_str,
-            spec_ctx,
-            briefing,
+            doc_agent_id=doc_agent_id,
+            task_id=task_id,
+            files=files,
+            owned_task=owned_task,
+            agent=agent,
+            role_str=role_str,
+            spec_ctx=spec_ctx,
+            briefing=briefing,
         )
 
     async def _finalize_documented(
         self,
+        *,
         doc_agent_id: UUID,
         task_id: UUID,
         files: list[str],

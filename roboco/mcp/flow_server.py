@@ -538,6 +538,7 @@ def give_me_work() -> dict[str, Any]:
 
 
 def i_will_work_on(
+    *,
     task_id: str,
     plan: str | None = None,
     steps: list[dict[str, str]] | None = None,
@@ -909,6 +910,7 @@ def waive_finding(finding_id: str, note: str) -> dict[str, Any]:
 
 
 def i_will_plan(
+    *,
     task_id: str,
     plan: str,
     approach: str = "",
@@ -949,6 +951,7 @@ def i_will_plan(
 
 
 def delegate(
+    *,
     parent_task_id: str,
     title: str,
     description: str,

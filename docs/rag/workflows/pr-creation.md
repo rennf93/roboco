@@ -12,8 +12,10 @@ You do **not** call any tool to create a PR. There is no `roboco_git_create_pr` 
 
 ```python
 # 1. Make commits as you work (auto-pushes, no separate push step)
-commit(message="feat(api): add Redis rate limiter",
-       files=["roboco/api/routes/rate.py", "tests/integration/test_rate.py"])
+commit(
+    message="feat(api): add Redis rate limiter",
+    files=["roboco/api/routes/rate.py", "tests/integration/test_rate.py"],
+)
 
 # 2. Once acceptance criteria are implemented + tested, hand off to QA.
 #    The choreographer opens the PR here, sets pr_number/pr_url on the

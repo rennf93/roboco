@@ -95,7 +95,7 @@ async def test_pm_cannot_execute_code_writes_audit_row() -> None:
     deps = _make_deps(task=task_svc, audit=audit_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(aid, tid, plan="x")
+    env = await c.i_will_work_on(agent_id=aid, task_id=tid, plan="x")
 
     assert env.error == "not_authorized"
     audit_svc.log_event.assert_awaited()
@@ -215,7 +215,7 @@ async def test_rejection_remediate_lands_in_audit_details() -> None:
     deps = _make_deps(task=task_svc, audit=audit_svc)
     c = Choreographer(deps)
 
-    env = await c.i_will_work_on(aid, tid, plan="x")
+    env = await c.i_will_work_on(agent_id=aid, task_id=tid, plan="x")
 
     assert env.error == "not_authorized"
     assert env.remediate

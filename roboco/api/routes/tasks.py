@@ -728,6 +728,7 @@ async def list_tasks(
 
 @router.get("/summary", response_model=list[TaskSummaryResponse])
 async def list_tasks_summary(
+    *,
     db: DbSession,
     agent: CurrentAgentContext,
     team: Team | None = None,

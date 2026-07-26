@@ -27,10 +27,12 @@ roboco_git_log(branch="<dev's branch>")
 # Frontend: pnpm test && pnpm lint && pnpm typecheck
 
 # 5. Capture evidence (survives compaction; PMs can audit later)
-note(text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
-          "(boundary tests). pytest 1635 passed; ruff clean; mypy clean.",
-     scope="evidence",
-     task_id="<task>")
+note(
+    text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
+    "(boundary tests). pytest 1635 passed; ruff clean; mypy clean.",
+    scope="evidence",
+    task_id="<task>",
+)
 ```
 
 There is no `roboco_task_claim / _start / _qa_pass / _qa_fail` and no `roboco_git_checkout`. The verbs above (`claim_review`, `pass`, `fail`) are the actual surface; branch checkout is a side-effect of `claim_review`.

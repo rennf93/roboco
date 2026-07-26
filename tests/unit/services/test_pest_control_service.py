@@ -415,8 +415,11 @@ async def test_approve_records_learn_decision(db_session: AsyncSession) -> None:
         )
     ).scalar_one()
     assert row.items_approved == ONE
+    # The ref is the item's TITLE, not its per-cycle index: this row is
+    # rendered into the next cycle's exploration prompt, where "item-0"
+    # names nothing (see BoardProgramEngine.learn_ref).
     assert {
-        "item_ref": "item-0",
+        "item_ref": "Item 0",
         "verdict": "approved",
         "reason": None,
     } in row.decisions
@@ -439,8 +442,11 @@ async def test_reject_records_learn_decision_with_reason(
         )
     ).scalar_one()
     assert row.items_rejected == ONE
+    # The ref is the item's TITLE, not its per-cycle index: this row is
+    # rendered into the next cycle's exploration prompt, where "item-0"
+    # names nothing (see BoardProgramEngine.learn_ref).
     assert {
-        "item_ref": "item-0",
+        "item_ref": "Item 0",
         "verdict": "rejected",
         "reason": "not a priority",
     } in row.decisions

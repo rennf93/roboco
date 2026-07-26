@@ -24,7 +24,7 @@ replaces.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
@@ -251,6 +251,25 @@ async def _pest_control_rework_spike(session: AsyncSession) -> bool:
 _METRIC_PREDICATES: dict[str, Callable[[AsyncSession], Awaitable[bool]]] = {
     "pest_control": _pest_control_rework_spike,
 }
+
+
+def learn_ref(item: dict[str, Any], limit: int = 80) -> str:
+    """The ``item_ref`` a per-item approve/reject records for LEARN.
+
+    The item's own title, because the ref's only consumer is
+    ``_render_cycle``, whose output goes into the NEXT cycle's exploration
+    prompt. Passing the stored ``id`` instead (``item-0``/``item-1``, a
+    per-cycle index — see ``_normalize_roadmap_item``) rendered
+    "rejected: item-1 — <reason>": the CEO's reason survived, but nothing
+    said which proposal it was about, and the index means something
+    different in every cycle. Falls back to the id when a title is missing.
+
+    ``target_task_title`` covers Scales, whose items name the live task they
+    mutate rather than carrying a draft title of their own.
+    """
+    title = str(item.get("title") or item.get("target_task_title") or "").strip()
+    ref = title or str(item.get("id") or "")
+    return ref[:limit].rstrip() if len(ref) > limit else ref
 
 
 def _legacy_enabled(key: str) -> bool:

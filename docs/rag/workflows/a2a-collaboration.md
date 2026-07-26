@@ -36,7 +36,7 @@ CEO-initiated conversations may arrive and are replied to in-thread like any oth
 Your claim briefing surfaces incoming A2A under `unread_a2a` — each entry shows the sender and a preview of their latest message. To read the full bodies (and clear them):
 
 ```python
-read_a2a()      # -> {"messages": [{from_agent, content, created_at}, ...]}
+read_a2a()  # -> {"messages": [{from_agent, content, created_at}, ...]}
 ```
 
 `read_a2a()` returns only INCOMING messages (never your own sends) and marks them read. It also clears `i_am_idle()`'s unread-A2A soft-block.

@@ -66,7 +66,12 @@ class PRReviewerMixin(_Base):
         role_str = str(agent.role) if agent is not None else "pr_reviewer"
         briefing = await self._briefing_for(reviewer_agent_id, task_id, full=True)
         role_or_rejection = await self._resolve_role(
-            t, role_str, briefing, reviewer_agent_id, task_id, "claim_pr_review"
+            t=t,
+            role_str=role_str,
+            briefing=briefing,
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb="claim_pr_review",
         )
         if isinstance(role_or_rejection, Envelope):
             return role_or_rejection
@@ -187,6 +192,7 @@ class PRReviewerMixin(_Base):
 
     async def _post_review_side_effects(
         self,
+        *,
         t: Any,
         slug: str | None,
         pr_number: int | None,
@@ -280,12 +286,23 @@ class PRReviewerMixin(_Base):
             t = await runner.run_intent("post_pr_review", t, agent, spec_ctx)
         except Exception as exc:
             return await self._runner_failure(
-                exc, t, role_str, briefing, reviewer_agent_id, task_id, "post_pr_review"
+                exc=exc,
+                t=t,
+                role_str=role_str,
+                briefing=briefing,
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="post_pr_review",
             )
         # Side-effects AFTER the DB transition (a2a.send pattern), both best-
         # effort: post the canonical review to GitHub + surface it to the CEO.
         await self._post_review_side_effects(
-            t, slug, pr_number, post_body, event, task_id
+            t=t,
+            slug=slug,
+            pr_number=pr_number,
+            post_body=post_body,
+            event=event,
+            task_id=task_id,
         )
         return Envelope.ok(
             status=str(t.status),
@@ -322,7 +339,12 @@ class PRReviewerMixin(_Base):
                 verb="post_pr_review",
             )
         role_or_rejection = await self._resolve_role(
-            t, role_str, briefing, reviewer_agent_id, task_id, "post_pr_review"
+            t=t,
+            role_str=role_str,
+            briefing=briefing,
+            agent_id=reviewer_agent_id,
+            task_id=task_id,
+            verb="post_pr_review",
         )
         if isinstance(role_or_rejection, Envelope):
             return role_or_rejection
@@ -451,6 +473,7 @@ class PRReviewerMixin(_Base):
 
     async def _resolve_role(
         self,
+        *,
         t: Any,
         role_str: str,
         briefing: dict[str, Any],
@@ -475,6 +498,7 @@ class PRReviewerMixin(_Base):
 
     async def _runner_failure(
         self,
+        *,
         exc: Exception,
         t: Any,
         role_str: str,

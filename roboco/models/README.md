@@ -95,67 +95,67 @@ in_progress ──► awaiting_pr_review
 
 ### TaskStatus (from `base.py`)
 ```python
-BACKLOG = "backlog"                           # PM setup phase
-PENDING = "pending"                           # Ready for work
-CLAIMED = "claimed"                           # Agent claimed, not started
-IN_PROGRESS = "in_progress"                   # Active work
-BLOCKED = "blocked"                           # External blocker
-PAUSED = "paused"                             # Temporary pause
-VERIFYING = "verifying"                       # Self-verification
-NEEDS_REVISION = "needs_revision"             # QA/PM requested changes
-AWAITING_QA = "awaiting_qa"                   # Ready for QA review
+BACKLOG = "backlog"  # PM setup phase
+PENDING = "pending"  # Ready for work
+CLAIMED = "claimed"  # Agent claimed, not started
+IN_PROGRESS = "in_progress"  # Active work
+BLOCKED = "blocked"  # External blocker
+PAUSED = "paused"  # Temporary pause
+VERIFYING = "verifying"  # Self-verification
+NEEDS_REVISION = "needs_revision"  # QA/PM requested changes
+AWAITING_QA = "awaiting_qa"  # Ready for QA review
 AWAITING_DOCUMENTATION = "awaiting_documentation"  # Ready for docs
-AWAITING_PM_REVIEW = "awaiting_pm_review"     # Ready for PM review
-AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"    # Major task, CEO decides
-COMPLETED = "completed"                       # Done
-CANCELLED = "cancelled"                       # Cancelled
+AWAITING_PM_REVIEW = "awaiting_pm_review"  # Ready for PM review
+AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"  # Major task, CEO decides
+COMPLETED = "completed"  # Done
+CANCELLED = "cancelled"  # Cancelled
 ```
 
 ### AgentRole
 ```python
-CEO = "ceo"                     # Executive (Human)
-PRODUCT_OWNER = "product_owner" # Board
-HEAD_MARKETING = "head_marketing" # Board
-AUDITOR = "auditor"             # Board (Silent observer)
-MAIN_PM = "main_pm"             # Management (coordinates all cells)
-CELL_PM = "cell_pm"             # Cell management
-DEVELOPER = "developer"         # Cell member
-QA = "qa"                       # Cell member
-DOCUMENTER = "documenter"       # Cell member
+CEO = "ceo"  # Executive (Human)
+PRODUCT_OWNER = "product_owner"  # Board
+HEAD_MARKETING = "head_marketing"  # Board
+AUDITOR = "auditor"  # Board (Silent observer)
+MAIN_PM = "main_pm"  # Management (coordinates all cells)
+CELL_PM = "cell_pm"  # Cell management
+DEVELOPER = "developer"  # Cell member
+QA = "qa"  # Cell member
+DOCUMENTER = "documenter"  # Cell member
 ```
 
 ### Team
 ```python
-BACKEND = "backend"     # Backend cell
-FRONTEND = "frontend"   # Frontend cell
-UX_UI = "ux_ui"         # UX/UI cell
-BOARD = "board"         # Board level (no cell)
+BACKEND = "backend"  # Backend cell
+FRONTEND = "frontend"  # Frontend cell
+UX_UI = "ux_ui"  # UX/UI cell
+BOARD = "board"  # Board level (no cell)
 ```
 
 ### WorkSessionStatus (from `work_session.py`)
 ```python
-ACTIVE = "active"         # Work in progress
-COMPLETED = "completed"   # PR merged
-ABANDONED = "abandoned"   # Session cancelled
+ACTIVE = "active"  # Work in progress
+COMPLETED = "completed"  # PR merged
+ABANDONED = "abandoned"  # Session cancelled
 ```
 
 ### TaskType (from `base.py`)
 ```python
-CODE = "code"                     # Source code changes
-DOCUMENTATION = "documentation"   # Documentation updates
-RESEARCH = "research"             # Research findings committed as notes
-PLANNING = "planning"             # Plans/architecture committed as docs
-DESIGN = "design"                 # Designs/specs committed as assets
-ADMINISTRATIVE = "administrative" # Process docs committed
+CODE = "code"  # Source code changes
+DOCUMENTATION = "documentation"  # Documentation updates
+RESEARCH = "research"  # Research findings committed as notes
+PLANNING = "planning"  # Plans/architecture committed as docs
+DESIGN = "design"  # Designs/specs committed as assets
+ADMINISTRATIVE = "administrative"  # Process docs committed
 ```
 
 ### BranchReason (from `project.py`)
 ```python
-FEATURE = "feature"   # New functionality
-BUG = "bug"           # Bug fixes
-CHORE = "chore"       # Maintenance
-DOCS = "docs"         # Documentation
-HOTFIX = "hotfix"     # Emergency fixes
+FEATURE = "feature"  # New functionality
+BUG = "bug"  # Bug fixes
+CHORE = "chore"  # Maintenance
+DOCS = "docs"  # Documentation
+HOTFIX = "hotfix"  # Emergency fixes
 ```
 
 ## Key Models
@@ -173,7 +173,9 @@ class Task:
     assigned_to: UUID | None
 
     # Task Type
-    task_type: TaskType              # code, documentation, research, planning, design, administrative
+    task_type: (
+        TaskType  # code, documentation, research, planning, design, administrative
+    )
 
     # Project & Branch (all tasks follow git workflow, branch auto-created on claim)
     project_id: UUID
@@ -181,33 +183,33 @@ class Task:
     work_session_id: UUID | None
 
     # PR Tracking (set during AWAITING_DOCUMENTATION parallel phase)
-    pr_number: int | None            # GitHub/GitLab PR number
-    pr_url: str | None               # Full URL to PR
+    pr_number: int | None  # GitHub/GitLab PR number
+    pr_url: str | None  # Full URL to PR
 
     # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
-    docs_complete: bool              # Documenter has finished
-    pr_created: bool                 # Developer has created PR
+    docs_complete: bool  # Documenter has finished
+    pr_created: bool  # Developer has created PR
 
     # PM Approval Tracking
-    pm_approvals: dict[str, bool]    # {'main_pm': True, 'cell_pm': True}
+    pm_approvals: dict[str, bool]  # {'main_pm': True, 'cell_pm': True}
 
     # Planning
     plan: TaskPlan | None
     estimated_complexity: Complexity
 
     # Execution tracking
-    commits: list[CommitRef]         # Linked git commits
-    checkpoints: list[Checkpoint]    # Recovery points
+    commits: list[CommitRef]  # Linked git commits
+    checkpoints: list[Checkpoint]  # Recovery points
     progress_updates: list[ProgressUpdate]
 
     # Documentation Notes
-    dev_notes: str | None            # Journey notes from developer
-    qa_notes: str | None             # QA feedback
-    auditor_notes: str | None        # Auditor observations
-    quick_context: str | None        # 2-3 sentences for quick context restoration
+    dev_notes: str | None  # Journey notes from developer
+    qa_notes: str | None  # QA feedback
+    auditor_notes: str | None  # Auditor observations
+    quick_context: str | None  # 2-3 sentences for quick context restoration
 
     # Proactive Knowledge Context (injected when task is claimed)
-    proactive_context: dict | None   # RAG context: similar tasks, learnings, patterns
+    proactive_context: dict | None  # RAG context: similar tasks, learnings, patterns
 ```
 
 ### Project (`project.py`)
@@ -215,24 +217,24 @@ class Task:
 class Project:
     id: UUID
     name: str
-    slug: str                      # URL-safe identifier (e.g., 'roboco', 'roboco-panel')
-    git_url: str                   # Git repository URL
-    default_branch: str            # e.g., "main"
+    slug: str  # URL-safe identifier (e.g., 'roboco', 'roboco-panel')
+    git_url: str  # Git repository URL
+    default_branch: str  # e.g., "main"
     protected_branches: list[str]  # Cannot push directly
 
     # CI/CD commands
-    test_command: str | None       # e.g., 'uv run pytest'
-    lint_command: str | None       # e.g., 'uv run ruff check .'
-    format_command: str | None     # e.g., 'uv run ruff format .'
+    test_command: str | None  # e.g., 'uv run pytest'
+    lint_command: str | None  # e.g., 'uv run ruff check .'
+    format_command: str | None  # e.g., 'uv run ruff format .'
     typecheck_command: str | None  # e.g., 'uv run mypy src/'
-    build_command: str | None      # e.g., 'pnpm build'
+    build_command: str | None  # e.g., 'pnpm build'
 
     # Access control
     assigned_cell: Team
     allowed_agents: list[UUID] | None  # None = all agents in cell
 
     # Runtime State (managed by workspace service)
-    workspace_path: str | None     # Legacy: now use WorkspaceService
+    workspace_path: str | None  # Legacy: now use WorkspaceService
     last_synced_at: datetime | None
     head_commit: str | None
 
@@ -255,13 +257,13 @@ class WorkSession:
     target_branch: str
 
     # Audit trail
-    commits: list[str]            # Commit SHAs
-    files_modified: list[str]     # Changed files
+    commits: list[str]  # Commit SHAs
+    files_modified: list[str]  # Changed files
 
     # PR tracking
     pr_number: int | None
     pr_url: str | None
-    pr_status: str | None         # open, merged, closed
+    pr_status: str | None  # open, merged, closed
     pr_created_at: datetime | None
     pr_merged_at: datetime | None
     merged_by: UUID | None

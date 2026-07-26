@@ -957,6 +957,7 @@ class PrompterService:
 
     async def _rewrite_batch_children(
         self,
+        *,
         umbrella: TaskTable,
         drafts: list[dict[str, Any]],
         children: list[TaskTable],
@@ -1063,7 +1064,12 @@ class PrompterService:
         plan = self._sequence_drafts(drafts)
         wave_of = {idx: w for w, wave in enumerate(plan.waves) for idx in wave}
         task_of = await self._rewrite_batch_children(
-            umbrella, drafts, children, wave_of, agent_id, agent_role
+            umbrella=umbrella,
+            drafts=drafts,
+            children=children,
+            wave_of=wave_of,
+            agent_id=agent_id,
+            agent_role=agent_role,
         )
         for a, b in plan.edges:
             await task_service.add_dependency(task_of[b], task_of[a])

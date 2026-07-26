@@ -149,8 +149,8 @@ async def test_dev_claim_acquires_lock_before_guard_read() -> None:
     c = Choreographer(deps)
 
     env = await c.i_will_work_on(
-        agent_id,
-        task_id,
+        agent_id=agent_id,
+        task_id=task_id,
         plan=_GOOD_PLAN,
         steps=_STEPS,
         technical_considerations=_GOOD_TC,

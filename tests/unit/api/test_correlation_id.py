@@ -228,7 +228,7 @@ def test_do_server_attaches_correlation_id_header(
 ) -> None:
     fake = _fake_client({"status": "noted"})
     with patch("httpx.Client", return_value=fake):
-        do_module.note("hi")
+        do_module.note(text="hi")
     _args, kwargs = fake.post.call_args
     headers = kwargs["headers"]
     assert headers["X-Agent-ID"] == "00000000-0000-0000-0000-000000000001"

@@ -471,6 +471,23 @@ async def test_prior_cycle_context_renders_rejections_with_reasons(
     assert "item-2 — too risky" in context
 
 
+def test_learn_ref_names_the_item_not_its_per_cycle_index() -> None:
+    """The ref reaches the next cycle's prompt, so it must say WHAT was
+    decided — ``item-1`` means something different in every cycle."""
+    assert bp_module.learn_ref({"id": "item-1", "title": "Fix the CLA gate"}) == (
+        "Fix the CLA gate"
+    )
+    # Scales items name the live task they mutate instead of a draft title.
+    assert bp_module.learn_ref(
+        {"id": "item-0", "target_task_title": "Panel UX wave"}
+    ) == ("Panel UX wave")
+    # A title-less item degrades to the old behaviour rather than an empty ref.
+    assert bp_module.learn_ref({"id": "item-2"}) == "item-2"
+    assert bp_module.learn_ref({"id": "item-3", "title": "   "}) == "item-3"
+    cap = 80
+    assert len(bp_module.learn_ref({"id": "item-4", "title": "x" * 200})) == cap
+
+
 def test_originators_cover_exactly_the_registry() -> None:
     assert set(bp_module._ORIGINATORS) == set(PROGRAMS)
 
