@@ -17,7 +17,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, BoardProgramCycleTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    AuditLogTable,
+    BoardProgramCycleTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -328,6 +334,20 @@ async def test_approve_post_failed_keeps_task_open(db_session: AsyncSession) -> 
     assert result.status == "post_failed"
     await db_session.refresh(task)
     assert task.status == TS.PENDING
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(
+                    AuditLogTable.event_type == "x_post.post_failed"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].target_id == task.id
+    assert rows[0].details["source"] == task.source
 
 
 @pytest.mark.asyncio
@@ -505,10 +525,10 @@ async def test_list_open_posts_includes_feature_spotlight_source(
 
 
 @pytest.mark.asyncio
-async def test_approve_posts_barfly_draft_as_a_reply(db_session: AsyncSession) -> None:
-    """An x_barfly draft's carried tweet_id (barfly_reply_ref) threads
-    through to post_tweet's in_reply_to_tweet_id — the CEO's approve posts
-    it as an actual reply, not a standalone tweet."""
+async def test_approve_posts_barfly_draft_standalone(db_session: AsyncSession) -> None:
+    """An x_barfly draft never threads: X's reply policy 403s programmatic
+    replies into unmentioning conversations, so Barfly ships standalone
+    link-posts — the carried barfly_reply_ref is provenance only."""
     task = await _seed_draft(db_session, source=X_BARFLY_SOURCE)
     markers.set_barfly_reply_ref(
         task,
@@ -529,14 +549,37 @@ async def test_approve_posts_barfly_draft_as_a_reply(db_session: AsyncSession) -
         result = await _svc(db_session).approve(_id(task))
     assert result is not None
     assert result.status == "posted"
-    assert client.reply_targets == ["555"]
+    assert client.reply_targets == [None]
+
+
+@pytest.mark.asyncio
+async def test_approve_threads_x_reply_draft(db_session: AsyncSession) -> None:
+    """An x_reply draft (the mentions poll — the account was 'summoned' by
+    the author, the one case X's reply policy allows) posts as a real
+    threaded reply via the carried mention id."""
+    task = await _seed_draft(db_session, source=X_REPLY_SOURCE)
+    markers.set_x_mention_ref(
+        task,
+        {"id": "777", "author_id": "42", "text": "hey @roboco what do you think?"},
+    )
+    await db_session.flush()
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    assert client.reply_targets == ["777"]
 
 
 @pytest.mark.asyncio
 async def test_approve_plain_x_post_never_passes_a_reply_target(
     db_session: AsyncSession,
 ) -> None:
-    """A non-barfly source never threads in_reply_to_tweet_id — proves the
+    """A non-reply source never threads in_reply_to_tweet_id — proves the
     branch is source-gated, not accidentally always-on."""
     task = await _seed_draft(db_session, source=X_POST_SOURCE)
     client = _StubClient()

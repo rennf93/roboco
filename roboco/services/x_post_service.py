@@ -19,6 +19,7 @@ has actually approved the spotlight, mirroring the
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -32,8 +33,8 @@ from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.notification_delivery import defer_after_commit
 from roboco.services.task import (
-    X_BARFLY_SOURCE,
     X_FEATURE_SOURCE,
+    X_REPLY_SOURCE,
     X_SOURCES,
     get_task_service,
 )
@@ -201,21 +202,19 @@ class XPostService(BaseService):
                 tweet_id=None,
                 detail="No X credentials are configured.",
             )
-        # Pass in_reply_to_tweet_id only when it's actually needed (a
-        # x_barfly draft) — every other source's post_tweet call stays
-        # byte-for-byte identical to before this param existed, so a test
-        # fake carrying the pre-reply-support signature (`post_tweet(self,
-        # text)`) is unaffected.
-        post_kwargs: dict[str, str] = {}
-        if task.source == X_BARFLY_SOURCE:
-            in_reply_to = (markers.get_barfly_reply_ref(task) or {}).get("tweet_id")
-            if in_reply_to:
-                post_kwargs["in_reply_to_tweet_id"] = in_reply_to
-        result = await client.post_tweet(body, **post_kwargs)
+        result = await client.post_tweet(body, **self._reply_kwargs(task))
         if not result.posted:
+            logger.warning(
+                "x post failed for draft %s (source=%s): %s",
+                task.id,
+                task.source,
+                result.detail,
+            )
+            self._audit_outcome(task, posted=False, detail=result.detail)
             return XPostExecuteResult(
                 status="post_failed", tweet_id=None, detail=result.detail
             )
+        self._audit_outcome(task, posted=True, detail=result.tweet_id or "")
         markers.set_x_posted_tweet_id(task, result.tweet_id or "")
         task.status = TaskStatus.COMPLETED
         # Commit while still holding the lock so COMPLETED is durable before
@@ -228,6 +227,37 @@ class XPostService(BaseService):
         return XPostExecuteResult(
             status="posted", tweet_id=result.tweet_id, detail=result.detail
         )
+
+    @staticmethod
+    def _reply_kwargs(task: TaskTable) -> dict[str, str]:
+        """Thread only the "summoned" case X's reply policy allows (2026-02-23:
+        programmatic replies 403 unless the target's author @mentioned the
+        account or it's the account's own thread): a mention reply qualifies
+        by construction. Barfly drafts deliberately do NOT thread — their
+        targets never mention the account, so they ship as standalone
+        link-posts with the conversation URL in the body instead."""
+        if task.source != X_REPLY_SOURCE:
+            return {}
+        in_reply_to = (markers.get_x_mention_ref(task) or {}).get("id")
+        return {"in_reply_to_tweet_id": str(in_reply_to)} if in_reply_to else {}
+
+    def _audit_outcome(self, task: TaskTable, *, posted: bool, detail: str) -> None:
+        """Best-effort audit row per post outcome — both approve routes (panel
+        and Telegram) reach this chokepoint. Success rides `_post`'s own
+        commit; a failure row rides the caller's route-level commit. A row-add
+        failure never affects the post result."""
+        with contextlib.suppress(Exception):
+            from roboco.db.tables import AuditLogTable
+
+            self.session.add(
+                AuditLogTable(
+                    event_type="x_post.posted" if posted else "x_post.post_failed",
+                    target_type="task",
+                    target_id=task.id,
+                    severity="info" if posted else "warning",
+                    details={"source": task.source, "detail": detail[:300]},
+                )
+            )
 
     async def _open_spotlight_video(self, task: TaskTable, posted_body: str) -> None:
         """Mirrors ``ReleaseProposalService._draft_video``: a best-effort side
