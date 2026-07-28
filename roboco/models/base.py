@@ -200,6 +200,13 @@ class ModelProvider(StrEnum):
     API key — the same subscription-style auth shape as GROK. Routes through a
     dedicated provider (roboco.llm.providers.gemini), never
     ANTHROPIC_BASE_URL injection.
+    `KIMI` is Moonshot AI's Kimi K3 via the official `kimi` (kimi-code) CLI,
+    authenticated by a Kimi subscription (OAuth device-code login, mounted
+    `~/.kimi-code/credentials/kimi-code.json`) rather than a metered key — the
+    same subscription-style auth shape as GROK/GEMINI. Routes through a
+    dedicated provider (roboco.llm.providers.kimi.KimiCliProvider), never
+    ANTHROPIC_BASE_URL injection. One-shot delivery roles only — no
+    interactive intake/secretary support.
     """
 
     ANTHROPIC = "anthropic"
@@ -208,6 +215,7 @@ class ModelProvider(StrEnum):
     LOCAL = "local"
     GROK = "grok"
     GEMINI = "gemini"
+    KIMI = "kimi"
 
 
 class AssignmentScope(StrEnum):

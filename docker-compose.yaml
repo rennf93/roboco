@@ -421,6 +421,21 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Kimi Image Builder (Moonshot AI Kimi K3 via the official kimi CLI).
+  # One-shot delivery roles only (V1) — no interactive prompter/secretary
+  # variant exists for Kimi yet, contrast the Grok images above.
+  # ==========================================================================
+  agent-kimi-image:
+    build:
+      context: .
+      dockerfile: docker/agent-kimi.Dockerfile
+    image: roboco-agent-kimi
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Kimi image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Sandbox PG Image Builder (kitchen-sink postgres for parameterized dev DBs)
   # Only pulled by the provisioner when a venture requests pg extensions; bare
   # sandboxes stay on the light upstream postgres image. See
@@ -510,6 +525,14 @@ services:
       # mounts <dir>/oauth_creds.json (read-only) into each Gemini agent. Run
       # `gemini` interactively once on the host to produce it.
       ROBOCO_HOST_GEMINI_DIR: ${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}
+      # Kimi subscription auth (host ~/.kimi-code) for Kimi-CLI agents — the
+      # orchestrator mounts <dir>/credentials/kimi-code.json into each Kimi
+      # agent. Run `kimi login` on the host. Read-WRITE (see the volumes
+      # mount below): unlike gemini's reusable refresh token, Kimi's refresh
+      # is rotation-with-short-reuse-grace, so every container shares this
+      # ONE host chain via a symlinked-in credentials/+oauth/ mount rather
+      # than a per-container copy (kimi follows codex's RW mount mode here).
+      ROBOCO_HOST_KIMI_DIR: ${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so
@@ -735,6 +758,17 @@ services:
       # IN-PROCESS by each agent container's own CLI — never by the
       # orchestrator — so no read-write access is needed here.
       - ${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-/home/renzof/.gemini}:ro
+      # Kimi subscription auth — mount the host ~/.kimi-code at the SAME host
+      # path the orchestrator passes to each Kimi agent's `-v`, so the
+      # credentials/kimi-code.json exists() check passes here AND the agent
+      # bind resolves on the host. Read-WRITE (unlike gemini's RO mount
+      # above): Moonshot's refresh token is rotation-with-short-reuse-grace,
+      # not truly reusable, so every container symlinks credentials/+oauth/
+      # from this ONE shared chain instead of refreshing a private copy —
+      # the CLI's own cross-process lock (oauth/kimi-code.lock) serializes
+      # redemptions. No orchestrator refresh daemon (the CLI refreshes
+      # itself); this mount just needs to be writable so the CLI can.
+      - ${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/vault:/app/vault
@@ -752,6 +786,8 @@ services:
       # Per-agent GEMINI usage capture: each Gemini agent writes usage.json
       # under <agent_id>/; the finalizer reads the captured tokens/cost back here.
       - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
+      # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
+      - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
       # Persistent logs — survive `docker compose down/up`. Orchestrator and
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.

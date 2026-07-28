@@ -35,6 +35,7 @@ export type RoutingMode =
   | "grok"
   | "codex"
   | "gemini"
+  | "kimi"
   | "ollama"
   | "self_hosted"
   | "mix"

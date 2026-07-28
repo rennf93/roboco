@@ -1974,6 +1974,52 @@ class Settings(BaseSettings):
             "override via ROBOCO_GEMINI_AUTH_RETRY_AFTER_SECONDS"
         ),
     )
+    # Host directory holding the Kimi Code CLI's subscription auth (from `kimi
+    # login`, credentials/kimi-code.json), mounted READ-WRITE into each Kimi
+    # agent — every container symlinks onto this one rotating refresh chain —
+    # the parity analogue of ROBOCO_HOST_CODEX_DIR (a real Settings field, not
+    # a raw os.environ read).
+    host_kimi_dir: str = Field(
+        default_factory=lambda: str(Path.home() / ".kimi-code"),
+        description=(
+            "Host directory holding the Kimi Code CLI subscription credential "
+            "(from `kimi login`); mounted read-write into each Kimi agent, "
+            "which symlinks onto its shared refresh chain. "
+            "Override via ROBOCO_HOST_KIMI_DIR"
+        ),
+    )
+    # The kimi CLI model alias passed at spawn (`kimi -p ... -m <alias>`).
+    # Aliases are namespaced under the login-managed "kimi-code" provider —
+    # see roboco.llm.providers.kimi_cli_config for the rendered config.toml.
+    kimi_cli_model: str = Field(
+        default="kimi-code/k3",
+        description=(
+            "Kimi CLI model alias passed to `kimi -p -m`; override via "
+            "ROBOCO_KIMI_CLI_MODEL"
+        ),
+    )
+    # Retry_after tunables for parking the KIMI provider — a real Settings
+    # field (gemini's tunable pattern), not codex's hardcoded module
+    # constants: an operator may want a different cadence for Moonshot's own
+    # 5h request-counted quota window than the flat 60s codex/gemini default.
+    kimi_rate_limit_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "Base retry_after (seconds) when parking the KIMI provider on a "
+            "quota/rate-limit exit; override via "
+            "ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS"
+        ),
+    )
+    kimi_auth_retry_after_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        description=(
+            "retry_after (seconds) when parking the KIMI provider on a "
+            "missing/expired subscription credential (entrypoint preflight "
+            "exit 78); override via ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose

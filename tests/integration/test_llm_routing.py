@@ -67,7 +67,15 @@ async def llm_setup(
         type=ModelProvider.GEMINI,
         enabled=True,
     )
-    db_session.add_all([anthropic, grok, ollama, openai, gemini])
+    # Mirrors migration 091_seed_kimi_provider's contract: enabled=True at
+    # seed time (Codex's shape, not Gemini's disabled-then-flipped one) — no
+    # base_url, subscription auth only.
+    kimi = ProviderConfigTable(
+        name="kimi-test",
+        type=ModelProvider.KIMI,
+        enabled=True,
+    )
+    db_session.add_all([anthropic, grok, ollama, openai, gemini, kimi])
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -233,6 +241,18 @@ async def test_derive_mode_gemini_when_only_gemini_global(llm_setup: dict) -> No
         scope=AssignmentScope.GLOBAL, scope_value=None, model_name=gemini_model
     )
     assert await svc.derive_mode() == "gemini"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_kimi_when_only_kimi_global(llm_setup: dict) -> None:
+    """A pure-KIMI global assignment reports "kimi", not the catch-all
+    "mix" — mirrors the codex/gemini branches derive_mode already carries."""
+    svc = llm_setup["svc"]
+    kimi_model = _first_model_for_type(ModelProvider.KIMI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=kimi_model
+    )
+    assert await svc.derive_mode() == "kimi"
 
 
 @pytest.mark.asyncio
@@ -415,6 +435,40 @@ async def test_apply_mode_gemini_enables_gemini_provider(llm_setup: dict) -> Non
     await svc.apply_mode(mode="gemini")
 
     refetched = await provider_svc.get_provider(cast("UUID", gemini.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_kimi_sets_global(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="kimi")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].provider.type == ModelProvider.KIMI
+    assert assignments[0].model_name == "kimi-code/k3"
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_kimi_enables_kimi_provider(llm_setup: dict) -> None:
+    """apply_mode('kimi') force-enables the KIMI row — belt-and-suspenders
+    against a row disabled by some other path, mirroring the codex/gemini tests."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    kimi = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.KIMI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", kimi.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="kimi")
+
+    refetched = await provider_svc.get_provider(cast("UUID", kimi.id))
     assert refetched is not None
     assert refetched.enabled is True
 
@@ -605,6 +659,78 @@ async def test_upsert_assignment_enables_disabled_gemini_provider(
 
 
 @pytest.mark.asyncio
+async def test_upsert_and_resolve_kimi_assignment_roundtrip(
+    llm_setup: dict,
+) -> None:
+    """kimi-code/k3 through upsert_assignment -> resolve_for_agent, against
+    the seeded KIMI row (migration 091). Proves resolve_for_agent actually
+    returns a KIMI spawn route — not a silent Anthropic fallback."""
+    svc = llm_setup["svc"]
+    kimi_model = _first_model_for_type(ModelProvider.KIMI)
+    row = await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=kimi_model,
+    )
+    assert row.model_name == kimi_model
+
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.provider_type == ModelProvider.KIMI
+    assert route.model_name == kimi_model
+    # The seeded row carries no stored token — Kimi authenticates via the
+    # shared, symlinked-in ~/.kimi-code subscription credential, not a
+    # decrypted token.
+    assert route.auth_token is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_assignment_enables_disabled_kimi_provider(
+    llm_setup: dict,
+) -> None:
+    """Belt-and-suspenders: assigning a Kimi model via Mix (upsert_assignment)
+    force-enables the row even if it was disabled — not just apply_mode('kimi')."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    kimi = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.KIMI
+    )
+    await provider_svc.update_provider(
+        cast("UUID", kimi.id), ProviderUpdate(enabled=False)
+    )
+    await svc.session.flush()
+
+    kimi_model = _first_model_for_type(ModelProvider.KIMI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=kimi_model,
+    )
+
+    refetched = await provider_svc.get_provider(cast("UUID", kimi.id))
+    assert refetched is not None
+    assert refetched.enabled is True
+    # And the route actually resolves to KIMI now that it's enabled.
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.provider_type == ModelProvider.KIMI
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_kimi_end_to_end_reachable(llm_setup: dict) -> None:
+    """The full reachability chain: apply_mode -> derive_mode reflects it ->
+    resolve_for_agent actually spawns Kimi, mirroring the Codex/Gemini tests."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="kimi")
+
+    assert await svc.derive_mode() == "kimi"
+
+    route = await svc.resolve_for_agent("be-dev-1")
+    assert route.provider_type == ModelProvider.KIMI
+    assert route.model_name == "kimi-code/k3"
+
+
+@pytest.mark.asyncio
 async def test_apply_mode_gemini_end_to_end_reachable(llm_setup: dict) -> None:
     """The full reachability chain the original drill missed: apply_mode
     -> derive_mode reflects it -> resolve_for_agent actually spawns Gemini."""
@@ -632,12 +758,12 @@ async def test_apply_mode_codex_end_to_end_reachable(llm_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["codex", "gemini"])
+@pytest.mark.parametrize("mode", ["codex", "gemini", "kimi"])
 @pytest.mark.parametrize("interactive_slug", ["intake-1", "secretary-1"])
 async def test_interactive_agents_exempt_from_delivery_only_global_mode(
     llm_setup: dict, mode: str, interactive_slug: str
 ) -> None:
-    """A fleet-wide Codex/Gemini mode must not capture Intake/Secretary —
+    """A fleet-wide Codex/Gemini/Kimi mode must not capture Intake/Secretary —
     they have no V1 support on those providers, so the resolver keeps them
     on the legacy Anthropic path (the completeness-drill gap: previously
     they resolved to the unsupported provider and the spawn guard left both

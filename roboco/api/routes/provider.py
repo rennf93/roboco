@@ -81,6 +81,12 @@ _PROVIDER_REMEDIATION: dict[ModelProvider, str] = {
         "a key — enable it via the Gemini mode button, or assign a Gemini "
         "model to an agent in Mix mode (both force-enable the row)."
     ),
+    ModelProvider.KIMI: (
+        "Kimi authenticates via a shared, symlinked-in ~/.kimi-code "
+        "subscription credential, not a key — enable it via the Kimi mode "
+        "button, or assign a Kimi model to an agent in Mix mode (both "
+        "force-enable the row)."
+    ),
 }
 
 
