@@ -302,14 +302,15 @@ _INTAKE_WORKSPACE_AMBIENT = (
 # time. Seeded in identity.AGENTS; see roboco/agent_sdk/secretary_main.py.
 SECRETARY_AGENT_ID = "secretary-1"
 
-# Codex (OPENAI) and Gemini (GEMINI) are V1 delivery-roles-only (see
-# roboco.llm.providers.codex / .gemini module docstrings) — neither supports
-# the persistent interactive Intake/Secretary session (no CLI-flag equivalent
-# to grok's --disallowed-tools/deny, no interactive-session driver image).
+# Codex (OPENAI), Gemini (GEMINI), and Kimi (KIMI) are V1 delivery-roles-only
+# (see roboco.llm.providers.codex / .gemini / .kimi module docstrings) —
+# none supports the persistent interactive Intake/Secretary session (no
+# CLI-flag equivalent to grok's --disallowed-tools/deny, no
+# interactive-session driver image).
 # Unlike GROK (which has its own GROK_PROMPTER_IMAGE / GROK_SECRETARY_IMAGE),
-# routing either of these to Intake/Secretary would fall through to the plain
+# routing any of these to Intake/Secretary would fall through to the plain
 # Claude SDK-driver image with a mismatched provider env instead of refusing —
-# so both spawn paths reject it explicitly instead of silently misbehaving.
+# so all three spawn paths reject it explicitly instead of silently misbehaving.
 # Mirrors roboco.services.llm.INTERACTIVE_UNSUPPORTED_PROVIDERS (kept as a
 # literal here to avoid a runtime import cycle; parity is pinned by a test).
 # The resolver exempts interactive agents from GLOBAL/ROLE rows on these
@@ -319,6 +320,7 @@ SECRETARY_AGENT_ID = "secretary-1"
 _INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,
+    ModelProvider.KIMI,
 )
 
 
@@ -499,6 +501,26 @@ _GEMINI_REPARK_EPISODE_GAP_S = 1500.0
 # re-parks flat (no exponential backoff) until an operator fixes it on the
 # host, exactly like grok's own auth-exit park.
 _GEMINI_AUTH_EXIT_CODE = 41
+
+# In-orchestrator path where each KIMI agent's usage capture is visible — the
+# kimi analogue of GEMINI_USAGE_DATA_DIR (see there for the mount shape).
+KIMI_USAGE_DATA_DIR = os.environ.get("ROBOCO_KIMI_USAGE_DIR", "/data/kimi-usage")
+
+# A one-shot Kimi container exits with these SAME codes for the SAME reasons
+# (its entrypoint mirrors the codex/grok exit-code convention — see
+# docker/scripts/kimi-cli-agent-entrypoint.sh): 75 (EX_TEMPFAIL) on a
+# detected Moonshot rate-limit/quota error, 78 (EX_CONFIG) when the
+# kimi_cli_config --check auth preflight finds the symlinked-in subscription
+# credential missing/expired. Numeric reuse is fine — the checks are scoped
+# by provider_type (ModelProvider.KIMI vs .OPENAI/.GROK), never by exit code
+# alone. Flat retry_after (no exponential repark backoff, mirroring codex's
+# simplicity — add backoff bookkeeping if Kimi is observed re-parking in a
+# tight cycle in practice), but the retry_after itself is a tunable Settings
+# field (gemini's pattern), not a hardcoded module constant — Moonshot's
+# request-counted 5h quota window may want a different cadence than the flat
+# 60s codex/gemini default.
+_KIMI_RATE_LIMIT_EXIT_CODE = 75
+_KIMI_AUTH_EXIT_CODE = 78
 
 
 # =============================================================================
@@ -1308,6 +1330,14 @@ class AgentOrchestrator:
         self._gemini_auth_retry_after_s: float = (
             settings.gemini_auth_retry_after_seconds
         )
+        # Configurable retry_after base for KIMI parks (gemini's tunable
+        # pattern, not codex's hardcoded module constants — see
+        # _KIMI_RATE_LIMIT_EXIT_CODE). No repark-backoff bookkeeping (codex's
+        # simplicity): add it if Kimi is observed re-parking in a tight cycle.
+        self._kimi_rate_limit_retry_after_s: float = (
+            settings.kimi_rate_limit_retry_after_seconds
+        )
+        self._kimi_auth_retry_after_s: float = settings.kimi_auth_retry_after_seconds
 
     def _init_engine_loop_task_slots(self) -> None:
         """Task handles for the default-off engine loops. Split out of
@@ -1800,6 +1830,47 @@ class AgentOrchestrator:
         except OSError as exc:
             logger.warning(
                 "could not pre-create gemini usage dir; gemini agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _kimi_usage_root() -> Path:
+        """The base dir all per-agent kimi usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(KIMI_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-kimi-usage"
+
+    @staticmethod
+    def _kimi_usage_dir(agent_id: str) -> Path:
+        """Per-agent kimi usage dir under :meth:`_kimi_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_kimi_usage_dir``) and the finalize read side
+        (``_kimi_usage_json``), mirroring ``_grok_usage_dir``.
+        """
+        return AgentOrchestrator._kimi_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_kimi_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's kimi usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._kimi_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create kimi usage dir; kimi agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
@@ -3129,6 +3200,8 @@ class AgentOrchestrator:
                 # Per-agent gemini usage dir (GEMINI only); same shape as
                 # grok_usage above (see GEMINI_USAGE_DATA_DIR).
                 "gemini_usage": f"{DATA_HOST_PATH}/gemini-usage/{config.agent_id}",
+                # Per-agent kimi usage dir (KIMI only); same shape.
+                "kimi_usage": f"{DATA_HOST_PATH}/kimi-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -3156,6 +3229,9 @@ class AgentOrchestrator:
             ),
             "gemini_usage": str(
                 Path(tempfile.gettempdir()) / "roboco-gemini-usage" / config.agent_id
+            ),
+            "kimi_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-kimi-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3534,15 +3610,18 @@ class AgentOrchestrator:
 
         Only providers that need a runtime other than the built-in Claude Code
         container are registered. Today that is GROK (xAI, OpenAI protocol),
-        OPENAI (Codex CLI, subscription-shaped like GROK), and GEMINI (Google,
+        OPENAI (Codex CLI, subscription-shaped like GROK), GEMINI (Google,
         official CLI, one-shot delivery roles only — see
-        roboco.llm.providers.gemini for the V1 scope).
+        roboco.llm.providers.gemini for the V1 scope), and KIMI (Moonshot,
+        official CLI, one-shot delivery roles only — see
+        roboco.llm.providers.kimi for the V1 scope).
         """
         if self._provider_registry is None:
             from roboco.llm.providers import (
                 CodexCliProvider,
                 GeminiCliProvider,
                 GrokCliProvider,
+                KimiCliProvider,
                 ProviderRegistry,
             )
             from roboco.models.base import ModelProvider
@@ -3566,6 +3645,10 @@ class AgentOrchestrator:
                 GeminiCliProvider(
                     self, image=_qualify_agent_image("roboco-agent-gemini")
                 ),
+            )
+            registry.register(
+                ModelProvider.KIMI,
+                KimiCliProvider(self, image=_qualify_agent_image("roboco-agent-kimi")),
             )
             self._provider_registry = registry
         return self._provider_registry
@@ -6590,6 +6673,15 @@ class AgentOrchestrator:
         """
         return self._read_usage_json_contained(self._gemini_usage_root(), agent_id)
 
+    def _kimi_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a KIMI agent's ``usage.json`` (mirrors ``_codex_usage_json``).
+
+        Written by the kimi-cli entrypoint (one-shot, post-run) to the
+        per-agent dir under ``_kimi_usage_dir``. Returns ``None`` when
+        absent / unreadable.
+        """
+        return self._read_usage_json_contained(self._kimi_usage_root(), agent_id)
+
     def _codex_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
         """An OPENAI agent's token usage from its ``usage.json``.
 
@@ -6626,6 +6718,50 @@ class AgentOrchestrator:
         which has no turn signal at all) — see ``codex_cli_usage``.
         """
         data = self._codex_usage_json(agent_id)
+        if not data:
+            return 0
+        try:
+            return int(data.get("turns", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _kimi_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A KIMI agent's token usage from its ``usage.json``.
+
+        Kimi's ``wire.jsonl`` carries a real, already-disjoint 4-bucket split
+        (see ``kimi_cli_usage``), so this returns the genuine tuple instead of
+        folding everything into output (parity with ``_codex_usage_tokens``).
+        A WARNING logs on a missing/zero read (a silent mount/uid failure is
+        otherwise indistinguishable from a genuine zero-cost run).
+        """
+        data = self._kimi_usage_json(agent_id)
+        tokens = (0, 0, 0, 0)
+        if data:
+            try:
+                tokens = (
+                    int(data.get("tokens_input", 0)),
+                    int(data.get("tokens_output", 0)),
+                    int(data.get("tokens_cache_read", 0)),
+                    int(data.get("tokens_cache_write", 0)),
+                )
+            except (TypeError, ValueError):
+                tokens = (0, 0, 0, 0)
+        if not tokens[0] and not tokens[1]:
+            logger.warning(
+                "KIMI agent finalized with no readable usage "
+                "(0 tokens / $0) — check the sessions dir mount",
+                agent_id=agent_id,
+            )
+        return tokens
+
+    def _kimi_usage_turns(self, agent_id: str) -> int:
+        """A KIMI agent's turn count from its ``usage.json`` (0 if none).
+
+        Kimi's wire.jsonl carries a real per-turn ``usage.record`` count
+        (see ``kimi_cli_usage``), the same parity ``_codex_usage_turns`` has
+        over grok's turn-less usage.json.
+        """
+        data = self._kimi_usage_json(agent_id)
         if not data:
             return 0
         try:
@@ -6735,7 +6871,7 @@ class AgentOrchestrator:
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        For a GROK, OPENAI (codex), or GEMINI agent, reads the captured
+        For a GROK, OPENAI (codex), GEMINI, or KIMI agent, reads the captured
         ``usage.json`` (no SDK server / Claude transcript exists for any of
         them). Otherwise tries the live SDK ``/usage/status`` first; if that
         misses — the SDK's in-memory counts race container teardown for
@@ -6746,13 +6882,28 @@ class AgentOrchestrator:
         from roboco.models.base import ModelProvider
 
         provider = self.get_provider_for_agent(agent_id)
-        if provider == ModelProvider.GROK.value:
-            return self._grok_usage_tokens(agent_id)
-        if provider == ModelProvider.OPENAI.value:
-            return self._codex_usage_tokens(agent_id)
-        if provider == ModelProvider.GEMINI.value:
-            return self._gemini_usage_tokens(agent_id)
+        # One-shot CLIs (no SDK server / Claude transcript) each read their own
+        # captured usage.json — collapsed into a lookup (mirrors
+        # _resolve_active_tokens's usage_json_readers) so a fourth such
+        # provider is one dict entry, not another branch (keeps this
+        # function's xenon budget flat).
+        usage_json_readers = {
+            ModelProvider.GROK.value: self._grok_usage_tokens,
+            ModelProvider.OPENAI.value: self._codex_usage_tokens,
+            ModelProvider.GEMINI.value: self._gemini_usage_tokens,
+            ModelProvider.KIMI.value: self._kimi_usage_tokens,
+        }
+        read_usage_json = usage_json_readers.get(provider) if provider else None
+        if read_usage_json is not None:
+            return read_usage_json(agent_id)
+        return await self._resolve_final_token_usage_from_sdk(agent_id)
 
+    async def _resolve_final_token_usage_from_sdk(
+        self, agent_id: str
+    ) -> tuple[int, int, int, int]:
+        """SDK ``/usage/status`` + Claude-transcript fallback for a Claude-path
+        agent — split out of ``_resolve_final_token_usage`` to keep its own
+        xenon budget flat as one-shot-CLI providers accrete."""
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
@@ -6791,9 +6942,10 @@ class AgentOrchestrator:
         assistant-message count) for short-lived agents whose SDK counts race
         teardown; ``tool_calls`` has no transcript equivalent and stays 0 ("n/a")
         when the SDK misses. Grok and Gemini agents have neither — returns
-        ``(0, 0)``. Codex agents have a real ``turn.completed`` count (from
-        its usage.json) but no tool-call signal — returns ``(turns, 0)``.
-        Best-effort: any failure degrades to zeros, never blocks finalize.
+        ``(0, 0)``. Codex and Kimi agents each have a real per-turn count
+        (from their own usage.json) but no tool-call signal — returns
+        ``(turns, 0)``. Best-effort: any failure degrades to zeros, never
+        blocks finalize.
         """
         from roboco.models.base import ModelProvider
 
@@ -6802,6 +6954,8 @@ class AgentOrchestrator:
             return (0, 0)
         if provider == ModelProvider.OPENAI.value:
             return (self._codex_usage_turns(agent_id), 0)
+        if provider == ModelProvider.KIMI.value:
+            return (self._kimi_usage_turns(agent_id), 0)
 
         turns = tool_calls = 0
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -6990,10 +7144,10 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet. GROK / OPENAI (codex) / GEMINI have no SDK
-        server or Claude transcript, so each routes to its own ``usage.json``
-        — the same early return the finalize path uses, so live
-        USAGE_SNAPSHOT reflects grok/codex/gemini agents mid-run too (in
+        source has any usage yet. GROK / OPENAI (codex) / GEMINI / KIMI have no
+        SDK server or Claude transcript, so each routes to its own
+        ``usage.json`` — the same early return the finalize path uses, so live
+        USAGE_SNAPSHOT reflects grok/codex/gemini/kimi agents mid-run too (in
         practice a one-shot run's usage.json is written only post-run, so
         this is a no-op ``None`` until the run ends).
         """
@@ -7004,12 +7158,13 @@ class AgentOrchestrator:
             else None
         )
         # One-shot CLIs (no SDK server / Claude transcript) each read their own
-        # captured usage.json — collapsed into a lookup so a third such
+        # captured usage.json — collapsed into a lookup so a fourth such
         # provider is one dict entry, not another branch.
         usage_json_readers = {
             ModelProvider.GROK.value: self._grok_usage_tokens,
             ModelProvider.OPENAI.value: self._codex_usage_tokens,
             ModelProvider.GEMINI.value: self._gemini_usage_tokens,
+            ModelProvider.KIMI.value: self._kimi_usage_tokens,
         }
         read_usage_json = usage_json_readers.get(provider) if provider else None
         if read_usage_json is not None:
@@ -8625,11 +8780,12 @@ Start by:
     ) -> bool:
         """Park the agent's provider on a recognized rate-limit/auth exit code.
 
-        Grok, Codex, and Gemini each run a one-shot CLI with no live SDK/usage
-        signal, so a 429-equivalent or missing-credential exit is detected
-        purely from the exit code (see the individual ``_is_*_exit`` checks).
-        Tries each provider's pair in turn; returns True on the first match
-        (having already awaited its ``_park_*`` call), False when none match.
+        Grok, Codex, Gemini, and Kimi each run a one-shot CLI with no live
+        SDK/usage signal, so a 429-equivalent or missing-credential exit is
+        detected purely from the exit code (see the individual ``_is_*_exit``
+        checks). Tries each provider's pair in turn; returns True on the
+        first match (having already awaited its ``_park_*`` call), False
+        when none match.
         """
         checks = (
             (self._is_grok_rate_limit_exit, self._park_grok_rate_limited),
@@ -8638,6 +8794,8 @@ Start by:
             (self._is_codex_auth_exit, self._park_codex_auth_unavailable),
             (self._is_gemini_rate_limit_exit, self._park_gemini_rate_limited),
             (self._is_gemini_auth_exit, self._park_gemini_auth_unavailable),
+            (self._is_kimi_rate_limit_exit, self._park_kimi_rate_limited),
+            (self._is_kimi_auth_exit, self._park_kimi_auth_unavailable),
         )
         for is_exit, park in checks:
             if is_exit(instance, exit_code):
@@ -8658,11 +8816,12 @@ Start by:
         do nothing; non-zero exits keep the existing crash-retry behaviour.
         """
         cid = instance.container_id[:12] if instance.container_id else None
-        # Grok/Codex/Gemini rate-limit + auth-missing parking: each one-shot
-        # CLI mirrors the same "recognized exit code -> park the provider"
-        # shape (see the individual _is_*_exit / _park_* pairs), so a single
-        # dispatch loop replaces what would otherwise be 6 near-identical
-        # early returns (keeps this function's branching flat for PLR0911).
+        # Grok/Codex/Gemini/Kimi rate-limit + auth-missing parking: each
+        # one-shot CLI mirrors the same "recognized exit code -> park the
+        # provider" shape (see the individual _is_*_exit / _park_* pairs), so
+        # a single dispatch loop replaces what would otherwise be 8
+        # near-identical early returns (keeps this function's branching flat
+        # for PLR0911).
         if await self._maybe_park_for_known_exit(agent_id, instance, exit_code):
             return
         graceful = exit_code == 0
@@ -10114,6 +10273,33 @@ Start by:
         )
 
     @staticmethod
+    def _is_kimi_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot kimi container that exited 75 (Moonshot 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _KIMI_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
+    def _is_kimi_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot kimi container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``kimi_cli_config --check`` as a backstop and
+        exits 78 when the symlinked-in subscription credential is missing or
+        expired — see ``_KIMI_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _KIMI_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
     async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
         """Return the last ``lines`` of a container's combined output, '' on error.
 
@@ -10427,6 +10613,49 @@ Start by:
             instance,
             provider=ModelProvider.GEMINI.value,
             retry_after=getattr(self, "_gemini_auth_retry_after_s", 60.0),
+            kind="auth_missing",
+        )
+
+    async def _park_kimi_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a kimi agent whose run hit a Moonshot 429/quota (entrypoint exit 75).
+
+        Flat retry_after (no exponential re-park backoff like grok's/gemini's
+        — see ``_KIMI_RATE_LIMIT_EXIT_CODE``): add the same backoff
+        bookkeeping if Kimi is observed re-parking in a tight cycle in
+        practice. The base itself is a tunable Setting (gemini's pattern),
+        not a hardcoded constant (codex's pattern).
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.KIMI.value,
+            retry_after=getattr(self, "_kimi_rate_limit_retry_after_s", 60.0),
+            kind="rate_limited",
+        )
+
+    async def _park_kimi_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a kimi agent whose credential was missing/expired (entrypoint exit 78).
+
+        Same park-and-probe shape as the codex auth path: the agent cannot
+        start without a valid credential, so crash-retrying burns tokens for
+        zero progress. Unlike codex/grok, no orchestrator-side refresher
+        daemon proactively mints a new token here — D2 resolved Kimi's
+        refresh token as rotation-with-short-reuse-grace over ONE shared RW
+        auth mount (symlinked into every container, not copied — see
+        roboco.llm.providers.kimi), refreshed IN-PROCESS by the CLI itself
+        through its own cross-process lock — so a genuinely bad/missing
+        credential re-parks flat until an operator fixes it on the host
+        (``kimi login``), exactly like gemini's own auth-exit park.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.KIMI.value,
+            retry_after=getattr(self, "_kimi_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
 

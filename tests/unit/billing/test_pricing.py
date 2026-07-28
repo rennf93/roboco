@@ -77,6 +77,23 @@ _GLM_OUTPUT = 4.40
 _GLM_CACHE_READ = 0.26
 _GLM_CACHE_WRITE = 1.40
 
+# Moonshot Kimi — priced non-Anthropic (kimi-code CLI subscription, priced
+# here for cost attribution like grok-build/gpt-5.3-codex).
+_KIMI_K3_INPUT = 3.00
+_KIMI_K3_OUTPUT = 15.00
+_KIMI_K3_CACHE_READ = 0.30
+_KIMI_K3_CACHE_WRITE = 3.00
+
+_KIMI_CODING_INPUT = 0.95
+_KIMI_CODING_OUTPUT = 4.00
+_KIMI_CODING_CACHE_READ = 0.19
+_KIMI_CODING_CACHE_WRITE = 0.95
+
+_KIMI_CODING_HIGHSPEED_INPUT = 1.90
+_KIMI_CODING_HIGHSPEED_OUTPUT = 8.00
+_KIMI_CODING_HIGHSPEED_CACHE_READ = 0.38
+_KIMI_CODING_HIGHSPEED_CACHE_WRITE = 1.90
+
 # Tolerance for floating-point comparisons
 _TOL = 1e-4
 
@@ -396,6 +413,78 @@ class TestCodexTier:
 
 
 # ---------------------------------------------------------------------------
+# Kimi tier (Moonshot — priced non-Anthropic, four login-managed aliases)
+# ---------------------------------------------------------------------------
+
+
+class TestKimiTier:
+    """kimi-code/* pricing — cache_write folds to the input rate, same
+    convention as grok-build/gpt-5.3-codex (no published cache-write discount)."""
+
+    def test_k3_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "kimi-code/k3",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = (
+            _KIMI_K3_INPUT
+            + _KIMI_K3_OUTPUT
+            + _KIMI_K3_CACHE_READ
+            + _KIMI_K3_CACHE_WRITE
+        )
+        assert abs(cost - expected) < _TOL
+
+    def test_k3_256k_prices_the_same_as_k3(self) -> None:
+        # "kimi-code/k3" is a PREFIX of "kimi-code/k3-256k" — longest-fragment
+        # wins in _lookup_prices must resolve the 256k alias to its own entry,
+        # not silently fall through to the bare k3 fragment (same rates here,
+        # but the resolution path is what's under test).
+        cost = calculate_cost("kimi-code/k3-256k", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _KIMI_K3_INPUT) < _TOL
+
+    def test_kimi_for_coding_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "kimi-code/kimi-for-coding",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = (
+            _KIMI_CODING_INPUT
+            + _KIMI_CODING_OUTPUT
+            + _KIMI_CODING_CACHE_READ
+            + _KIMI_CODING_CACHE_WRITE
+        )
+        assert abs(cost - expected) < _TOL
+
+    def test_kimi_for_coding_highspeed_resolves_its_own_longer_fragment(self) -> None:
+        # "kimi-code/kimi-for-coding" is a PREFIX of
+        # "kimi-code/kimi-for-coding-highspeed" — longest-fragment-wins must
+        # resolve the highspeed alias to its OWN (pricier) rate, not the base
+        # coding tier's cheaper one.
+        cost = calculate_cost(
+            "kimi-code/kimi-for-coding-highspeed", tokens_input=_M, tokens_output=0
+        )
+        assert abs(cost - _KIMI_CODING_HIGHSPEED_INPUT) < _TOL
+        assert cost > calculate_cost(
+            "kimi-code/kimi-for-coding", tokens_input=_M, tokens_output=0
+        )
+
+    def test_kimi_is_not_treated_as_anthropic(self) -> None:
+        assert _is_anthropic_model("kimi-code/k3") is False
+        assert calculate_cost("kimi-code/k3", tokens_input=_M, tokens_output=0) > 0.0
+
+    def test_output_is_pricier_than_input(self) -> None:
+        assert _KIMI_K3_OUTPUT > _KIMI_K3_INPUT
+        assert _KIMI_CODING_OUTPUT > _KIMI_CODING_INPUT
+        assert _KIMI_CODING_HIGHSPEED_OUTPUT > _KIMI_CODING_HIGHSPEED_INPUT
+
+
+# ---------------------------------------------------------------------------
 # GLM-5.2 tier (Ollama Cloud — priced non-Anthropic, grounded in a citable
 # published rate; see the module's pricing-table comment for the source).
 # ---------------------------------------------------------------------------
@@ -616,6 +705,12 @@ class TestCostResult:
         result = calculate_cost_result(
             "gpt-5.3-codex", tokens_input=_M, tokens_output=0
         )
+        assert result.cost_usd > 0.0
+        assert result.unpriced is False
+        assert result.is_anthropic is False
+
+    def test_priced_non_anthropic_kimi_is_not_unpriced(self) -> None:
+        result = calculate_cost_result("kimi-code/k3", tokens_input=_M, tokens_output=0)
         assert result.cost_usd > 0.0
         assert result.unpriced is False
         assert result.is_anthropic is False

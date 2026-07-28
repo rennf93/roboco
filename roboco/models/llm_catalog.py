@@ -94,6 +94,22 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "gemini-2.5-flash-lite", ModelProvider.GEMINI, "Gemini 2.5 Flash Lite"
     ),
+    # --- Kimi (Moonshot, official kimi/kimi-code CLI) ---
+    # Routes to the KIMI provider → KimiCliProvider spawn. Subscription auth
+    # (~/.kimi-code, from `kimi login`), no metered API key — parity with
+    # Grok/Codex. Aliases are namespaced under the login-managed "kimi-code"
+    # provider (see roboco.llm.providers.kimi_cli_config); default
+    # (ROBOCO_KIMI_CLI_MODEL) is k3 first, down to the cheaper K2.7 Code tier.
+    CatalogEntry("kimi-code/k3", ModelProvider.KIMI, "Kimi K3"),
+    CatalogEntry("kimi-code/k3-256k", ModelProvider.KIMI, "Kimi K3 (256k)"),
+    CatalogEntry(
+        "kimi-code/kimi-for-coding", ModelProvider.KIMI, "Kimi for Coding (K2.7)"
+    ),
+    CatalogEntry(
+        "kimi-code/kimi-for-coding-highspeed",
+        ModelProvider.KIMI,
+        "Kimi for Coding HighSpeed (K2.7)",
+    ),
 )
 
 

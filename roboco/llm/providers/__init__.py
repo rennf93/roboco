@@ -16,6 +16,10 @@ Backends:
 - :class:`GeminiCliProvider` — Google Gemini via the official ``gemini`` CLI on
   an OAuth login (mounted ``~/.gemini`` auth, one-shot delivery roles only —
   see :mod:`roboco.llm.providers.gemini` for the V1 scope).
+- :class:`KimiCliProvider` — Moonshot AI's Kimi K3 via the official ``kimi``
+  (kimi-code) CLI on a Kimi subscription (mounted ``~/.kimi-code`` auth,
+  one-shot delivery roles only — see :mod:`roboco.llm.providers.kimi` for the
+  V1 scope).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
@@ -23,6 +27,7 @@ from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.llm.providers.codex import CodexCliProvider
 from roboco.llm.providers.gemini import GeminiCliProvider
 from roboco.llm.providers.grok import GrokCliProvider
+from roboco.llm.providers.kimi import KimiCliProvider
 from roboco.llm.providers.registry import ProviderNotRegisteredError, ProviderRegistry
 
 __all__ = [
@@ -31,6 +36,7 @@ __all__ = [
     "CodexCliProvider",
     "GeminiCliProvider",
     "GrokCliProvider",
+    "KimiCliProvider",
     "ProviderError",
     "ProviderNotRegisteredError",
     "ProviderRegistry",

@@ -94,6 +94,21 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("gemini-2.5-pro", 1.25, 10.00, 1.25, 1.25),
     ("gemini-2.5-flash-lite", 0.10, 0.40, 0.10, 0.10),
     ("gemini-2.5-flash", 0.30, 2.50, 0.30, 0.30),
+    # Moonshot Kimi (K3 / K2.7 Code, via the kimi-code CLI subscription) —
+    # priced non-Anthropic, same "attribute at the underlying per-token rate"
+    # convention as grok-build/gpt-5.3-codex above. Rates per Moonshot's
+    # published Kimi Code CLI pricing (CEO-checkout-verified 2026-07-28):
+    # K3 $3.00/1M in, $15.00/1M out, $0.30/1M cache-read; K2.7 Code
+    # $0.95/$4.00/$0.19; K2.7 Code HighSpeed $1.90/$8.00/$0.38. No
+    # cache-write discount is published, so cache_write falls back to the
+    # input rate (same convention as grok-build/gpt-5.3-codex). "kimi-code/k3"
+    # is a prefix of "kimi-code/k3-256k" and "kimi-code/kimi-for-coding" is a
+    # prefix of "kimi-code/kimi-for-coding-highspeed" — longest-fragment-wins
+    # in _lookup_prices disambiguates both pairs correctly.
+    ("kimi-code/k3-256k", 3.00, 15.00, 0.30, 3.00),
+    ("kimi-code/k3", 3.00, 15.00, 0.30, 3.00),
+    ("kimi-code/kimi-for-coding-highspeed", 1.90, 8.00, 0.38, 1.90),
+    ("kimi-code/kimi-for-coding", 0.95, 4.00, 0.19, 0.95),
     # Z.ai GLM-5.2 — priced non-Anthropic. Ollama Cloud's `glm-5.2:cloud` tag
     # (roboco's own ROBOCO_LOCAL_LLM_MODEL default) is billed via flat
     # subscription/GPU-time, not per token, but the same "attribute at the

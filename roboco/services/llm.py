@@ -88,11 +88,13 @@ _COST_TIERED_SEED: tuple[tuple[str, str, str], ...] = ()
 # row. A dict keeps derive_mode's branch count low (a chain of `if` returns
 # hits ruff's PLR0911 the moment a new provider is added, as GEMINI did).
 _SINGLE_GLOBAL_MODE_BY_PROVIDER: dict[
-    ModelProvider, Literal["grok", "codex", "gemini", "ollama", "self_hosted"]
+    ModelProvider,
+    Literal["grok", "codex", "gemini", "kimi", "ollama", "self_hosted"],
 ] = {
     ModelProvider.GROK: "grok",
     ModelProvider.OPENAI: "codex",
     ModelProvider.GEMINI: "gemini",
+    ModelProvider.KIMI: "kimi",
     ModelProvider.OLLAMA_CLOUD: "ollama",
     ModelProvider.LOCAL: "self_hosted",
 }
@@ -158,17 +160,19 @@ class _ResolvedAssignment:
 
 
 # Interactive agents (Intake chat, Secretary chat) have no V1 support on the
-# Codex/Gemini providers. A GLOBAL/ROLE assignment pointing them there (e.g.
-# the one-click Codex/Gemini mode) is treated as not-applicable at resolution
-# time — they fall back to the legacy Anthropic path, so a fleet-wide mode
-# switch always yields working chats. An EXPLICIT AGENT_SLUG pin is honored
-# here and refused loudly by the orchestrator's spawn guard instead — a
-# deliberate operator choice deserves an error, not a silent override. The
-# orchestrator imports these as the single source of truth for that guard.
+# Codex/Gemini/Kimi providers. A GLOBAL/ROLE assignment pointing them there
+# (e.g. the one-click Codex/Gemini mode) is treated as not-applicable at
+# resolution time — they fall back to the legacy Anthropic path, so a
+# fleet-wide mode switch always yields working chats. An EXPLICIT AGENT_SLUG
+# pin is honored here and refused loudly by the orchestrator's spawn guard
+# instead — a deliberate operator choice deserves an error, not a silent
+# override. The orchestrator imports these as the single source of truth for
+# that guard.
 INTERACTIVE_AGENT_SLUGS: tuple[str, ...] = ("intake-1", "secretary-1")
 INTERACTIVE_UNSUPPORTED_PROVIDERS: tuple[ModelProvider, ...] = (
     ModelProvider.OPENAI,
     ModelProvider.GEMINI,
+    ModelProvider.KIMI,
 )
 
 
@@ -447,16 +451,17 @@ class ModelRoutingService(BaseService):
                 provider = await self._get_seeded_provider(entry.provider_type)
                 provider_type_for_log = entry.provider_type
 
-        # Whenever an assignment resolves to LOCAL/GEMINI/OPENAI, ensure the
-        # provider row is enabled so resolve_for_agent() will actually use it
-        # instead of silently falling back to Anthropic. GROK is deliberately
-        # excluded — its enable state is gated on the xAI key
-        # (set_grok_api_key), unlike LOCAL/Codex/Gemini which have no key to
-        # gate on (self-hosted's own base_url + mounted-subscription auth).
+        # Whenever an assignment resolves to LOCAL/GEMINI/OPENAI/KIMI, ensure
+        # the provider row is enabled so resolve_for_agent() will actually use
+        # it instead of silently falling back to Anthropic. GROK is
+        # deliberately excluded — its enable state is gated on the xAI key
+        # (set_grok_api_key), unlike LOCAL/Codex/Gemini/Kimi which have no key
+        # to gate on (self-hosted's own base_url + mounted-subscription auth).
         if provider_type_for_log in (
             ModelProvider.LOCAL,
             ModelProvider.GEMINI,
             ModelProvider.OPENAI,
+            ModelProvider.KIMI,
         ):
             provider_svc = ProviderService(self.session)
             await provider_svc.update_provider(
@@ -489,7 +494,7 @@ class ModelRoutingService(BaseService):
     async def derive_mode(
         self,
     ) -> Literal[
-        "anthropic", "grok", "codex", "gemini", "ollama", "mix", "self_hosted"
+        "anthropic", "grok", "codex", "gemini", "kimi", "ollama", "mix", "self_hosted"
     ]:
         """Return the current "mode" label for the Settings UI.
 
@@ -500,6 +505,7 @@ class ModelRoutingService(BaseService):
           - only a global row, GROK         → "grok"
           - only a global row, OPENAI       → "codex"
           - only a global row, GEMINI       → "gemini"
+          - only a global row, KIMI         → "kimi"
           - anything else                   → "mix"
         """
         assignments = await self.list_assignments()
@@ -643,6 +649,10 @@ class ModelRoutingService(BaseService):
             provider, set the GLOBAL default to a Gemini model (default
             gemini-2.5-pro). No key check — subscription-CLI auth (~/.gemini),
             same shape as Grok/self_hosted.
+          - "kimi":        wipe role/global assignments, force-enable the KIMI
+            provider, set the GLOBAL default to a Kimi model (default
+            kimi-code/k3). No key check — subscription-CLI auth
+            (~/.kimi-code), same shape as Codex/Gemini.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -666,6 +676,8 @@ class ModelRoutingService(BaseService):
             await self._apply_codex(default_model)
         elif mode == "gemini":
             await self._apply_gemini(default_model)
+        elif mode == "kimi":
+            await self._apply_kimi(default_model)
         elif mode == "ollama":
             await self._apply_ollama(default_model)
         elif mode == "self_hosted":
@@ -677,7 +689,7 @@ class ModelRoutingService(BaseService):
         else:
             raise ValueError(
                 f"Unknown mode '{mode}'."
-                " Use 'anthropic', 'grok', 'codex', 'gemini', 'ollama',"
+                " Use 'anthropic', 'grok', 'codex', 'gemini', 'kimi', 'ollama',"
                 " 'self_hosted', 'mix', or 'cost_tiered'."
             )
 
@@ -793,6 +805,32 @@ class ModelRoutingService(BaseService):
             model_name=model_name,
         )
         self.log.info("Mode applied: gemini", default_model=model_name)
+
+    async def _apply_kimi(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Kimi (Moonshot) model.
+
+        Migration 091 already seeds the KIMI provider row `enabled=true`
+        (there's no key to withhold behind a disabled row — subscription
+        auth via a shared, symlinked-in `~/.kimi-code` credential, same posture as
+        Codex), but this mode's own force-enable is belt-and-suspenders
+        against a row disabled by some other path, mirroring `_apply_codex`.
+        AGENT_SLUG pins and complexity overrides are preserved (see
+        `_wipe_mode_switch_assignments`).
+        """
+        await self._wipe_mode_switch_assignments()
+        kimi = await self._get_seeded_provider(ModelProvider.KIMI)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(kimi.id),
+            ProviderUpdate(enabled=True),
+        )
+        model_name = default_model or "kimi-code/k3"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: kimi", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe role/global assignments, set GLOBAL to an Ollama Cloud model.
