@@ -168,10 +168,20 @@ def _hom_voice(product_name: str) -> str:
 
 def _clamp_tweet(text: str) -> str:
     """Collapse whitespace and hard-enforce the 280-char limit."""
+    return _clamp_to(text, MAX_TWEET_CHARS)
+
+
+def _clamp_to(text: str, limit: int) -> str:
     collapsed = " ".join(text.split())
-    if len(collapsed) <= MAX_TWEET_CHARS:
+    if len(collapsed) <= limit:
         return collapsed
-    return collapsed[: MAX_TWEET_CHARS - 1].rstrip() + "…"
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _strip_handles(text: str) -> str:
+    """Drop @-prefixes: X (2026-02-28) rejects @mentions inside plain posts on
+    non-Enterprise API tiers, and Barfly link-posts post plain, not as replies."""
+    return re.sub(r"@(\w)", r"\1", text)
 
 
 def _fallback_release_body(version: str, product_name: str) -> str:
@@ -1233,16 +1243,27 @@ class XEngine(BaseService):
         reply_body: str,
         rationale: str,
     ) -> TaskTable:
-        """Materialize ONE Barfly-authored reply draft through the shared
+        """Materialize ONE Barfly-authored draft through the shared
         ``_originate_post`` chokepoint (source=X_BARFLY_SOURCE) — called once
         per approved-shape item from the ``propose_conversation_replies``
         content verb (N per cycle, unlike ``materialize_feature_spotlight``'s
         single call). Does NOT touch ``exploration_task``'s own status — the
         verb completes the exploration once, after every item in the batch
-        has materialized."""
+        has materialized.
+
+        The draft is a standalone LINK-POST (commentary + the conversation
+        URL), never a threaded reply: X's 2026-02-23 policy 403s programmatic
+        replies into conversations that don't mention the account — Barfly's
+        entire discovery surface. The ``/i/web/status/`` URL form needs no
+        author handle, and handles are stripped from the commentary (plain
+        posts with @mentions are rejected on our tier too)."""
+        link = f"https://x.com/i/web/status/{candidate.get('id')}"
+        commentary = _clamp_to(
+            _strip_handles(reply_body), MAX_TWEET_CHARS - len(link) - 1
+        )
         task = await self._originate_post(
-            title=f"X reply: conversation {candidate.get('id')}",
-            body=_clamp_tweet(reply_body),
+            title=f"X link-post: conversation {candidate.get('id')}",
+            body=f"{commentary} {link}",
             source=X_BARFLY_SOURCE,
             project_id=cast("UUID", exploration_task.project_id),
         )
@@ -1443,6 +1464,7 @@ class XEngine(BaseService):
                 task_id=str(post_task.id),
             )
             return None
+        body = self._restore_barfly_link(post_task, body)
         task = await self._originate_post(
             title=post_task.title or "X post revision",
             body=body,
@@ -1491,6 +1513,23 @@ class XEngine(BaseService):
         actually about. Dict-dispatched, mirroring ``_redraft_identity``."""
         builder = _REDRAFT_CONTEXT_BUILDERS.get(post_task.source)
         return builder(post_task) if builder is not None else ""
+
+    def _restore_barfly_link(self, post_task: TaskTable, body: str) -> str:
+        """A barfly redraft must keep its conversation link — the local
+        model's revision may drop or mangle the URL the link-post exists to
+        carry. Re-append the canonical link (and re-strip handles) whenever
+        it's missing; non-barfly sources pass through untouched."""
+        if post_task.source != X_BARFLY_SOURCE:
+            return body
+        tweet_id = (markers.get_barfly_reply_ref(post_task) or {}).get("tweet_id")
+        if not tweet_id:
+            return body
+        link = f"https://x.com/i/web/status/{tweet_id}"
+        stripped = _strip_handles(body)
+        if link in stripped:
+            return stripped
+        commentary = _clamp_to(stripped, MAX_TWEET_CHARS - len(link) - 1)
+        return f"{commentary} {link}"
 
     def _carry_redraft_markers(self, new_task: TaskTable, post_task: TaskTable) -> None:
         """Copy the rejected draft's source-specific reference marker onto the

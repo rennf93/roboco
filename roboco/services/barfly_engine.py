@@ -73,9 +73,13 @@ def _exploration_description(candidate_count: int) -> str:
         "Review the screened candidate X conversations already gathered for "
         "you on this task — search results where RoboCo is relevant but "
         "unmentioned. Pick up to "
-        f"{candidate_count} worth replying to and draft replies via "
-        "propose_conversation_replies(). Only reply to a REAL candidate "
-        "already on this task — never invent a tweet."
+        f"{candidate_count} worth engaging and draft commentary via "
+        "propose_conversation_replies(). Only target a REAL candidate "
+        "already on this task — never invent a tweet. Each draft posts as a "
+        "STANDALONE post carrying a link to the conversation (X forbids "
+        "programmatic replies into unmentioning threads), so write "
+        "commentary that stands on its own with no @handles — assume the "
+        "reader sees your post first and the linked thread second."
     )
 
 

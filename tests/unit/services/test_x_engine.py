@@ -1214,7 +1214,37 @@ async def test_materialize_barfly_reply_holds_draft_through_originate_post(
     assert ref["author_handle"] == "someone"
     assert ref["rationale"] == "Directly answers their question."
     body = markers.get_x_draft_body(draft)
-    assert body == "That's exactly what request_sandbox() gives you."
+    assert body == (
+        "That's exactly what request_sandbox() gives you. "
+        "https://x.com/i/web/status/111"
+    )
+
+
+@pytest.mark.asyncio
+async def test_materialize_barfly_reply_strips_handles(
+    db_session: AsyncSession,
+) -> None:
+    """Link-posts are plain posts: @handles are stripped (X rejects mentions
+    in plain posts on non-Enterprise tiers)."""
+    await _seed(db_session)
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+
+    class _Exploration:
+        project_id = project.id
+
+    draft = await engine.materialize_barfly_reply(
+        exploration_task=cast("TaskTable", _Exploration()),
+        candidate=_BARFLY_CANDIDATE,
+        reply_body="Great point @someone — @roboco_ai does this.",
+        rationale="whatever",
+    )
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert "@" not in body
+    assert body.endswith("https://x.com/i/web/status/111")
 
 
 @pytest.mark.asyncio
@@ -1426,7 +1456,12 @@ async def test_redraft_from_rejection_barfly_carries_reply_ref(
     ref = markers.get_barfly_reply_ref(redraft)
     assert ref is not None
     assert ref["tweet_id"] == "111"
-    assert markers.get_x_draft_body(redraft) == "A sharper reply."
+    # The redraft re-appends the conversation link the link-post exists to
+    # carry (the revision model was mocked without it).
+    assert (
+        markers.get_x_draft_body(redraft)
+        == "A sharper reply. https://x.com/i/web/status/111"
+    )
 
 
 @pytest.mark.asyncio
