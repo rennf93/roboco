@@ -52,6 +52,11 @@ const {
       provider_type: "gemini",
       display_name: "Gemini 2.5 Pro",
     },
+    {
+      model_name: "kimi-code/k3",
+      provider_type: "kimi",
+      display_name: "Kimi K3",
+    },
   ]),
   getOllamaKey: vi.fn(async () => ({ has_key: false, enabled: true })),
   setOllamaKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -893,6 +898,64 @@ describe("AIRoutingCard", () => {
     });
   });
 
+  describe("Kimi mode button", () => {
+    it("renders the Kimi button and applies mode='kimi' on confirm", async () => {
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      fireEvent.click(screen.getByText("Kimi"));
+
+      await waitFor(() =>
+        expect(applyMode).toHaveBeenCalledWith({ mode: "kimi" }),
+      );
+      confirmSpy.mockRestore();
+    });
+
+    it("is not gated on a key (no key card exists for Kimi)", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Grok (xAI) API key");
+
+      expect(screen.getByText("Kimi").closest("button")).not.toBeDisabled();
+    });
+  });
+
+  describe("Mix picker Kimi group visibility", () => {
+    it("shows the Kimi provider group for a delivery role's per-agent select", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+
+      const beDevRow = mixRowFor("be-dev-1");
+      expect(
+        await within(beDevRow).findByText("Kimi (Moonshot)"),
+      ).toBeInTheDocument();
+    });
+
+    it("excludes Kimi from the Intake/Secretary/PR Review group", async () => {
+      render(withQueryClient(<AIRoutingCard />));
+      await screen.findByText("Per-agent override (mix mode)");
+
+      // Wait for the catalog query to resolve (an unrelated row's groups)
+      // before asserting absence on this group's rows below.
+      await within(mixRowFor("be-dev-1")).findByText("Kimi (Moonshot)");
+
+      const secretaryRow = mixRowFor("secretary-1");
+      expect(
+        within(secretaryRow).queryByText("Kimi (Moonshot)"),
+      ).not.toBeInTheDocument();
+
+      const intakeRow = mixRowFor("intake-1");
+      expect(
+        within(intakeRow).queryByText("Kimi (Moonshot)"),
+      ).not.toBeInTheDocument();
+
+      const prReviewerRow = mixRowFor("pr-reviewer-1");
+      expect(
+        within(prReviewerRow).queryByText("Kimi (Moonshot)"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("Mix picker Codex/Gemini group visibility", () => {
     it("shows Codex and Gemini provider groups for a delivery role's per-agent select", async () => {
       render(withQueryClient(<AIRoutingCard />));
@@ -913,7 +976,7 @@ describe("AIRoutingCard", () => {
       await screen.findByText("Per-agent override (mix mode)");
 
       expect(
-        screen.getByText(/Codex and Gemini are delivery-roles-only/i),
+        screen.getByText(/Codex, Gemini, and Kimi are delivery-roles-only/i),
       ).toBeInTheDocument();
 
       // Wait for the catalog query to resolve (an unrelated row's groups)

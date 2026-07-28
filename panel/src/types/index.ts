@@ -107,6 +107,7 @@ export enum ModelProvider {
   LOCAL = "local",
   GROK = "grok",
   GEMINI = "gemini",
+  KIMI = "kimi",
 }
 
 export enum AssignmentScope {

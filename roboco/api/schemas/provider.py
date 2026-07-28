@@ -191,6 +191,10 @@ class ApplyModeRequest(BaseModel):
     - mode="gemini": clear every assignment; force-enable the GEMINI provider;
       set GLOBAL default to `default_model` (default gemini-2.5-pro). No key
       check — subscription-CLI auth (~/.gemini), same shape as grok.
+    - mode="kimi": clear every assignment; force-enable the KIMI provider;
+      set GLOBAL default to `default_model` (default kimi-code/k3). No key
+      check — subscription-CLI auth (shared, symlinked-in ~/.kimi-code),
+      same shape as codex/gemini.
     - mode="mix": clear existing per-agent pins; upsert the `per_agent`
       map verbatim. Role + GLOBAL rows are left untouched so the user can
       layer with an existing partial setup. Self-hosted model names in

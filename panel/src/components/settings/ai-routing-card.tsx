@@ -46,6 +46,7 @@ import {
   Gem,
   Key,
   KeyRound,
+  Moon,
   Server,
   ShieldCheck,
   Sparkles,
@@ -117,10 +118,11 @@ const AGENT_GROUP_DEFS: {
   },
 ];
 
-// Codex/Gemini are V1 delivery-roles-only — no interactive Intake/Secretary
-// support (see roboco.llm.providers.codex / .gemini). This group's per-agent
-// picker excludes both providers below instead of offering a route that
-// would silently misroute the persistent Intake/Secretary session at spawn.
+// Codex/Gemini/Kimi are V1 delivery-roles-only — no interactive Intake/
+// Secretary support (see roboco.llm.providers.codex / .gemini / .kimi). This
+// group's per-agent picker excludes all three providers below instead of
+// offering a route that would silently misroute the persistent Intake/
+// Secretary session at spawn.
 const INTERACTIVE_ONLY_GROUP_TITLE = "Intake / Secretary / PR Review";
 
 // Stable within-group ordering (PM/lead first, devs, QA, doc, reviewer last)
@@ -296,6 +298,10 @@ export function AIRoutingCard() {
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.GEMINI,
   );
+  const catalogKimiOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.KIMI,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) =>
       c.provider_type === ModelProvider.ANTHROPIC,
@@ -376,6 +382,26 @@ export function AIRoutingCard() {
       await applyMode.mutateAsync({ mode: "gemini" });
       toast.success(
         "Role/global routing now on Gemini — pins/overrides kept, Intake & Secretary stay on Anthropic",
+      );
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToKimi = async () => {
+    if (
+      !confirm(
+        "Switch every agent to Kimi? Per-agent pins and complexity " +
+          "overrides are kept; other role/global assignments are replaced. " +
+          "Intake and Secretary stay on Anthropic (Kimi has no interactive " +
+          "chat support).",
+      )
+    )
+      return;
+    try {
+      await applyMode.mutateAsync({ mode: "kimi" });
+      toast.success(
+        "Role/global routing now on Kimi — pins/overrides kept, Intake & Secretary stay on Anthropic",
       );
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
@@ -720,6 +746,23 @@ export function AIRoutingCard() {
         </SelectGroup>
       )}
 
+      {/* Kimi (Moonshot) models — excluded for the interactive-only group */}
+      {!restrictInteractiveOnly && catalogKimiOnly.length > 0 && (
+        <SelectGroup>
+          <SelectLabel>
+            <ProviderBadge variant="kimi" />
+            Kimi (Moonshot)
+          </SelectLabel>
+          {catalogKimiOnly.map(
+            (c: { model_name: string; display_name: string }) => (
+              <SelectItem key={c.model_name} value={c.model_name}>
+                {c.display_name}
+              </SelectItem>
+            ),
+          )}
+        </SelectGroup>
+      )}
+
       {/* Ollama Cloud models */}
       {catalogOllamaOnly.length > 0 && (
         <SelectGroup>
@@ -773,9 +816,9 @@ export function AIRoutingCard() {
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
-          Cloud use the API keys you save below; Codex and Gemini authenticate
-          via their own mounted CLI subscriptions (no key needed) — V1:
-          delivery roles only, not Intake/Secretary; Self-Hosted connects to
+          Cloud use the API keys you save below; Codex, Gemini, and Kimi
+          authenticate via their own mounted CLI subscriptions (no key needed) —
+          V1: delivery roles only, not Intake/Secretary; Self-Hosted connects to
           any OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
@@ -915,10 +958,10 @@ export function AIRoutingCard() {
 
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
-          <HelpTip label="Anthropic / Grok / Codex / Gemini / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
+          <HelpTip label="Anthropic / Grok / Codex / Gemini / Kimi / Ollama / Self-Hosted replace role/global routing with that provider; per-agent pins in the table below survive the switch. Mix keeps whatever's picked in the table.">
             <Label className="text-sm font-medium">Routing mode</Label>
           </HelpTip>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-9 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -956,6 +999,15 @@ export function AIRoutingCard() {
               onClick={flipToGemini}
               disabled={applyMode.isPending}
               labelHint="Gemini authenticates via a mounted ~/.gemini OAuth login (no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
+            />
+            <ModeButton
+              icon={<Moon className="h-4 w-4" />}
+              label="Kimi"
+              description="Every agent uses Kimi (kimi-code/k3)."
+              active={currentMode === "kimi"}
+              onClick={flipToKimi}
+              disabled={applyMode.isPending}
+              labelHint="Kimi authenticates via a shared, symlinked-in ~/.kimi-code subscription credential (Moonshot, no API key) — always available once the CLI is logged in on the host. V1: delivery roles only, not offered for Intake/Secretary."
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -1040,6 +1092,14 @@ export function AIRoutingCard() {
               Gemini agents run on Google&apos;s official gemini CLI (OAuth
               login, mounted ~/.gemini); the same guards apply. V1: delivery
               roles only — not available for Intake/Secretary.
+            </p>
+          ) : null}
+          {currentMode === "kimi" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Kimi agents run on Moonshot&apos;s official kimi (kimi-code) CLI
+              (subscription auth, shared ~/.kimi-code credential); the same
+              guards apply. V1: delivery roles only — not available for
+              Intake/Secretary.
             </p>
           ) : null}
         </section>
@@ -1237,8 +1297,9 @@ export function AIRoutingCard() {
                     </HelpTip>
                     {restrictInteractiveOnly ? (
                       <p className="mb-2 text-[11px] text-muted-foreground">
-                        Codex and Gemini are delivery-roles-only (V1) — not
-                        offered here (no interactive Intake/Secretary support).
+                        Codex, Gemini, and Kimi are delivery-roles-only (V1) —
+                        not offered here (no interactive Intake/Secretary
+                        support).
                       </p>
                     ) : null}
                     <div className="grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
@@ -1431,6 +1492,7 @@ function ProviderBadge({
     | "grok"
     | "openai"
     | "gemini"
+    | "kimi"
     | "ollama"
     | "self-hosted";
 }) {
@@ -1441,6 +1503,7 @@ function ProviderBadge({
     grok: "bg-teal-500/20 text-teal-700 dark:text-teal-400",
     openai: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
     gemini: "bg-sky-500/20 text-sky-700 dark:text-sky-400",
+    kimi: "bg-amber-500/20 text-amber-700 dark:text-amber-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
@@ -1449,6 +1512,7 @@ function ProviderBadge({
     grok: "G",
     openai: "C",
     gemini: "Ge",
+    kimi: "K",
   };
   return (
     <span

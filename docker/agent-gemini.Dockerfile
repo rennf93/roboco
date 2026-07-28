@@ -17,15 +17,16 @@ FROM roboco-agent-base
 
 USER root
 
-# Install the official Gemini CLI. Pinned — untrusted model output runs under
-# it, so bump the version deliberately, never float (spike verified 0.52.0 at
-# github.com/google-gemini/gemini-cli @ 9681621c). npm installs to the global
-# node_modules the base image's Node 22 already resolves onto PATH.
-ARG GEMINI_CLI_VERSION=0.52.0
-RUN npm install -g "@google/gemini-cli@${GEMINI_CLI_VERSION}" \
+# Install the official Gemini CLI. NO version pin (2026-07-28 policy:
+# latest-at-build, always adapt — fleet-wide across grok/gemini/codex/kimi).
+# npm installs to the global node_modules the base image's Node 22 already
+# resolves onto PATH; the resolved version is stamped to /etc/gemini-cli-version
+# for per-image provenance (a record, not a pin).
+RUN npm install -g @google/gemini-cli \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/* \
-    && gemini --version
+    && command -v gemini \
+    && gemini --version | tee /etc/gemini-cli-version
 
 # Entrypoint: copy the staged OAuth credential into a writable ~/.gemini,
 # render settings.json + policy TOML, then run gemini headless (overrides the
@@ -39,6 +40,7 @@ USER agent
 
 LABEL role="gemini-cli-runtime"
 LABEL description="Gemini (Google) agent runtime — Gemini Build via the official gemini CLI"
+LABEL gemini.cli.pinned="false"
 
 # advanced.autoConfigureMemory=false (rendered into settings.json) pins Node's
 # heap sizing away from auto-detection against a shared host; this bounds it

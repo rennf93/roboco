@@ -17,17 +17,21 @@ USER root
 # Install the official grok CLI (Grok Build) for the agent user. The installer's
 # default is $HOME/.grok/bin, so the binary lands at ~/.grok/bin/grok alongside
 # its runtime (downloads / bundled / skills) under ~/.grok, all agent-owned.
-# Pinned — untrusted model output runs under it, so bump the version deliberately,
-# never float. Download the installer to a file first (a `curl | bash` pipe hides
-# a curl failure as a silent no-op) and verify the binary installed AND runs, so
-# a broken install fails the build here, not at spawn. (curl/bash from the base.)
-ARG GROK_CLI_VERSION=0.2.56
+# NO version pin (2026-07-28 policy: latest-at-build, always adapt — fleet-wide
+# across grok/gemini/codex/kimi). Download the installer to a file first (a
+# `curl | bash` pipe hides a curl failure as a silent no-op) and verify the
+# binary installed AND runs, so a broken install fails the build here, not at
+# spawn; the resolved version is stamped to /etc/grok-cli-version (build-log +
+# on-disk provenance, not a pin — the next build reinstalls whatever's latest).
 RUN su agent -s /bin/bash -c "set -euo pipefail; export HOME=/home/agent; \
       curl -fsSL https://x.ai/cli/install.sh -o /tmp/grok-install.sh; \
-      bash /tmp/grok-install.sh ${GROK_CLI_VERSION}; \
-      test -x /home/agent/.grok/bin/grok; \
-      /home/agent/.grok/bin/grok --version" \
-    && rm -rf /tmp/*
+      bash /tmp/grok-install.sh; \
+      test -x /home/agent/.grok/bin/grok" \
+    && rm -rf /tmp/* \
+    # Provenance stamp runs as root (outside the su subshell — /etc is
+    # root-writable only) with root's HOME; fine while `grok --version`
+    # touches no $HOME-relative state.
+    && /home/agent/.grok/bin/grok --version | tee /etc/grok-cli-version
 
 # Entrypoint: render ~/.grok/config.toml + the per-role flags, then run grok
 # headless (overrides the base image's `claude` entrypoint). ~/.grok is already
@@ -43,5 +47,6 @@ ENV PATH="/home/agent/.grok/bin:/app/.venv/bin:$PATH"
 
 LABEL role="grok-cli-runtime"
 LABEL description="Grok (xAI) agent runtime — Grok Build via the official grok CLI"
+LABEL grok.cli.pinned="false"
 
 ENTRYPOINT ["/app/scripts/grok-cli-agent-entrypoint.sh"]

@@ -1975,14 +1975,16 @@ class Settings(BaseSettings):
         ),
     )
     # Host directory holding the Kimi Code CLI's subscription auth (from `kimi
-    # login`, credentials/kimi-code.json), mounted read-only into each Kimi
-    # agent — the parity analogue of ROBOCO_HOST_CODEX_DIR (a real Settings
-    # field, not a raw os.environ read).
+    # login`, credentials/kimi-code.json), mounted READ-WRITE into each Kimi
+    # agent — every container symlinks onto this one rotating refresh chain —
+    # the parity analogue of ROBOCO_HOST_CODEX_DIR (a real Settings field, not
+    # a raw os.environ read).
     host_kimi_dir: str = Field(
         default_factory=lambda: str(Path.home() / ".kimi-code"),
         description=(
             "Host directory holding the Kimi Code CLI subscription credential "
-            "(from `kimi login`); mounted read-only into each Kimi agent. "
+            "(from `kimi login`); mounted read-write into each Kimi agent, "
+            "which symlinks onto its shared refresh chain. "
             "Override via ROBOCO_HOST_KIMI_DIR"
         ),
     )

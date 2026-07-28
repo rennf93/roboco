@@ -19,17 +19,17 @@ FROM roboco-agent-base
 
 USER root
 
-# Install the official codex CLI globally via npm. Pinned — untrusted model
-# output runs under it, so bump the version deliberately, never float. The
-# npm route (not chatgpt.com/codex/install.sh, which the CDN denies to
-# non-browser clients) has no postinstall network fetch: the native binary
-# rides an optionalDependency (@openai/codex-linux-x64) served from the
-# public npm registry. Global install symlinks `codex` onto PATH for the
-# agent user; verify it runs so a broken install fails the build, not spawn.
-ARG CODEX_CLI_VERSION=0.145.0
-RUN npm install -g @openai/codex@${CODEX_CLI_VERSION} \
+# Install the official codex CLI globally via npm. NO version pin (2026-07-28
+# policy: latest-at-build, always adapt — fleet-wide across grok/gemini/codex/
+# kimi). The npm route (not chatgpt.com/codex/install.sh, which the CDN denies
+# to non-browser clients) has no postinstall network fetch: the native binary
+# rides an optionalDependency (@openai/codex-linux-x64) served from the public
+# npm registry. Global install symlinks `codex` onto PATH for the agent user;
+# verify it runs so a broken install fails the build, not spawn; the resolved
+# version is stamped to /etc/codex-cli-version for per-image provenance.
+RUN npm install -g @openai/codex \
     && command -v codex \
-    && codex --version
+    && codex --version | tee /etc/codex-cli-version
 
 # Entrypoint: render ~/.codex/config.toml + execpolicy rules + the per-role
 # sandbox flag, then run codex headless (overrides the base image's `claude`
@@ -47,5 +47,6 @@ ENV PATH="/home/agent/.codex/bin:/home/agent/.local/bin:/app/.venv/bin:$PATH"
 
 LABEL role="codex-cli-runtime"
 LABEL description="Codex (OpenAI) agent runtime — Codex Build via the official codex CLI"
+LABEL codex.cli.pinned="false"
 
 ENTRYPOINT ["/app/scripts/codex-cli-agent-entrypoint.sh"]
