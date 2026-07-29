@@ -16,22 +16,22 @@ RoboCo is equivalent, superior, or genuinely behind on each.
 **RoboCo surface: the CEO-approval workflow.**
 
 - The single source of truth for the CEO check is `require_ceo_role()` in
-  `roboco/api/deps.py:613` — both the router-level gate and the release
+  `roboco/api/deps.py:627` — both the router-level gate and the release
   handler previously drifted apart on this comparison; they now delegate to
   one function.
-- The lifecycle spec (`roboco/foundation/policy/lifecycle.py:350-361`) encodes
+- The lifecycle spec (`roboco/foundation/policy/lifecycle.py:358-369`) encodes
   `AWAITING_CEO_APPROVAL -> COMPLETED` (`ceo_approve`) and
   `AWAITING_CEO_APPROVAL -> NEEDS_REVISION` (`ceo_reject`) as
   `frozenset({Role.CEO})`-only transitions — no other role can execute either.
-- `POST /api/tasks/{id}/ceo-approve` (`roboco/api/routes/tasks.py:2097-2144`)
+- `POST /api/tasks/{id}/ceo-approve` (`roboco/api/routes/tasks.py:2171-2224`)
   enforces the CEO-only check inline and additionally *requires a substantive
   note* (`_MIN_NOTES_CHARS`, >= 20 chars) recording why the work is approved
   for production — an audit trail Port's announcement doesn't detail at this
   granularity.
-- `POST /api/tasks/{id}/approve-and-merge` (`roboco/api/routes/tasks.py:2185-2254`)
+- `POST /api/tasks/{id}/approve-and-merge` (`roboco/api/routes/tasks.py:2266-2348`)
   is the merge-to-master step itself: CEO-only, requires an existing PR
   (`pr_number`), and calls `GitService.merge_pr_for_task` to squash-merge.
-- `TaskService.ceo_approve()` (`roboco/services/task.py:6193`) additionally
+- `TaskService.ceo_approve()` (`roboco/services/task.py:7256`) additionally
   refuses to approve unless the work session's PR is already `merged` —
   the human sign-off is structurally the last gate before a task can reach
   `completed`.
@@ -50,15 +50,15 @@ machine and API layer, not just presented in a UI.
 
 **RoboCo surface: the in-house RAG/knowledge-base system (`OptimalService`).**
 
-- `OptimalService` (`roboco/services/optimal.py:151`) is a plugin-based
+- `OptimalService` (`roboco/services/optimal.py:158`) is a plugin-based
   architecture over PostgreSQL + pgvector with a registry of indexes
-  (`PLUGIN_REGISTRY`, `roboco/services/optimal.py:137-148`) covering
+  (`PLUGIN_REGISTRY`, `roboco/services/optimal.py:144-155`) covering
   documentation, journals, errors, standards, decisions, reviews, learnings,
   playbooks, and CEO vault notes — i.e. org-specific context accumulated from
   every agent's actual work, not a generic corpus.
-- `OptimalService.search()` (`roboco/services/optimal.py:1212`) embeds a
+- `OptimalService.search()` (`roboco/services/optimal.py:1230`) embeds a
   query once and runs every index's hybrid (vector + keyword) search
-  concurrently; `OptimalService.query()` (`roboco/services/optimal.py:1321`)
+  concurrently; `OptimalService.query()` (`roboco/services/optimal.py:1339`)
   aggregates citations across indexes and synthesizes a single answer.
 - These are exposed to every agent as MCP tools: `roboco_kb_search`
   (`roboco/mcp/optimal_server.py:92`, semantic search) and
@@ -97,8 +97,8 @@ does not.
   every changed definition and raises `Finding`s. A `block`-level finding
   (a model in a router, a suppressed lint/type check) hard-refuses both
   `i_am_done` (`_conventions_gate`,
-  `roboco/services/gateway/choreographer/_impl.py:2245`) and the PR-reviewer's
-  `pr_pass` (`_conventions_guard`, same file, line 2287) — the offending
+  `roboco/services/gateway/choreographer/_impl.py:2498`) and the PR-reviewer's
+  `pr_pass` (`_conventions_guard`, same file, line 2540) — the offending
   `file:line` plus fix hint is returned in the rejection, and a false positive
   can only be cleared by committing an explicit, reviewed waiver.
 
