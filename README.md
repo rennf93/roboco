@@ -56,7 +56,7 @@ CEO (You, the human)
                    └── UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
-The 25 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok (the official `grok` CLI on a SuperGrok subscription) — see the provider note under Configuration.
+The 25 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
 
 ## How it works
 
@@ -113,6 +113,8 @@ roboco/
 You need **Docker** + **Docker Compose** and a Claude Code auth directory on the host (`~/.claude`, mounted into the orchestrator so agents can reach the model). Copy `.env.example` to `.env` and set at least `ROBOCO_ENCRYPTION_KEY` and `ROBOCO_AGENT_AUTH_SECRET` (that file shows how to generate each). However you start it, the whole company is reachable at one origin: **http://localhost:3000**.
 
 **Optional — run agents on xAI Grok instead of Claude.** RoboCo can spawn agents on xAI's official `grok` CLI authenticated by a SuperGrok subscription (no metered API key). Run `grok login` once on the host and point `ROBOCO_HOST_GROK_DIR` at the resulting `~/.grok` so it mounts into Grok agents; the orchestrator keeps the ~6h token refreshed for you. See the Grok block in `.env.example` (`ROBOCO_HOST_GROK_DIR`, `ROBOCO_GROK_AGENT_IMAGE`, `ROBOCO_GROK_CLI_MODEL`, `ROBOCO_GROK_REASONING_EFFORT`).
+
+**Optional — run agents on Moonshot Kimi K3 instead of Claude.** RoboCo can spawn agents on Moonshot's official `kimi` (kimi-code) CLI authenticated by a Kimi subscription (OAuth device-code login, no metered API key). Run `kimi login` once on the host; `ROBOCO_HOST_KIMI_DIR` points at the resulting `~/.kimi-code` (optional — defaults sensibly) and mounts read-write, since every Kimi agent shares the host's one rotating credential chain. See the Kimi block in `.env.example` (`ROBOCO_HOST_KIMI_DIR`, `ROBOCO_KIMI_CLI_MODEL` — default `kimi-code/k3`, `kimi-code/kimi-for-coding` is the cheaper lever).
 
 ### Option 1 — Run the pre-built images (quickest)
 
@@ -303,7 +305,7 @@ uv run mypy roboco/
 | RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (Ollama) |
 | Local LLM | Ollama (glm-5.2:cloud) |
-| Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) |
+| Cloud LLM | Claude API (Anthropic) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) + Moonshot Kimi K3 (official `kimi` CLI, Kimi subscription) |
 | Package Manager | uv |
 
 ## Status
@@ -320,7 +322,7 @@ uv run mypy roboco/
 - [x] RAG/Knowledge base (in-house pgvector engine)
 - [x] Agent orchestrator
 - [x] CEO approval workflow
-- [x] Pluggable agent providers (Claude Code + xAI Grok + OpenAI Codex + Google Gemini, each on its official CLI)
+- [x] Pluggable agent providers (Claude Code + xAI Grok + OpenAI Codex + Google Gemini + Moonshot Kimi K3, each on its official CLI)
 - [x] Inbound PR review (read-only PR-reviewer + CEO supersede/dismiss queue)
 - [x] Self-healing CI loop for RoboCo's own repo (default-off, CEO-gated)
 - [x] Business Goals tab with a live Company Scorecard (delivery, spend-vs-budget, lead time)

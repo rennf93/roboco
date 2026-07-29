@@ -74,6 +74,17 @@ Agents whose provider is `GROK` run xAI's official `grok` CLI. Auth is the host 
 | `ROBOCO_GROK_IDLE_KILL_SECONDS` | `900` | Kill + evict a Grok container that has been ACTIVE-yet-idle (no gateway verb) this long |
 | `ROBOCO_GROK_MAX_COST_USD` | `0.0` | Per-agent Grok cost ceiling (USD); `0` disables |
 
+## Kimi provider (Moonshot AI)
+
+Agents whose provider is `KIMI` run Moonshot AI's official `kimi` (kimi-code) CLI. Auth is the host Kimi subscription (OAuth device-code login via `kimi login`), not a metered API key — the credential dir is mounted read-write and shared across every Kimi agent plus the orchestrator, since Moonshot's refresh token is rotation-with-short-reuse-grace rather than truly reusable.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_HOST_KIMI_DIR` | `~/.kimi-code` | Host dir holding `credentials/`/`oauth/`, mounted read-write and shared across every Kimi agent; the CLI's own cross-process lock serializes token redemptions. Set up once with `kimi login`. |
+| `ROBOCO_KIMI_CLI_MODEL` | `kimi-code/k3` | Kimi CLI model alias; `kimi-code/kimi-for-coding` is the cheaper cost lever |
+| `ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS` | `60` | Park-and-retry delay after a rate-limit/quota sniff (exit 75) |
+| `ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS` | `60` | Park-and-retry delay after a missing/expired credential (exit 78) |
+
 ## Feature flags
 
 Env-gated subsystems. Most are default-off; `ROBOCO_OVERLOAD_BREAK_ENABLED`, `ROBOCO_RESEARCH_ENABLED`, and `ROBOCO_PROVISIONING_ENABLED` ship default-**on**. Each takes effect on the next backend restart; the panel's Settings → Feature Flags card toggles the panel-exposed ones (`roboco/services/settings.py`'s `FEATURE_FLAGS`) without hand-editing env — a few security/topology flags below are env-only by design and are called out as such.
