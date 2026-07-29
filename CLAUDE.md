@@ -39,52 +39,6 @@ CEO (Renzo - Human)
 - **UGREEN NAS (Warehouse)**: 36TB RAID6, 128GB RAM, hosts PostgreSQL, Redis
 - **Pi Cluster (Operations)**: Monitoring, notifications, smart home
 
-## Development Standards
-
-### Python (Backend)
-```bash
-# Package manager
-uv
-
-# Before any commit
-uv run ruff format .
-uv run ruff check .
-uv run mypy roboco/
-uv run pytest
-
-# Coverage target: 80%
-```
-
-### TypeScript (Frontend)
-```bash
-# Package manager
-pnpm
-
-# Before any commit
-pnpm format
-pnpm lint
-pnpm typecheck
-pnpm test
-
-# Coverage target: 80%
-```
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|------------|
-| API Framework | FastAPI |
-| Database | PostgreSQL + asyncpg |
-| Vector Store | PostgreSQL + pgvector (in-house engine) |
-| RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
-| Cache/Queue | Redis |
-| Container Runtime | Docker + Docker Compose |
-| Cloud LLM | Claude API (claude-opus-5) + xAI Grok (official `grok` CLI, SuperGrok subscription) + OpenAI (official `codex` CLI, ChatGPT subscription) + Google Gemini (official `gemini` CLI, OAuth login) + Moonshot Kimi K3 (official `kimi` CLI, Kimi subscription) |
-| Local LLM | Ollama (glm-5.2:cloud for RAG/hybrid retrieval) |
-| Embeddings | qwen3-embedding:0.6b (1024 dim) |
-| Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |
-| Edge / Proxy | nginx (single entry point on port 3000) |
-
 ## Multi-Agent Workspace Structure
 
 Each agent gets their own git clone of a project, enabling parallel development without conflicts:
@@ -202,21 +156,6 @@ The REST surface (PRs, CI status, reviews, labels, releases) is provider-routed 
 
 The complete task lifecycle is defined in `roboco/foundation/policy/lifecycle.py` (`roboco/enforcement/task_lifecycle.py` is a backwards-compat shim over it):
 
-```
-backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
-                                     |                                  |
-                                     v                                  v
-                                 awaiting_qa <------------------+   awaiting_documentation
-                                     |         (needs_revision) |           |
-                                     v                          |           v
-                                 awaiting_documentation --------+   awaiting_pm_review
-                                     |                                      |
-                                     v                                      v
-                                 awaiting_pm_review             awaiting_ceo_approval
-                                     |                                      |
-                                     v                                      v
-                                 completed                              completed
-```
 
 **In-path PR-review gate** (`awaiting_pr_review`): each assembled PR is reviewed before the PM merges. The cell PM's `submit_up` opens the cell→root PR and the Main PM's `submit_root` opens the root→master PR; both enter `awaiting_pr_review`, where a reviewer `pr_pass`es it on to `awaiting_pm_review` or `pr_fail`s it back to `needs_revision` — the merge-level reject the PM otherwise lacks. Leaf dev tasks and branchless coordination roots skip the gate. `pr_pass` additionally refuses while the assembled PR's own CI (its head commit's checks, `GitService.get_pr_ci_status`) is failing, pending, or unresolvable — a repo with no CI configured passes through with an evidence note; `pr_fail` stays available regardless so a reviewer is never stuck waiting on CI. The reviewer prompt requires a per-AC `file:line` walk (a silently dropped deliverable is an automatic fail) and the gate's diff/conventions base resolves the task's REAL parent branch (`resolve_parent_branch`, the parent task's own `branch_name`) instead of deriving it from the branch-name string, so a cross-team hop (e.g. cell→root) no longer attributes inherited base-branch content to the task under review.
 
@@ -231,25 +170,6 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 Resolution: `i_am_done`/`submit_up`/`submit_root` all gain `resolved_findings` (`{finding_id, commit?, note?}`), gated by a new `Requirement.FINDINGS_ADDRESSED` — every OPEN finding on the task must be named (a fuzzy 8-char-prefix match against `[F-id8]`) or the envelope rejects, listing the still-open ids. `pass_review`/`pr_pass`/`complete` bulk-verify their own origin's `addressed` findings same-transaction (a stamp failure fails the verb outright, not best-effort); `ceo_approve` stamps `ceo`-origin best-effort. `mark_waived` is wired to the auditor-only `waive_finding` flow verb (severity-scoped: blocker/major must be fixed, never waived; only minor/nit open findings are waivable, with a required note and a `task.finding_waived` audit event; no task status change).
 
 Delivery: `evidence()`/`build_task_handoff` carry `revision_findings` (open only, capped) so a bounced dev finally gets what `developer.md` promises instead of nothing; `claim_review`/`claim_gate_review` additionally carry `prior_findings` (the full ledger) so a round-2+ reviewer checks prior findings instead of re-deriving them blind. The orchestrator's `REVISION_REQUIRED` dev prompt and the PM triage "bounced" block render open findings inline with the same rendering; A2A fail bodies share it. `GET /api/tasks/{id}/findings` (capped 500, SQL-aggregated per-origin/status summary + `total`/`truncated`) backs the panel's task-detail Findings tab and a `bounced xN` header chip (`revision_count`); metrics attribute `pm_rejects`/`ceo_rejects` + open/total findings counts per task; vault task notes render a capped `## Findings` section (fail-open fetch, never blocks the note write).
-
-**States:**
-| State | Description |
-|-------|-------------|
-| `backlog` | PM setup phase - dependencies or session setup needed |
-| `pending` | Ready for work - orchestrator can spawn agents |
-| `claimed` | Agent has locked the task |
-| `in_progress` | Active development |
-| `blocked` | External dependency blocking progress |
-| `paused` | Temporarily stopped (can resume) |
-| `verifying` | Self-verification by developer |
-| `needs_revision` | QA or CEO requested changes |
-| `awaiting_qa` | Submitted for QA review — PR must already exist |
-| `awaiting_documentation` | Documentation phase — PR already open from pre-QA; doc writes docs |
-| `awaiting_pr_review` | In-path PR-review gate: a reviewer checks the assembled cell→root / root→master PR before the PM merges (assembled, PR-bearing tasks only) |
-| `awaiting_pm_review` | Docs complete, PM reviews + merges |
-| `awaiting_ceo_approval` | Major tasks escalated for CEO final approval |
-| `completed` | Terminal state - work done and merged |
-| `cancelled` | Terminal state - work cancelled |
 
 ### Role-Based Transitions
 
@@ -426,13 +346,13 @@ Agent backends are pluggable. `roboco/llm/providers/` defines an `AgentProvider`
 
 **RoboCo X account (default-off).** The Head-of-Marketing voice on X (Twitter): drafts a post when a release publishes, drafts replies to meaningful mentions, and — a third, independent capability — periodically investigates RoboCo's own shipped features and drafts a spotlight for an under-publicized one. NOTHING auto-posts across any of the three; every tweet is held in a panel queue for the CEO to edit/approve. Gated by `ROBOCO_X_ENGINE_ENABLED` (+ `_MENTIONS_INTERVAL_SECONDS` / `_MENTIONS_MAX_PER_CYCLE` / `_MENTIONS_MIN_ENGAGEMENT` / `_MAX_OPEN_POSTS` / `X_ACCOUNT_USER_ID`); inert without credentials regardless. Mirrors the `ReleaseManagerEngine` held-artifact shape: `XEngine` (`roboco/services/x_engine.py`) originates a held task (`source` `x_post` / `x_reply` / `x_feature`, `confirmed_by_human=False`, Secretary-owned, skipped by every dispatcher) whose marker payload carries a body clamped to 280 chars. Release posts hook `ReleaseProposalService.approve`'s publish-success branch via a small `draft_release_post` seam; mentions ride a dedicated `_x_mentions_poll_loop` (no webhook infra exists) deduped by a `x_seen_mentions` ledger + per-cycle/open caps — both are **local-model-drafted** (never a cloud LLM in the hot path). The spotlight half is the one exception to "no agent spawn": gated by its own sub-switch `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED` (+ `_INTERVAL_SECONDS`, default 3 days) on top of `x_engine_enabled` — now also the `x_feature` entry in the Board Program registry (see "Board Program registry" below), armed through the same `program_armed` chokepoint with these two flags as its legacy alias, migrated behavior-identical — `_x_feature_spotlight_loop` opens a held PENDING exploration task (`source=x_feature_exploration`, team=Board, assigned to Head of Marketing, carrying a `x_seen_features` dedup-ledger snapshot marker) that `_dispatch_pm_work` routes (mirroring `ROADMAP_SOURCE`) to a one-shot real cloud-LLM spawn of the Head of Marketing — full read tools, investigates CHANGELOG.md/feature-flags/docs/map/charter/KB, calls the Head-of-Marketing-only `propose_feature_spotlight` do-tool exactly once, which marks the feature slug seen (`x_seen_features` table, migration 061) and materializes a brand-new `source=x_feature` held draft (completing the exploration task as a side effect — a deliberate asymmetry from `propose_roadmap`, which instead leaves its own task open). The four OAuth 1.0a secrets live Fernet-encrypted in a singleton `x_credentials` row (migration 059, all-or-nothing set/clear, mirroring the git-token pattern; the API only ever returns `has_credentials`) — decryption is server-side only, agents never hold creds or egress. `XPostService.approve` (CEO-only route) is the ONLY caller of `x_client.post_tweet`: it posts under a Redis single-flight lock, **re-reads the committed task state inside the lock and commits COMPLETED before releasing** so a concurrent approve can't double-post, and is idempotent (an already-posted draft is a no-op). The hand-rolled OAuth 1.0a HMAC-SHA1 signer (`roboco/services/x_client.py`) adds no dependency; a `NullXClient` makes the unconfigured path a graceful no-op (research-engine posture). All three draft kinds share one voice: `XEngine._voice_guide` reads the CEO-editable `company_goals.brand_voice` charter field (migration 061, panel-editable in Business → Goals) and appends it to a generic baseline (`_HOM_VOICE`) — the baseline alone until the CEO supplies a real sample. Panel: `x-post-queue.tsx` (editable draft + 280 counter, approve/reject, a `sourceMeta`-driven label/icon per source including "Feature spotlight") + `x-credentials-card.tsx` (4 write-only secret inputs).
 
-**RoboCo video engine (default-off).** Bespoke motion-graphics videos (release announcements, feature spotlights, on-demand CEO briefs) authored by a UX/UI dev and distributed to X/TikTok — nothing renders or posts without the flags on, and nothing posts without an explicit CEO approval. Gated by `ROBOCO_VIDEO_ENGINE_ENABLED` (+ sub-switches `ROBOCO_VIDEO_ON_RELEASE` / `ROBOCO_VIDEO_ON_SPOTLIGHT`, and `_MAX_OPEN_POSTS` / `_RENDER_INTERVAL_SECONDS` / `_RENDER_TIMEOUT_SECONDS` / `_REQUEST_TIMEOUT_SECONDS` / `_OUTPUT_DIR`); a CEO on-demand brief rides `POST /video/request` regardless of the release/spotlight sub-switches. A project opts in via `projects.video_engine_enabled` (migration 063, mirroring `ci_watch_enabled`): the global flag arms the subsystem, the per-project flag opts a repo into authoring against its `motion/` — `VideoEngine._opted_in_project` no-ops `open_video_task` until the operator flips it on the project settings page's budget/ops card (Wave C — was the edit-project dialog). Two task kinds mirror the XEngine/ReleaseManagerEngine "originate a CEO-scoped artifact" shape but split across the real delivery lifecycle: `VideoEngine.open_video_task` (`roboco/services/video_engine.py`) opens a normal, ASSIGNED **authoring task** (`source=video`, `confirmed_by_human=True`, team=UX/UI, balanced across `ux-dev-1`/`ux-dev-2` by open-task count) that dispatches like any other pre-assigned code task — NOT held, NOT in any dispatcher's skip bucket. The assigned dev builds a HyperFrames HTML composition under `motion/compositions/<id>/` and calls the UX/UI-team-gated `propose_video` do-tool (metadata-only: composition id, input props, per-platform captions — every developer role carries the tool on their manifest, but the runtime `_caller_team` check rejects a be-dev/fe-dev) to stamp the task's `video_draft` marker, then commits + `open_pr` through the normal PR-review gate. Once that authoring task reaches `completed`, the orchestrator's `_video_render_loop` (bounded retry, `_MAX_VIDEO_RENDER_ATTEMPTS`) tars the merged `motion/` dir from the project's read-clone and POSTs it to the credential-free **video-renderer sidecar** (`VideoRenderer` in `roboco/services/video_renderer_client.py`, `ROBOCO_VIDEO_RENDERER_BASE_URL`) to render both the 9:16 and 1:1 cuts to MP4 (`video_output_dir`); on success `VideoEngine._originate_video_post` materializes a held **video-post draft** (`source=video_post`, `confirmed_by_human=False`, Secretary-owned, skipped by every dispatcher) carrying `mp4_paths` (`{vertical, square}` absolute paths) + the per-platform captions. The CEO reviews it in the panel's video queue (`video-post-queue.tsx`; `GET /video/posts` lists drafts including `mp4_paths` so the panel knows which cuts exist, `GET /video/posts/{id}/media?cut=vertical|square` streams the MP4 bytes for the preview player, CEO-gated throughout) and edits captions / approves / rejects. `VideoPostService.approve` (`roboco/services/video_post_service.py`) is the ONLY caller of the X-v2 (`XVideoPoster` in `x_video_client.py`) and TikTok inbox-upload (`TikTokPoster` in `tiktok_client.py`) posters; because a video upload + transcode/poll can run well past a minute, the critical section runs under a heartbeat-renewed Redis mutex (`heartbeat_mutex.py`, mirroring `ReleaseProposalService`'s release-execute lock shape) rather than a flat lock, commits each platform's posted-id durably before attempting the next (a partial failure never re-posts an already-succeeded platform on retry), and is idempotent (an already-`COMPLETED` draft returns the stored ids without calling a poster again). TikTok's four OAuth2 secrets live Fernet-encrypted in a singleton `tiktok_credentials` row (mirroring the git-token / `x_credentials` pattern; the API only ever returns `has_credentials`) — set via the panel's TikTok credentials card. `NullVideoRenderer` / `NullXVideoPoster` / `NullTikTokPoster` make every unconfigured leg a graceful no-op rather than a crash. **Artifact verification (2026-07-16):** authoring is gated on the RENDERED clip, not its source — the `request_render` do-verb (developer/QA, mirroring `request_sandbox`'s shape) renders the caller's actual composition via the sidecar's new frames mode (`POST /render` with `frames=N` → ffprobe'd duration + N midpoint-sampled PNGs, tar.gz back) and extracts them to the container-shared `{workspaces_root}/{project}/.previews/{task8}/{orientation}/`; the dev renders their own working tree (worktree-aware, `head_sha`/`dirty` provenance), QA a read-only `git archive` export of the assembled branch (`WorkspaceService.export_branch_motion` — the read clone's pinned HEAD undisturbed). Success stamps the `render_preview` marker; `i_am_done` on a `source=video` task refuses without it (`Requirement.RENDER_VERIFIED` in the tracing gate, mirrored in the possibilities-matrix fast path — the canonical source string lives in foundation as `markers.VIDEO_TASK_SOURCE`), the dev spawn prompt orders Read-every-frame verification, and QA's `claim_review` evidence carries a `video_context` block so the reviewer checks output, not source. A CEO reject of a held video-post draft with a non-empty reason now also re-enters the flow: `VideoPostService.reject` → `VideoEngine.reauthor_from_rejection` opens a fresh authoring task carrying the verbatim feedback + a revise-in-place pointer at the existing composition (best-effort, never fails the reject).
+**RoboCo video engine (default-off).** Full subsystem doctrine: `.claude/rules/video-engine.md` (auto-loads when working under this subsystem's files).
 
 **Board Program registry (per-program default-off).** Twelve new programs plus the two pre-existing origination cycles (`roadmap`/Printer, `x_feature`/spotlight — migrated onto the registry byte-for-byte, their own flags kept working as legacy aliases) all now ride one generic engine instead of bespoke per-engine loops. `BoardProgram` (`roboco/foundation/policy/board_programs.py`) is a frozen registry entry — `key`, `role` (the solo explorer), `trigger` (`cron`/`metric`/`event`), `source` (the exploration task's `tasks.source` marker), `default_interval_seconds`, `max_items_per_cycle`, `scope` (`project`/`org`) — for all fourteen entries in `PROGRAMS`. `BoardProgramEngine` (`roboco/services/board_programs.py`) runs the uniform lifecycle TRIGGER → EXPLORE → PROPOSE → DECIDE → MATERIALIZE → LEARN: the orchestrator's `_board_program_loop` ticks `run_due_programs` on a floor interval (the shortest registered cadence, clamped 300s-3600s), which for each enabled CRON program checks the `board_program_cycles` dedup ledger (migration 087 — one row per cycle, auto-closes when its exploration task goes terminal) and `program_due`, then originates via a per-program `_ORIGINATORS` callable (each program's own engine's `run_cycle`) and records the cycle row; `open_program_cycle` is the same path minus the cron-due check, used by the CEO's panel "run now" and by event/metric triggers. **Arming has no master flag**: `program_armed` (the single chokepoint every origination path routes through) reads a per-program settings-store row (`board_program.{key}.enabled`) falling back to the legacy boot flag only for `roadmap`/`x_feature` — every new program is settings-store-only, defaulting OFF until the CEO flips its toggle. **Scope + dual polarity**: `projects.board_programs` (migration 088, nullable jsonb) — a `scope="project"` program (it reads one repo: Pest Control, Spackle, Dogfood, Mirror) needs an affirmative per-project opt-in (`"pest_control"`; null/absent = out) before a cycle even opens (`_scope_gate`); a `scope="org"` program (it reads the org's process/market: Printer, Scales, Periscope, Megaphone, Barfly, War Room, Coroner, Librarian, Sentinel, x_feature) runs org-wide by default and is excluded per-project only by the opposite-polarity `"!key"` entry — one pure helper, `project_participates`, implements both. Panel: the project settings page's budget/ops card exposes both forms as checkboxes. **LEARN**: `BoardProgramEngine.record_decision` accrues each CEO approve/reject onto the cycle row's `decisions` jsonb; `prior_cycle_context` renders the last two closed cycles ("proposed N, approved N; rejected: X — reason") back into the next cycle's exploration prompt, closing the amnesia the old roadmap/spotlight engines had. Dispatchers skip every program source (`_is_non_dev_dispatch_source` / `_dispatch_board_program_exploration`'s dict-dispatch table) exactly like `board_roadmap` before; every exploration is a solo one-shot spawn reusing the `_board_dispatched` tracker + respawn breaker, bypassing the two-reviewer board-review gate. Panel: the Board Programs page (Business section, `board-programs-card.tsx` → `GET /api/board-programs`, `POST /api/board-programs/{key}/run-now`, CEO-only) lists every entry's live enablement/cadence/last-cycle summary/opted-in projects with a toggle and a "run now" button.
 
 The fourteen programs: **Printer**/`roadmap` (PO, weekly cron, org) — the pre-existing roadmap cycle, now LEARN-fed and Periscope-briefed; `propose_roadmap` → backlog tasks. **Pest Control**/`pest_control` (PO, weekly cron + a rework-rate-spike metric accelerator, project-scoped) — hunts latent bugs in the findings ledger/rework hotspots/`ponytail:` debt; `propose_bug_hunt` (evidence-required) → ≤5 backlog tasks. **Spackle**/`spackle` (PO, biweekly cron, project-scoped) — audits half-shipped surface area (routes with no panel, flags with no docs); `propose_gap_fill` → ≤5 backlog tasks. **Scales**/`scales` (PO, monthly cron, org) — reviews the live backlog against the charter; `propose_rebalance` → a held per-item plan whose approval MUTATES the live task in place (reprioritize or cancel), never creates one. **Dogfood**/`dogfood` (PO, event — release-publish hook or CEO run-now, project-scoped) — walks the product as a user; the one program whose spawn also mounts the Playwright MCP, task-scoped via `AgentOrchestrator._is_dogfood_spawn` (not a role-wide grant); `propose_friction_fixes` (walked-path evidence required) → ≤5 backlog tasks. **Periscope**/`periscope` (HoM, weekly cron, org) — market/competitor research with mandatory `source_url` citations; `propose_market_brief` → a held `ceo_report`, no task, and feeds forward into Printer's prompt. **Megaphone**/`megaphone` (HoM, 3-day cron, org) — the standing editorial calendar off shipped-task/CHANGELOG digests; `propose_editorial_post` → the existing X held-draft queue. **Mirror**/`mirror` (HoM, quarterly cron, project-scoped) — audits README/docs-site/website messaging against shipped reality; `propose_messaging_fixes` → ≤5 backlog docs tasks. **Barfly**/`barfly` (HoM, 2-day cron, org) — engages adjacent X conversations from a screened candidate list (`injection_guard.screen_external_text`, candidate-id-bound so a draft can't target an invented tweet); `propose_conversation_replies` → held X drafts, materialized as **standalone link-posts** (commentary + the conversation's `/i/web/status/` URL, @handles stripped) — never threaded replies, since X's 2026-02-23 policy 403s programmatic replies into conversations that don't @mention the account on every non-Enterprise API tier (the same policy the mentions-poll `x_reply` drafts DO satisfy — they thread via `in_reply_to_tweet_id`; note a URL-bearing post costs $0.20 vs $0.015 on pay-per-use). Every post outcome (posted / post_failed) writes an `x_post.*` audit row at the `XPostService._post` chokepoint. **War Room**/`war_room` (HoM, event — release-publish hook `WarRoomEngine.open_for_release` or CEO run-now, org) — plans a 2-6 post campaign with strictly-ascending `publish_after` timestamps (guidance only, nothing auto-schedules); `propose_campaign` → held X drafts as one batch. **Coroner**/`coroner` (Auditor, event only — task bounced `revision_count>=3`, cancelled after work started, or budget-blocked, wired at `TaskService`'s bounce/cancel chokepoints + the orchestrator's budget-block path, org) — one autopsy at a time, no cron; `propose_postmortem` (`process_change.kind` one of `playbook`/`prompt_fix`/`conventions_rule`/`other`) → a held process-change item, or drafts straight into the pending-playbook queue when `kind='playbook'`. **Librarian**/`librarian` (Auditor, biweekly cron, org) — mines journals/learnings for undrafted repeated patterns; `propose_playbook_drafts` (the Auditor's one exception to "curates but doesn't draft") → 1-3 real DRAFT playbooks via `PlaybookService` directly, landing in the same curation queue a later Auditor spawn reviews. **Sentinel**/`sentinel` (Auditor, weekly cron, org) — waiver/findings/conventions/budget drift watch; `propose_quality_report` → a held `ceo_report`, no task. **Feature spotlight**/`x_feature` (HoM — unchanged, see "RoboCo X account" below). Every artifact is HELD; the CEO is the only path to materialization — nothing auto-starts, auto-posts, or auto-merges.
 
-**Obsidian vault V1+V2 (default-off).** The org's human-readable memory palace as a rebuildable DB projection — tasks, journals, and A2A digests as wikilinked markdown — gated by `ROBOCO_OBSIDIAN_VAULT_ENABLED` + `ROBOCO_VAULT_PATH` (default off, but both compose files arm it `true`). `VaultWriter` (`roboco/services/vault_writer.py`) is a pure, DB-free materializer under `RoboCo/{Tasks/<project-slug>,Journals/<agent-slug>,A2A,Agents,Archive/<year>/Tasks/<project-slug>,Reports}/`; every note carries a stable `aliases: [<id8>]` so a title rename (or an archival move) never breaks a `[[id8|title]]` cross-link, and private journals are excluded. Four best-effort event seams (`TaskService.create`'s materialize-on-create, `TaskService`'s status-transition frontmatter touch, `JournalService`, `A2AService`) patch/append on the relevant transition — a vault write failure never blocks the real action; materialize-on-create means a task's note exists from the moment it's created, not just at curation/rebuild. `python -m roboco.vault rebuild` re-projects every entity from the DB (preserving an existing task's Auditor-authored `## Narrative`, archive-aware so an old terminal task lands directly in `Archive/<year>/`) and materializes the shipped `.obsidian/` config (Dataview, Kanban, graph groups) + `RoboCo/_meta/` dashboards + `.base` Bases views from `roboco/vault_assets/`; `relocate <path>` moves the tree, grafting `RoboCo/` into an existing personal vault without touching its own config. The Auditor gets a one-shot `curate_vault(task_id, narrative)` do-tool, spawned by the orchestrator on each completed root task, writing the `## Narrative` section a deterministic write otherwise leaves as a placeholder. A second, independently-gated `ROBOCO_VAULT_INTAKE_ENABLED` watcher (`VaultIntakeEngine`) turns `#roboco`-tagged notes under the vault's inbox folder into PENDING, Product-Owner-assigned board-review drafts (`source=vault_note`) — the identical board-review path a chat-confirmed draft takes, never straight into delivery. Extraction runs on the local model with a deterministic fallback; the note body is screened through `foundation/policy/injection_guard.screen_external_text` (the same untrusted-content envelope `XEngine` applies to X mentions — flags an injection-pattern line inline, never removes content) before it reaches the prompt or the fallback. Deduped per `(vault-relative path, content hash)` via `vault_seen_notes`, so an edit re-qualifies a previously-seen note — the same hashing convention (every RoboCo feedback callout stripped first, `foundation/policy/vault_notes.py`) is now shared with the KB engine below. V2 adds three things on top: a **drift janitor** (`services/vault_janitor.py`, `_vault_janitor_loop`) hourly-ticked but gated by a `RoboCo/_meta/.janitor_state.json` state file so real work (a daily changed-task re-projection + random-sample drift check + archival pass, each capped at 200/cycle and per-item isolated so one bad row never wedges the sweep) and a weekly org-report (`vault_report_enabled`, default true — `VaultWriter.write_org_report` from `MetricsService`/`UsageService`, best-effort CEO notification) each fire exactly once per elapsed period regardless of loop/restart cadence; **archival** (`vault_archive_days`, default 30, `0`=off) moving old terminal tasks' notes into `RoboCo/Archive/<year>/Tasks/<project>/` during the sweep, alias links making the move free and the shipped Dataview/graph assets `Archive/`-aware; and **KB ingest** (`vault_kb_enabled`, default false — NAS compose arms it `true`, registry compose leaves it `false`) embedding the CEO's own `RoboCo/Notes/` (config `vault_kb_dirs`, csv, load-time-validated against traversal/overlap with reserved projection dirs) into a new `IndexType.VAULT_NOTES` corpus via `_vault_kb_loop` (`services/vault_kb_engine.py`, default 900s), with every note re-checked for symlink/path-escape at read time and screened through the injection guard as a hard GATE (a flagged note is quarantined — skipped, logged, callout-marked, never embedded) rather than the intake watcher's screen-and-still-process posture — reaching `roboco_kb_search`, `MentorService`'s default domain, and `EvidenceRepo.similar_memory` (claim-time briefings, relevance-floored, labeled `vault_note`) so the CEO's own writing finally becomes fleet-retrievable institutional memory.
+**Obsidian vault V1+V2 (default-off).** Full subsystem doctrine: `.claude/rules/obsidian-vault.md` (auto-loads when working under this subsystem's files).
 
 **Fable-mode (default-off).** Full opus-fable-playbook adoption: makes the fleet behave more like Fable 5 on the existing model tiers (the tiers stay — Fable 5 the model is not an option). Two levers, both gated by `ROBOCO_FABLE_MODE_ENABLED`: ① **doctrine** — `fable_doctrine_layer()` (`roboco/agents/factories/_base.py`) composes the vendored behavioral doctrine (`agents/prompts/doctrine/fable.md`, from `github.com/rennf93/opus-fable-playbook` MIT `output-styles/fable.md`, YAML frontmatter stripped) into `compose_prompt`'s layer tuple immediately after `base.md` — universal cross-role doctrine, the same tier as the base rules, ahead of role/team/identity layers so those keep their specificity precedence. ② **hooks** — 5 vendored scripts under `docker/scripts/fable-*.sh` (stop-gate, bash-discipline, honesty-nudge, prompt-nudge, precompact; `session-start.sh` deliberately SKIPPED — its doctrine card is redundant with ① and its output-style check is inapplicable here) are installed alongside RoboCo's own hooks, never replacing them: `AgentOrchestrator._fable_hook_groups()` appends them AFTER RoboCo's own per-event entries in the Claude-path settings.json (isolated into its own helper to protect `_generate_agent_settings`'s xenon budget); the grok path installs only `honesty-nudge` (`write_grok_fable_hooks`, `roboco/llm/providers/grok_cli_config.py`) — a deliberately conservative V1 scope, since a grok `PreToolUse`/`Stop` hook deny cancels the entire run (verified live) while `PostToolUse` never denies. Off by default: the spawn path (composed prompt, settings.json, grok hooks) is byte-for-byte unchanged when the flag is off. No new eval harness for Fable-specific measurement — that rides the existing rework/spawn-waste/`revision_count` dashboard (see "Delivery observability" below); the separate golden-task eval harness (`roboco/eval/`, see below) is an offline CLI bench for a (role, model/provider) cohort, unrelated to Fable-mode's own on/off measurement. Armed on the NAS deploy like the rest; left OFF in `docker-compose.registry.yml`.
 
@@ -442,7 +362,7 @@ The fourteen programs: **Printer**/`roadmap` (PO, weekly cron, org) — the pre-
 
 **Env-branches ladder + EnvSyncEngine (default-off `ROBOCO_ENV_SYNC_ENABLED`).** Replaces a project's single `default_branch` with an ordered environment ladder: nullable `projects.environments` JSONB (migration 073), an ordered `list[{name, branch}]` where index 0 is the **head** rung (where dev/cell/leaf PRs land) and index -1 is the **prod** rung (where the gated release executor commits + tags); middle rungs are intermediates (qa/stag). A null ladder degenerates to a single-branch ladder synthesized from `default_branch` at read time (`roboco/models/env_branches.py`: `head_branch` / `prod_branch` / `ladder_pairs` / `promotion_chain`) — no backfill, byte-for-byte legacy behavior until the CEO declares a real split. Every former `default_branch` consumer now routes through the shim: the PR target and per-agent clone (`WorkspaceService.ensure_workspace` / `ensure_read_clone`), the CI branch, the release executor's clone/commit/tag target (`_ReleaseContext.prod_branch`) plus its full-chain head→…→prod promotion before bumping (`promote_env_chain`, fail-closed `promotion_failed` on a merge conflict), and `release_readiness`'s diff baseline (`prod..head` instead of `last_tag..HEAD`) with a tag-drift cross-check (`_tag_drift_gaps` — the last tag's commit vs. prod tip disagreeing flags a hotfix that landed on prod after the tag). `EnvSyncEngine` (`roboco/services/env_sync_engine.py`) cascades the ladder prod→…→head via GitHub's merges API: a clean merge auto-pushes straight to the lower rung, a conflict opens ONE idempotent sync PR + a Main-PM coordination task and stops that project's cascade for the cycle — the cascade's target is never the prod rung by construction, so "only the CEO merges master" still holds. Bounded + deduped per repo (one open env_sync task at a time). Panel: an environment-ladder editor on the project edit dialog.
 
-**Telegram notifications bridge V1+V2+V3 (default-off `ROBOCO_TELEGRAM_ENABLED`).** V1: best-effort, outbound-only Telegram DMs to the CEO on escalation and completion. Mirrors the `x_credentials` pattern: a singleton Fernet-encrypted `telegram_credentials` row (migration 074, bot token + chat id; the API returns `has_credentials` only) behind CEO-only `/telegram/credentials` routes and a panel credentials card. `_notify_telegram` (`roboco/services/notification_delivery.py`) fans out from `notify_ceo_of_escalation` / `notify_ceo_of_completion`, sending only the notification's subject plus an optional panel deep-link (`panel_base_url`) — never the body — via a deferred, best-effort send that never raises into the producer (`NullTelegramClient` when unconfigured or the flag is off, `LiveTelegramClient` posting to the Bot API otherwise). V2 (`ROBOCO_TELEGRAM_INBOUND_ENABLED`, sub-switch on top of V1's flag — both plus stored credentials are required, otherwise the bot only sends and never listens) makes the bridge two-way: `TelegramInboundEngine` (`roboco/services/telegram_inbound.py`) long-polls `getUpdates` from a dedicated orchestrator loop (`_telegram_poll_loop`), authorizing every update by BOTH chat id and sender id, and routes `/status` / `/queue` / `/task` commands plus `Approve`/`Reject`/`Open` inline-keyboard taps (a compact `apv|rej:<kind>:<id8>` callback codec; a reject reason or a task-approve note is collected via a force_reply prompt held in a TTL'd in-memory pending-action map) through the SAME CEO-gated service calls the HTTP routes make (task/release/xpost/video/roadmap), stamping a `via=telegram` audit row on each. Escalation DMs (not completion DMs) carry the actionable keyboard when V2 is armed. All bot/bridge messages are HTML-styled (`parse_mode=HTML` with mandatory `_esc`/`_esc_attr` escaping at every dynamic interpolation and balance-aware 4096 truncation — the injection posture moved from no-parse_mode to escaping discipline), and every held-draft origination (release proposal, X post, video post, roadmap item via `propose_roadmap`) pushes a styled DM with its Approve/Reject keyboard the moment it materializes (`notify_ceo_of_queue_item`, best-effort, sharing `/queue`'s renderer). Closing the loop exposed a real hole: a stale Approve/Reject button targets its item by id regardless of current status, so `ReleaseProposalService.approve`/`.reject`, `XPostService.approve`, and `VideoPostService.approve` now all refuse an already-CANCELLED (rejected) or already-COMPLETED (published/posted) target instead of silently re-executing — a fix that also closes the identical hole via a replayed HTTP call, not just Telegram. V3 adds a Telegram **Mini App** sign-in: `POST /api/telegram/webapp-auth` (`roboco/api/routes/telegram.py`, mounted only when `telegram_miniapp_enabled` AND `cloud_auth_enabled` are both armed — `telegram_miniapp_enabled` is env-only like `cloud_auth_enabled`, deliberately off the panel feature-flags card, and fails loud at startup if armed without cloud auth on) validates Telegram's signed `initData` (`roboco/utils/telegram_initdata.py` — pure HMAC-SHA256 `WebAppData`-keyed validation, constant-time compare, a `telegram_initdata_max_age_seconds` freshness window with 60s clock-skew tolerance) against the stored bot token and the CEO's own `chat_id`, then mints the same cloud-auth session cookie `/api/auth/login` issues — turning the CEO's phone into a real panel client at the new `(tg)` route group (`/tg`: Approvals/Inbox/Board/Chat tabs, outside the normal dashboard shell; `proxy.ts`'s matcher excludes `tg(?:/|$)` so a phone session is never bounced to the password `/login` page it can't reach). Requires a public HTTPS origin (the cookie is secure-only) and BotFather's `/setmenubutton` pointed at `https://<host>/tg`. **V4 (Mini App V4)** rebuilds the cockpit and the command tier on both sides. Panel: the `(tg)` surface opens on a "Today" brief (`GET /api/telegram/today`, CEO-gated, one DB-only round trip via `TgCockpitService` — needs-you items, held-draft counts, fleet with per-agent task titles, day-rollup spend, ship state), the Approvals tab is a native card stack over all four held-draft queues (MainButton/BackButton/haptics with visible fallbacks; X 280-counter editing, blob-fetched video player, per-AC release view; a failed queue source is surfaced, never rendered as "queue is clear"), Chat/Today ride the shared `/ws/system` socket (invalidate-on-frame, poll fallback), theme adopts the user's Telegram `themeParams` scoped to `#tg-shell`, a dev-only mock bridge + `/tg?demo=1` fixtures make the whole surface workable in a plain browser, and shared primitives (`panel/src/components/tg/ui.tsx`) carry the visual language. Bot: `BOT_COMMANDS` is the single registry driving `/help` AND a once-per-process Bot API `setMyCommands` sync; `/agents` `/usage` `/blocked` join the read tier, and `/secretary` + `/newtask` bridge the chat into the SAME in-process live runtimes the panel drives (`roboco/services/telegram_bridge.py`): a per-chat consumer task drains the `PrompterLiveRegistry` stream (sole consumer — no sync reply seam exists) and pushes one Telegram message per `turn_end`; free text routes into the live session; a `draft` event becomes a Send-to-Board/Discard keyboard whose confirm runs `PrompterService.confirm_live_draft(route="board")` and PARKS the session so board feedback streams back into the thread; `/end` reaps; the bridge sweeps its own idle TTL (the held stream arms the registry keepalive, so the registry's reap never fires), parked sessions exempt. Intake/secretary containers are process-wide singletons, so a bridged session preempts a live panel session of the same kind by construction; MegaTask batches still confirm in the panel only. **V6 (Mini App V6)** is the premium overhaul: a native-type design system on the `#tg-shell` tokens (borderless elevated cards, wallet-style tabular-numeral heroes, floating dock; Share Tech Mono demoted to the `ROBOCO_` wordmark only) with Telegram window-chrome painting riding the theme bridge (`setHeaderColor`/`setBackgroundColor`/`setBottomBarColor`); Inbox moves behind a header bell as a pushed sub-page with humanized notifications (UUIDs resolve to task names via the Board's shared task index, `tg-format.tsx`); a new Metrics tab (period-segmented spend hero + by-agent/team/model + delivery/efficiency; tapping an agent pushes a drilldown over the previously-untapped `/usage/time-series?agent_slug` plus the member scorecard); Chat is rebuilt with honest scopes — Mine rides the participant-scoped `/a2a/chat/conversations` (resolved peer, real unread counts, mark-read on open, plain CEO send) while Fleet rides the admin list (task-linked threads interject via `replyAsCeo` with a recipient chip, task-less threads are watch-only), both with markdown transcripts, live pulse flashes, and a pinned **Secretary** live chat on the same `secretary_live` SSE session runtime the panel drives; and the Board task sheet carries the CEO's own decide verbs (approve / request-changes / unblock) instead of being read-only. The `/api/dashboard/*` router is now `require_panel_token`-gated at router level (mirroring `/api/usage`), closing the unauthenticated metrics/scorecard exposure.
+**Telegram notifications bridge V1+V2+V3 (default-off `ROBOCO_TELEGRAM_ENABLED`).** Full subsystem doctrine: `.claude/rules/telegram-bridge.md` (auto-loads when working under this subsystem's files).
 
 **Possibilities matrix (default-off `ROBOCO_POSSIBILITIES_MATRIX_ENABLED`).** A work-already-done fast path on `i_am_done`: when a claimed/in_progress task already has commits, an open PR, every acceptance criterion addressed, and no open findings (`_work_appears_done`), the dev submits straight to QA in one call instead of the standard multi-turn plan/journal/local-gate derivation. `_i_am_done_fast_path` still runs the non-negotiable guards — ownership, branch-pushed, not-behind-base, conventions, `FINDINGS_ADDRESSED` — and trusts the PR's own CI-green signal as the quality-gate proxy (`_fast_path_quality_verdict`, the same signal `pr_pass` trusts); a repo with no CI signal falls back to the local `make quality` gate (plus the toolchain-match guard when `ROBOCO_TOOLCHAIN_MATCH_ENABLED` is armed), and a known-red CI refuses the fast path outright rather than shipping it to QA. The orchestrator's dev spawn prompt steers a matching task to a `WORK_ALREADY_DONE` state that tells the dev to call `i_am_done` directly instead of re-deriving what's already done.
 
@@ -505,60 +425,12 @@ Core services in `roboco/services/`:
 
 Key settings in `roboco/config.py` (env prefix: `ROBOCO_`):
 
-```bash
-# Database
-ROBOCO_DATABASE_HOST=localhost
-ROBOCO_DATABASE_PORT=5432
-ROBOCO_DATABASE_USER=roboco
-ROBOCO_DATABASE_PASSWORD=roboco
-ROBOCO_DATABASE_NAME=roboco
-
-# Redis
-ROBOCO_REDIS_HOST=localhost
-ROBOCO_REDIS_PORT=6379
-
-# Security (REQUIRED)
-# Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
-ROBOCO_ENCRYPTION_KEY=<your-fernet-key>
-
-# Workspaces
-ROBOCO_WORKSPACES_ROOT=/data/workspaces
-ROBOCO_WORKSPACE_AUTO_CLONE=true
-ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
-
-# RAG (in-house pgvector engine)
-ROBOCO_RAG_CHUNK_STRATEGY=fixed
-ROBOCO_RAG_CHUNK_SIZE=512
-ROBOCO_RAG_USE_HYDE=true
-ROBOCO_RAG_USE_HYBRID_SEARCH=true
-
-# AI/LLM
-ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
-ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
-ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
-
-# Doctrine (bundled with fable-mode)
-ROBOCO_PONYTAIL_INTENSITY=full      # lite/full/ultra — developer ladder intensity (bundled with fable-mode)
-```
 
 ## Docker Deployment
 
 ### Container Architecture
 
 The system runs as Docker Compose services. All Dockerfiles live under `docker/` at the project root; every service uses `context: .` plus `dockerfile: docker/<name>.Dockerfile`.
-
-| Service | Purpose | Healthcheck |
-|---------|---------|-------------|
-| `postgres` | PostgreSQL + pgvector | `pg_isready` |
-| `redis` | Cache, sessions, event bus | `redis-cli ping` |
-| `ollama` | Local LLM + embeddings | `ollama list` |
-| `ollama-init` | Pulls models on startup | One-shot |
-| `backup` | Daily `pg_dump` sidecar, data-only network, newest-14 rotation — see `docs/backend/ops/database-backups.md` | — |
-| `agent-base-image` / `agent-*-image` | Pre-built images spawned per agent | One-shot |
-| `orchestrator` | API + agent spawner | Depends on all above |
-| `panel` | Next.js control panel (internal, port 3000) | — |
-| `nginx` | Reverse proxy fronting panel + orchestrator | — |
 
 ### Quickstart (registry pull-and-run)
 
@@ -599,26 +471,6 @@ Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
 - **Token usage** is captured per agent session from the Claude Code transcript via the SDK server's `/usage/sync` (hook → orchestrator finalize → `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced; local/Ollama intentionally `$0`). The token sweep also publishes `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's "Token Usage & Cost" panel updates live and falls back to HTTP polling when the stream is down.
 - **Delivery observability** (the panel's Metrics → "Delivery" tab) shows how work *flows*, computed by `MetricsService` from data already captured — no new feature flag. Per-stage cycle time and the bottleneck distribution are reconstructed from the `audit_log` transition journey (each generic `task.<status>` event marks entry into a status; the named `task.qa_fail`/`task.pr_fail` events are excluded from the reconstruction). Rework rate reads `tasks.revision_count` — incremented once per transition into `needs_revision` at the single chokepoint `TaskService._emit_status_transition_audit` — and attributes each bounce to the QA / PR-reviewer via those named audit events; rework cost joins `agent_spawn_sessions.task_id`. Read-only endpoints: `/dashboard/metrics/{cycle-time,bottlenecks,rework,scorecard/agent/{id},scorecard/team/{team}}`.
 
-### Startup Sequence
-
-The startup order is critical due to dependencies:
-
-```
-postgres ──┐
-redis ─────┼──> ollama ──> ollama-init ──> orchestrator ──> panel ──> nginx
-           │        │            │
-           │        │            └── Pulls qwen3-embedding:0.6b, glm-5.2:cloud
-           │        └── Healthcheck: ollama list
-           └── Healthcheck: pg_isready, redis-cli ping
-```
-
-**Important timing notes:**
-1. `ollama-init` pulls models (~30s for embedding model, ~2min for LLM)
-2. Orchestrator waits for models before starting
-3. FastAPI lifespan indexes documents using Ollama (~30-60s)
-4. Orchestrator polls `/health` until API is ready before starting dispatcher
-5. After orchestrator is up, `panel` (Next.js) builds/starts, then `nginx`
-
 ### Database migrations
 
 Schema changes ship as Alembic migrations under `alembic/versions/`. Run:
@@ -628,20 +480,6 @@ docker compose exec orchestrator alembic upgrade head
 ```
 
 after pulling any change that adds a new migration.
-
-### Ollama Configuration
-
-Ollama provides two APIs:
-- `/v1/*` - OpenAI-compatible API (for LLM chat/completion)
-- `/api/*` - Native Ollama API (for embeddings, model management)
-
-The embedder uses `/api/embed` endpoint with the `qwen3-embedding:0.6b` model.
-
-**Environment variables for Docker:**
-```bash
-ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1    # OpenAI-compat
-ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434          # Native API
-```
 
 ### Common Issues
 
