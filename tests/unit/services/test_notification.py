@@ -558,7 +558,7 @@ async def test_send_collision_sequencing_notification_rides_caller_session(
         held_back_task_id="t2",
         blocking_task_id="t1",
         held_back_assignee="be-dev-1",
-        db_session=db,
+        db_session=cast("Any", db),
     )
     assert [r for r in db.added if r.related_task_id == "t2"]
 
