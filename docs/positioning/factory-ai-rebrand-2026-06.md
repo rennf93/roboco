@@ -5,6 +5,8 @@ factories," describing an end-to-end signals → triage → build/test/review/
 secure/ship → monitor loop built on three pillars: model independence,
 sovereign intelligence, and continual self-improvement.
 
+Source: https://factory.ai/news/software-factory
+
 This note records RoboCo's verified posture against that framing, checked
 directly against this codebase rather than assumed.
 
