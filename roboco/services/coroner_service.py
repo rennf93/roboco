@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
     from roboco.db.tables import TaskTable
 
-_PLAYBOOK_KIND = "playbook"
+PLAYBOOK_KIND = "playbook"
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class CoronerService(BaseService):
         task, payload, process_change = await self._find(task_id)
         if task is None or payload is None or process_change is None:
             return None
-        if process_change["kind"] == _PLAYBOOK_KIND:
+        if process_change["kind"] == PLAYBOOK_KIND:
             return self._playbook_result()
         if process_change["status"] == "approved":
             return ProcessChangeResult(
@@ -139,7 +139,7 @@ class CoronerService(BaseService):
         task, payload, process_change = await self._find(task_id)
         if task is None or payload is None or process_change is None:
             return None
-        if process_change["kind"] == _PLAYBOOK_KIND:
+        if process_change["kind"] == PLAYBOOK_KIND:
             return self._playbook_result()
         if process_change["status"] == "rejected":
             return ProcessChangeResult(

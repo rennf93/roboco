@@ -25,7 +25,7 @@ from roboco.api.schemas.coroner import (
 )
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
-from roboco.services.coroner_service import get_coroner_service
+from roboco.services.coroner_service import PLAYBOOK_KIND, get_coroner_service
 from roboco.services.task import get_task_service
 
 if TYPE_CHECKING:
@@ -55,7 +55,16 @@ def _to_response(task: TaskTable) -> PostmortemResponse:
         process_change_kind=process_change.get("kind"),
         process_change_description=process_change.get("description"),
         playbook_id=postmortem.get("playbook_id"),
-        process_change_status=process_change.get("status", "proposed"),
+        # A playbook-kind change already drafted into the playbook queue at
+        # propose time — there is nothing to decide, but the stored status
+        # stays "proposed", which left the panel rendering approve/dismiss
+        # buttons that both verbs refuse forever. Derive the terminal status
+        # the panel's contract expects instead.
+        process_change_status=(
+            "not_applicable"
+            if process_change.get("kind") == PLAYBOOK_KIND
+            else process_change.get("status", "proposed")
+        ),
         process_change_reject_reason=process_change.get("reject_reason"),
         process_change_materialized_task_id=process_change.get("materialized_task_id"),
     )

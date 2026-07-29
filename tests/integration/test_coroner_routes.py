@@ -201,6 +201,28 @@ async def test_list_postmortems_returns_completed_autopsy(
 
 
 @pytest.mark.asyncio
+async def test_list_postmortems_derives_not_applicable_for_playbook_kind(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """A playbook-kind process change reads as not_applicable even when the
+    stored marker has NO status key — legacy rows predate the propose-time
+    stamp, and the raw default ("proposed") left the panel rendering
+    approve/dismiss buttons both verbs refuse forever."""
+    task = await _seed_completed_postmortem(db_session)
+    payload = markers.get_coroner_postmortem(task)
+    assert payload is not None
+    payload["process_change"] = {
+        "kind": "playbook",
+        "description": "run the named command end-to-end",
+    }
+    markers.set_coroner_postmortem(task, payload)
+    await db_session.flush()
+    resp = await ceo_client.get("/api/coroner/postmortems")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()[0]["process_change_status"] == "not_applicable"
+
+
+@pytest.mark.asyncio
 async def test_list_postmortems_forbidden_for_non_ceo(
     dev_client: AsyncClient,
 ) -> None:
