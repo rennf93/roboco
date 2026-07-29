@@ -40,6 +40,7 @@ from roboco.services.base import BaseService, NotFoundError
 from roboco.services.notification_dedup import (
     all_recipients_recently_notified,
     clear_dedup_key,
+    duplicate_unacked_notification_exists,
 )
 from roboco.services.notification_text import task_display
 from roboco.services.repositories.query_helpers import get_agent_by_role
@@ -1594,13 +1595,15 @@ class NotificationDeliveryService(BaseService):
         """Add to session, flush (to get an id), deliver. Caller commits.
 
         Returns True iff actually persisted+delivered, False if suppressed by
-        the 60s dedup guard below. That guard only ever applies to
+        either guard below. The Redis re-fire guard only ever applies to
         `_LOOP_PRONE_TYPES` (notification_dedup.py) — BLOCKER_ESCALATION,
         the type re-escalations use, is NOT one of them, so for that path
         this always returns True or raises; the real double-delivery guard
         for re-escalations is the CAS claim in
         `NotificationDeliveryService._claim_reescalation_slot`, upstream of
-        this call.
+        this call. The DB purpose-dedup guard applies to ACK_REQUIRED_BY_TYPE
+        action-required types (BLOCKER_ESCALATION included) — a retried
+        `i_am_blocked`/escalate past the 60s Redis window still hits this.
         """
         # Re-fire guard (loop-prone types): this path skips the DB dedup, so
         # apply the same 60s Redis SET-NX window. Fail-open on Redis down.
@@ -1617,6 +1620,30 @@ class NotificationDeliveryService(BaseService):
                 from_agent=str(notification.from_agent)
                 if notification.from_agent is not None
                 else None,
+                type=notification.type.value if notification.type is not None else None,
+                related_task_id=str(notification.related_task_id)
+                if notification.related_task_id is not None
+                else None,
+            )
+            return False
+        # DB purpose-dedup: this path (task-handoff helpers) never went
+        # through `NotificationService._create_notification`, so it never
+        # got the same-purpose/unacked check that path applies. Without it,
+        # a retried blocker/escalate past the Redis window above re-creates
+        # a second unacked row for the same (sender, type, task, recipients).
+        is_duplicate = notification.from_agent is not None and (
+            await duplicate_unacked_notification_exists(
+                self.session,
+                from_agent=cast("UUID", notification.from_agent),
+                notification_type=notification.type,
+                related_task_id=cast("UUID | None", notification.related_task_id),
+                to_agents=cast("list[UUID]", notification.to_agents),
+            )
+        )
+        if is_duplicate:
+            _log.info(
+                "Suppressed duplicate notification (same purpose, unacked)",
+                from_agent=str(notification.from_agent),
                 type=notification.type.value if notification.type is not None else None,
                 related_task_id=str(notification.related_task_id)
                 if notification.related_task_id is not None
