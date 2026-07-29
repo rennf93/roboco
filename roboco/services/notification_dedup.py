@@ -1,4 +1,5 @@
-"""Bounded re-fire guard for loop-prone notification types.
+"""Notification dedup helpers: a Redis re-fire guard plus a shared DB
+purpose-dedup query.
 
 TASK_ASSIGNMENT / REVIEW_REQUEST / DOCUMENTATION_REQUEST / BROADCAST can be
 re-fired by a PM every tick while a task sits in a state, flooding inboxes.
@@ -7,6 +8,12 @@ for these four, so a short Redis SET-NX window per (type, sender, recipient,
 task) suppresses the re-fire here. Fail-open: Redis unavailable → never
 suppress (a notification is never dropped because the dedup infra is down).
 One-shot types (KNOWLEDGE_SHARE / MENTION / A2A_REQUEST) bypass entirely.
+
+``duplicate_unacked_notification_exists`` is the DB-side purpose-dedup query
+(same sender + type + task + exact recipient set, prior still unacked),
+shared by ``NotificationService._create_notification`` and
+``NotificationDeliveryService._persist_and_deliver`` so both paths apply the
+same semantics instead of each growing its own query.
 """
 
 from __future__ import annotations
@@ -15,13 +22,17 @@ import logging
 from typing import TYPE_CHECKING
 
 import redis.asyncio as redis
+from sqlalchemy import select
 
 from roboco.config import settings
+from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +129,67 @@ async def clear_dedup_key(
             await conn.aclose()
     except Exception as exc:
         logger.warning("notification dedup clear failed (redis): %s", exc)
+
+
+async def duplicate_unacked_notification_exists(
+    db: AsyncSession,
+    *,
+    from_agent: UUID,
+    notification_type: NotificationType,
+    related_task_id: UUID | str | None,
+    to_agents: Sequence[UUID],
+) -> bool:
+    """True when an unacked same-purpose notification already exists.
+
+    Purpose-based dedup (CEO directive, 2026-06-10): same sender, type,
+    task, EQUAL recipient set, while a prior one is still unacked — agents
+    re-send the same signal (often reworded) and each copy inflates the
+    recipient's unacked set, soft-blocking i_am_idle and driving respawn
+    churn. Body text is NOT compared. Dedup applies only to ACTION-REQUIRED
+    types; informational carries distinct content per send and acking is
+    voluntary, so deduping them would silently drop broadcasts.
+
+    Recipient set must be EXACTLY equal — overlapping-but-not-equal sets do
+    NOT suppress. A blocker sent to {be-pm, main-pm} after an unacked one to
+    {be-pm} alone must reach main-pm (the prior's recipients are a strict
+    subset). Overlap is the SQL filter; the exact-set-equality check runs in
+    Python against the fetched candidate rows.
+
+    Primitive-typed (db/from_agent/notification_type/related_task_id/
+    to_agents) so both ``NotificationService._create_notification`` (which
+    holds a ``CreateNotificationParams``) and
+    ``NotificationDeliveryService._persist_and_deliver`` (which only holds a
+    built ``NotificationTable``, no params object) can share the one query
+    instead of each growing a divergent copy.
+    """
+    from roboco.db.tables import NotificationTable  # local: avoid import cycle
+
+    if not ACK_REQUIRED_BY_TYPE.get(notification_type, True):
+        return False
+    to_agents_list = list(to_agents)
+    new_set = set(to_agents_list)
+    dup_q = (
+        select(NotificationTable.id, NotificationTable.to_agents)
+        .where(NotificationTable.from_agent == from_agent)
+        .where(NotificationTable.type == notification_type)
+        .where(NotificationTable.to_agents.overlap(to_agents_list))
+        .where(~NotificationTable.acked_by.contains(to_agents_list))
+        .where(
+            NotificationTable.related_task_id == related_task_id
+            if related_task_id is not None
+            else NotificationTable.related_task_id.is_(None)
+        )
+    )
+    result = await db.execute(dup_q)
+    for row in result.all():
+        if set(row[1]) == new_set:
+            logger.info(
+                "Suppressed duplicate notification (same purpose, unacked): "
+                "from_agent=%s type=%s related_task_id=%s to_agents=%s",
+                from_agent,
+                notification_type.value,
+                related_task_id,
+                to_agents_list,
+            )
+            return True
+    return False
