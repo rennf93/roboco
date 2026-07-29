@@ -68,12 +68,21 @@ def _wire(monitor: dict[str, Any], provider_value: str) -> Any:
             auth_token=None,
         )
 
-    async def _prepare(*_a: Any, **_k: Any) -> Any:
+    async def _prepare(agent_id: str, *_a: Any, **_k: Any) -> Any:
+        # Registers the STARTING instance under the requested agent_id like the
+        # real _prepare_agent_spawn does — the post-prepare gate re-check runs
+        # against _instances WITH this entry present (the self-count regression
+        # only reproduces with it registered).
         monitor["prepare_calls"] += 1
         cfg = SimpleNamespace(provider_type=provider_value, model="model")
         inst = AgentInstance(
-            agent_id="spawning-agent", state=AgentState.STARTING, config=None
+            agent_id=agent_id,
+            state=AgentState.STARTING,
+            config=AgentConfig(
+                agent_id=agent_id, blueprint_path=Path(), provider_type=provider_value
+            ),
         )
+        monitor["orch"]._instances[agent_id] = inst
         return cfg, inst, None
 
     return _readiness_gate, _git_context, _route, _prepare
@@ -85,6 +94,7 @@ def _wire_orch(
     monitor: dict[str, Any],
     provider_value: str,
 ) -> None:
+    monitor["orch"] = orch
     _rg, _gc, _route, _prepare = _wire(monitor, provider_value)
     monkeypatch.setattr(orch, "_readiness_gate", _rg)
     monkeypatch.setattr(orch, "_resolve_spawn_git_context", _gc)
@@ -145,6 +155,32 @@ def test_live_provider_instance_count_and_capacity() -> None:
 # spawn_agent integration: exercises the exact chokepoint every kimi spawn
 # path crosses (mirrors test_parked_spawn_shortcut.py).
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sole_kimi_spawn_passes_its_own_post_prepare_cap_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-07-29 fleet wedge: with cap=1 and NO other kimi instance, the
+    post-prepare gate re-check counted the spawn's own just-registered
+    STARTING instance (1 >= 1) and cancelled every kimi spawn forever. The
+    agent being spawned must be excluded from its own capacity check."""
+    orch = _make_orchestrator()
+    monitor = {"route_calls": 0, "prepare_calls": 0}
+    _wire_orch(orch, monkeypatch, monitor, "kimi")
+
+    launched: list[bool] = []
+
+    async def _launch(*_a: Any, **_k: Any) -> AgentInstance:
+        launched.append(True)
+        return AgentInstance(agent_id="main-pm", state=AgentState.ACTIVE, config=None)
+
+    monkeypatch.setattr(orch, "_launch_spawn", _launch)
+
+    await orch.spawn_agent(agent_id="main-pm", task_id="task-1")
+
+    assert monitor["prepare_calls"] == 1
+    assert launched == [True]
 
 
 @pytest.mark.asyncio
