@@ -130,18 +130,29 @@ class Settings(BaseSettings):
     # asyncio lock queue) holds its row locks + pooled connection until
     # Postgres kills it; a statement queued on someone else's row lock gives
     # up instead of camping on a pool slot. 0 disables (Postgres semantics).
+    # The idle default MUST clear the longest legitimate in-transaction
+    # window: a cold-workspace claim holds its transaction across the clone
+    # (workspace_clone_timeout, 300s) + dep install
+    # (workspace_dep_install_timeout_seconds, 600s) under the 900s
+    # flow_verb_slow_timeout_seconds wall — hence 20 min, not tighter.
     database_idle_in_transaction_timeout_ms: int = Field(
-        default=120_000,
+        default=1_200_000,
         ge=0,
         description=(
             "Postgres idle_in_transaction_session_timeout for app "
-            "connections, in ms; 0 disables"
+            "connections, in ms; 0 disables. Keep above "
+            "flow_verb_slow_timeout_seconds — claim verbs legitimately hold "
+            "a transaction across cold clone + dep install"
         ),
     )
     database_lock_timeout_ms: int = Field(
-        default=30_000,
+        default=60_000,
         ge=0,
-        description="Postgres lock_timeout for app connections, in ms; 0 disables",
+        description=(
+            "Postgres lock_timeout for app connections, in ms; 0 disables. "
+            "A blocked statement burns a pool connection for the whole wait, "
+            "so this stays tight; losers get a clean retryable error"
+        ),
     )
 
     @computed_field  # type: ignore[prop-decorator]

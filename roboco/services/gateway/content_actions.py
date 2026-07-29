@@ -5396,8 +5396,14 @@ class ContentActions:
         # pool's connections for that whole time — enough concurrent evidence
         # calls exhaust the pool (2026-07-29 incident). Reads after this
         # reopen a fresh transaction on demand; expire_on_commit=False keeps
-        # ``t`` usable.
-        await self.task.session.commit()
+        # ``t`` usable. A poisoned session (PendingRollbackError) rolls back
+        # instead — the point is ending the transaction, either way works.
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
         if t.branch_name and t.work_session_id:
             await self.workspace.fetch_branch_for_inspection(
                 agent_id=agent_id, branch_name=t.branch_name

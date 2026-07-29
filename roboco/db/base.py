@@ -106,8 +106,8 @@ def get_engine() -> AsyncEngine:
         # left idle (its coroutine parked on git I/O or an asyncio lock) is
         # killed by Postgres itself, releasing its row locks and pool slot;
         # a statement queued on someone else's row lock errors instead of
-        # holding a pool connection for the wait. Alembic uses its own sync
-        # engine, so migrations are unaffected.
+        # holding a pool connection for the wait. Alembic's env.py builds its
+        # own engine, so migrations never carry these.
         server_settings = {
             key: str(value)
             for key, value in (
