@@ -11,13 +11,25 @@ an open BLOCKER-severity finding.
 2026-07-29 triage pass. No frontend task currently sits in `needs_revision` or
 `awaiting_pm_review` with an unresolved review outcome.
 
-## Prior blocker case
+## Triaged
 
-The one recent blocker case on record for this cell — the CLA CI check failure on
-task `b2bc7ef4` — already completed a full `addressed` → `verified` cycle via
-escalation, with no stall in the finding lifecycle.
+No individual frontend task IDs were enumerated in this pass — the audit ran via
+two aggregate `triage()` calls against the frontend cell's `needs_revision` /
+`awaiting_pm_review` backlog rather than per-task lookups:
+
+- **~16:51 UTC** (cold run) — `triage()` returned zero frontend tasks in
+  `needs_revision` or `awaiting_pm_review` with an unresolved review outcome.
+- **~18:21 UTC** (re-run after clearing the notification/A2A inbox, to rule out
+  stale items masking real backlog) — `triage()` returned the same zero-match
+  result.
+
+Both results were cross-referenced against `recent_team_activity`, which showed
+no frontend task in `needs_revision` at either checkpoint. Because `triage()`
+returns an aggregate empty-set signal rather than a task list, no individual task
+IDs exist to enumerate beyond these two calls.
 
 ## Assessment
 
-Based on this pass, the `mark_addressed` / `mark_verified` finding lifecycle is
-functioning correctly in the frontend cell: no lifecycle-wiring gap was found.
+0 open blockers found on frontend tasks this pass, so this audit gives no direct
+evidence on whether `mark_addressed`/`mark_verified` is working — only that
+nothing is currently stuck.
