@@ -619,6 +619,23 @@ async def test_wire_sibling_collision_dag_notifies_only_for_new_edges() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collision_sequencing_notify_rides_task_service_session() -> None:
+    """2026-07-29: the held-back task row is uncommitted in this transaction —
+    the notification must ride the SAME session or its related_task_id FK
+    fails (ForeignKeyViolationError seen live in cell_pm/delegate)."""
+    session = MagicMock(flush=AsyncMock())
+    svc = TaskService(session)
+    mock_ns = MagicMock()
+    mock_ns.send_collision_sequencing_notification = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService", return_value=mock_ns
+    ):
+        await svc._notify_collision_sequencing(uuid4(), uuid4(), None)
+    kwargs = mock_ns.send_collision_sequencing_notification.await_args.kwargs
+    assert kwargs["db_session"] is session
+
+
+@pytest.mark.asyncio
 async def test_mark_agent_idle_sets_status_idle() -> None:
     agent = MagicMock(id=uuid4(), status=AgentStatus.ACTIVE, current_task_id=uuid4())
     result = MagicMock()

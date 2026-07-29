@@ -8944,6 +8944,7 @@ class TaskService(BaseService):
                 held_back_assignee=str(owner) if owner is not None else None,
                 held_back_title=held_back_title,
                 blocking_title=blocking_title,
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning("Collision-sequencing notify failed", error=str(e))
