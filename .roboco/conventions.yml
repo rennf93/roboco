@@ -107,3 +107,22 @@ waivers:
       not a production component — the same pattern already used by the
       pre-existing use-agents.test.tsx / use-observability.test.tsx hook
       tests colocated under hooks/__tests__/.
+  - path: roboco/api/routes/prompter_live.py
+    rule: no_lint_suppressions
+    reason: >-
+      preview_live_batch's `session_id` path parameter is unused in the
+      function body (the endpoint is a pure precompute) but must stay in the
+      signature under that exact name for FastAPI to bind the
+      `/live/{session_id}/preview-batch` path — renaming or dropping it
+      breaks routing, so the ARG001 suppression is a permanent framework
+      constraint, not silenced debt.
+  - path: roboco/foundation/policy/lifecycle.py
+    rule: no_lint_suppressions
+    reason: >-
+      The module-load-time `_run_all_lifecycle_validators` import sits below
+      other module code deliberately: its validators live in
+      `roboco.foundation._validate_lifecycle`, a sibling of
+      `foundation/_validate.py`, and `roboco.foundation.__init__` eagerly
+      imports `_validate` — importing it at the top of this file would
+      create a real import cycle. The E402 suppression documents a genuine
+      circular-import constraint, not silenced debt.

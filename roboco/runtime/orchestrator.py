@@ -10940,12 +10940,13 @@ Start by:
             from roboco.utils.converters import require_uuid
 
             # Compute human-friendly duration
+            _MINUTES_PER_HOUR = 60
             duration_desc = "unknown duration"
             try:
                 activated_at = datetime.fromisoformat(activated_at_str)
                 elapsed = datetime.now(UTC) - activated_at
                 total_minutes = int(elapsed.total_seconds() / 60)
-                if total_minutes < 60:  # noqa: PLR2004
+                if total_minutes < _MINUTES_PER_HOUR:
                     duration_desc = f"{total_minutes} minute(s)"
                 else:
                     duration_desc = f"{total_minutes // 60}h {total_minutes % 60}m"
