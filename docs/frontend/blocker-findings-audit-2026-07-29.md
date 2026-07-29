@@ -8,8 +8,8 @@ the frontend cell's `needs_revision` / `awaiting_pm_review` backlog for tasks ca
 an open BLOCKER-severity finding.
 
 **Result: 0 open BLOCKER-severity findings** were found on frontend tasks as of the
-2026-07-29 triage pass. No frontend task currently sits in `needs_revision` or
-`awaiting_pm_review` with an unresolved review outcome.
+2026-07-29 triage pass. No frontend task sat in `needs_revision` or
+`awaiting_pm_review` at either checkpoint.
 
 ## Triaged
 
