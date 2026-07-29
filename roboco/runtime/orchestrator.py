@@ -3120,7 +3120,9 @@ class AgentOrchestrator:
         # existing-running check above stays first, so a live agent is never
         # replaced by this bail. Fail-open: a tracker read error never blocks.
         route = await self._resolve_agent_route(agent_id, task_id)
-        skip_reason = await self._spawn_gate_skip_reason(route.provider_type.value)
+        skip_reason = await self._spawn_gate_skip_reason(
+            route.provider_type.value, exclude_agent_id=agent_id
+        )
         if skip_reason:
             self._mark_task_handled(task_id)
             logger.info(
@@ -3145,7 +3147,9 @@ class AgentOrchestrator:
         # parked case is already handled above; this guards the window between
         # the pre-check and the launch. Fail-open: a tracker read error never
         # blocks spawning.
-        skip_reason = await self._spawn_gate_skip_reason(config.provider_type)
+        skip_reason = await self._spawn_gate_skip_reason(
+            config.provider_type, exclude_agent_id=agent_id
+        )
         if skip_reason:
             return self._bail_prepared_instance(
                 instance, agent_id, task_id, config.provider_type, skip_reason
@@ -10186,39 +10190,52 @@ Start by:
             return settings.kimi_max_concurrent
         return None
 
-    def _live_provider_instance_count(self, provider_type: str) -> int:
+    def _live_provider_instance_count(
+        self, provider_type: str, exclude_agent_id: str | None = None
+    ) -> int:
         """Count ``_instances`` entries for *provider_type* still holding a slot.
 
         Mirrors ``_existing_running_instance``'s liveness definition: any
         state other than OFFLINE/WAITING_LONG occupies (or is about to
-        occupy) a container.
+        occupy) a container. *exclude_agent_id* drops the agent being
+        spawned from the count — ``_prepare_agent_spawn`` registers its
+        STARTING instance before the post-prepare gate re-check, and with
+        cap=1 a self-counting check cancels every spawn forever.
         """
         return sum(
             1
-            for inst in self._instances.values()
-            if inst.config is not None
+            for agent_id, inst in self._instances.items()
+            if agent_id != exclude_agent_id
+            and inst.config is not None
             and inst.config.provider_type == provider_type
             and inst.state not in (AgentState.OFFLINE, AgentState.WAITING_LONG)
         )
 
-    def _provider_spawn_at_capacity(self, provider_type: str | None) -> bool:
+    def _provider_spawn_at_capacity(
+        self, provider_type: str | None, exclude_agent_id: str | None = None
+    ) -> bool:
         """True when *provider_type* is at its concurrency cap, if any."""
         cap = self._provider_concurrency_cap(provider_type)
         if cap is None or provider_type is None:
             return False
-        return self._live_provider_instance_count(provider_type) >= cap
+        live = self._live_provider_instance_count(provider_type, exclude_agent_id)
+        return live >= cap
 
-    async def _spawn_gate_skip_reason(self, provider_type: str | None) -> str | None:
+    async def _spawn_gate_skip_reason(
+        self, provider_type: str | None, exclude_agent_id: str | None = None
+    ) -> str | None:
         """Why ``spawn_agent`` should bail before launch, or None to proceed.
 
         Checked in order: provider-parked (rate-limited/overloaded), then the
         provider's concurrency cap (currently kimi-only, see
         ``_provider_concurrency_cap``). The returned string is both the skip
         reason and the log event name — same shape both callers already used.
+        *exclude_agent_id* is the agent this spawn is FOR: its own registered
+        instance must never count against its own capacity check.
         """
         if await self._provider_spawn_parked(provider_type):
             return "Spawn skipped: provider rate-limited (parked)"
-        if self._provider_spawn_at_capacity(provider_type):
+        if self._provider_spawn_at_capacity(provider_type, exclude_agent_id):
             return "Spawn skipped: kimi concurrency cap reached"
         return None
 
