@@ -524,12 +524,16 @@ class NotificationService:
         to_ceo: str = "ceo",
         held_back_title: str | None = None,
         blocking_title: str | None = None,
+        db_session: AsyncSession | None = None,
     ) -> None:
         """Tell the held-back task's owner (+ CEO) it now waits on a sibling.
 
         Fired only for a newly-created collision-sequencing edge (see
         ``wire_sibling_collision_dag`` — a repeat wiring pass over an
         already-wired pair contributes no edge, so this cannot double-fire).
+        ``db_session`` must be the edge-wiring transaction's own session: the
+        held-back task row may be uncommitted there, and the FK on
+        ``related_task_id`` fails on any other connection (2026-07-29).
         """
         recipients = list(dict.fromkeys(r for r in (held_back_assignee, to_ceo) if r))
         if not recipients:
@@ -556,7 +560,8 @@ class NotificationService:
                 subject=f"Task {held_back_display} sequenced behind a sibling",
                 body=body,
                 related_task_id=held_back_task_id,
-            )
+            ),
+            db_session,
         )
 
     async def send_unblock_notification(

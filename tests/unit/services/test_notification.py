@@ -545,6 +545,25 @@ async def test_send_collision_sequencing_notification(
 
 
 @pytest.mark.asyncio
+async def test_send_collision_sequencing_notification_rides_caller_session(
+    svc: NotificationService,
+) -> None:
+    """2026-07-29: delegate wires collision edges inside a transaction whose
+    held-back task row is not yet committed — the notification INSERT must
+    ride that same session, or its related_task_id FK fails on any other
+    connection. No _patch_db_context here: opening a separate connection
+    would hit the real engine and fail the test."""
+    db = _FakeDb(agent_uuid=uuid4())
+    await svc.send_collision_sequencing_notification(
+        held_back_task_id="t2",
+        blocking_task_id="t1",
+        held_back_assignee="be-dev-1",
+        db_session=db,
+    )
+    assert [r for r in db.added if r.related_task_id == "t2"]
+
+
+@pytest.mark.asyncio
 async def test_send_unblock_notification(svc: NotificationService) -> None:
     aid = uuid4()
     db = _FakeDb(agent_uuid=aid)

@@ -15485,6 +15485,15 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             if self._is_hitl_blocked(task):
                 continue
 
+            # A dependency-held blocked task can't be unblocked by any
+            # resolver until the dependency lands — spawn_agent's readiness
+            # gate would refuse anyway, and each refused attempt burned a
+            # respawn-breaker strike + a CEO escalation once tripped
+            # (2026-07-29). Skip quietly; this dispatcher re-checks every
+            # tick and proceeds once the dependency goes terminal.
+            if await self._check_dependencies_terminal(client, task):
+                continue
+
             agent_id = self._blocker_resolver_slug(task)
             if not agent_id:
                 continue
