@@ -125,6 +125,24 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=20, ge=0)
     database_pool_timeout: int = Field(default=10, ge=1)
     database_pool_recycle: int = Field(default=1800, ge=60)
+    # Server-side guards against the lock-convoy incident class (2026-07-29):
+    # a session parked mid-transaction on non-DB work (git subprocess, an
+    # asyncio lock queue) holds its row locks + pooled connection until
+    # Postgres kills it; a statement queued on someone else's row lock gives
+    # up instead of camping on a pool slot. 0 disables (Postgres semantics).
+    database_idle_in_transaction_timeout_ms: int = Field(
+        default=120_000,
+        ge=0,
+        description=(
+            "Postgres idle_in_transaction_session_timeout for app "
+            "connections, in ms; 0 disables"
+        ),
+    )
+    database_lock_timeout_ms: int = Field(
+        default=30_000,
+        ge=0,
+        description="Postgres lock_timeout for app connections, in ms; 0 disables",
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
