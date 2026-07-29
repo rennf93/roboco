@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import CursorResult, and_, event, select, update
+from sqlalchemy import CursorResult, and_, case, event, func, not_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -608,24 +608,34 @@ class NotificationDeliveryService(BaseService):
         Returns:
             Dict with counts: total, unread, pending_ack
         """
-        # Get all notifications for agent
-        base_query = select(NotificationTable).where(
-            NotificationTable.to_agents.contains([agent_id])
+        # SQL COUNT aggregates — never materialize the full row set (this is
+        # hit on every panel-bell/Telegram cockpit poll).
+        unread_case = case(
+            (not_(NotificationTable.read_by.contains([agent_id])), 1), else_=0
         )
-
-        result = await self.session.execute(base_query)
-        notifications = list(result.scalars().all())
-
-        total = len(notifications)
-        unread = sum(1 for n in notifications if agent_id not in n.read_by)
-        pending_ack = sum(
-            1 for n in notifications if n.requires_ack and agent_id not in n.acked_by
+        pending_ack_case = case(
+            (
+                and_(
+                    NotificationTable.requires_ack.is_(True),
+                    not_(NotificationTable.acked_by.contains([agent_id])),
+                ),
+                1,
+            ),
+            else_=0,
         )
+        query = select(
+            func.count().label("total"),
+            func.coalesce(func.sum(unread_case), 0).label("unread"),
+            func.coalesce(func.sum(pending_ack_case), 0).label("pending_ack"),
+        ).where(NotificationTable.to_agents.contains([agent_id]))
+
+        result = await self.session.execute(query)
+        row = result.one()
 
         return {
-            "total": total,
-            "unread": unread,
-            "pending_ack": pending_ack,
+            "total": int(row.total),
+            "unread": int(row.unread),
+            "pending_ack": int(row.pending_ack),
         }
 
     # =========================================================================
