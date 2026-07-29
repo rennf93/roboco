@@ -5390,6 +5390,20 @@ class ContentActions:
             and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
+        # Release the request's transaction before the git work below: fetch +
+        # diff can run for minutes (cold workspace, serialized behind the
+        # per-workspace ensure lock), and an open transaction pins one of the
+        # pool's connections for that whole time — enough concurrent evidence
+        # calls exhaust the pool (2026-07-29 incident). Reads after this
+        # reopen a fresh transaction on demand; expire_on_commit=False keeps
+        # ``t`` usable. A poisoned session (PendingRollbackError) rolls back
+        # instead — the point is ending the transaction, either way works.
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
         if t.branch_name and t.work_session_id:
             await self.workspace.fetch_branch_for_inspection(
                 agent_id=agent_id, branch_name=t.branch_name
