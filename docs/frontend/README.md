@@ -22,6 +22,7 @@ Documentation for the Frontend Cell team.
 - [`hooks.md`](./hooks.md) — `usePageRefresh` and `PageRefreshProvider` usage and API reference
 - [`forms/forms-audit.md`](./forms/forms-audit.md) — the living panel-forms ↔ backend-schema consistency audit (settings page + project + task dialogs); update the matching row in the same PR as any schema change
 - [`forms/project-fields-audit.md`](./forms/project-fields-audit.md) — project dialog field reference (types, create-vs-edit exposure, the add-a-field checklist)
+- [`blocker-findings-audit-2026-07-29.md`](./blocker-findings-audit-2026-07-29.md) — 2026-07-29 audit of the frontend cell's `needs_revision`/`awaiting_pm_review` backlog for open BLOCKER-severity findings
 
 ## Contributing
 
