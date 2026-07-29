@@ -9,12 +9,12 @@ from __future__ import annotations
 import contextlib
 import os
 import time
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import jwt
 import structlog
-from fastapi import Cookie, Depends, Header, HTTPException, Response, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, params, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,6 +52,10 @@ logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+
+    from fastapi import Request
+
+    from roboco.services.gateway.envelope import Envelope
 
 # Type alias for database session dependency. get_db_committed stashes the
 # session on request.state so DbCommitMiddleware can commit it before the
@@ -136,7 +140,6 @@ OrchestratorDep = Annotated[AgentOrchestrator, Depends(get_orchestrator)]
 
 
 async def get_current_agent_id(
-    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -151,13 +154,13 @@ async def get_current_agent_id(
     spoof and is rejected (see _cloud_auth_agent_context)."""
     if settings.cloud_auth_enabled:
         ctx = await _cloud_auth_agent_context(
-            db=db,
-            response=response,
-            x_agent_id=x_agent_id,
-            x_agent_role=x_agent_role,
-            x_agent_team=x_agent_team,
-            x_agent_token=x_agent_token,
-            session_cookie=roboco_session,
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
         )
         return ctx.agent_id
     if not x_agent_id:
@@ -173,7 +176,6 @@ CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
 async def get_current_agent_slug(
-    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -187,13 +189,13 @@ async def get_current_agent_slug(
     slug; a CEO cookie resolves to 'ceo')."""
     if settings.cloud_auth_enabled:
         ctx = await _cloud_auth_agent_context(
-            db=db,
-            response=response,
-            x_agent_id=x_agent_id,
-            x_agent_role=x_agent_role,
-            x_agent_team=x_agent_team,
-            x_agent_token=x_agent_token,
-            session_cookie=roboco_session,
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
         )
         assert ctx.slug is not None  # cloud-auth ctx always carries a slug
         return ctx.slug
@@ -232,19 +234,9 @@ OptionalAgentId = Annotated[UUID | None, Depends(get_optional_agent_id)]
 
 
 def _auth_required() -> bool:
-    """True when agent HMAC auth is mandatory (prod-ish) vs opt-in (dev).
-
-    An UNSET flag fails closed in production: a public deployment must not sit
-    in header-trust mode, where any client reaching the API can claim
-    ``X-Agent-Role: ceo`` without a signed token (GHSA-4f7g-w95g-5q2c). An
-    explicit opt-out still stands for a trusted private-network prod deploy.
-    """
+    """True when agent HMAC auth is mandatory (prod-ish) vs opt-in (dev)."""
     val = os.environ.get("ROBOCO_AGENT_AUTH_REQUIRED", "").strip().lower()
-    if val in ("1", "true", "yes"):
-        return True
-    if val in ("0", "false", "no"):
-        return False
-    return settings.environment == "production"
+    return val in ("1", "true", "yes")
 
 
 def _check_agent_auth_token(
@@ -485,7 +477,6 @@ def _should_remint(token: str) -> bool:
 
 
 async def _cloud_auth_agent_context(
-    *,
     db: AsyncSession,
     response: Response,
     x_agent_id: str | None,
@@ -548,7 +539,6 @@ async def _cloud_auth_agent_context(
 
 
 async def get_agent_context(
-    *,
     db: DbSession,
     response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
@@ -578,13 +568,13 @@ async def get_agent_context(
             db, x_agent_id, x_agent_role, x_agent_team, x_agent_token
         )
     return await _cloud_auth_agent_context(
-        db=db,
-        response=response,
-        x_agent_id=x_agent_id,
-        x_agent_role=x_agent_role,
-        x_agent_team=x_agent_team,
-        x_agent_token=x_agent_token,
-        session_cookie=roboco_session,
+        db,
+        response,
+        x_agent_id,
+        x_agent_role,
+        x_agent_team,
+        x_agent_token,
+        roboco_session,
     )
 
 
@@ -782,6 +772,85 @@ async def get_content_actions(
 # =============================================================================
 
 
+# =============================================================================
+# ORCHESTRATOR ROUTE DEPENDENCIES (relocated from api/routes/orchestrator.py)
+# =============================================================================
+
+
+async def require_orchestrator_ceo(
+    x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
+    x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
+    x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+    x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    session_cookie: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+) -> None:
+    """CEO-only guard for the orchestrator control routes (spawn / stop /
+    resolve-wait / mark-waiting, plus the read-only status views) — any
+    client that could reach the API could previously spawn, stop, or
+    manipulate any agent's runtime state. Mirrors the panel-token approach
+    used by the WebSocket streams (DB-free): it binds the presented
+    ``X-Agent-ID`` to a verified HMAC token and asserts the role is CEO. In
+    dev (header-trust) mode a missing token is a no-op (the panel/operator
+    flow keeps working), but a presented-but-forged token is still rejected —
+    the same contract as the v1 flow role guards and the do router. CEO is
+    the sole operator role; agents (developers/QA/PMs) drive the orchestrator
+    via MCP verbs, not these HTTP routes, so a developer token is correctly
+    403'd here. The CEO role check itself delegates to ``require_ceo_role``
+    (#25 — the single source of truth shared with the release routes).
+    """
+    # Bind the role header to a verified token BEFORE trusting it (same
+    # defense-in-depth contract as the v1 flow role guards in _role_dep.py).
+    if not settings.cloud_auth_enabled:
+        _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+        require_ceo_role(x_agent_role, action="control the orchestrator")
+        return
+    # cloud_auth on: CEO HMAC token OR CEO session cookie (panel path).
+    if x_agent_token:
+        if not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        require_ceo_role(x_agent_role, action="control the orchestrator")
+        return
+    async for db in get_db():
+        user = await resolve_session_user(session_cookie, db)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Cloud auth is enabled — a valid session "
+                    "or agent token is required."
+                ),
+            )
+        return
+
+
+def validate_agent_id_param(agent_id: str) -> str:
+    """Reject an ``agent_id`` that could traverse a filesystem path downstream.
+
+    ``agent_id`` is an opaque slug / uuid the orchestrator assigns, but it is a
+    request path parameter and flows into per-agent paths (e.g. the grok usage
+    dir). Reject every traversal vector — empty, ``.`` / ``..``, a ``/`` or
+    ``\\`` separator, or an embedded NUL — at the HTTP boundary with 422 before
+    it reaches any path. Explicit guards (not a regex) so CodeQL models this as a
+    path-injection barrier; the runtime ``_grok_usage_dir`` repeats the check as
+    defense in depth for non-HTTP callers.
+    """
+    if (
+        not agent_id
+        or agent_id in {".", ".."}
+        or "/" in agent_id
+        or "\\" in agent_id
+        or "\x00" in agent_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid agent_id",
+        )
+    return agent_id
+
+
 def get_pagination(
     limit: int = 50,
     offset: int = 0,
@@ -794,3 +863,82 @@ def get_pagination(
 
 
 PaginationDep = Annotated[PaginationParams, Depends(get_pagination)]
+
+
+# =============================================================================
+# V1 FLOW ROUTER DEPENDENCIES (relocated from api/routes/v1/_role_dep.py)
+# =============================================================================
+#
+# Every v1 flow router gets one of these as a dependency so the role check
+# happens before the choreographer body even runs. Defense in depth — the
+# choreographer also re-checks role internally for verbs that branch on it.
+
+
+def require_roles(allowed: frozenset[Role]) -> params.Depends:
+    def _check(
+        x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
+        x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
+        x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+        x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    ) -> None:
+        # Bind the role header to a verified token BEFORE trusting it. These v1
+        # flow guards are the sole gate for the /api/v1/flow/* endpoints, but
+        # previously checked only the role string — unlike get_agent_context,
+        # which already verifies the token. So a forged X-Agent-Role passed, and
+        # in strict mode (ROBOCO_AGENT_AUTH_REQUIRED) the token was never
+        # required here. In header-trust (dev) mode a missing token stays a
+        # no-op; any presented token is still verified.
+        _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+        # `Role` is a StrEnum, so the lowercase header string compares equal
+        # to its matching member.
+        if x_agent_role.lower() not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"role '{x_agent_role}' not allowed for this endpoint group",
+            )
+
+    return cast("params.Depends", Depends(_check))
+
+
+def require_authenticated_agent() -> params.Depends:
+    """Token-only guard for the content-tool (do) router.
+
+    The do router serves every role — content tools are role-uniform, with
+    per-role removal handled in the spawn manifest — so, unlike the flow
+    routers, there is no single role to assert. But it must still bind the
+    presented ``X-Agent-ID`` to a verified HMAC token when
+    ``ROBOCO_AGENT_AUTH_REQUIRED=true`` and reject a forged token even in
+    dev mode, exactly as the flow role guards do. Without this the
+    ``/api/v1/do/*`` endpoints were the one agent-gateway path that
+    accepted a forged ``X-Agent-ID`` with no token check — a weaker gate
+    than ``/api/v1/flow/*``. The role/team headers are optional (the do
+    MCP server sends role but not team); they only feed the HMAC payload,
+    so a missing team is the empty-string team the token was issued with.
+    """
+
+    def _check(
+        x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
+        x_agent_role: Annotated[str | None, Header(alias="X-Agent-Role")] = None,
+        x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+        x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    ) -> None:
+        _check_agent_auth_token(
+            x_agent_id, x_agent_role or "", x_agent_team, x_agent_token
+        )
+
+    return cast("params.Depends", Depends(_check))
+
+
+def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:
+    """Stamp the request's correlation_id onto the envelope and return wire-dict.
+
+    ``CorrelationIdMiddleware`` writes the inbound (or freshly-generated)
+    ``X-Correlation-ID`` to ``request.state.correlation_id``. We pull it
+    here so the agent receives the same id it sent (or can capture the
+    server-generated one) and ops can join logs across the full
+    MCP -> API -> service hop.
+    """
+    cid = getattr(request.state, "correlation_id", None)
+    if cid is not None and env.correlation_id is None:
+        env.correlation_id = cid
+    return env.as_dict()

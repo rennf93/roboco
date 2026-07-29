@@ -1,13 +1,18 @@
 """Schemas for the video engine's on-demand request + CEO approval surface."""
 
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.markers import MAX_VIDEO_RENDER_ATTEMPTS
 from roboco.services.video_post_service import MAX_TIKTOK_CAPTION_CHARS
 from roboco.services.x_client import MAX_TWEET_CHARS
+
+if TYPE_CHECKING:
+    from roboco.db.tables import TaskTable
 
 
 class VideoRequestBody(BaseModel):
@@ -42,8 +47,6 @@ class VideoPostResponse(BaseModel):
     reject_reason: str | None = None
     mp4_paths: dict[str, str] = Field(default_factory=dict)
     source_task_id: str | None = None  # the authoring task this draft rendered from
-    project_slug: str | None = None
-    project_name: str | None = None
 
 
 class VideoPostApproveRequest(BaseModel):
@@ -86,8 +89,6 @@ class VideoPostHistoryResponse(BaseModel):
     posted: dict[str, str] = Field(default_factory=dict)  # platform -> posted id
     acted_at: datetime
     source_task_id: str | None = None  # the authoring task this draft rendered from
-    project_slug: str | None = None
-    project_name: str | None = None
 
 
 class VideoPipelineItemResponse(BaseModel):
@@ -107,35 +108,6 @@ class VideoPipelineItemResponse(BaseModel):
     render_attempts: int = 0
     max_attempts: int = MAX_VIDEO_RENDER_ATTEMPTS
     render_error: str | None = None
-    project_slug: str | None = None
-    project_name: str | None = None
-
-
-class PreviewFrameResponse(BaseModel):
-    """One extracted request_render preview frame — index/timestamp decoded
-    from the sidecar's self-describing filename
-    (``frame-<idx>-of-<n>-at-<t>s.png``, video-renderer/render.js)."""
-
-    index: int
-    file: str
-    timestamp_seconds: float
-
-
-class VideoPreviewFramesResponse(BaseModel):
-    """A video-authoring task's request_render preview frames, keyed by
-    orientation — the CEO's only look at the rendered artifact before the
-    post-completion render loop produces the real MP4 (awaiting_ceo_approval
-    has nothing else to show). composition_id/duration/head_sha/dirty/
-    rendered_at come from the render_preview marker; an orientation absent
-    or empty from ``frames`` was never rendered."""
-
-    task_id: str
-    composition_id: str | None = None
-    duration_seconds: float | None = None
-    head_sha: str | None = None
-    dirty: bool | None = None
-    rendered_at: str | None = None
-    frames: dict[str, list[PreviewFrameResponse]] = Field(default_factory=dict)
 
 
 class TikTokCredentialsStatus(BaseModel):
@@ -151,3 +123,69 @@ class TikTokCredentialsSetRequest(BaseModel):
     client_secret: str = Field(default="")
     access_token: str = Field(default="")
     refresh_token: str = Field(default="")
+
+
+def status_value(task: "TaskTable") -> str:
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_video_post_response(task: "TaskTable") -> VideoPostResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPostResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=status_value(task),
+        occasion=str(draft.get("occasion") or ""),
+        script=str(draft.get("script") or ""),
+        platforms=list(draft.get("platforms") or []),
+        x_caption=draft.get("x_caption"),
+        tiktok_caption=draft.get("tiktok_caption"),
+        reject_reason=markers.get_video_reject_reason(task),
+        mp4_paths=dict(draft.get("mp4_paths") or {}),
+        source_task_id=draft.get("source_task_id"),
+    )
+
+
+def task_to_pipeline_item(task: "TaskTable") -> VideoPipelineItemResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPipelineItemResponse(
+        task_id=str(task.id),
+        title=task.title,
+        occasion=str(draft.get("occasion") or ""),
+        status=status_value(task),
+        pr_number=task.pr_number,
+        composition_id=draft.get("composition_id"),
+        render_status=draft.get("render_status"),
+        render_attempts=int(draft.get("render_attempts", 0)),
+        render_error=draft.get("render_error"),
+    )
+
+
+def posted_ids(draft: dict[str, Any]) -> dict[str, str]:
+    """Every ``{platform}_posted_id`` key stamped by approve, keyed by
+    platform (e.g. ``{"x": "..", "tiktok": ".."}``)."""
+    suffix = "_posted_id"
+    return {
+        k[: -len(suffix)]: str(v) for k, v in draft.items() if k.endswith(suffix) and v
+    }
+
+
+def task_to_video_post_history_response(task: "TaskTable") -> VideoPostHistoryResponse:
+    draft = markers.get_video_draft(task) or {}
+    return VideoPostHistoryResponse(
+        task_id=str(task.id),
+        source=task.source,
+        title=task.title,
+        status=status_value(task),
+        occasion=str(draft.get("occasion") or ""),
+        script=str(draft.get("script") or ""),
+        platforms=list(draft.get("platforms") or []),
+        x_caption=draft.get("x_caption"),
+        tiktok_caption=draft.get("tiktok_caption"),
+        reject_reason=markers.get_video_reject_reason(task),
+        posted=posted_ids(draft),
+        acted_at=task.updated_at or task.created_at,
+        source_task_id=draft.get("source_task_id"),
+    )

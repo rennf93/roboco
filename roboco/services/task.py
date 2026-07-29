@@ -6,21 +6,19 @@ Handles status transitions, assignments, and queries.
 """
 
 import asyncio
-import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-import structlog
 from sqlalchemy import String, and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstanceState
 
+from roboco.db.base import get_db_context
 from roboco.db.tables import (
-    AgentSpawnSessionTable,
     AgentTable,
     JournalEntryTable,
     JournalTable,
@@ -63,7 +61,6 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
-from roboco.models.env_branches import effective_environments, head_branch
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
@@ -82,6 +79,8 @@ from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
 if TYPE_CHECKING:
+    from fastapi import HTTPException
+
     from roboco.services.permissions import PermissionService
 
 # UUID format constants for validation
@@ -389,35 +388,6 @@ def _append_capped(existing: str | None, addition: str) -> str:
 _CEO_REJECT_ACTUAL_CAP = 300
 _CEO_REJECT_EVIDENCE_CAP = 2000
 
-# Roles whose claim WORKS the branch (and so should inherit an advanced
-# upstream base into it). QA / documenter / PR-gate claims review the branch
-# exactly as the dev pushed it and must never move it.
-_BASE_INHERIT_ROLES = frozenset({"developer", "cell_pm", "main_pm"})
-
-# Pre-claim statuses where inheriting is safe: work is (re)starting, nothing
-# downstream has reviewed the branch yet. A PM's i_will_plan re-claim of its
-# own AWAITING_PM_REVIEW task must NOT inherit — that branch already passed
-# QA + the PR gate, and a silent base merge would put unreviewed content
-# under the PM's merge decision.
-_BASE_INHERIT_STATUSES = frozenset({TaskStatus.PENDING, TaskStatus.NEEDS_REVISION})
-
-
-def _should_inherit_base(
-    original_branch_name: str | None,
-    project_id: Any,
-    agent_role: str | None,
-    original_status: Any,
-) -> bool:
-    """True iff this claim should merge the advanced upstream base in:
-    a pre-existing branch on a project task, claimed by a WORK role, from a
-    pre-review status. Kept out of ``_finalize_claim`` for complexity budget."""
-    return bool(
-        original_branch_name
-        and project_id
-        and agent_role in _BASE_INHERIT_ROLES
-        and original_status in _BASE_INHERIT_STATUSES
-    )
-
 
 def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
     """Split a CEO rejection reason into a ledger Finding's (actual, evidence).
@@ -635,12 +605,6 @@ DEP_UPDATE_SOURCE = "dep_update"
 # auto-merges; requires the roboco-website project to be registered.
 DOCS_SYNC_SOURCE = "docs_sync"
 
-# Source tag for an env-sync conflict task: opened by the EnvSyncEngine when the
-# prod→…→head cascade hits a non-fast-forward on a rung and opens a sync PR. Rides
-# the normal delivery lifecycle (+ PR-review gate) and is never auto-merged; the
-# task tracks the PR so the dedup cap + panel visibility work.
-ENV_SYNC_SOURCE = "env_sync"
-
 # Source tag for a gated release proposal: opened by the release-manager engine
 # when accumulated unreleased changes pass the threshold + the gate is green.
 # Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
@@ -669,44 +633,13 @@ X_FEATURE_EXPLORATION_SOURCE = "x_feature_exploration"
 # free.
 X_FEATURE_SOURCE = "x_feature"
 
-# Source tag for a materialized Megaphone editorial post — the HoM-authored
-# standing-editorial-calendar draft (dev-log threads, behind-the-scenes posts,
-# changelog highlights — spec §4). Added to X_SOURCES so it inherits every
-# existing consumer (XPostService, list_open_x_posts, the PM-dispatcher's
-# held-source skip) for free, mirroring X_FEATURE_SOURCE exactly — the
-# materializer IS the existing X held-draft queue, zero new approval surface.
-X_EDITORIAL_SOURCE = "x_editorial"
-
-# Source tag for one ordered post materialized from a War Room (Board Program)
-# campaign — teaser/launch/follow_up/spotlight, each carrying its own
-# publish_after guidance (x_campaign_ref marker). Added to X_SOURCES so it
-# inherits every existing consumer (XPostService, list_open_x_posts, the
-# PM-dispatcher's held-source skip) for free, mirroring X_FEATURE_SOURCE.
-X_CAMPAIGN_SOURCE = "x_campaign"
-
-# Source tag for a materialized Barfly (Board Program) reply draft — a
-# HoM-authored reply to a screened X conversation the search cycle found.
-# Added to X_SOURCES so it inherits XPostService (approve/reject),
-# list_open_x_posts/list_x_post_history, and the PM-dispatcher's held-source
-# skip for free, exactly like X_FEATURE_SOURCE.
-X_BARFLY_SOURCE = "x_barfly"
-
-X_SOURCES = (
-    X_POST_SOURCE,
-    X_REPLY_SOURCE,
-    X_FEATURE_SOURCE,
-    X_EDITORIAL_SOURCE,
-    X_CAMPAIGN_SOURCE,
-    X_BARFLY_SOURCE,
-)
+X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
 # dispatched — a normal, pre-assigned delivery task like any other cell code
-# task — so it stays out of every held-source skip bucket. Canonical string
-# lives in foundation (markers.VIDEO_TASK_SOURCE) so the tracing gate can
-# key on it without importing this layer.
-VIDEO_SOURCE = markers.VIDEO_TASK_SOURCE
+# task — so it stays out of every held-source skip bucket.
+VIDEO_SOURCE = "video"
 
 # Source tag for a held video-post draft: mp4s + captions ready for CEO
 # approval. Like release_manager/X_SOURCES this is NEVER dispatched — held
@@ -728,205 +661,6 @@ ROADMAP_SOURCE = "board_roadmap"
 # (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
 ROADMAP_ITEM_SOURCE = "roadmap"
 
-# Source tag for a Pest Control (Board Program) exploration cycle: a PENDING
-# task the pest-control engine opens for the Product Owner to hunt latent
-# defects (findings-ledger clusters, rework hotspots) in an opted-in project
-# and author evidence-backed bug drafts (the ``propose_bug_hunt`` content
-# verb). Mirrors ROADMAP_SOURCE: IS dispatched (one-shot PO spawn) but never
-# rides the delivery lifecycle; items materialize into BACKLOG only via the
-# CEO's per-item approve (source=PEST_CONTROL_ITEM_SOURCE below).
-PEST_CONTROL_SOURCE = "board_pest_control"
-
-# Source tag stamped on a task MATERIALIZED from an approved pest-hunt item
-# (distinct from PEST_CONTROL_SOURCE, which tags the held exploration cycle).
-PEST_CONTROL_ITEM_SOURCE = "pest_control"
-
-# Source tag for a Periscope (Board Program) exploration cycle: a PENDING task
-# the periscope engine opens for the Head of Marketing to research the market
-# (competitors, adjacent-tool releases, positioning shifts) and author a brief
-# via the ``propose_market_brief`` content verb. Org-scoped (no project
-# targeting — it reads the market, not a repo) and, like X_FEATURE_
-# EXPLORATION_SOURCE, complete-at-propose: the exploration task itself
-# completes the moment the brief is filed, but each cited finding still
-# carries its OWN proposed/approved/rejected status the CEO decides
-# per-finding after the fact (source=PERISCOPE_ITEM_SOURCE below) — the report
-# and the per-item queue are orthogonal, unlike roadmap/pest-control where
-# they're the same open-vs-closed task.
-PERISCOPE_SOURCE = "board_periscope"
-
-# Source tag stamped on a task MATERIALIZED from an approved Periscope
-# finding (distinct from PERISCOPE_SOURCE, which tags the already-completed
-# exploration task the finding lives on).
-PERISCOPE_ITEM_SOURCE = "periscope"
-
-# Source tag for a Coroner (Board Program) postmortem-exploration task: the
-# EVENT-triggered autopsy the Auditor authors (spec §4) when an incident task
-# bounces >=3x, is cancelled after work started, or is budget-blocked.
-# Dispatched (one-shot Auditor spawn), never rides the delivery lifecycle.
-# The exploration task completes atomically the moment ``propose_postmortem``
-# lands (mirrors X_FEATURE_EXPLORATION_SOURCE's atomic-complete shape, not the
-# stays-open-for-per-item-decisions roadmap/pest-control shape) — but unlike
-# a report, a postmortem's single ``process_change`` still carries its own
-# proposed/approved/rejected status for the CEO's after-the-fact decision
-# (source=CORONER_ITEM_SOURCE below), except when its kind is "playbook"
-# (already routed straight into the playbook curation queue, nothing left to
-# decide here).
-CORONER_SOURCE = "board_coroner"
-
-# Source tag stamped on a task MATERIALIZED from an approved Coroner
-# process-change (distinct from CORONER_SOURCE, which tags the
-# already-completed postmortem exploration task it lives on).
-CORONER_ITEM_SOURCE = "coroner"
-
-# Source tag for a Scales (Board Program) portfolio-rebalance exploration
-# cycle: a PENDING task the scales engine opens for the Product Owner to
-# review the live backlog against the charter and author re-priority /
-# cancellation drafts (the ``propose_rebalance`` content verb). Org-scoped
-# (spec §4: it reads the portfolio, not one repo) but IS dispatched
-# (one-shot PO spawn) and never rides the delivery lifecycle. Mirrors
-# ROADMAP_SOURCE/PEST_CONTROL_SOURCE's stays-open-for-per-item-decisions
-# shape — unlike them, an approved item never materializes a NEW task: it
-# MUTATES a live one (reprioritize) or cancels it, so there is no separate
-# "materialized item" source.
-SCALES_SOURCE = "board_scales"
-
-# Source tag for a War Room (Board Program) campaign-planning exploration: a
-# PENDING task the War Room engine opens for the Head of Marketing to design
-# an ordered campaign (teaser -> launch -> follow-up -> spotlight) and author
-# it via the ``propose_campaign`` content verb. EVENT-triggered (spec §4:
-# release-publish or a CEO "run now" call, never a cron cadence) and, like
-# CORONER_SOURCE/PERISCOPE_SOURCE, complete-at-propose: one call materializes
-# every post and completes the task in the same step — no separate
-# materialized-item source exists (each post lands directly under
-# X_CAMPAIGN_SOURCE in roboco.services.x_engine).
-WAR_ROOM_SOURCE = "board_war_room"
-
-# Coroner's bounce trigger (spec §4): a task that has bounced this many times
-# into needs_revision gets one autopsy attempt.
-_CORONER_BOUNCE_THRESHOLD = 3
-
-
-_module_log = structlog.get_logger()
-
-
-async def _fire_coroner_bounce_hook(task_id: UUID) -> None:
-    """Best-effort Coroner autopsy trigger for a task's 3rd bounce.
-
-    Scheduled via ``asyncio.create_task`` from the SYNC
-    ``_emit_status_transition_audit`` chokepoint, so this opens its OWN fresh
-    DB session rather than reusing the caller's mid-transaction one — the
-    caller's transaction may still roll back after this fires (the same
-    accepted small race every other fire-and-forget hook in this module
-    carries, e.g. the lifecycle-event indexer), which would rarely misfire an
-    autopsy on a bounce that never really landed. ``CoronerEngine.
-    open_for_incident`` itself is armed+dedup-gated, so a misfire is at worst
-    a wasted, no-op autopsy spawn, never a duplicate/live one.
-    """
-    from roboco.db.base import get_db_context
-    from roboco.services.coroner_engine import get_coroner_engine
-
-    try:
-        async with get_db_context() as db:
-            await get_coroner_engine(db).open_for_incident(task_id, kind="bounced")
-            await db.commit()
-    except Exception:
-        _module_log.warning(
-            "coroner: bounce hook failed (best-effort)", task_id=str(task_id)
-        )
-
-
-# Source tag for a Sentinel (Board Program) exploration cycle: a PENDING task
-# the sentinel engine opens for the Auditor to assess org-wide quality drift
-# (waiver-accumulation trends, conventions-violation hotspots, docs/map
-# staleness, budget anomalies) and file ONE "state of quality" report via the
-# ``propose_quality_report`` content verb. Org-scoped (no project targeting)
-# and, like PERISCOPE_SOURCE, complete-at-propose — but each drift item still
-# carries its own proposed/approved/rejected status for the CEO's per-item
-# decision after the report is filed (source=SENTINEL_ITEM_SOURCE below).
-SENTINEL_SOURCE = "board_sentinel"
-
-# Source tag stamped on a task MATERIALIZED from an approved Sentinel drift
-# item (distinct from SENTINEL_SOURCE, which tags the already-completed
-# exploration task the item lives on).
-SENTINEL_ITEM_SOURCE = "sentinel"
-
-# Source tag for a Spackle (Board Program) exploration cycle: a PENDING task
-# the spackle engine opens for the Product Owner to audit an opted-in
-# project's half-shipped surface area (API routes with no panel surface and
-# vice versa, armed flags with no docs, docs promises the code doesn't keep,
-# coverage holes, dead-end panel tabs) and author evidence-backed gap-fill
-# drafts (the ``propose_gap_fill`` content verb). Mirrors PEST_CONTROL_SOURCE
-# exactly: IS dispatched (one-shot PO spawn) but never rides the delivery
-# lifecycle; items materialize into BACKLOG only via the CEO's per-item
-# approve (source=SPACKLE_ITEM_SOURCE below).
-SPACKLE_SOURCE = "board_spackle"
-
-# Source tag stamped on a task MATERIALIZED from an approved gap-fill item
-# (distinct from SPACKLE_SOURCE, which tags the held exploration cycle).
-SPACKLE_ITEM_SOURCE = "spackle"
-
-# Source tag for a Mirror (Board Program) exploration cycle: a PENDING task
-# the mirror engine opens for the Head of Marketing to audit an opted-in
-# project's messaging surfaces (README, docs-site, website) against the
-# charter and shipped reality, and author evidence-backed messaging-fix
-# drafts (the ``propose_messaging_fixes`` content verb). Mirrors
-# SPACKLE_SOURCE exactly: IS dispatched (one-shot HoM spawn) but never rides
-# the delivery lifecycle; items materialize into BACKLOG only via the CEO's
-# per-item approve (source=MIRROR_ITEM_SOURCE below).
-MIRROR_SOURCE = "board_mirror"
-
-# Source tag stamped on a task MATERIALIZED from an approved messaging-fix
-# item (distinct from MIRROR_SOURCE, which tags the held exploration cycle).
-MIRROR_ITEM_SOURCE = "mirror"
-
-# Source tag for a Megaphone (Board Program) exploration cycle: a PENDING task
-# the megaphone engine opens for the Head of Marketing to pick ONE angle off
-# the server-assembled shipped-this-week digest and author a post via the
-# ``propose_editorial_post`` content verb. Org-scoped (no project targeting —
-# it reads the org's own shipped-task/changelog history, not a repo) and,
-# like X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: the materializer IS
-# the existing X held-draft queue (source=X_EDITORIAL_SOURCE above), so there
-# is no separate per-item CEO decision to leave the exploration task open for.
-MEGAPHONE_SOURCE = "board_megaphone"
-
-# Source tag for a Librarian (Board Program) exploration cycle: a PENDING
-# task the librarian engine opens for the Auditor to mine journals/learnings
-# for repeated patterns nobody has turned into a playbook yet and draft 1-3
-# of them via the ``propose_playbook_drafts`` content verb. Org-scoped (spec
-# §4: it mines org-wide journal/learning data, not one repo) and, like
-# PERISCOPE_SOURCE/SENTINEL_SOURCE, complete-at-propose: each draft is
-# already a real PlaybookTable row riding the normal pending-playbook
-# curation queue, so there is no separate materialized-item source.
-LIBRARIAN_SOURCE = "board_librarian"
-
-# Source tag for a Barfly (Board Program) conversation-reply exploration
-# cycle: a PENDING task the barfly engine opens for the Head of Marketing,
-# carrying screened candidate X conversations (search results — RoboCo is
-# relevant but unmentioned) for the ``propose_conversation_replies`` content
-# verb. Org-scoped (spec §4: it searches X, not a repo) and, like
-# PERISCOPE_SOURCE/X_FEATURE_EXPLORATION_SOURCE, complete-at-propose: each
-# approved-shape reply materializes its OWN held draft (source=X_BARFLY_SOURCE
-# above) in the same call, so there is no per-item CEO decision on THIS task
-# — the CEO instead decides each materialized draft in the existing X post
-# queue.
-BARFLY_SOURCE = "board_barfly"
-
-# Source tag for a Dogfood (Board Program) exploration cycle: a PENDING task
-# the dogfood engine opens for the Product Owner to walk an opted-in
-# project's live surfaces (panel via Playwright, docs site, Telegram flow) as
-# a user and author evidence-backed UX-friction drafts (the
-# ``propose_friction_fixes`` content verb). Mirrors SPACKLE_SOURCE exactly:
-# IS dispatched (one-shot PO spawn) but never rides the delivery lifecycle;
-# items materialize into BACKLOG only via the CEO's per-item approve
-# (source=DOGFOOD_ITEM_SOURCE below). EVENT-triggered (a release-publish hook
-# or a CEO "run now"), never cron — the one program whose spawn also gets the
-# playwright MCP (see AgentOrchestrator._is_dogfood_spawn).
-DOGFOOD_SOURCE = "board_dogfood"
-
-# Source tag stamped on a task MATERIALIZED from an approved friction-fix
-# item (distinct from DOGFOOD_SOURCE, which tags the held exploration cycle).
-DOGFOOD_ITEM_SOURCE = "dogfood"
-
 # Source tag for an intake draft the vault-intake watcher originates from a
 # #roboco-tagged vault note. Unlike X_SOURCES/VIDEO_HELD_SOURCES this IS
 # dispatched — it rides the intake board-review path (PENDING, Product-Owner-
@@ -934,18 +668,6 @@ DOGFOOD_ITEM_SOURCE = "dogfood"
 # Start" shape): the board reviews, the CEO's approve_and_start hands it to
 # the Main PM. The board routing is the start gate; no held-source skip.
 VAULT_NOTE_SOURCE = "vault_note"
-
-# Source tag for a golden-task fixture the offline eval bench
-# (``roboco/eval/``) replays through the real delivery lifecycle to score a
-# (role, model/provider config) cohort. Deliberately absent from every
-# held-source / non-dev-dispatch set above: an eval_bench task is a normal,
-# pre-assigned dev leaf task and must dispatch exactly like one (real spawn,
-# real QA, real docs, real cell-PM merge) — every OTHER engine (self-heal,
-# ci-watch, dep-update, docs-sync, release-manager, X, video, roadmap, vault-
-# intake) only ever queries/dedupes by ITS OWN source constant above, so an
-# eval_bench task is invisible to all of them by construction, not by an
-# explicit exemption.
-EVAL_BENCH_SOURCE = "eval_bench"
 
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
@@ -967,35 +689,6 @@ def supersede_marker_line(task: Any) -> str:
     ....split()``) exactly as before.
     """
     return markers.get_external_pr_supersede(task) or ""
-
-
-def _reconcile_ac_ids(
-    *,
-    old_criteria: list[str],
-    old_ids: list[str],
-    new_criteria: list[str],
-) -> list[str]:
-    """Stable per-criterion ids (migration 036) across an AC rewrite.
-
-    One id per element of ``new_criteria``. A criterion whose TEXT is
-    unchanged keeps its existing id — ``covers_parent_criteria``, the
-    findings ledger's ``criterion`` matcher, and ``parent_ac_refs`` all
-    reference a criterion by stable id or exact text, so a blanket re-mint on
-    every edit would silently orphan every existing reference and open
-    finding. A new or reworded criterion mints a fresh id; a dropped one
-    drops its id. Same routine serves a genuine caller-driven rewrite (``old``
-    is the row's pre-update state) and a legacy self-heal (``old`` and `new`
-    are the same current row, reconciling ids that drifted out of sync before
-    every write routed through this helper). Duplicate text is matched in
-    encounter order (first ``old`` occurrence to first ``new`` occurrence).
-    """
-    pool: dict[str, list[str]] = {}
-    for ac_text, cid in zip(old_criteria, old_ids, strict=False):
-        pool.setdefault(ac_text, []).append(cid)
-    return [
-        pool[ac_text].pop(0) if pool.get(ac_text) else uuid4().hex
-        for ac_text in new_criteria
-    ]
 
 
 class TaskService(BaseService):
@@ -1186,7 +879,6 @@ class TaskService(BaseService):
             and from_status != TaskStatus.NEEDS_REVISION.value
         ):
             task.revision_count = (task.revision_count or 0) + 1
-            self._maybe_schedule_coroner_bounce_hook(task)
 
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
@@ -1222,35 +914,6 @@ class TaskService(BaseService):
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
-
-    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
-        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
-        ONCE, at the 3rd bounce — not on every later re-bounce, which would
-        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
-        Best-effort, fire-and-forget on a FRESH DB session (this method is
-        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
-        docstring for the accepted small race this implies) so a hook
-        failure — or the enclosing transaction later rolling back — can
-        never fail the transition that got us here. Split out of
-        ``_emit_status_transition_audit`` to keep its own complexity down
-        (xenon budget)."""
-        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
-            return
-        try:
-            bg_task = asyncio.create_task(
-                _fire_coroner_bounce_hook(cast("UUID", task.id))
-            )
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
-        except Exception:
-            # Scheduling itself failing (e.g. no running event loop) must
-            # never break the transition already recorded above —
-            # _fire_coroner_bounce_hook's own body is already try/excepted
-            # for everything past this point.
-            _module_log.warning(
-                "coroner: bounce hook scheduling failed (best-effort)",
-                task_id=str(task.id),
-            )
 
     def _touch_vault_frontmatter(
         self, task: TaskTable, *, to_status: str, team: str
@@ -1392,33 +1055,6 @@ class TaskService(BaseService):
         except Exception as e:
             self.log.warning(
                 "Auditor rework alert failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
-        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
-
-        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
-        bounce hook, ``cancel`` is already async) right after the transition
-        flushes, for the top-level task the caller asked to cancel — not each
-        cascade-cancelled descendant, so a big-subtree cancel opens at most
-        one autopsy attempt. "Work started" is commits or a work session ever
-        having existed on this task; ``CoronerEngine.open_for_incident`` does
-        its own armed+dedup gating, so a false-positive call here is a cheap
-        no-op. Best-effort: never lets a hook failure break the cancel.
-        """
-        if not (task.commits or task.work_session_id is not None):
-            return
-        try:
-            from roboco.services.coroner_engine import get_coroner_engine
-
-            await get_coroner_engine(self.session).open_for_incident(
-                require_uuid(task.id), kind="cancelled"
-            )
-        except Exception as e:
-            self.log.warning(
-                "Coroner cancel-hook failed (best-effort)",
                 task_id=str(task.id),
                 error=str(e),
             )
@@ -1579,9 +1215,9 @@ class TaskService(BaseService):
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
-        ac_ids = req.acceptance_criteria_ids or _reconcile_ac_ids(
-            old_criteria=[], old_ids=[], new_criteria=req.acceptance_criteria or []
-        )
+        ac_ids = req.acceptance_criteria_ids or [
+            uuid4().hex for _ in (req.acceptance_criteria or [])
+        ]
         task = TaskTable(
             title=req.title,
             description=req.description,
@@ -1722,7 +1358,27 @@ class TaskService(BaseService):
         - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
         - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
         """
-        scope_ids = await self._repo_sibling_project_ids(project_id)
+        # Resolve every project sharing this project's repo (git_url) so the
+        # dedupe spans the whole monorepo, not just the one project. An unknown
+        # project_id falls back to itself (can't widen).
+        git_url = (
+            await self.session.execute(
+                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
+            )
+        ).scalar_one_or_none()
+        if git_url:
+            sibling_ids = (
+                (
+                    await self.session.execute(
+                        select(ProjectTable.id).where(ProjectTable.git_url == git_url)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            scope_ids = list(sibling_ids) or [project_id]
+        else:
+            scope_ids = [project_id]
         result = await self.session.execute(
             select(TaskTable.orchestration_markers).where(
                 TaskTable.project_id.in_(scope_ids),
@@ -1809,55 +1465,26 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
-    async def _repo_sibling_project_ids(self, project_id: UUID) -> list[UUID]:
-        """Every project id sharing ``project_id``'s repo (``git_url``).
-
-        The inbound-PR poll collapses a monorepo's cell-projects to one
-        canonical project per repo, so any repo-level lookup keyed by the
-        canonical id must widen back out to the siblings — a branch/review
-        owned by a sibling cell-project is still "this repo's". Falls back to
-        ``[project_id]`` when the project is unknown or has no git_url.
-        """
-        git_url = (
-            await self.session.execute(
-                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
-            )
-        ).scalar_one_or_none()
-        if not git_url:
-            return [project_id]
-        sibling_ids = (
-            (
-                await self.session.execute(
-                    select(ProjectTable.id).where(ProjectTable.git_url == git_url)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return list(sibling_ids) or [project_id]
-
     async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
-        """True if a non-terminal task on this REPO already owns this branch.
+        """True if a non-terminal task on ``project_id`` already owns this branch.
 
-        Lets the inbound-PR reviewer skip the org's own in-flight integration
+        Lets the internal-PR reviewer skip the org's own in-flight integration
         PRs — those whose head branch a live task created via the agent
         task-flow (and which therefore already pass QA + PM review) — and review
         only org-repo PRs opened outside that flow.
 
-        Scoped to the REPO (every project sharing ``project_id``'s git_url),
-        not the single polled project: the poll collapses a monorepo's
-        cell-projects to one canonical project, so a fleet PR whose owning
-        task lives on a sibling cell-project must still count as ours.
-        Cross-REPO branch-name collisions stay excluded — a different repo's
-        task can never own this repo's branch.
+        Scoped to the polled project: a branch in project A's repo can only be
+        owned by a task whose ``project_id == A`` (each task branches in its
+        own project's repo, including each root-subtask of a multi-repo
+        MegaTask). An unscoped lookup would match the wrong project's task on a
+        cross-project branch_name collision and false-skip project A's PR.
         """
         if not branch_name:
             return False
-        scope_ids = await self._repo_sibling_project_ids(project_id)
         result = await self.session.execute(
             select(TaskTable.id).where(
                 TaskTable.branch_name == branch_name,
-                TaskTable.project_id.in_(scope_ids),
+                TaskTable.project_id == project_id,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )
@@ -1950,26 +1577,6 @@ class TaskService(BaseService):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_open_env_sync_tasks(
-        self, git_url: str | None = None
-    ) -> list[TaskTable]:
-        """Non-terminal env_sync conflict tasks — the dedupe + open-cap basis.
-
-        Optionally scoped to one repo by ``git_url`` (matched on the normalized
-        repo key). A conflict stops the cascade at that rung, so at most one
-        open env_sync task exists per repo: while it is open the repo's cascade
-        is paused and the engine skips it until the PR resolves.
-        """
-        stmt = select(TaskTable).where(
-            TaskTable.source == ENV_SYNC_SOURCE,
-            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-        )
-        if git_url is not None:
-            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
-            stmt = stmt.where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
     async def list_open_docs_sync_tasks(
         self, version: str | None = None
     ) -> list[TaskTable]:
@@ -1984,13 +1591,12 @@ class TaskService(BaseService):
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
         if version is not None:
-            # Filter by marker in SQL so the database applies the predicate
-            # and avoids hauling every open docs_sync row into Python.
-            # .as_string() is the generic JSON comparator; .astext is JSONB-only.
+            # Filter by marker in SQL so the database can apply JSONB indexes
+            # and avoid hauling every open docs_sync row into Python.
             stmt = stmt.where(
                 TaskTable.orchestration_markers[
                     markers.DOCS_SYNC_RELEASE_VERSION
-                ].as_string()
+                ].astext
                 == version
             )
         result = await self.session.execute(stmt)
@@ -2154,98 +1760,6 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
-    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
-        """Non-terminal pest-control exploration tasks — the one-open-cycle
-        dedup + panel-queue basis. Includes a cycle before AND after the
-        Product Owner authors it (``propose_bug_hunt``); ordered oldest-first.
-        Mirrors ``list_open_roadmap_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PEST_CONTROL_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_coroner_cycles(self) -> list[TaskTable]:
-        """Non-terminal Coroner postmortem-exploration tasks — the one-open-
-        autopsy-at-a-time dedup basis. Mirrors ``list_open_pest_control_cycles``;
-        unlike it there is no separate authored-vs-not split (``propose_
-        postmortem`` completes the task atomically), so this is purely the
-        dedup gate, not also a panel-queue basis."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == CORONER_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_spackle_cycles(self) -> list[TaskTable]:
-        """Non-terminal spackle exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_gap_fill``); ordered oldest-first.
-        Mirrors ``list_open_pest_control_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SPACKLE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_mirror_cycles(self) -> list[TaskTable]:
-        """Non-terminal mirror exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Head of
-        Marketing authors it (``propose_messaging_fixes``); ordered
-        oldest-first. Mirrors ``list_open_spackle_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == MIRROR_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
-        """Non-terminal dogfood exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_friction_fixes``); ordered oldest-first.
-        Mirrors ``list_open_spackle_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == DOGFOOD_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_completed_coroner_postmortems(
-        self, limit: int = 50
-    ) -> list[TaskTable]:
-        """Completed Coroner postmortem tasks, newest first — backs the
-        panel's read-only Postmortems list."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == CORONER_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
     async def list_open_feature_explorations(self) -> list[TaskTable]:
         """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
         dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
@@ -2256,82 +1770,6 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_periscope_cycles(self) -> list[TaskTable]:
-        """Non-terminal Periscope exploration tasks — the one-open-cycle dedup
-        + ``propose_market_brief``'s task lookup. Mirrors
-        ``list_open_feature_explorations``: complete-at-propose, so a task
-        found here is always pre-brief (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PERISCOPE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_periscope_briefs(self, *, limit: int = 20) -> list[TaskTable]:
-        """Completed Periscope exploration tasks (each carries a ``market_
-        brief`` marker) — the panel's Market Briefs list + the roadmap
-        prompt's "latest brief" injection basis. Newest-first, bounded by
-        ``limit``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PERISCOPE_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
-        """Non-terminal Megaphone exploration tasks — the one-open-cycle dedup
-        + ``propose_editorial_post``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-draft (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == MEGAPHONE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
-        """Non-terminal Sentinel exploration tasks — the one-open-cycle dedup
-        + ``propose_quality_report``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-report (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SENTINEL_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_sentinel_reports(self, *, limit: int = 20) -> list[TaskTable]:
-        """Completed Sentinel exploration tasks (each carries a
-        ``quality_report`` marker) — the panel's Quality Reports list basis.
-        Newest-first, bounded by ``limit``. Mirrors ``list_periscope_briefs``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SENTINEL_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -2351,99 +1789,6 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
-
-    async def list_open_scales_cycles(self) -> list[TaskTable]:
-        """Non-terminal Scales exploration tasks — the one-open-cycle dedup +
-        panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_rebalance``); ordered oldest-first.
-        Mirrors ``list_open_pest_control_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SCALES_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_librarian_cycles(self) -> list[TaskTable]:
-        """Non-terminal Librarian exploration tasks — the one-open-cycle
-        dedup + ``propose_playbook_drafts``'s task lookup. Mirrors
-        ``list_open_sentinel_cycles``: complete-at-propose, so a task found
-        here is always pre-drafts (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == LIBRARIAN_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_war_room_cycles(self) -> list[TaskTable]:
-        """Non-terminal War Room campaign-planning exploration tasks — the
-        one-open-campaign-at-a-time dedup basis. Mirrors
-        ``list_open_coroner_cycles``: complete-at-propose (``propose_campaign``
-        completes the task atomically), so this is purely the dedup gate, not
-        also a panel-queue basis — the materialized posts themselves live
-        under X_CAMPAIGN_SOURCE and ride the normal X post queue."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == WAR_ROOM_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_barfly_cycles(self) -> list[TaskTable]:
-        """Non-terminal Barfly exploration tasks — the one-open-cycle dedup +
-        ``propose_conversation_replies``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-authored."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == BARFLY_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def resolve_scales_task_ref(self, ref: str) -> TaskTable | None:
-        """Resolve a Scales rebalance item's ``task_ref`` — an id8 prefix or
-        an exact task title — to a live BACKLOG/PENDING task.
-
-        Mirrors the revision-findings ledger's "by id or exact text" match
-        (``unmatched_criteria``), applied to tasks instead of acceptance
-        criteria: an id8 prefix is tried first (the ``search_tasks`` id-cast
-        idiom), then an exact title match. None when nothing live matches —
-        the caller (``propose_rebalance``) rejects the item naming the ref.
-        """
-        ref = ref.strip()
-        if not ref:
-            return None
-        live = TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
-        by_id = await self.session.execute(
-            select(TaskTable)
-            .where(live, cast("Any", TaskTable.id).cast(String).ilike(f"{ref}%"))
-            .order_by(TaskTable.created_at)
-            .limit(1)
-        )
-        task = by_id.scalar_one_or_none()
-        if task is not None:
-            return task
-        by_title = await self.session.execute(
-            select(TaskTable)
-            .where(live, TaskTable.title == ref)
-            .order_by(TaskTable.created_at)
-            .limit(1)
-        )
-        return by_title.scalar_one_or_none()
 
     async def list_open_vault_note_drafts(self) -> list[TaskTable]:
         """Vault-note drafts still awaiting board review / CEO approval — the
@@ -2550,12 +1895,6 @@ class TaskService(BaseService):
         # the reviewer deadlocks at post_pr_review (tracing_gap) and burns tokens
         # into the do-server breaker. Cleared by complete_review.
         task.active_claimant_id = cast("Any", reviewer_agent_id)
-        # Flip agent.status/current_task_id to ACTIVE/this-task (mirrors
-        # _finalize_claim / _qa_or_doc_claim) — the external-PR-review
-        # claim chokepoint (claim_pr_review), otherwise the reviewer never
-        # shows as active in the fleet either.
-        reviewer_agent = await self.session.get(AgentTable, reviewer_agent_id)
-        self._mark_agent_active_for_claim(reviewer_agent, task.id)
         self._validate_and_set_status(
             task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
         )
@@ -2597,9 +1936,6 @@ class TaskService(BaseService):
         task.assigned_to = None
         task.claimed_by = None
         task.active_claimant_id = cast("Any", None)
-        # The external-PR reviewer's claim ends here — release the fleet
-        # marker (mirrors pr_review_claim's own ACTIVE-marking).
-        await self._clear_agent_current_task(reviewer_id, task_id)
         self._validate_and_set_status(
             task,
             TaskStatus.COMPLETED,
@@ -2736,9 +2072,7 @@ class TaskService(BaseService):
             )
             frontier = []
             for child in result.scalars().all():
-                # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
-                # import and to keep ruff/mypy happy without noqa/type: ignore.
-                child_id = cast("UUID", child.id)
+                child_id = cast(UUID, child.id)  # noqa: TC006
                 if child_id in seen:
                     continue
                 seen.add(child_id)
@@ -2979,8 +2313,8 @@ class TaskService(BaseService):
         Used by the gateway merge-target resolver
         (:func:`roboco.services.gateway.merge_chain.resolve_parent_branch`) when
         a child task's parent is branchless (a coordination/fan-out parent that
-        owns no repo): the real merge target is the child's own project head
-        rung — the branch the child was actually cut from — not a derived ref
+        owns no repo): the real merge target is the child's own project default
+        branch — the branch the child was actually cut from — not a derived ref
         the parent never created. Returns None for a task with no
         project_id (e.g. a coordination task itself).
         """
@@ -2988,10 +2322,12 @@ class TaskService(BaseService):
         if project_id is None:
             return None
         result = await self.session.execute(
-            select(ProjectTable).where(ProjectTable.id == UUID(str(project_id)))
+            select(ProjectTable.default_branch).where(
+                ProjectTable.id == UUID(str(project_id))
+            )
         )
-        project = result.scalar_one_or_none()
-        return head_branch(project) if project else None
+        default_branch = result.scalar_one_or_none()
+        return str(default_branch) if default_branch else None
 
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str:
         """Pick parent branch for a new task branch, fall back to project default."""
@@ -3000,7 +2336,9 @@ class TaskService(BaseService):
             parent_branch = await self._find_ancestor_branch(task)
 
         if not parent_branch:
-            default_branch = head_branch(project)
+            default_branch = (
+                str(project.default_branch) if project.default_branch else "master"
+            )
             self.log.info(
                 "No ancestor branch found, using project default",
                 task_id=str(task.id),
@@ -3231,106 +2569,6 @@ class TaskService(BaseService):
             files=result.get("files"),
         )
 
-    async def _inherit_upstream_base(self, task: TaskTable, agent_id: UUID) -> None:
-        """Merge the task's advanced upstream base into its existing branch.
-
-        Reuses the dependency-lineage merge: an already-ancestor base is a
-        cheap no-op, a conflict aborts (branch left at its cut point) and
-        leaves a transition note steering the agent to ``sync_branch``.
-        Best-effort — never fails the claim.
-        """
-        from roboco.services.git import get_git_service
-        from roboco.services.project import get_project_service
-
-        try:
-            project = await get_project_service(self.session).get(
-                UUID(str(task.project_id))
-            )
-            if not project:
-                return
-            base_branch = await self._resolve_parent_branch(task, project)
-            branch_name = str(task.branch_name)
-            if not base_branch or base_branch == branch_name:
-                return
-            git_service = get_git_service(self.session)
-            workspace = await git_service.get_workspace(project.slug, agent_id)
-            result = await git_service.merge_dependency_lineage(
-                workspace,
-                require_uuid(task.id),
-                branch_name,
-                base_branch,
-                project_slug=project.slug,
-            )
-            status = result.get("status")
-            if status == "merged":
-                # The one path that changes branch content — leave a trail.
-                self.log.info(
-                    "upstream base inherited into task branch",
-                    task_id=str(task.id),
-                    branch_name=branch_name,
-                    base_branch=base_branch,
-                )
-            elif status == "conflict":
-                self._note_base_inheritance_conflict(task, base_branch, result)
-                await self.session.flush()
-            elif status == "merged_push_failed":
-                # Local merge succeeded, push to origin failed. Self-heals on
-                # the dev's next real push, but tell the dev so a failed
-                # submit isn't a mystery.
-                self._append_base_inheritance_dev_note(
-                    task,
-                    f"Upstream base {base_branch!r} was merged locally but the "
-                    f"push to origin failed; your next push carries it forward.",
-                )
-                await self.session.flush()
-            elif status not in ("already_ancestor", "missing_ref"):
-                # missing_ref is quiet: a merged-and-deleted parent branch
-                # simply has nothing left to inherit.
-                self.log.warning(
-                    "upstream base inheritance incomplete",
-                    task_id=str(task.id),
-                    base_branch=base_branch,
-                    status=status,
-                )
-        except Exception:
-            self.log.warning(
-                "upstream base inheritance errored",
-                task_id=str(task.id),
-                exc_info=True,
-            )
-
-    def _note_base_inheritance_conflict(
-        self, task: TaskTable, base_branch: str, result: dict[str, Any]
-    ) -> None:
-        """Log + note a base-inheritance merge conflict for the assignee."""
-        files = ", ".join(result.get("files") or []) or "unknown files"
-        note = (
-            f"Upstream base {base_branch!r} has advanced with changes that "
-            f"conflict with this branch ({task.branch_name!r}) in: {files}. "
-            f"Merge {base_branch!r} in by hand (sync_branch) before submitting."
-        )
-        existing = markers.get_transition_note(task, "base_inheritance_conflict")
-        markers.set_transition_note(
-            task,
-            "base_inheritance_conflict",
-            f"{existing}\n{note}" if existing else note,
-        )
-        # The transition-note marker isn't surfaced to the agent; dev_notes IS
-        # (it rides evidence()/build_task_handoff), so the dev actually sees the
-        # conflict on its next turn instead of only in orchestrator logs.
-        self._append_base_inheritance_dev_note(task, note)
-        self.log.warning(
-            "upstream base inheritance conflict",
-            task_id=str(task.id),
-            branch_name=task.branch_name,
-            base_branch=base_branch,
-            files=result.get("files"),
-        )
-
-    def _append_base_inheritance_dev_note(self, task: TaskTable, note: str) -> None:
-        """Surface a base-inheritance note to the assignee via dev_notes."""
-        task.dev_notes = _append_capped(task.dev_notes, f"[BASE INHERITANCE] {note}")
-
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one
         ``feature/main_pm/{root}`` integration branch each.
@@ -3477,25 +2715,10 @@ class TaskService(BaseService):
         task_id: UUID,
         **updates: Any,
     ) -> TaskTable | None:
-        """Update a task.
-
-        A rewritten ``acceptance_criteria`` re-stamps ``acceptance_criteria_ids``
-        1:1 unless the caller already supplied its own ids explicitly — every
-        writer of this generic setter (the PATCH route, the board-redraft
-        patches) otherwise left the old ids in place, mismatched or empty
-        against the new criteria list (see ``_reconcile_ac_ids``).
-        """
+        """Update a task."""
         task = await self.get(task_id)
         if not task:
             return None
-
-        new_criteria = updates.get("acceptance_criteria")
-        if new_criteria is not None and "acceptance_criteria_ids" not in updates:
-            updates["acceptance_criteria_ids"] = _reconcile_ac_ids(
-                old_criteria=list(task.acceptance_criteria or []),
-                old_ids=list(task.acceptance_criteria_ids or []),
-                new_criteria=new_criteria,
-            )
 
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
@@ -3572,11 +2795,7 @@ class TaskService(BaseService):
             new_status in _REVIEW_QUEUE_STATES
             and from_status != TaskStatus.BLOCKED.value
         ):
-            prior_claimant = to_python_uuid(task.active_claimant_id)
             task.active_claimant_id = cast("Any", None)
-            # The stale claimant is no longer active on THIS task — release
-            # its fleet marker (mirrors every other claim-clearing site).
-            await self._clear_agent_current_task(prior_claimant, task_id)
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -3762,36 +2981,16 @@ class TaskService(BaseService):
         CEO directive: sequence is the bar, independent of ``dependency_ids``
         — a PM can delegate siblings with ``sequence`` 0..N and wire no
         dependency edges between them, and claim order must still hold (the
-        4-revision-subtask live failure this guards). Effective sequence is
-        ``COALESCE(sequence, 0)`` on both sides; ties run in parallel.
-        Effective sequence 0 or no parent is unaffected. Scoped to PENDING
-        and NEEDS_REVISION claims — wider than ``_claim_blocked_by_dependencies``
-        (PENDING only), deliberately: a lower-sequence sibling delegated
-        AFTER the first claim must still hold a needs_revision reclaim; the
-        dep guard's identical needs_revision gap is pre-existing and left
-        as-is.
-
-        Two scopes, deliberately different (the live 2026-07-24 sequence-drift
-        incident): a MegaTask root-subtask's ``sequence`` is a one-shot,
-        globally-computed Kahn wave index (``PrompterService._build_confirm_batch``)
-        — a deliberate staged-release barrier, so it stays STRICTER than
-        dependency edges: a wave-N root-subtask waits for EVERY wave-(N-1)
-        root-subtask, not just its wired edge targets, no edges-exist
-        exemption. Every other same-parent context (dev-task collision-DAG
-        streams stamped incrementally by ``stamp_wave_sequence``, or a
-        hand-authored coordination subtask) instead routes through
-        ``sequence_blocker_id``: a candidate only blocks when it is a real
-        (transitive) predecessor via ``dependency_ids`` UNIONED with
-        ``completed_dependency_ids`` (a real edge to an already-terminal
-        predecessor is pruned from the live column by
-        ``_unblock_dependents`` — the union keeps that graph fact visible
-        so the fallback below never misfires on it) — because ``sequence``
-        is stamped from a partial, per-task view of the graph at delegate
-        time, an unrelated sibling from a different, never-connected stream
-        must not phantom-hold a claim purely for sharing a lower raw
-        number. A task with NO dependency edge (live or completed) onto ANY
-        same-parent sibling falls back to the raw bar unchanged (preserves
-        the #452 edge-less scenario exactly).
+        4-revision-subtask live failure this guards). STRICTER than
+        dependency edges where both exist: a wave-N sibling waits for EVERY
+        wave-(N-1) sibling, not just its edge targets — no edges-exist
+        exemption. Effective sequence is ``COALESCE(sequence, 0)`` on both
+        sides; ties run in parallel. Effective sequence 0 or no parent is
+        unaffected. Scoped to PENDING and NEEDS_REVISION claims — wider than
+        ``_claim_blocked_by_dependencies`` (PENDING only), deliberately: a
+        lower-sequence sibling delegated AFTER the first claim must still
+        hold a needs_revision reclaim; the dep guard's identical
+        needs_revision gap is pre-existing and left as-is.
         """
         if (
             task.status not in (TaskStatus.PENDING, TaskStatus.NEEDS_REVISION)
@@ -3801,116 +3000,27 @@ class TaskService(BaseService):
         seq = task.sequence or 0
         if seq == 0:
             return None
-        candidates, detail, sibling_deps = await self._sequence_sibling_candidates(
-            task, seq
+        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+        result = await self.session.execute(
+            select(TaskTable.title, TaskTable.sequence)
+            .where(
+                TaskTable.parent_task_id == task.parent_task_id,
+                TaskTable.id != task.id,
+                func.coalesce(TaskTable.sequence, 0) < seq,
+                TaskTable.status.notin_(terminal),
+            )
+            .limit(1)
         )
-        if not candidates:
+        row = result.first()
+        if row is None:
             return None
-        blocker_id = self._resolve_sequence_blocker(task, candidates, sibling_deps)
-        if blocker_id is None:
-            return None
-        title, blk_seq = detail[blocker_id]
-        blocker = f"{title!r} (sequence {blk_seq})"
+        blocker = f"{row.title!r} (sequence {row.sequence or 0})"
         self.log.warning(
             "Cannot claim task - sequence_held",
             task_id=str(task.id),
             blocked_by=blocker,
         )
         return blocker
-
-    async def _sequence_sibling_candidates(
-        self, task: TaskTable, seq: int
-    ) -> tuple[
-        list[UUID],
-        dict[UUID, tuple[str, int]],
-        dict[UUID, list[UUID]],
-    ]:
-        """Fetch same-parent siblings, split into (candidates, detail,
-        dependency-graph). ``candidates`` are strictly-lower-sequence,
-        non-terminal siblings; ``sibling_deps`` unions each sibling's live +
-        completed dependency ids (every sibling, not just candidates — a
-        BFS hop through an already-terminal intermediate must still reach a
-        further, still-open predecessor beyond it)."""
-        terminal = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
-        result = await self.session.execute(
-            select(
-                TaskTable.id,
-                TaskTable.title,
-                TaskTable.sequence,
-                TaskTable.status,
-                TaskTable.dependency_ids,
-                TaskTable.completed_dependency_ids,
-            )
-            .where(
-                TaskTable.parent_task_id == task.parent_task_id,
-                TaskTable.id != task.id,
-            )
-            .order_by(TaskTable.sequence, TaskTable.created_at)
-        )
-        candidates: list[UUID] = []
-        detail: dict[UUID, tuple[str, int]] = {}
-        sibling_deps: dict[UUID, list[UUID]] = {}
-        for row in result.all():
-            sibling_deps[row.id] = [
-                *(row.dependency_ids or []),
-                *(row.completed_dependency_ids or []),
-            ]
-            if (row.sequence or 0) < seq and row.status not in terminal:
-                candidates.append(row.id)
-                detail[row.id] = (row.title, row.sequence or 0)
-        return candidates, detail, sibling_deps
-
-    def _resolve_sequence_blocker(
-        self,
-        task: TaskTable,
-        candidates: list[UUID],
-        sibling_deps: dict[UUID, list[UUID]],
-    ) -> UUID | None:
-        """Which candidate (if any) really blocks — batch root-subtasks keep
-        the raw, edge-agnostic bar; everything else routes through the
-        dependency-graph-aware ``sequence_blocker_id`` (see
-        ``_claim_blocked_by_sequence``'s docstring for the full rationale)."""
-        if is_batch_root_subtask(
-            batch_id=task.batch_id, parent_task_id=task.parent_task_id
-        ):
-            return candidates[0]
-        from roboco.services.sequencing import sequence_blocker_id
-
-        # Union live + completed dependency ids: a real edge to an
-        # already-terminal predecessor is pruned from `dependency_ids` by
-        # `_unblock_dependents` (moved into `completed_dependency_ids`
-        # instead) the moment that predecessor completes — almost always
-        # BEFORE this dependent is ever claimed. Without the union, a task
-        # whose sole real edge already resolved would look edge-less and
-        # wrongly fall back to the raw bar, reviving the exact phantom-hold
-        # this fix removes.
-        own_dep_ids: list[object] = [
-            *(task.dependency_ids or []),
-            *(task.completed_dependency_ids or []),
-        ]
-        return cast(
-            "UUID | None",
-            sequence_blocker_id(
-                task_dependency_ids=own_dep_ids,
-                candidate_ids=cast("list[object]", candidates),
-                sibling_dependency_ids=cast("dict[object, list[object]]", sibling_deps),
-            ),
-        )
-
-    async def sequence_hold_reason(self, task: TaskTable) -> str | None:
-        """Public accessor for the sequence claim-gate's blocker naming.
-
-        Thin wrapper over ``_claim_blocked_by_sequence`` so gateway callers
-        can surface a clean, distinct ``sequence_held`` envelope BEFORE
-        running the composed claim verb — instead of letting the hold
-        surface as ``TaskService.claim()``'s bare ``None`` return, which the
-        verb runner's intermediate-``None`` guard misdiagnoses as a
-        concurrent-transition race (the 2026-07-24 incident: repeated
-        identical ``invalid_state`` rejections on a ``needs_revision``
-        reclaim that nothing concurrent ever touched — it was sequence-held
-        the whole time).
-        """
-        return await self._claim_blocked_by_sequence(task)
 
     async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
         """True when either sequencing guard blocks this PENDING claim.
@@ -4013,18 +3123,6 @@ class TaskService(BaseService):
         # throws — without restoring it, a retried claim sees the field set and
         # the trust-but-verify short-circuits, never re-pushing the branch.
         original_branch_name = task.branch_name
-        # agent.status/current_task_id too: this IS the one production
-        # chokepoint every claim verb (give_me_work -> i_will_work_on /
-        # i_will_plan, claim_review, claim_doc_task, claim_pr_review,
-        # claim_gate_review) routes through, so it's the single place to fix
-        # the "fleet always reports active: 0" bug — nothing else in the
-        # codebase ever set agent.status to ACTIVE or wrote
-        # current_task_id, so the Today brief's fleet/agents breakdown and
-        # /status's "Active agents" count were structurally incapable of
-        # reflecting real activity. Snapshot for the same rollback-on-
-        # branch-failure path as the task fields above.
-        original_agent_status = agent.status if agent else None
-        original_agent_task = agent.current_task_id if agent else None
 
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -4042,7 +3140,6 @@ class TaskService(BaseService):
         # declared but never written; now wired so the
         # invariant is functional.
         task.active_claimant_id = cast("Any", agent_id)
-        self._mark_agent_active_for_claim(agent, task.id)
 
         agent_role = agent.role.value if agent and agent.role else None
         if task.status in self._CLAIMABLE_STATUSES:
@@ -4067,9 +3164,6 @@ class TaskService(BaseService):
             task.last_heartbeat_at = original_heartbeat
             task.active_claimant_id = original_claimant_id
             task.branch_name = original_branch_name
-            self._restore_agent_claim_snapshot(
-                agent, original_agent_status, original_agent_task
-            )
             await self.session.flush()
             # emit the reversal audit row so the journey doesn't diverge
             # from real state. The forward ``task.claimed`` audit row was
@@ -4093,82 +3187,11 @@ class TaskService(BaseService):
             raise
         await self.session.refresh(task)
 
-        # Upstream base inheritance: a re-claim reuses a branch cut at an
-        # earlier claim, so upstream work merged since (e.g. UX/UI landing on
-        # the root after this cell branch was cut) never reaches it. Merge the
-        # advanced base back in before the agent spawns. Work-claims only —
-        # QA/doc/gate claims must review the branch as pushed, and a PM's
-        # i_will_plan re-claim of its own AWAITING_PM_REVIEW task must not
-        # move a branch that already passed QA + the PR gate. A fresh cut
-        # (original_branch_name unset) already branches from the live base.
-        if _should_inherit_base(
-            original_branch_name, task.project_id, agent_role, original_status
-        ):
-            await self._inherit_upstream_base(task, agent_id)
-
         await self._create_work_session_if_needed(task, agent_id, agent_role)
 
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
-
-    def _mark_agent_active_for_claim(
-        self, agent: AgentTable | None, task_id: Any
-    ) -> None:
-        """Flip agent.status/current_task_id to ACTIVE/this-task on a
-        successful claim (or claim-equivalent resume) step. Nothing else in
-        the codebase ever set agent.status to ACTIVE or wrote
-        current_task_id, so the Today brief's fleet/agents breakdown and
-        /status's fleet counts were structurally incapable of reflecting
-        real activity (always active: 0).
-
-        Every production call site (every place an agent starts genuinely
-        working a task without a further claim call in between):
-        - ``_finalize_claim`` — the dev/PM claim chokepoint (``claim()``),
-          with branch-failure rollback via ``_restore_agent_claim_snapshot``.
-        - ``_qa_or_doc_claim`` — QA / Documenter / in-path PR-reviewer claim
-          (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``). No
-          rollback needed — no failure path follows the field writes.
-        - ``pr_review_claim`` — the external-PR-review claim
-          (``claim_pr_review``).
-        - ``_apply_pre_block_restore`` — ONLY when the pre-block snapshot
-          restores straight to IN_PROGRESS (a real resume with no fresh
-          claim call). A PENDING or review-queue restored status
-          deliberately does NOT mark active there — see that method.
-        - ``unblock`` — ONLY when the branch check resumes IN_PROGRESS
-          directly (same reasoning as the restore case above).
-
-        The release half (clearing current_task_id when a claim ends) is
-        ``_clear_agent_current_task`` / ``_retarget_agent_claim`` — see
-        their own docstrings for their call sites (``mark_agent_idle``,
-        every unclaim path, ``pass_qa``/``fail_qa``, ``pr_pass``/``pr_fail``,
-        ``complete_review``, ``_maybe_advance_to_pm_review``,
-        ``admin_set_status``, ``_admin_out_of_blocked``,
-        ``_divert_owned_task_to_pool``, ``reassign_active_claim``).
-
-        ponytail: a single column can't represent a coordinator PM holding
-        several concurrent roots (PM claim-guard concurrency is intentional
-        — see claim_guards.py) — it just points at the MOST RECENT claim,
-        same ceiling the column already had before this fix (it was simply
-        never written at all). Upgrade path: a per-agent set of active task
-        ids, if multi-task fleet display is ever needed."""
-        if agent is None:
-            return
-        agent.status = AgentStatus.ACTIVE
-        agent.current_task_id = cast("Any", task_id)
-
-    def _restore_agent_claim_snapshot(
-        self,
-        agent: AgentTable | None,
-        status: AgentStatus | None,
-        current_task_id: Any,
-    ) -> None:
-        """Undo ``_mark_agent_active_for_claim`` when a branch-creation
-        failure rolls the whole claim back."""
-        if agent is None:
-            return
-        agent.status = cast("AgentStatus", status)
-        agent.current_task_id = cast("Any", current_task_id)
 
     async def acquire_claim_lock(self, agent_id: UUID) -> None:
         """Take a per-agent transaction-scoped advisory lock.
@@ -4443,8 +3466,9 @@ class TaskService(BaseService):
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
-        # - For parent tasks: merge into the project's head rung (dev trunk)
-        target_branch = head_branch(project)
+        # - For parent tasks: merge into default branch (master)
+        default_branch = project.default_branch
+        target_branch: str = str(default_branch) if default_branch else "master"
         if task.parent_task_id:
             # Get parent task's branch
             parent_id = cast("UUID", task.parent_task_id)
@@ -5400,13 +4424,6 @@ class TaskService(BaseService):
         task.claimed_by = owner
         task.last_heartbeat_at = None
         task.active_claimant_id = cast("Any", None)
-        # Ownership is preserved but the claim is released — the owner isn't
-        # actively working on this task right now (the reaper's holder is
-        # provably dead; the dependency-blocked owner is waiting on upstream
-        # work), so IDLE it rather than leaving it falsely reporting ACTIVE
-        # with a stale current_task_id until the eventual re-claim.
-        if owner is not None:
-            await self._retarget_agent_claim(cast("UUID", owner), None, task_id)
         await self.session.flush()
         return True
 
@@ -5460,13 +4477,9 @@ class TaskService(BaseService):
         if task is None or task.assigned_to != agent_id:
             return None
         if task.status == TaskStatus.PENDING:
-            result = await self._unclaim_pending_assignment(task)
-            await self._clear_agent_current_task(agent_id, task_id)
-            return result
+            return await self._unclaim_pending_assignment(task)
         if task.status == TaskStatus.BLOCKED:
-            result = await self._unclaim_from_blocked(task)
-            await self._clear_agent_current_task(agent_id, task_id)
-            return result
+            return await self._unclaim_from_blocked(task)
         # verifying (self-verification before awaiting_qa) and needs_revision
         # (QA/CEO sent it back) are both claims a dev can be sitting on when it
         # decides to bail — a wedged dev retrying unclaim from either got a
@@ -5509,28 +4522,8 @@ class TaskService(BaseService):
             task.work_session_id = cast("Any", None)
         task.assigned_to = cast("Any", None)
         task.active_claimant_id = cast("Any", None)
-        await self._clear_agent_current_task(agent_id, task_id)
         await self.session.flush()
         return task
-
-    async def _clear_agent_current_task(
-        self, agent_id: UUID | None, task_id: UUID
-    ) -> None:
-        """Clear the agent's ``current_task_id`` iff it still points at
-        ``task_id`` — every release path's specific side effect on the claim
-        marker (``_finalize_claim`` / ``_retarget_agent_claim`` /
-        ``mark_agent_idle`` own writing it; this is the release half).
-        ``agent_id=None`` (no prior claimant to release) is a no-op — lets
-        every release call site skip its own None-guard. Leaves
-        ``agent.status`` untouched: releasing THIS task doesn't mean the
-        agent is idle overall, only that it isn't the one working on it
-        anymore — the next claim or ``i_am_idle`` call is authoritative for
-        status."""
-        if agent_id is None:
-            return
-        agent = await self.session.get(AgentTable, agent_id)
-        if agent is not None and agent.current_task_id == task_id:
-            agent.current_task_id = None
 
     async def _unclaim_pending_assignment(self, task: TaskTable) -> TaskTable:
         """Release a never-claimed ``pending`` assignment (no status change).
@@ -5795,19 +4788,6 @@ class TaskService(BaseService):
         )
         return task
 
-    def _clear_tripped_oscillation_marker(self, task: TaskTable) -> None:
-        """The legacy human/panel unblock route never goes through the
-        gateway's `_oscillation_unblock_guard` — reaching a tripped task
-        here IS the human intervention the breaker demands, so clear it
-        rather than leave it to haunt the task's next legitimate
-        block/unblock cycle. The agent-verb `unblock` gateway path never
-        reaches here with the marker still tripped: its own guard already
-        refused before this method runs. A no-op when not tripped, so an
-        in-flight (non-tripped) strike count survives an ordinary unblock.
-        """
-        if markers.is_oscillation_tripped(task):
-            markers.clear_marker(task, markers.OSCILLATION_STRIKES)
-
     async def unblock(
         self, task_id: UUID, agent_role: str | None = None
     ) -> TaskTable | None:
@@ -5849,7 +4829,6 @@ class TaskService(BaseService):
             task.claimed_by = owner
         # Clear resolver metadata — only meaningful while BLOCKED.
         task.blocker_resolver_type = None
-        self._clear_tripped_oscillation_marker(task)
         # A task with a branch was claimed before it blocked, so resume it
         # in_progress. A task with NO branch was blocked before it was ever
         # claimed (e.g. a dependency-gated claim that got escalated); it cannot
@@ -5858,16 +4837,6 @@ class TaskService(BaseService):
         # claim gate then holds it cleanly if its dependency is still unmet.
         target = TaskStatus.IN_PROGRESS if task.branch_name else TaskStatus.PENDING
         self._validate_and_set_status(task, target, agent_role)
-        owner_id = to_python_uuid(owner)
-        if target == TaskStatus.IN_PROGRESS and owner_id is not None:
-            # A real resume of active work with no fresh claim() call in
-            # between — mirrors _apply_pre_block_restore's own IN_PROGRESS
-            # case. The PENDING branch deliberately does NOT mark the owner
-            # active: it needs a fresh claim() to actually resume, and
-            # marking ahead of that would show it active before any
-            # container spawns.
-            owner_agent = await self.session.get(AgentTable, owner_id)
-            self._mark_agent_active_for_claim(owner_agent, task.id)
         await self.session.flush()
 
         self.log.info(
@@ -5888,13 +4857,11 @@ class TaskService(BaseService):
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
 
-        await self._notify_unblock(task_id, task.assigned_to, task.title)
+        await self._notify_unblock(task_id, task.assigned_to)
 
         return task
 
-    async def _notify_unblock(
-        self, task_id: UUID, restored_owner: Any, task_title: str | None = None
-    ) -> None:
+    async def _notify_unblock(self, task_id: UUID, restored_owner: Any) -> None:
         """Best-effort coordination notification when a blocked task resumes.
 
         Called from both `unblock` and `unblock_with_restore`'s restore=True
@@ -5911,7 +4878,6 @@ class TaskService(BaseService):
                 task_id=str(task_id),
                 restored_owner=str(restored_owner),
                 db_session=self.session,
-                task_title=task_title,
             )
         except Exception as e:
             self.log.warning(
@@ -6111,9 +5077,6 @@ class TaskService(BaseService):
         # route POST /pass-qa calls pass_qa directly — fix once at the
         # shared transition so every caller is covered.
         task.active_claimant_id = cast("Any", None)
-        # QA's claim on THIS task ends here — release the fleet marker
-        # (mirrors _qa_or_doc_claim's own ACTIVE-marking on the claim side).
-        await self._clear_agent_current_task(captured_qa_id, task_id)
         task.qa_verified = True
         # Reset docs so the documenter writes fresh docs for this cycle.
         # DO NOT reset pr_created — the PR exists pre-QA under the current
@@ -6190,9 +5153,6 @@ class TaskService(BaseService):
 
         # Store QA agent before reassigning
         qa_agent_id = task.assigned_to
-        # QA's claim on THIS task ends here — release the fleet marker
-        # (mirrors _qa_or_doc_claim's own ACTIVE-marking on the claim side).
-        await self._clear_agent_current_task(to_python_uuid(qa_agent_id), task_id)
 
         # Reassign to original developer so they can work on revisions
         original_dev = extract_original_developer(task)
@@ -6491,31 +5451,11 @@ class TaskService(BaseService):
             pr_created=task.pr_created,
         )
         if ready_for_pm:
-            # Capture the prior claimant (the documenter, or whoever held
-            # this review-queue claim) BEFORE it's overwritten below, so
-            # their fleet marker can be released once the reassign lands —
-            # they're no longer the active claimant, and the PM hasn't
-            # actually claimed (spawned) yet, so it must NOT be marked
-            # active in their place (that's `claim()`'s job, not this
-            # pre-assignment).
-            prior_claimant = to_python_uuid(task.active_claimant_id)
             self._validate_and_set_status(
                 task, TaskStatus.AWAITING_PM_REVIEW, "documenter"
             )
             owning_pm = await self._resolve_pm_for_review(task)
             task.assigned_to = cast("Any", owning_pm) if owning_pm else None
-            # The documenter's claim ends here — unlike submit_for_qa/pass_qa/
-            # fail_qa (which all clear claimed_by + active_claimant_id on their
-            # own review-queue entry), this path pre-assigns a SPECIFIC owning
-            # PM rather than leaving assigned_to null. Without clearing the
-            # stale documenter claimant_id too, `_active_claim_violation`
-            # (content_actions.py) wrongly refuses the newly-assigned PM's own
-            # note()/commit() calls against this task_id before it formally
-            # claims — `assigned_to == agent_id` routes into the active-claim
-            # check, which still sees the documenter as claimant.
-            task.claimed_by = cast("Any", owning_pm) if owning_pm else None
-            task.active_claimant_id = cast("Any", owning_pm) if owning_pm else None
-            await self._clear_agent_current_task(prior_claimant, task_id)
             self.log.info(
                 "Documentation complete, awaiting PM review",
                 task_id=str(task_id),
@@ -7759,57 +6699,17 @@ class TaskService(BaseService):
         await ws_service.abandon(require_uuid(task.work_session_id), reason=reason)
 
     async def _delete_task_branch_best_effort(self, task: TaskTable) -> None:
-        """Delete the task's remote + local branch and per-task worktree on
-        cancel.
+        """Delete the task's remote branch + per-task worktree on cancel.
 
         Best-effort, never raises. Skipped for tasks that didn't make it to a
         branch yet, or whose PR already merged (merge path deletes the source
         branch). The worktree at ``{clone_root}/.worktrees/{task-short}/`` is
         removed from the assignee's clone so cancelled tasks don't leak full
-        working trees on disk (F123); the local branch ref (force-deleted —
-        cancelled work is discarded on purpose) and the task's video-preview
-        dir are cleaned up alongside it. The stale-claim reaper must NOT call
-        this — it routes to ``pending`` for a re-claim that reuses the
-        worktree.
+        working trees on disk (F123). The stale-claim reaper must NOT call this
+        — it routes to ``pending`` for a re-claim that reuses the worktree.
         """
         branch = task.branch_name
         if not branch:
-            return
-        try:
-            project_result = await self.session.execute(
-                select(ProjectTable).where(ProjectTable.id == task.project_id)
-            )
-            project = project_result.scalar_one_or_none()
-            if not project:
-                return
-            from roboco.services.git import get_git_service
-
-            git_service = get_git_service(self.session)
-            await git_service.delete_task_branch(project.slug, str(branch))
-            await self._remove_task_worktree_best_effort(
-                task, project, force_branch_delete=True
-            )
-        except Exception as e:
-            # Cleanup is best-effort — don't fail the cancel if the
-            # remote is unreachable or the branch is already gone.
-            self.log.warning(
-                "Branch cleanup skipped",
-                task_id=str(task.id),
-                branch=str(branch),
-                error=str(e),
-            )
-
-    async def _close_task_pr_best_effort(self, task: TaskTable) -> None:
-        """Close the task's still-open PR on cancel, if it recorded one.
-
-        Best-effort, never raises — mirrors ``_delete_task_branch_best_effort``.
-        Cancellation already force-deletes the branch/worktree, but left an
-        open PR on the forge forever since nothing ever closed it. Skipped
-        for tasks that never opened one; a no-op if it's already
-        closed/merged (``GitService.close_task_pr_best_effort``).
-        """
-        pr_number = task.pr_number
-        if not pr_number:
             return
         try:
             project_result = await self.session.execute(
@@ -7821,107 +6721,59 @@ class TaskService(BaseService):
             from roboco.services.git import get_git_service
 
             git_service = get_git_service(self.session)
-            await git_service.close_task_pr_best_effort(project_slug, int(pr_number))
+            await git_service.delete_task_branch(project_slug, str(branch))
+            await self._remove_task_worktree_best_effort(task, project_slug)
         except Exception as e:
             # Cleanup is best-effort — don't fail the cancel if the
-            # remote is unreachable or the PR is already gone.
+            # remote is unreachable or the branch is already gone.
             self.log.warning(
-                "PR close skipped",
+                "Branch cleanup skipped",
                 task_id=str(task.id),
-                pr_number=pr_number,
+                branch=str(branch),
                 error=str(e),
             )
 
     async def _remove_task_worktree_best_effort(
-        self, task: TaskTable, project: ProjectTable, *, force_branch_delete: bool
-    ) -> None:
-        """Remove the per-task worktree + local branch ref, and rmtree the
-        task's video-preview dir. Never raises.
-
-        The worktree/local-branch step no-ops when the task has no resolvable
-        assignee (pooled/unassigned at cancel) or the assignee carries no team
-        (can't form a clone path); previews cleanup still runs regardless
-        (project-scoped, not clone-scoped). The local branch is skipped
-        entirely when it's still an environment-ladder rung — a ladder branch
-        outlives any one task.
-        """
-        assignee = task.assignee
-        if (
-            assignee is not None
-            and assignee.team is not None
-            and assignee.slug is not None
-        ):
-            from roboco.services.workspace import get_workspace_service
-
-            ws_service = get_workspace_service(self.session)
-            clone_root = ws_service.get_clone_root_path(
-                project.slug, assignee.team, assignee.slug
-            )
-            worktree = clone_root / ".worktrees" / str(task.id)[:8]
-            await ws_service.remove_worktree(clone_root, worktree)
-
-            branch = task.branch_name
-            ladder_branches = {r.branch for r in effective_environments(project)}
-            if branch and str(branch) not in ladder_branches:
-                await ws_service.delete_local_branch(
-                    clone_root, str(branch), force=force_branch_delete
-                )
-
-        self._cleanup_task_previews_best_effort(task, project.slug)
-
-    def _cleanup_task_previews_best_effort(
         self, task: TaskTable, project_slug: str
     ) -> None:
-        """Best-effort rmtree of the task's video-render preview dir.
+        """Remove the per-task worktree from the assignee's clone. Never raises.
 
-        Nothing else prunes it (``_render_extract_frames`` writes frames but
-        no cleanup runs on task end), so a video-authoring task's previews
-        would otherwise leak on disk forever. Guards the resolved path stays
-        under the project's workspace dir before deleting anything.
+        No-op when the task has no resolvable assignee (pooled/unassigned at
+        cancel) or the assignee carries no team (can't form a clone path).
         """
-        from roboco.config import settings
+        assignee = task.assignee
+        if assignee is None or assignee.team is None or assignee.slug is None:
+            return
+        from roboco.services.workspace import get_workspace_service
 
-        project_dir = Path(settings.workspaces_root) / project_slug
-        previews_dir = project_dir / ".previews" / str(task.id)[:8]
-        try:
-            if not previews_dir.exists():
-                return
-            if not previews_dir.resolve().is_relative_to(project_dir.resolve()):
-                return
-            shutil.rmtree(previews_dir)
-        except Exception as e:
-            self.log.warning(
-                "Preview cleanup skipped", task_id=str(task.id), error=str(e)
-            )
+        ws_service = get_workspace_service(self.session)
+        clone_root = ws_service.get_clone_root_path(
+            project_slug, assignee.team, assignee.slug
+        )
+        worktree = clone_root / ".worktrees" / str(task.id)[:8]
+        await ws_service.remove_worktree(clone_root, worktree)
 
     async def _remove_task_worktree_on_terminal(self, task: TaskTable) -> None:
-        """Best-effort per-task worktree + local-branch removal on terminal
-        completion.
+        """Best-effort per-task worktree removal on terminal completion.
 
-        Force-deletes the local branch ref (``-D``), same as the cancel path:
-        completion implies the PR already merged remotely (the merge path
-        deleted the remote branch), and the default merge method is SQUASH —
-        the local ref's commits are never ancestors of the base, so a "safe"
-        ``-d`` refuses every time and the ref would leak forever. The ref is
-        spent either way once the task is terminal. A completed task would
-        otherwise leak its worktree + branch ref on disk until the whole
-        agent is deleted (F123). Best-effort: never raises, so a cleanup
-        failure can't block completion. No-op for branchless tasks (no
-        worktree was ever cut). Terminal-only by call site — earlier review
-        states may bounce ``needs_revision`` and need the worktree back.
+        Mirrors the cancel-path cleanup but WITHOUT deleting the remote branch
+        (the merge path already deleted it). A completed/merged task would
+        otherwise leak its worktree on disk until the whole agent is deleted
+        (F123). Best-effort: never raises, so a cleanup failure can't block
+        completion. No-op for branchless tasks (no worktree was ever cut).
+        Terminal-only by call site — earlier review states may bounce
+        ``needs_revision`` and need the worktree back.
         """
         if not task.branch_name:
             return
         try:
             result = await self.session.execute(
-                select(ProjectTable).where(ProjectTable.id == task.project_id)
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
             )
-            project = result.scalar_one_or_none()
-            if not project:
+            project_slug = result.scalar_one_or_none()
+            if not project_slug:
                 return
-            await self._remove_task_worktree_best_effort(
-                task, project, force_branch_delete=True
-            )
+            await self._remove_task_worktree_best_effort(task, project_slug)
         except OSError as e:
             # FS/permission failure (stuck mount, perms) — systemic, not
             # task-specific. Track the streak and escalate a CEO alert once
@@ -8061,7 +6913,6 @@ class TaskService(BaseService):
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
             )
-            await self._close_task_pr_best_effort(descendant)
             await self._delete_task_branch_best_effort(descendant)
 
         if cancelled_count > 0:
@@ -8075,10 +6926,8 @@ class TaskService(BaseService):
         self._validate_and_set_status(task, TaskStatus.CANCELLED, agent_role)
         cancelled_now.append(task)
         await self._abandon_work_session_for_task(task, reason="task cancelled")
-        await self._close_task_pr_best_effort(task)
         await self._delete_task_branch_best_effort(task)
         await self.session.flush()
-        await self._alert_coroner_of_cancel(task)
 
         # Origin fix: a cancelled child may have declared parent_ac_refs that
         # no surviving sibling covers, leaving the roll-up gate
@@ -8289,7 +7138,6 @@ class TaskService(BaseService):
                 assignee=str(owner),
                 completed_dependency_id=str(completed_dependency_id),
                 db_session=self.session,
-                task_title=task.title,
             )
         except Exception as e:
             self.log.warning(
@@ -8456,14 +7304,13 @@ class TaskService(BaseService):
     async def list_recent_for_project(
         self, project_id: UUID, limit: int = 15
     ) -> list[TaskTable]:
-        """Recent non-cancelled tasks for a project, most-recently-active first.
+        """Recent tasks for a project, most-recently-active first.
 
         Backs the prompter's history digest: the intake agent gets a compact
         chronological view of what's already been built/attempted in this repo.
         "Recent" = highest of completed_at / updated_at / created_at, so a
         just-touched-but-not-completed task still surfaces ahead of an old
-        completed one. Cancelled tasks are excluded — abandoned work is not
-        precedent an intake agent should treat as shipped or in-flight.
+        completed one.
         """
         activity = func.coalesce(
             TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
@@ -8471,7 +7318,6 @@ class TaskService(BaseService):
         stmt = (
             select(TaskTable)
             .where(TaskTable.project_id == project_id)
-            .where(TaskTable.status != TaskStatus.CANCELLED)
             .order_by(activity.desc())
             .limit(limit)
         )
@@ -8916,23 +7762,13 @@ class TaskService(BaseService):
             created = await self.add_dependency(held_back_id, blocking_id)
             if created:
                 held_back = siblings_by_id.get(held_back_id)
-                blocking = siblings_by_id.get(blocking_id)
                 owner = getattr(held_back, "assigned_to", None) if held_back else None
                 await self._notify_collision_sequencing(
-                    held_back_id,
-                    blocking_id,
-                    owner,
-                    getattr(held_back, "title", None),
-                    getattr(blocking, "title", None),
+                    held_back_id, blocking_id, owner
                 )
 
     async def _notify_collision_sequencing(
-        self,
-        held_back_task_id: UUID,
-        blocking_task_id: UUID,
-        owner: Any,
-        held_back_title: str | None = None,
-        blocking_title: str | None = None,
+        self, held_back_task_id: UUID, blocking_task_id: UUID, owner: Any
     ) -> None:
         """Best-effort coordination notification for a newly-wired collision edge."""
         try:
@@ -8942,8 +7778,6 @@ class TaskService(BaseService):
                 held_back_task_id=str(held_back_task_id),
                 blocking_task_id=str(blocking_task_id),
                 held_back_assignee=str(owner) if owner is not None else None,
-                held_back_title=held_back_title,
-                blocking_title=blocking_title,
             )
         except Exception as e:
             self.log.warning("Collision-sequencing notify failed", error=str(e))
@@ -9094,104 +7928,6 @@ class TaskService(BaseService):
             if dep_status not in terminal
         ]
 
-    async def project_month_spend_usd(self, project_id: UUID) -> float:
-        """This calendar month's summed agent-spawn cost for a project's tasks.
-
-        Backs the claim-time monthly-budget guard (``ROBOCO_TASK_BUDGETS_ENABLED``).
-        ``agent_spawn_sessions.task_id`` is a plain ``String(36)``, not a real
-        FK (see ``AgentSpawnSessionTable``), so the join casts ``tasks.id`` to
-        text. A still-open session's ``estimated_cost_usd`` stays null until
-        close (``AgentOrchestrator._finalize_spawn_session``) — summing that
-        column alone undercounts N parallel long-running sessions as $0 while
-        they're open, which is exactly the case a claim-time budget guard must
-        not miss. So this fetches per-row token/cost columns (one query, no
-        server-side SUM) and prices any still-open row from its periodically-
-        refreshed token counts via the same ``calculate_cost`` the
-        orchestrator's task-budget sweep uses (``_task_spend_usd``).
-
-        Month attribution is deliberately ``started_at``-bucketed: a session
-        that starts in one calendar month and closes in the next counts
-        entirely against its START month, never split pro-rata across the
-        boundary. Accepted simplification — a claim-time guard only needs to
-        be roughly current, not a settled ledger; the tiny sliver of a
-        month-spanning session's tail is a rounding error against a monthly
-        cap, not a correctness bug.
-        """
-        from roboco.billing.pricing import calculate_cost
-
-        month_start = datetime.now(UTC).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        task_id_str = cast("Any", TaskTable.id).cast(String)
-        result = await self.session.execute(
-            select(
-                AgentSpawnSessionTable.estimated_cost_usd,
-                AgentSpawnSessionTable.ended_at,
-                AgentSpawnSessionTable.model,
-                AgentSpawnSessionTable.tokens_input,
-                AgentSpawnSessionTable.tokens_output,
-                AgentSpawnSessionTable.tokens_cache_read,
-                AgentSpawnSessionTable.tokens_cache_write,
-            )
-            .select_from(AgentSpawnSessionTable)
-            .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
-            .where(
-                TaskTable.project_id == project_id,
-                AgentSpawnSessionTable.started_at >= month_start,
-            )
-        )
-        total = 0.0
-        for row in result.all():
-            if row.estimated_cost_usd is not None:
-                total += row.estimated_cost_usd
-            elif row.ended_at is None:
-                total += calculate_cost(
-                    model=row.model,
-                    tokens_input=row.tokens_input,
-                    tokens_output=row.tokens_output,
-                    tokens_cache_read=row.tokens_cache_read,
-                    tokens_cache_write=row.tokens_cache_write,
-                )
-        return total
-
-    async def task_spend_usd(self, task_id: UUID) -> float:
-        """Total agent-spawn spend for one task: closed sessions'
-        ``estimated_cost_usd`` + the live cost of any still-open session.
-
-        Scoped to one task instead of a project+month — otherwise identical
-        to ``project_month_spend_usd``'s open-session handling: a still-open
-        session's cost stays null until close, so it's priced from its
-        periodically-refreshed token counts via ``calculate_cost``. Backs the
-        orchestrator's per-task budget sweep and ``unblock``'s budget-breach
-        re-check (both need "is this task still over its own cap").
-        """
-        from roboco.billing.pricing import calculate_cost
-
-        rows = (
-            (
-                await self.session.execute(
-                    select(AgentSpawnSessionTable).where(
-                        AgentSpawnSessionTable.task_id == str(task_id)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        total = 0.0
-        for row in rows:
-            if row.estimated_cost_usd is not None:
-                total += row.estimated_cost_usd
-            elif row.ended_at is None:
-                total += calculate_cost(
-                    model=row.model,
-                    tokens_input=row.tokens_input,
-                    tokens_output=row.tokens_output,
-                    tokens_cache_read=row.tokens_cache_read,
-                    tokens_cache_write=row.tokens_cache_write,
-                )
-        return total
-
     async def inherit_unmet_dependencies(
         self, subtask_id: UUID, parent_id: UUID
     ) -> None:
@@ -9288,9 +8024,9 @@ class TaskService(BaseService):
             children = await self.get_subtasks(current_id)
             for child in children:
                 descendants.append(child)
-                # String-literal cast tells mypy the SQLAlchemy Mapped[UUID]
-                # resolves to uuid.UUID at runtime, without a type: ignore.
-                to_process.append(cast("UUID", child.id))
+                # child.id is SQLAlchemy Mapped[UUID]
+                # but resolves to uuid.UUID at runtime
+                to_process.append(child.id)  # type: ignore[arg-type]
 
         return descendants
 
@@ -9880,8 +8616,6 @@ class TaskService(BaseService):
             raise ServiceError("Update failed")
 
         if new_status == TaskStatus.AWAITING_PM_REVIEW and target_pm_slug:
-            from roboco.services.notification_text import task_display
-
             await notify_pm_for_substitute(
                 self.session,
                 pm_slug=target_pm_slug,
@@ -9889,8 +8623,7 @@ class TaskService(BaseService):
                 from_agent_id=agent.agent_id,
                 message=(
                     f"Task needs review: {updated.title or 'Unknown task'}",
-                    f"Task {task_display(updated.title, task_id)} requires PM "
-                    "review.\n\n"
+                    f"Task {task_id} requires PM review.\n\n"
                     f"Reason: {reason.value}\n"
                     f"Details: {details}\n\n"
                     "Please review and reassign as needed.",
@@ -10155,12 +8888,7 @@ class TaskService(BaseService):
         dependency that has not resolved (e.g. a frontend dev coding before
         the UX/UI design lands). The pre-assigned path bypasses
         `list_pending(filter_by_dependencies=True)`, so the dependency gate
-        must be applied here too — and so must the sequence claim-gate
-        (`_claim_blocked_by_sequence`): without it, give_me_work offered a
-        sequence-held pre-assigned task that `i_will_work_on`'s claim() then
-        rejected (the give_me_work/i_will_work_on disagreement this closes
-        on the PENDING side; `_drop_dependency_held` closes the same class
-        of gap for the `list_assigned_for_agent` NEEDS_REVISION fallback).
+        must be applied here too.
 
         F059: a self-heal fix task held for the CEO's Approve-&-Start
         (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
@@ -10204,8 +8932,6 @@ class TaskService(BaseService):
         available: list[TaskTable] = []
         for task in tasks:
             if await self.unmet_dependency_ids(list(task.dependency_ids)):
-                continue
-            if await self._claim_blocked_by_sequence(task) is not None:
                 continue
             available.append(task)
         return available
@@ -10256,54 +8982,19 @@ class TaskService(BaseService):
         statuses = result.scalars().all()
         return all(s in terminal for s in statuses)
 
-    async def terminal_children_count(self, task_id: UUID) -> int:
-        """Count of direct subtasks in a terminal status (COMPLETED/CANCELLED).
-
-        One cheap COUNT query — feeds the oscillation breaker's progress
-        fingerprint, since a PM coordination root never commits itself (all
-        real progress lands on child rows); ``unblock`` is rare enough that
-        the extra query is fine.
-        """
-        result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                TaskTable.parent_task_id == task_id,
-                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-        )
-        return result.scalar_one()
-
-    async def self_heal_ac_ids(self, parent: TaskTable) -> None:
-        """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
-        of length with ``acceptance_criteria`` -- a legacy row from before every
-        AC rewrite reconciled ids (``TaskService.update``), or any other drift.
-        No-op when already 1:1. Reconciling against the row's own current
-        criteria means any id a child already references by matching TEXT
-        survives; the parent-coverage gate is live again instead of skipped
-        forever (``_parent_ac_ref_sets``). Public: also called directly by the
-        delegate-coverage guard so its rejection hint always has real ids.
-        """
-        if len(parent.acceptance_criteria_ids or []) == len(parent.acceptance_criteria):
-            return
-        parent.acceptance_criteria_ids = _reconcile_ac_ids(
-            old_criteria=parent.acceptance_criteria,
-            old_ids=list(parent.acceptance_criteria_ids or []),
-            new_criteria=parent.acceptance_criteria,
-        )
-        await self.session.flush()
-
     async def _parent_ac_ref_sets(
         self, task_id: UUID
     ) -> tuple[TaskTable, set[str], set[str], bool, set[str]] | None:
         """Load a parent and its children's parent-AC-ref coverage sets.
 
         Shared core of the three AC-coverage primitives. Returns ``None`` when
-        the parent is missing or has no acceptance criteria at all (nothing to
-        cover). Otherwise ``(parent, claimed, verified, any_declared,
-        root_owned)`` where ``claimed`` is the union of parent_ac_refs over all
-        non-cancelled children, ``verified`` the union over COMPLETED children
-        only, and ``any_declared`` whether *any* child declared a ref at all
-        (the safe-by-construction inertness signal — a cancelled-only
-        declaration still counts as "coverage tracking is active here").
+        the parent is missing or has no stable criterion ids (nothing to cover).
+        Otherwise ``(parent, claimed, verified, any_declared, root_owned)``
+        where ``claimed`` is the union of parent_ac_refs over all non-cancelled
+        children, ``verified`` the union over COMPLETED children only, and
+        ``any_declared`` whether *any* child declared a ref at all (the
+        safe-by-construction inertness signal — a cancelled-only declaration
+        still counts as "coverage tracking is active here").
 
         ``root_owned`` is the parent's OWN ``parent_ac_refs`` (declared on
         itself via ``declare_coverage(task_id=<own root>, ...)``) — criteria
@@ -10312,16 +9003,10 @@ class TaskService(BaseService):
         folded into both ``claimed`` and ``verified``: there is no child
         status to gate on, the work happens at/after the root's own
         submit/supersede by construction.
-
-        A parent whose ``acceptance_criteria_ids`` is empty or out of length
-        with ``acceptance_criteria`` (a legacy row from before every AC
-        rewrite reconciled ids — or any other drift) self-heals via
-        ``self_heal_ac_ids`` rather than silently disabling coverage.
         """
         parent = await self.get(task_id)
-        if not parent or not parent.acceptance_criteria:
+        if not parent or not parent.acceptance_criteria_ids:
             return None
-        await self.self_heal_ac_ids(parent)
         result = await self.session.execute(
             select(TaskTable.status, TaskTable.parent_ac_refs).where(
                 TaskTable.parent_task_id == task_id
@@ -10736,17 +9421,11 @@ class TaskService(BaseService):
             task_id=str(task_id),
             new_assignee=str(effective_assignee) if effective_assignee else None,
         )
-        await self._notify_reassignment(
-            task_id, previous_assignee, effective_assignee, task.title
-        )
+        await self._notify_reassignment(task_id, previous_assignee, effective_assignee)
         return task
 
     async def _notify_reassignment(
-        self,
-        task_id: UUID,
-        previous_assignee: Any,
-        new_assignee: Any,
-        task_title: str | None = None,
+        self, task_id: UUID, previous_assignee: Any, new_assignee: Any
     ) -> None:
         """Best-effort coordination notification for a real ownership change.
 
@@ -10765,7 +9444,6 @@ class TaskService(BaseService):
                 else None,
                 new_assignee=str(new_assignee) if new_assignee is not None else None,
                 db_session=self.session,
-                task_title=task_title,
             )
         except Exception as e:
             self.log.warning(
@@ -10932,14 +9610,12 @@ class TaskService(BaseService):
             if redirect.dev_notes_line is not None:
                 task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
 
-        old_assignee = cast("UUID | None", task.claimed_by)
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", effective_assignee)
         task.claimed_by = cast("Any", effective_assignee)
         task.claimed_at = now
         task.last_heartbeat_at = now
         task.active_claimant_id = cast("Any", effective_assignee)
-        await self._retarget_agent_claim(old_assignee, effective_assignee, task_id)
         await self.session.flush()
         self.log.info(
             "Active task reassigned to a fresh claimant",
@@ -10948,39 +9624,8 @@ class TaskService(BaseService):
         )
         return task
 
-    async def _retarget_agent_claim(
-        self,
-        old_agent_id: UUID | None,
-        new_agent_id: UUID | None,
-        task_id: UUID,
-    ) -> None:
-        """Move the ACTIVE marker + ``current_task_id`` from the old
-        claimant to the new one on a handoff. The OTHER production
-        chokepoint (besides ``_finalize_claim``) that hands a task to an
-        agent — ``reassign_active_claim`` — needs the same write, or a
-        reassigned task keeps reporting its stale prior claimant as "the one
-        working on it" while the real new claimant never shows as active."""
-        if old_agent_id is not None and old_agent_id != new_agent_id:
-            old = await self.session.get(AgentTable, old_agent_id)
-            if old is not None and old.current_task_id == task_id:
-                old.status = AgentStatus.IDLE
-                old.current_task_id = None
-        if new_agent_id is None:
-            return
-        new_agent = await self.session.get(AgentTable, new_agent_id)
-        if new_agent is not None:
-            new_agent.status = AgentStatus.ACTIVE
-            new_agent.current_task_id = cast("Any", task_id)
-
     async def mark_agent_idle(self, agent_id: UUID) -> None:
-        """Set agent.status = IDLE, clear current_task_id, + emit an
-        ``agent.idle`` audit row.
-
-        Clearing ``current_task_id`` matters now that ``_finalize_claim`` /
-        ``_retarget_agent_claim`` actually populate it on claim: without this,
-        an agent that goes idle (container about to shut down) would keep
-        reporting its last task as "currently working" forever, since
-        nothing else ever clears the column.
+        """Set agent.status = IDLE + emit an ``agent.idle`` audit row.
 
         The audit row (target = the agent, details.agent_slug) is the idle
         signal the member scorecard needs — it lets the sweeper compute idle
@@ -10994,7 +9639,6 @@ class TaskService(BaseService):
         if agent is None:
             return
         agent.status = AgentStatus.IDLE
-        agent.current_task_id = None
         from roboco.db.tables import AuditLogTable
 
         self.session.add(
@@ -11034,14 +9678,6 @@ class TaskService(BaseService):
         role-scoped guard that only blocks a competing PR_REVIEWER claim;
         a PM owning the root (non-reviewer claim) is intentionally
         overridable by the first reviewer.
-
-        Also flips agent.status/current_task_id to ACTIVE/this-task
-        (``_mark_agent_active_for_claim``, mirroring ``_finalize_claim``) —
-        this is the QA/Documenter/in-path-PR-reviewer claim chokepoint
-        (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``), so without it
-        those three roles could never show as active in the fleet. No
-        branch-creation step follows (unlike ``_finalize_claim``), so there
-        is no failure path afterward to roll the marker back from.
         """
         lock_result = await self.session.execute(
             select(TaskTable)
@@ -11078,8 +9714,6 @@ class TaskService(BaseService):
         # used by claimant_lock. Cleared by QA pass/fail
         # and doc-complete when the review hand-off finishes.
         task.active_claimant_id = cast("Any", agent_id)
-        agent = await self.session.get(AgentTable, agent_id)
-        self._mark_agent_active_for_claim(agent, task.id)
         await self.session.flush()
         return task
 
@@ -11279,9 +9913,6 @@ class TaskService(BaseService):
         task.assigned_to = None
         task.claimed_by = None
         task.active_claimant_id = cast("Any", None)
-        # The gate reviewer's claim on THIS task ends here — release the
-        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
-        await self._clear_agent_current_task(captured, task_id)
         self._validate_and_set_status(
             task,
             TaskStatus.AWAITING_PM_REVIEW,
@@ -11328,9 +9959,6 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", pm.id) if pm is not None else None
         task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
-        # The gate reviewer's claim on THIS task ends here — release the
-        # fleet marker (mirrors _qa_or_doc_claim's own ACTIVE-marking).
-        await self._clear_agent_current_task(captured, task_id)
         self._validate_and_set_status(
             task,
             TaskStatus.NEEDS_REVISION,
@@ -11441,7 +10069,7 @@ class TaskService(BaseService):
             return await self.unblock(task_id, agent_role="cell_pm")
 
         restored = await self._apply_pre_block_restore(task, restored_status)
-        await self._notify_unblock(task_id, restored.assigned_to, restored.title)
+        await self._notify_unblock(task_id, restored.assigned_to)
         return restored
 
     async def _apply_pre_block_restore(
@@ -11476,19 +10104,6 @@ class TaskService(BaseService):
         pre_status, restored_status, restored_owner = self._restore_block_ownership(
             task, restored_status
         )
-        restored_owner_id = to_python_uuid(restored_owner)
-        if restored_status == TaskStatus.IN_PROGRESS and restored_owner_id is not None:
-            # A real resume of active dev work with no fresh claim() call in
-            # between — _finalize_claim's own ACTIVE-marking never runs
-            # here, so this is the one restore outcome that needs the same
-            # write directly. PENDING (the branchless divert above) and any
-            # review-queue restored_status deliberately do NOT mark the
-            # owner active here: a fresh claim() / qa_claim / doc_claim /
-            # pr_gate_claim call is what actually resumes those, and marking
-            # ahead of that would show an agent active before its container
-            # ever spawns.
-            restored_agent = await self.session.get(AgentTable, restored_owner_id)
-            self._mark_agent_active_for_claim(restored_agent, task.id)
         await self.session.flush()
         # This restore path sets the status directly (bypassing the strict
         # transition validator), so emit the audit explicitly — no status
@@ -11505,13 +10120,6 @@ class TaskService(BaseService):
             self._emit_admin_override_audit(
                 task, pre_status, restored_status, actor_id, actor_role
             )
-            # The oscillation-strikes marker is cleared by the caller
-            # (_admin_out_of_blocked) for every admin exit from BLOCKED,
-            # snapshot-driven or not — this branch only runs when a snapshot
-            # exists, so it must not clear it again here (the in-band
-            # unblock(restore=True) path never reaches this branch either —
-            # its own gateway call site reads/bumps this marker around this
-            # same restore).
         if (
             restored_status == TaskStatus.NEEDS_REVISION
             and pre_status != TaskStatus.NEEDS_REVISION.value
@@ -11565,16 +10173,10 @@ class TaskService(BaseService):
         pending/in_progress with a snapshot → full pre-block restore (returns
         the restored task). Review/queue targets → clear the stale claim so
         the next claimant starts clean (returns None; caller sets status).
-        Any other target → no-op (returns None). Every branch below also
-        clears the oscillation breaker's strike marker — a human is the one
-        moving the task out of BLOCKED here, so its job for this cycle is
-        done regardless of whether a pre-block snapshot survived to drive a
-        restore (a trip can wipe it before the force-block re-lands the task
-        in BLOCKED with no snapshot of its own).
+        Any other target → no-op (returns None).
         """
-        if from_status != TaskStatus.BLOCKED.value or new_status == TaskStatus.BLOCKED:
+        if from_status != TaskStatus.BLOCKED.value:
             return None
-        markers.clear_marker(task, markers.OSCILLATION_STRIKES)
         if (
             new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
             and task.pre_block_assignee is not None
@@ -11593,11 +10195,7 @@ class TaskService(BaseService):
             # Review/queue targets are re-claimed via the claim verbs — a stale
             # escalation claim surviving the override strands the next claimant
             # (give_me_work hands out the task while its note() writes bounce).
-            prior_claimant = to_python_uuid(task.active_claimant_id)
             self._clear_claim_and_block_snapshot(task)
-            # The stale claimant is no longer active on THIS task — release
-            # its fleet marker too (mirrors admin_set_status's own release).
-            await self._clear_agent_current_task(prior_claimant, cast("UUID", task.id))
         return None
 
     def _clear_claim_and_block_snapshot(self, task: TaskTable) -> None:
@@ -11841,12 +10439,6 @@ class TaskService(BaseService):
         task.active_claimant_id = cast("Any", None)
         task.status = TaskStatus.PENDING
         task.dev_notes = (task.dev_notes or "") + note
-        # The refused owner is genuinely no longer engaged with this task at
-        # all (ownership cleared entirely, not just re-routed) — idle its
-        # fleet marker, mirroring _force_unclaim_to_pending's reaper release.
-        await self._retarget_agent_claim(
-            to_python_uuid(prior_owner), None, cast("UUID", task.id)
-        )
         await self.session.flush()
         self._emit_status_transition_audit(
             task,
@@ -12138,6 +10730,507 @@ async def notify_pm_for_substitute(
 
     delivery_service = get_notification_delivery_service(db)
     await delivery_service.deliver(require_uuid(notification.id))
+
+
+# =============================================================================
+# ROUTE-LAYER HELPERS (relocated from api/routes/tasks.py — placement-only)
+# =============================================================================
+
+# #13: lifecycle-bypass hatch states — a privileged PATCH into one of these is a
+# forced override that must carry the explicit ``force`` acknowledgement flag.
+# The set covers every gate / terminal state a panel drag could paste a task
+# into, bypassing the human gate that state represents: COMPLETED (the merge
+# decision), AWAITING_QA / AWAITING_DOCUMENTATION / AWAITING_PR_REVIEW /
+# AWAITING_PM_REVIEW / AWAITING_CEO_APPROVAL (the review/merge/CEO gates),
+# and CANCELLED (the terminal cancel). Without force these are refused so the
+# bypass is always an explicit, audited, acknowledged override — never a quiet
+# panel click that drops a task into (or out of) a gate.
+HATCH_OVERRIDE_STATES = frozenset(
+    {
+        TaskStatus.COMPLETED,
+        TaskStatus.CANCELLED,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
+    }
+)
+
+# Terminal statuses — a privileged PATCH OUT of one of these resurrects
+# finished/cancelled work, which must also carry the explicit ``force``
+# acknowledgement (mirrors the escalate route's refusal to resurrect).
+RESURRECT_SOURCE_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.CANCELLED})
+
+# Nullable task fields that may be explicitly cleared via PATCH.
+# After TaskService.update() gains its not-None guard, null-clears for these
+# fields are handled here (not by TaskService.update()) by direct setattr on
+# the ORM object.
+NULLABLE_TASK_FIELDS: frozenset[str] = frozenset(
+    {"assigned_to", "parent_task_id", "project_id"}
+)
+
+# The CEO's "PM lighter" scope: cell_pm/main_pm may PATCH this content-only
+# slice — the same allowlist the Secretary's edit directive originally had
+# (before it grew to Secretary FULL). No status changes, no structural/
+# ownership fields, no git fields — those stay on the lifecycle-verb surface
+# (delegate/reassign/complete/...).
+PM_LIGHTER_UPDATE_FIELDS: frozenset[str] = frozenset(
+    {"title", "description", "acceptance_criteria", "priority"}
+)
+
+# Roles that get the lighter slice above instead of the full ASSIGN-holding
+# admin bypass. TaskAction.ASSIGN is not team-scoped (see
+# can_perform_task_action), so a cell_pm would otherwise ride the same
+# unrestricted bypass CEO/Board/Auditor get, on any team's task — the
+# own-team restriction below is enforced independently of that permission.
+PM_LIGHTER_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.CELL_PM, AgentRole.MAIN_PM}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StatusOverride:
+    """Bundle of ``update_task`` override params (keeps the helper ≤ 5 args)."""
+
+    service: "TaskService"
+    task_id: UUID
+    task: TaskTable
+    new_status: TaskStatus
+    force: bool
+    has_higher_perms: bool
+    agent: AgentContext
+
+
+async def refuse_unforced_complete_with_open_pr(req: StatusOverride) -> None:
+    """Admin-complete must merge-or-refuse.
+
+    Completing a task whose PR is still OPEN strands its commits unmerged
+    (bit the CEO twice live, 2026-07-02). Checked before the generic hatch
+    text so the refusal names the PR and the consequence instead of a vague
+    gate message; ``force`` stays the deliberate, audited escape.
+    """
+    from fastapi import HTTPException, status
+
+    if req.new_status != TaskStatus.COMPLETED or req.force:
+        return
+    open_ws = await req.service.open_pr_ref(req.task)
+    if open_ws is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Task still has OPEN PR #{open_ws.pr_number}"
+                f" ({open_ws.pr_url}); completing it now would strand"
+                " those commits unmerged. Merge the PR first (or approve"
+                " via POST /api/tasks/{id}/ceo-approve), or pass"
+                ' "force": true to strand it deliberately.'
+            ),
+        )
+
+
+async def apply_forced_status_override(req: StatusOverride) -> TaskTable:
+    """Apply an audited admin status override, gating the lifecycle bypass.
+
+    Extracted from ``update_task`` so the route's complexity stays readable.
+    Refuses a non-privileged caller, and refuses a bypass into a hatch state
+    without the explicit ``force`` flag; otherwise delegates to the audited
+    ``admin_set_status`` and asserts the override landed.
+    """
+    from fastapi import HTTPException, status
+
+    if req.new_status == req.task.status:
+        return req.task
+    if not req.has_higher_perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only privileged roles may override task status.",
+        )
+    await refuse_unforced_complete_with_open_pr(req)
+    if req.new_status in HATCH_OVERRIDE_STATES and not req.force:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Overriding a task into "
+                f"{req.new_status.value} bypasses the lifecycle gate; pass "
+                '"force": true to acknowledge the forced override.'
+            ),
+        )
+    # Resurrecting a terminal task (completed / cancelled -> anything) is a
+    # bypass of the merge / cancel decision; it too requires the explicit force
+    # acknowledgement. The target-only hatch gate above misses this because the
+    # target (e.g. in_progress) is not itself a hatch state.
+    if req.task.status in RESURRECT_SOURCE_STATES and not req.force:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Task is in the terminal state {req.task.status.value};"
+                " resurrecting it past the lifecycle gate requires"
+                ' "force": true to acknowledge the override.'
+            ),
+        )
+    task = await req.service.admin_set_status(
+        req.task_id,
+        req.new_status,
+        actor_id=req.agent.agent_id,
+        actor_role=getattr(req.agent, "role", None),
+        force=req.force,
+    )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task status override failed unexpectedly",
+        )
+    return task
+
+
+def pm_editor_scope(
+    agent: AgentContext, task: TaskTable, *, has_higher_perms: bool
+) -> bool:
+    """Return True if ``agent`` gets the "PM lighter" content-only slice.
+
+    Raises 403 outright for a cell PM outside its own team — ASSIGN itself
+    is not team-scoped (see ``can_perform_task_action``), so without this
+    check a cross-team cell PM would fall through to the wider CEO/Board/
+    Auditor admin bypass on ``has_higher_perms`` alone.
+    """
+    from fastapi import HTTPException, status
+
+    is_pm_editor = has_higher_perms and agent.role in PM_LIGHTER_ROLES
+    if is_pm_editor and agent.role == AgentRole.CELL_PM and agent.team != task.team:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Cell PM may only update tasks belonging to their own team "
+                f"({agent.team}); this task is on {task.team}."
+            ),
+        )
+    return is_pm_editor
+
+
+def enforce_pm_lighter_fields(
+    updates: dict[str, Any],
+    null_clears: dict[str, Any],
+    new_status: TaskStatus | None,
+) -> None:
+    """Refuse anything past the content-only allowlist for a PM-lighter editor.
+
+    "No status changes beyond what they already have" — status rides the
+    lifecycle verbs, never this PATCH surface, for cell_pm/main_pm.
+    """
+    from fastapi import HTTPException, status
+
+    disallowed = (updates.keys() | null_clears.keys()) - PM_LIGHTER_UPDATE_FIELDS
+    if not disallowed and new_status is None:
+        return
+    reasons = []
+    if disallowed:
+        reasons.append(f"disallowed fields {sorted(disallowed)}")
+    if new_status is not None:
+        reasons.append("status changes are not part of the PM PATCH surface")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"PM roles may only edit {sorted(PM_LIGHTER_UPDATE_FIELDS)} via "
+            "PATCH; " + "; ".join(reasons)
+        ),
+    )
+
+
+def translate_task_error(e: ServiceError) -> "HTTPException":
+    """Service errors → HTTP status. Kept at route layer; everything else moves."""
+    from fastapi import HTTPException, status
+
+    if isinstance(e, NotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    if isinstance(e, UnauthorizedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+    if isinstance(e, ValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
+    )
+
+
+def task_is_awaiting_pm_review(task: Any) -> bool:
+    """Return True if the task is in the awaiting_pm_review state."""
+    from roboco.models.base import TaskStatus as _TS
+
+    return (
+        task.status == _TS.AWAITING_PM_REVIEW
+        or getattr(task.status, "value", None) == "awaiting_pm_review"
+    )
+
+
+def pop_null_clears(updates: dict[str, Any]) -> dict[str, None]:
+    """Remove and return explicitly-set-to-None nullable fields from *updates*.
+
+    TaskService.update() skips None values (not-None guard), so null-clearing
+    a field must be done by the caller. This helper splits the intent: it pops
+    the null-clears from *updates* (modifying it in-place) and returns them so
+    the caller can apply them directly on the ORM object.
+    """
+    clears: dict[str, None] = {}
+    for field in NULLABLE_TASK_FIELDS:
+        if field in updates and updates[field] is None:
+            clears[field] = updates.pop(field)
+    return clears
+
+
+def apply_null_clears(task: Any, null_clears: dict[str, None]) -> None:
+    """Set *null_clears* fields to None on the ORM task object.
+
+    Unassigning implies releasing the claim: a cleared assigned_to with a
+    surviving claimed_by/active_claimant_id keeps routing the task to the
+    stale claimant while the next agent's content writes bounce.
+    """
+    for field in null_clears:
+        setattr(task, field, None)
+    if "assigned_to" in null_clears:
+        task.claimed_by = None
+        task.claimed_at = None
+        task.active_claimant_id = None
+
+
+def reassert_batch_shape(task: Any) -> None:
+    """Raise HTTP 400 if a mutation broke the task's MegaTask shape. Raised
+    before any commit, so a violation rolls back cleanly."""
+    from fastapi import HTTPException, status
+
+    try:
+        TaskService.assert_batch_shape_intact(task)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
+async def resolve_assigned_to_slug(data: Any, db: AsyncSession) -> Any:
+    """Resolve an assigned_to slug to a UUID string; returns (possibly modified) data.
+
+    ``data`` is a ``roboco.api.schemas.tasks.TaskUpdate``. If assigned_to was
+    not set or is already a valid UUID or null, returns *data* unchanged.  If
+    it is an agent slug, looks up the agent and replaces the slug with the
+    UUID string so downstream transform helpers parse it correctly.  Raises
+    HTTPException 422 when the slug cannot be found.
+    """
+    from fastapi import HTTPException, status
+
+    if "assigned_to" not in data.model_fields_set or data.assigned_to is None:
+        return data
+    try:
+        UUID(data.assigned_to)
+        return data  # already a valid UUID — no resolution needed
+    except ValueError:
+        pass
+    from roboco.services.repositories.query_helpers import get_agent_by_slug
+
+    agent_row = await get_agent_by_slug(db, data.assigned_to)
+    if agent_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": {
+                    "code": "ASSIGNEE_NOT_FOUND",
+                    "message": f"No agent with slug or UUID '{data.assigned_to}'",
+                    "hint": "Use an agent slug (e.g. 'be-dev-1') or UUID",
+                }
+            },
+        ) from None
+    return data.model_copy(update={"assigned_to": str(agent_row.id)})
+
+
+def first_cell_map_project_id(task: Any) -> UUID | None:
+    """First distinct project_id from a task's ad-hoc per-cell map.
+
+    Mirrors the product-root ``distinct_project_ids(...)[0]`` first-project
+    resolution: dedupes by project_id (a monorepo mapped across cells shares
+    one project), ordered by cell team for determinism. Returns None when the
+    task carries no cell map.
+    """
+    cell_map = getattr(task, "cell_projects", None) or []
+    seen: set[UUID] = set()
+    for mapping in sorted(cell_map, key=lambda m: m.team.value):
+        pid = UUID(str(mapping.project_id))
+        if pid not in seen:
+            seen.add(pid)
+            return pid
+    return None
+
+
+async def project_for_complete(task: Any, db: AsyncSession) -> Any:
+    """Resolve the project for complete_task's pre-merge step.
+
+    Returns the project or None if unresolvable (no exception raised — the
+    caller simply skips the merge when no project can be found).
+    """
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(db)
+    if task.project_id is not None:
+        return await project_service.get(UUID(str(task.project_id)))
+    if task.product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(db)
+        pids = await product_service.distinct_project_ids(UUID(str(task.product_id)))
+        if pids:
+            return await project_service.get(pids[0])
+    cell_pid = first_cell_map_project_id(task)
+    if cell_pid is not None:
+        return await project_service.get(cell_pid)
+    return None
+
+
+async def merge_pr_if_awaiting_pm_review(
+    task_id: UUID,
+    pre_task: Any,
+    agent: Any,
+    db: AsyncSession,
+) -> None:
+    """Merge the task's PR when it is in awaiting_pm_review.
+
+    Does nothing when pre_task is None, has no PR, or is not in the right
+    state.  Raises HTTPException 400 when the merge itself fails.
+    After this returns successfully, *_auto_complete_on_merge* inside the
+    git service will have already transitioned the task to *completed*.
+    """
+    from fastapi import HTTPException, status
+
+    if pre_task is None or pre_task.pr_number is None:
+        return
+    if not task_is_awaiting_pm_review(pre_task):
+        return
+
+    project = await project_for_complete(pre_task, db)
+    if project is None:
+        return
+
+    from roboco.api.schemas.git import GitMergePRRequest
+    from roboco.exceptions import GitError
+    from roboco.services.git import get_git_service
+
+    git_service = get_git_service(db)
+    try:
+        await git_service.merge_pr_for_task(
+            agent.agent_id,
+            agent.role,
+            GitMergePRRequest(
+                project_slug=project.slug,
+                pr_number=pre_task.pr_number,
+                task_id=task_id,
+                merge_method="squash",
+            ),
+        )
+    except (ServiceError, GitError) as e:
+        msg = getattr(e, "message", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"PR merge failed before completion: {msg}",
+        ) from e
+
+
+async def resolve_project_for_merge(task: Any, db: AsyncSession) -> Any:
+    """Resolve and return the Project required for a merge operation.
+
+    Handles both direct project_id and product_id→project resolution.
+    Raises HTTPException 400 if no project can be resolved or found.
+    """
+    from fastapi import HTTPException, status
+
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(db)
+    if task.project_id is not None:
+        resolved_id = UUID(str(task.project_id))
+    elif task.product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(db)
+        project_ids = await product_service.distinct_project_ids(
+            UUID(str(task.product_id))
+        )
+        if not project_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"NO_PROJECT: Product {task.product_id} has no cell->project "
+                    "mapping; cannot resolve workspace for merge."
+                ),
+            )
+        resolved_id = project_ids[0]
+    else:
+        cell_pid = first_cell_map_project_id(task)
+        if cell_pid is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "NO_PROJECT: Task has neither project_id, product_id, nor a "
+                    "cell->project map; cannot resolve workspace for merge. Set a "
+                    "target on the task first."
+                ),
+            )
+        resolved_id = cell_pid
+    project = await project_service.get(resolved_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"NO_PROJECT: Project {resolved_id} not found; "
+                "cannot resolve workspace for merge."
+            ),
+        )
+    return project
+
+
+# =============================================================================
+# ORCHESTRATOR SPAWN-PROMPT HELPERS (relocated from api/routes/orchestrator.py)
+# =============================================================================
+
+
+def build_manual_spawn_prompt(task: TaskTable, ceo_note: str | None) -> str:
+    """Build the initial prompt for a CEO-triggered manual (panel) spawn.
+
+    Mirrors the tone of dispatcher-built prompts (e.g. ``_build_pr_review_prompt``
+    in the orchestrator): point the agent at the task by id/title/status and
+    trust the gateway envelope's ``next`` / ``remediate`` to guide the actual
+    claim verb, rather than enumerating per-role verbs here.
+    """
+    lines = [
+        "You were manually spawned by the CEO to work a specific task.",
+        "",
+        f"TASK ID: {task.id}",
+        f"TITLE: {task.title}",
+        f"STATUS: {task.status.value}",
+        "",
+        "Claim it with the claim verb appropriate to your role and this "
+        "task's current state, then proceed. Trust the gateway envelope's "
+        "`next` / `remediate` fields to guide you rather than guessing.",
+    ]
+    if ceo_note:
+        lines += ["", "== CEO NOTE ==", ceo_note]
+    return "\n".join(lines)
+
+
+async def resolve_manual_spawn_prompt(
+    task_id: str | None, ceo_message: str | None
+) -> str | None:
+    """Best-effort task-aware prompt for a manual panel spawn.
+
+    Falls back to ``ceo_message`` unchanged (current behavior) on any lookup
+    failure — bad ``task_id``, DB hiccup, task not found. Enrichment must
+    never block a spawn the CEO already asked for; ``spawn_agent``'s own
+    readiness gate is the real gatekeeper for an invalid/not-ready task.
+    """
+    if not task_id:
+        return ceo_message
+    try:
+        async with get_db_context() as db:
+            task = await get_task_service(db).get(UUID(task_id))
+    except Exception:
+        return ceo_message
+    if task is None:
+        return ceo_message
+    return build_manual_spawn_prompt(task, ceo_message)
 
 
 # =============================================================================

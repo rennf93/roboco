@@ -29,8 +29,6 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
-from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable, HeartbeatMutex
-from roboco.services.notification_delivery import get_notification_delivery_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
     VIDEO_POST_SOURCE,
@@ -40,6 +38,7 @@ from roboco.services.task import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,22 +50,8 @@ _AUTHORING_ACCEPTANCE_CRITERIA = [
     "Captions within platform limits",
     "Composition follows motion/README.md's design bar and uses the "
     "panel-demo kit register where the occasion shows the product",
-    "request_render preview frames verified — every scene in the brief "
-    "appears fully and legibly in the rendered cut",
 ]
 _POST_ACCEPTANCE_CRITERIA = ["CEO approves or rejects the draft"]
-
-# Mirrors task_completeness._AC_MAX_ITEMS / _AC_MAX_ITEM_CHARS (mig 068) —
-# duplicated locally per this file's no-cross-service-internals idiom (see
-# vault_intake_engine.py / api/schemas/v1/flow.py for the same pattern).
-_AC_MAX_ITEMS = 7
-_AC_MAX_ITEM_CHARS = 200
-
-# reauthor_from_rejection's fallback AC when the original brief named no
-# enumerable features — the rejection reason is already verbatim in the brief.
-_REAUTHOR_FEEDBACK_CRITERION = (
-    "Every point in the CEO rejection feedback is visibly addressed in the rendered cut"
-)
 
 _CHAT_TIMEOUT_SECONDS = 60.0
 
@@ -74,27 +59,13 @@ _CHAT_TIMEOUT_SECONDS = 60.0
 # pathological entry can't blow up the task description.
 _CHANGELOG_BRIEF_CHARS = 4000
 
-# ``open_video_task``'s "no open task for this occasion yet" check and its
-# insert are NOT atomic on their own: unlike the other engines' `run_cycle`
-# (each driven by exactly one sequential orchestrator-loop task, so it can
-# never overlap itself), this method is reachable from several genuinely
-# concurrent callers — the release-publish hook, the feature-spotlight hook,
-# and the CEO's on-demand ``POST /video/request`` route (two overlapping
-# requests, e.g. a double-click, each get their own DB session/transaction).
-# A flat SET NX (mirrors XPostService's identical short-critical-section
-# lock) keyed by occasion closes that window instead of letting a duplicate
-# authoring task slip through.
-_OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
-_OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
-
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
 # authoring dev always lands on the demo kit instead of a text card.
 _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
     "README.md. Build in the panel-demo register on motion/kit/ — extend "
     "compositions/panel-demo/ rather than starting from scratch or shipping "
-    "a text card. Before submitting: call request_render and read every "
-    "returned frame to verify the RENDERED cut, not just the source."
+    "a text card."
 )
 
 
@@ -143,96 +114,33 @@ def _first_changelog_bullet(changelog: str) -> str:
     return highlights[0] if highlights else ""
 
 
-def _fallback_release_script(version: str, changelog: str, product_name: str) -> str:
+def _fallback_release_script(version: str, changelog: str) -> str:
     highlight = _first_changelog_bullet(changelog)
     lead = f": {highlight}" if highlight else ""
-    return f"{product_name} v{version} just shipped{lead}."
+    return f"RoboCo v{version} just shipped{lead}."
 
 
-def _release_video_prompt(version: str, changelog: str, product_name: str) -> str:
+def _release_video_prompt(version: str, changelog: str) -> str:
     return (
-        f"You are {product_name}'s marketing team, writing a short voiceover "
-        "script for a bespoke motion-graphics video announcing a release. "
-        "Plain text, 2-3 short sentences, energetic but factual — no "
-        "invented facts.\n\n"
-        f"Write the script for {product_name} v{version}, based on this "
-        f"CHANGELOG entry:\n{changelog[:1000]}\n"
+        "You are RoboCo's marketing team, writing a short voiceover script "
+        "for a bespoke motion-graphics video announcing a release. Plain "
+        "text, 2-3 short sentences, energetic but factual — no invented "
+        "facts.\n\n"
+        f"Write the script for RoboCo v{version}, based on this CHANGELOG "
+        f"entry:\n{changelog[:1000]}\n"
     )
 
 
-def _release_video_brief(
-    version: str, changelog: str, highlights: list[str], product_name: str
-) -> str:
+def _release_video_brief(version: str, changelog: str, highlights: list[str]) -> str:
     """The structured release brief: the (capped) CHANGELOG section for this
     version plus its highlights list — replaces the old one-liner-as-
     description. The LLM script stays a separate ``script`` prop suggestion,
     never the whole brief."""
     section = changelog[:_CHANGELOG_BRIEF_CHARS].strip() or "(no changelog entry)"
-    parts = [f"{product_name} v{version} release notes:", section]
+    parts = [f"RoboCo v{version} release notes:", section]
     if highlights:
         bullets = "\n".join(f"- {h}" for h in highlights)
         parts.append(f"Highlights:\n{bullets}")
-    return "\n\n".join(parts)
-
-
-def _scene_criterion(features: list[str]) -> str | None:
-    """Turn an enumerable brief feature list into its own gate-checkable AC.
-
-    The live failure this closes: a brief named N features, the task's ACs
-    stayed generic, a dev shipped fewer scenes, and every gate passed because
-    "N features" existed only in prose. None for an empty/absent list. The
-    joined list is bounded to the AC per-item char cap — truncated with an
-    "… (+N more)" tail rather than overrunning it.
-    """
-    trimmed = [f.strip() for f in features if f and f.strip()]
-    if not trimmed:
-        return None
-    prefix = "Every brief-named feature appears as its own fully readable scene: "
-    budget = _AC_MAX_ITEM_CHARS - len(prefix)
-    kept = list(trimmed)
-    while kept:
-        omitted = len(trimmed) - len(kept)
-        tail = f"… (+{omitted} more)" if omitted else ""
-        body = "; ".join(kept) + tail
-        if len(body) <= budget:
-            return prefix + body
-        kept.pop()
-    return prefix + "…"  # pathological: even one (huge) feature name overruns
-
-
-def _authoring_criteria(
-    suggested_input_props: dict[str, Any] | None,
-    fallback_acceptance_criterion: str | None,
-) -> list[str]:
-    """The base authoring ACs plus one derived/fallback criterion: the scene
-    criterion when ``suggested_input_props["highlights"]`` is a real list,
-    else ``fallback_acceptance_criterion`` (when given), else nothing."""
-    criteria = list(_AUTHORING_ACCEPTANCE_CRITERIA)
-    features = (suggested_input_props or {}).get("highlights")
-    criterion = _scene_criterion(features if isinstance(features, list) else [])
-    criterion = criterion or fallback_acceptance_criterion
-    if criterion is not None and len(criteria) < _AC_MAX_ITEMS:
-        criteria.append(criterion)
-    return criteria
-
-
-def _reauthor_brief(reason: str, draft: dict[str, Any]) -> str:
-    """The revision brief for a CEO-rejected cut: the verbatim rejection
-    feedback, a revise-in-place pointer at the existing composition (when
-    known), then the original brief/script for context."""
-    parts = [
-        "REVISION of a CEO-rejected cut. CEO rejection feedback "
-        f"(address every point): {reason}"
-    ]
-    composition_id = draft.get("composition_id")
-    if composition_id:
-        parts.append(
-            f"Revise the EXISTING composition motion/compositions/{composition_id}/ "
-            "in place — do not start a new composition."
-        )
-    original = draft.get("brief") or draft.get("script") or ""
-    if original:
-        parts.append(original)
     return "\n\n".join(parts)
 
 
@@ -340,7 +248,6 @@ class VideoEngine(BaseService):
         brief: str,
         suggested_input_props: dict[str, Any] | None = None,
         project_id: UUID | None = None,
-        fallback_acceptance_criterion: str | None = None,
     ) -> TaskTable | None:
         """Originate ONE UX/UI authoring task for a bespoke video, or None.
 
@@ -363,73 +270,9 @@ class VideoEngine(BaseService):
         "highlights": [...]}`` from the release caller) is seeded onto the
         marker as-is so the dev copies real structured data into
         ``propose_video``'s ``input_props`` instead of hand-typing facts.
-
-        When ``suggested_input_props`` carries a ``highlights`` list, it
-        becomes its OWN acceptance criterion (``_scene_criterion``) — a
-        prose-only feature list used to pass gates even when a dev shipped
-        fewer scenes than named. Absent highlights,
-        ``fallback_acceptance_criterion`` (when supplied) is appended instead
-        — ``reauthor_from_rejection`` uses this for its
-        feedback-must-be-addressed criterion.
-
-        The dedup check + insert below run under a short-lived Redis mutex
-        keyed by ``occasion`` (see ``_OCCASION_LOCK_PREFIX``) — this method,
-        unlike the other engines' single-loop ``run_cycle``, is reachable
-        from several genuinely concurrent callers (the release/spotlight
-        hooks and the on-demand ``/video/request`` route), so the "no open
-        task yet" read and the create must be atomic against each other.
-        Fails closed: a Redis outage or a lock already held both no-op
-        (return None) rather than risk a duplicate authoring task.
         """
         if not settings.video_engine_enabled:
             return None
-        lock = HeartbeatMutex(
-            f"{_OCCASION_LOCK_PREFIX}{occasion}",
-            ttl_seconds=_OCCASION_LOCK_TTL_SECONDS,
-            heartbeat_seconds=_OCCASION_LOCK_TTL_SECONDS,
-        )
-        try:
-            token = await lock.acquire()
-        except HeartbeatLockUnavailable as exc:
-            self.log.warning(
-                "video-engine: occasion lock unavailable (redis down); "
-                "not opening authoring task",
-                occasion=occasion,
-                error=str(exc),
-            )
-            return None
-        if token is None:
-            self.log.info(
-                "video-engine: another call is already opening this occasion; skipping",
-                occasion=occasion,
-            )
-            return None
-        try:
-            return await self._open_video_task_locked(
-                occasion=occasion,
-                script=script,
-                platforms=platforms,
-                brief=brief,
-                suggested_input_props=suggested_input_props,
-                project_id=project_id,
-                fallback_acceptance_criterion=fallback_acceptance_criterion,
-            )
-        finally:
-            await lock.release(token)
-
-    async def _open_video_task_locked(
-        self,
-        *,
-        occasion: str,
-        script: str,
-        platforms: list[str],
-        brief: str,
-        suggested_input_props: dict[str, Any] | None,
-        project_id: UUID | None,
-        fallback_acceptance_criterion: str | None,
-    ) -> TaskTable | None:
-        """The dedup-check + insert body, run while ``open_video_task`` holds
-        the per-occasion lock."""
         task_svc = get_task_service(self.session)
         open_tasks = await task_svc.list_open_video_posts()
         for existing in open_tasks:
@@ -451,9 +294,6 @@ class VideoEngine(BaseService):
 
         assignee = self._select_ux_dev(open_tasks)
         enriched_brief = await self._enrich_brief(brief)
-        acceptance_criteria = _authoring_criteria(
-            suggested_input_props, fallback_acceptance_criterion
-        )
         # Savepoint-isolate the insert: a DBAPI error here (FK, deadlock,
         # dropped connection) must roll back ONLY this insert, never poison the
         # shared session — whose next commit is the caller's release-publish
@@ -464,7 +304,7 @@ class VideoEngine(BaseService):
                     TaskCreateRequest(
                         title=f"Video: {occasion}",
                         description=enriched_brief,
-                        acceptance_criteria=acceptance_criteria,
+                        acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
                         team=Team.UX_UI,
                         assigned_to=assignee,
                         created_by=_foundation.AGENTS["system"].uuid,
@@ -509,7 +349,7 @@ class VideoEngine(BaseService):
     # ---- release trigger (event-driven hook) -------------------------------
 
     async def draft_release_video(
-        self, *, version: str, changelog: str, project_id: UUID | None = None
+        self, *, version: str, changelog: str
     ) -> TaskTable | None:
         """Originate ONE UX/UI video-authoring task for a release announcement,
         or None (no-op).
@@ -527,40 +367,27 @@ class VideoEngine(BaseService):
         """
         if not (settings.video_engine_enabled and settings.video_on_release):
             return None
-        project = (
-            await get_project_service(self.session).get(project_id)
-            if project_id is not None
-            else None
-        )
-        product_name = await get_company_goals_service(
-            self.session
-        ).resolve_product_name(project)
-        script = await self._draft_release_script(version, changelog, product_name)
+        script = await self._draft_release_script(version, changelog)
         highlights = _changelog_highlights(changelog)
-        brief = _release_video_brief(version, changelog, highlights, product_name)
+        brief = _release_video_brief(version, changelog, highlights)
         return await self.open_video_task(
             occasion=f"release {version}",
             script=script,
             platforms=["x", "tiktok"],
             brief=brief,
             suggested_input_props={"version": version, "highlights": highlights},
-            project_id=project_id,
         )
 
-    async def _draft_release_script(
-        self, version: str, changelog: str, product_name: str
-    ) -> str:
+    async def _draft_release_script(self, version: str, changelog: str) -> str:
         try:
-            draft = await _chat(_release_video_prompt(version, changelog, product_name))
+            draft = await _chat(_release_video_prompt(version, changelog))
         except Exception as exc:
             self.log.warning(
                 "video-engine: local-model script draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
-        return (draft or "").strip() or _fallback_release_script(
-            version, changelog, product_name
-        )
+        return (draft or "").strip() or _fallback_release_script(version, changelog)
 
     # ---- held draft (materialized once a render pass produces MP4s) -------
 
@@ -620,92 +447,7 @@ class VideoEngine(BaseService):
             "video-engine: video post drafted (held for CEO)",
             source_task_id=str(source_task.id),
         )
-        try:
-            await get_notification_delivery_service(
-                self.session
-            ).notify_ceo_of_queue_item(
-                kind="video", id8=str(task.id)[:8], title=occasion
-            )
-        except Exception as exc:
-            self.log.warning(
-                "video-engine: telegram notify failed (best-effort)", error=str(exc)
-            )
         return task
-
-    # ---- reject -> re-author (CEO feedback loop) ---------------------------
-
-    async def _resolve_reauthor_project(
-        self, post_task: TaskTable, draft: dict[str, Any]
-    ) -> UUID | None:
-        """The project to re-author against: the rejected post's own
-        ``project_id`` (the normal case), else its source authoring task's
-        (via the draft's ``source_task_id``) — a defensive fallback for a
-        draft that somehow landed without one."""
-        if post_task.project_id is not None:
-            return cast("UUID", post_task.project_id)
-        source_task_id = draft.get("source_task_id")
-        if not source_task_id:
-            return None
-        source_task = await get_task_service(self.session).get(
-            cast("UUID", source_task_id)
-        )
-        return cast("UUID", source_task.project_id) if source_task else None
-
-    async def reauthor_from_rejection(
-        self, post_task: TaskTable, reason: str
-    ) -> TaskTable | None:
-        """Route a CEO's rejection reason into a fresh authoring task that
-        revises the SAME composition in place, instead of the feedback going
-        nowhere.
-
-        Reads the rejected ``video_post`` draft's carried-forward
-        ``video_draft`` marker (occasion, brief/script, composition_id,
-        platforms, input_props, source_task_id) and re-opens via
-        ``open_video_task`` under the SAME occasion — that call's own dedup
-        only scans OPEN drafts, so the just-cancelled post never blocks it (a
-        second reject while a revision is already open correctly dedups
-        against it instead of stacking a third).
-
-        Best-effort: never raises. A missing draft marker, an unresolvable
-        project, or any other failure just logs a warning and returns None —
-        the caller's reject must succeed regardless of this seam.
-        """
-        try:
-            draft = markers.get_video_draft(post_task)
-            if draft is None:
-                self.log.warning(
-                    "video-engine: reauthor skipped, no video_draft marker",
-                    task_id=str(post_task.id),
-                )
-                return None
-            project_id = await self._resolve_reauthor_project(post_task, draft)
-            if project_id is None:
-                self.log.warning(
-                    "video-engine: reauthor skipped, no project resolvable",
-                    task_id=str(post_task.id),
-                )
-                return None
-            return await self.open_video_task(
-                occasion=str(draft.get("occasion") or post_task.title),
-                script=str(draft.get("script") or ""),
-                platforms=list(draft.get("platforms") or []),
-                brief=_reauthor_brief(reason, draft),
-                suggested_input_props=(
-                    draft.get("input_props") or draft.get("suggested_input_props")
-                ),
-                project_id=project_id,
-                # Original had highlights -> the scene criterion regenerates
-                # from them; no highlights -> this fallback names the reason
-                # (already verbatim in the brief) as the checkable outcome.
-                fallback_acceptance_criterion=_REAUTHOR_FEEDBACK_CRITERION,
-            )
-        except Exception as exc:
-            self.log.warning(
-                "video-engine: reauthor from rejection failed",
-                task_id=str(post_task.id),
-                error=str(exc),
-            )
-            return None
 
     # ---- re-render (CEO-triggered retry) -----------------------------------
 
@@ -744,3 +486,16 @@ class VideoEngine(BaseService):
 def get_video_engine(session: AsyncSession) -> VideoEngine:
     """Build a VideoEngine for ``session``."""
     return VideoEngine(session)
+
+
+def resolve_preview_path(root: Path, file_path: str) -> Path | None:
+    """Resolve ``file_path`` against the workspace ``root``, refusing
+    anything that escapes it. A leading ``/`` is stripped before joining —
+    pathlib's ``/`` operator otherwise lets an absolute right operand
+    discard ``root`` entirely — then the joined path must resolve to an
+    existing file still under ``root``. The sole confinement check for the
+    CEO preview proxy."""
+    candidate = (root / file_path.lstrip("/")).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
