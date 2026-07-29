@@ -2020,6 +2020,23 @@ class Settings(BaseSettings):
             "exit 78); override via ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS"
         ),
     )
+    # Every Kimi container shares ONE OAuth refresh-token chain (the
+    # read-write ~/.kimi-code mount above). Moonshot rotates refresh tokens
+    # with a short reuse-grace; two containers refreshing near-simultaneously
+    # fork the chain, and a later redemption of a stale ancestor triggers
+    # family revocation — fleet-wide Kimi auth dies and the CEO must
+    # re-login. One consumer at a time keeps refreshes strictly sequential
+    # (the proven-stable regime, live-incident-verified 2026-07-29).
+    kimi_max_concurrent: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Max concurrent live KIMI agent containers. Raising this risks "
+            "forking the shared OAuth refresh-token chain and triggering "
+            "fleet-wide Kimi re-login; override via "
+            "ROBOCO_KIMI_MAX_CONCURRENT only if you understand that risk"
+        ),
+    )
     # An interactive intake/secretary chat the human abandoned (closed the tab
     # without confirming/stopping) otherwise leaks its container until the
     # orchestrator restarts. The sweeper reaps a live session whose

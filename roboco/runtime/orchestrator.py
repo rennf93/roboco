@@ -3120,28 +3120,16 @@ class AgentOrchestrator:
         # existing-running check above stays first, so a live agent is never
         # replaced by this bail. Fail-open: a tracker read error never blocks.
         route = await self._resolve_agent_route(agent_id, task_id)
-        if await self._provider_spawn_parked(route.provider_type.value):
+        skip_reason = await self._spawn_gate_skip_reason(route.provider_type.value)
+        if skip_reason:
             self._mark_task_handled(task_id)
             logger.info(
-                "Spawn skipped: provider rate-limited (parked)",
+                skip_reason,
                 agent_id=agent_id,
                 task_id=task_id,
                 provider=route.provider_type.value,
             )
-            return AgentInstance(
-                agent_id=agent_id,
-                state=AgentState.OFFLINE,
-                config=AgentConfig(
-                    agent_id=agent_id,
-                    blueprint_path=Path(),  # not launching — no blueprint written
-                    model=route.model_name,
-                    provider_type=route.provider_type.value,
-                    provider_base_url=route.base_url,
-                    provider_auth_token=route.auth_token,
-                    git_context=git_context,
-                ),
-                current_task_id=task_id,
-            )
+            return self._offline_route_bail(agent_id, task_id, route, git_context)
 
         async with self._lock:
             # TOCTOU re-check: another tick may have started this agent during
@@ -3157,16 +3145,11 @@ class AgentOrchestrator:
         # parked case is already handled above; this guards the window between
         # the pre-check and the launch. Fail-open: a tracker read error never
         # blocks spawning.
-        if await self._provider_spawn_parked(config.provider_type):
-            self._mark_task_handled(task_id)
-            instance.state = AgentState.OFFLINE
-            logger.info(
-                "Spawn skipped: provider rate-limited (parked)",
-                agent_id=agent_id,
-                task_id=task_id,
-                provider=config.provider_type,
+        skip_reason = await self._spawn_gate_skip_reason(config.provider_type)
+        if skip_reason:
+            return self._bail_prepared_instance(
+                instance, agent_id, task_id, config.provider_type, skip_reason
             )
-            return instance
         # Record the task as handled so later dispatchers in the same
         # tick don't act on it again. Safe even if _launch_spawn fails
         # — the next tick starts fresh.
@@ -10189,6 +10172,96 @@ Start by:
                 error=str(exc),
             )
             return False
+
+    @staticmethod
+    def _provider_concurrency_cap(provider_type: str | None) -> int | None:
+        """Max concurrent live containers for *provider_type*, or None if uncapped.
+
+        Only KIMI is capped: every Kimi container shares one OAuth
+        refresh-token chain (see ``settings.kimi_max_concurrent``) — a second
+        concurrent container risks forking it and revoking fleet-wide Kimi
+        auth. No other provider has this constraint.
+        """
+        if provider_type == ModelProvider.KIMI.value:
+            return settings.kimi_max_concurrent
+        return None
+
+    def _live_provider_instance_count(self, provider_type: str) -> int:
+        """Count ``_instances`` entries for *provider_type* still holding a slot.
+
+        Mirrors ``_existing_running_instance``'s liveness definition: any
+        state other than OFFLINE/WAITING_LONG occupies (or is about to
+        occupy) a container.
+        """
+        return sum(
+            1
+            for inst in self._instances.values()
+            if inst.config is not None
+            and inst.config.provider_type == provider_type
+            and inst.state not in (AgentState.OFFLINE, AgentState.WAITING_LONG)
+        )
+
+    def _provider_spawn_at_capacity(self, provider_type: str | None) -> bool:
+        """True when *provider_type* is at its concurrency cap, if any."""
+        cap = self._provider_concurrency_cap(provider_type)
+        if cap is None or provider_type is None:
+            return False
+        return self._live_provider_instance_count(provider_type) >= cap
+
+    async def _spawn_gate_skip_reason(self, provider_type: str | None) -> str | None:
+        """Why ``spawn_agent`` should bail before launch, or None to proceed.
+
+        Checked in order: provider-parked (rate-limited/overloaded), then the
+        provider's concurrency cap (currently kimi-only, see
+        ``_provider_concurrency_cap``). The returned string is both the skip
+        reason and the log event name — same shape both callers already used.
+        """
+        if await self._provider_spawn_parked(provider_type):
+            return "Spawn skipped: provider rate-limited (parked)"
+        if self._provider_spawn_at_capacity(provider_type):
+            return "Spawn skipped: kimi concurrency cap reached"
+        return None
+
+    def _bail_prepared_instance(
+        self,
+        instance: AgentInstance,
+        agent_id: str,
+        task_id: str | None,
+        provider_type: str | None,
+        reason: str,
+    ) -> AgentInstance:
+        """OFFLINE a just-``_prepare_agent_spawn``'d instance and log why the
+        launch was skipped (used by both the parked and concurrency-cap
+        rare-race checks after prepare)."""
+        self._mark_task_handled(task_id)
+        instance.state = AgentState.OFFLINE
+        logger.info(reason, agent_id=agent_id, task_id=task_id, provider=provider_type)
+        return instance
+
+    def _offline_route_bail(
+        self,
+        agent_id: str,
+        task_id: str | None,
+        route: Any,
+        git_context: SpawnGitContext | None,
+    ) -> AgentInstance:
+        """Build the unregistered OFFLINE instance returned by a pre-prepare
+        spawn bail (parked or at-capacity) — no blueprint/settings/image work
+        has run, so nothing needs undoing."""
+        return AgentInstance(
+            agent_id=agent_id,
+            state=AgentState.OFFLINE,
+            config=AgentConfig(
+                agent_id=agent_id,
+                blueprint_path=Path(),  # not launching — no blueprint written
+                model=route.model_name,
+                provider_type=route.provider_type.value,
+                provider_base_url=route.base_url,
+                provider_auth_token=route.auth_token,
+                git_context=git_context,
+            ),
+            current_task_id=task_id,
+        )
 
     @staticmethod
     def _is_grok_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:

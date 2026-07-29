@@ -533,6 +533,10 @@ services:
       # ONE host chain via a symlinked-in credentials/+oauth/ mount rather
       # than a per-container copy (kimi follows codex's RW mount mode here).
       ROBOCO_HOST_KIMI_DIR: ${ROBOCO_HOST_KIMI_DIR:-/home/renzof/.kimi-code}
+      ROBOCO_KIMI_CLI_MODEL: ${ROBOCO_KIMI_CLI_MODEL:-kimi-code/k3}
+      ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+      ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS:-60}
+      ROBOCO_KIMI_MAX_CONCURRENT: ${ROBOCO_KIMI_MAX_CONCURRENT:-1}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so

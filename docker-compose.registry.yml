@@ -385,6 +385,10 @@ services:
       # ONE host chain via a symlinked-in credentials/+oauth/ mount rather
       # than a per-container copy (kimi follows codex's RW mount mode here).
       ROBOCO_HOST_KIMI_DIR: ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
+      ROBOCO_KIMI_CLI_MODEL: ${ROBOCO_KIMI_CLI_MODEL:-kimi-code/k3}
+      ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS:-60}
+      ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS: ${ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS:-60}
+      ROBOCO_KIMI_MAX_CONCURRENT: ${ROBOCO_KIMI_MAX_CONCURRENT:-1}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
       # Reachable base URL for commit-trailer links — set to your host's LAN
       # address or domain so the links in commit bodies resolve.
