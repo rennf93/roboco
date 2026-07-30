@@ -3400,6 +3400,19 @@ class Choreographer:
         satisfies the gate, no duplicate is written. Best-effort — a journal
         write failure is logged and swallowed so the verb falls through to
         the normal gate (which rejects as before), never crashing the verb.
+
+        Savepoint-guarded: the journal INSERT can lock-timeout on a
+        concurrent claim holding the task row's FK share lock (live
+        incident: an escalate_up request's write hit
+        ``LockNotAvailableError`` mid-flush). Swallowing that without a
+        rollback left the session's transaction poisoned — the very next
+        attribute touch anywhere in the request (``_escalate_up_preflight``
+        reading ``t.id``) raised an unhandled ``PendingRollbackError``
+        instead of the clean gate rejection this docstring promises.
+        ``begin_nested()`` scopes the failure to a SAVEPOINT the except
+        below rolls back to, leaving the outer transaction — and every
+        object this call didn't itself touch, e.g. the caller's ``t`` —
+        exactly as usable as if the write had never been attempted.
         """
         from roboco.config import settings as _settings
 
@@ -3407,16 +3420,17 @@ class Choreographer:
         if not text:
             return
         try:
-            latest = await self.journal.latest_decision_at(agent_id, task_id)
-            window = _settings.pm_decision_window_seconds
-            if (
-                latest is not None
-                and (datetime.now(UTC) - latest).total_seconds() <= window
-            ):
-                return
-            await self.journal.write_decision(
-                agent_id=agent_id, task_id=task_id, content=text
-            )
+            async with self.task.session.begin_nested():
+                latest = await self.journal.latest_decision_at(agent_id, task_id)
+                window = _settings.pm_decision_window_seconds
+                if (
+                    latest is not None
+                    and (datetime.now(UTC) - latest).total_seconds() <= window
+                ):
+                    return
+                await self.journal.write_decision(
+                    agent_id=agent_id, task_id=task_id, content=text
+                )
         except Exception as exc:  # best-effort; gate rejects normally on failure
             logger.warning(
                 "auto-record pm decision failed",

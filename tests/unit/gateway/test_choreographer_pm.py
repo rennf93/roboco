@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from sqlalchemy.exc import OperationalError
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -967,6 +968,52 @@ async def test_escalate_up_blocks_without_journal_decision() -> None:
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "journal:decision" in body["missing"]
+
+
+@pytest.mark.asyncio
+async def test_escalate_up_survives_journal_write_lock_timeout() -> None:
+    """Regression: a journal:decision INSERT that lock-times out (a
+    concurrent claim transaction holding the task row's FK share lock —
+    live production 500) used to be swallowed by ``_ensure_pm_decision``
+    with no rollback/savepoint, poisoning the session so the very next
+    attribute touch (``_escalate_up_preflight`` reading ``t.id``) raised an
+    unhandled ``PendingRollbackError``. The write is now savepoint-guarded
+    (``begin_nested()``): the failure is contained, the verb falls through
+    cleanly to the normal tracing_gap rejection (no decision was actually
+    persisted), and the task stays fully readable — no unhandled exception
+    escapes ``escalate_up``."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(id=task_id, status="blocked", assigned_to=pm_id, team="backend")
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", escalation_target="main-pm"
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = False
+    journal_svc.latest_decision_at.return_value = None
+    journal_svc.write_decision.side_effect = OperationalError(
+        "INSERT INTO journal_entries (id, ...) VALUES (...)",
+        {},
+        Exception("canceling statement due to lock timeout"),
+    )
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.escalate_up(pm_id, task_id, reason="needs cross-cell coordination")
+
+    # The savepoint was actually engaged — proves the fix is wired in, not
+    # merely that AsyncMock happened to swallow the raise on its own.
+    task_svc.session.begin_nested.assert_called()
+    # No unhandled exception escaped escalate_up: the gate falls through to
+    # its normal clean rejection since the decision write never landed.
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "journal:decision" in body["missing"]
+    # The task is still fully readable afterward — this is exactly where
+    # the production trace crashed with PendingRollbackError on t.id.
+    assert t.id == task_id
 
 
 @pytest.mark.asyncio
