@@ -189,6 +189,34 @@ async def test_gemini_spawn_wires_gateway_env_and_image_last() -> None:
     )
 
 
+async def test_gemini_spawn_adds_compose_labels_before_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the orchestrator resolves its own compose project, the sibling
+    agent container carries it too (UGOS grouping + `down --remove-orphans`)
+    — and the labels land BEFORE the image, never after (docker parses
+    anything past the image as the container command, not a flag)."""
+
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.llm.providers.gemini.compose_label_args", _fake_label_args
+    )
+    host = _FakeHost()
+    provider = GeminiCliProvider(host, image="roboco-agent-gemini:test")
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config())
+    cmd = list(exec_mock.call_args.args)
+    assert "com.docker.compose.service=be-dev-1" in cmd
+    assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
+        "roboco-agent-gemini:test"
+    )
+    assert cmd[-1] == "roboco-agent-gemini:test"
+
+
 async def test_gemini_spawn_mounts_auth_when_present(
     _isolate_gemini_auth: Path,
 ) -> None:

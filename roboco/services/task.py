@@ -3243,56 +3243,73 @@ class TaskService(BaseService):
         from roboco.services.project import get_project_service
 
         try:
-            project = await get_project_service(self.session).get(
-                UUID(str(task.project_id))
-            )
-            if not project:
-                return
-            base_branch = await self._resolve_parent_branch(task, project)
-            branch_name = str(task.branch_name)
-            if not base_branch or base_branch == branch_name:
-                return
-            git_service = get_git_service(self.session)
-            workspace = await git_service.get_workspace(project.slug, agent_id)
-            result = await git_service.merge_dependency_lineage(
-                workspace,
-                require_uuid(task.id),
-                branch_name,
-                base_branch,
-                project_slug=project.slug,
-            )
-            status = result.get("status")
-            if status == "merged":
-                # The one path that changes branch content — leave a trail.
-                self.log.info(
-                    "upstream base inherited into task branch",
-                    task_id=str(task.id),
-                    branch_name=branch_name,
-                    base_branch=base_branch,
+            # Savepoint: the two flush() calls below would otherwise poison
+            # the shared session on a mid-flush failure — this runs mid-claim,
+            # immediately followed by _create_work_session_if_needed (a
+            # required write) and the claim route's eventual commit.
+            async with self.session.begin_nested():
+                project = await get_project_service(self.session).get(
+                    UUID(str(task.project_id))
                 )
-            elif status == "conflict":
-                self._note_base_inheritance_conflict(task, base_branch, result)
-                await self.session.flush()
-            elif status == "merged_push_failed":
-                # Local merge succeeded, push to origin failed. Self-heals on
-                # the dev's next real push, but tell the dev so a failed
-                # submit isn't a mystery.
-                self._append_base_inheritance_dev_note(
-                    task,
-                    f"Upstream base {base_branch!r} was merged locally but the "
-                    f"push to origin failed; your next push carries it forward.",
+                if not project:
+                    return
+                base_branch = await self._resolve_parent_branch(task, project)
+                branch_name = str(task.branch_name)
+                if not base_branch or base_branch == branch_name:
+                    return
+                git_service = get_git_service(self.session)
+                workspace = await git_service.get_workspace(project.slug, agent_id)
+                result = await git_service.merge_dependency_lineage(
+                    workspace,
+                    require_uuid(task.id),
+                    branch_name,
+                    base_branch,
+                    project_slug=project.slug,
                 )
-                await self.session.flush()
-            elif status not in ("already_ancestor", "missing_ref"):
-                # missing_ref is quiet: a merged-and-deleted parent branch
-                # simply has nothing left to inherit.
-                self.log.warning(
-                    "upstream base inheritance incomplete",
-                    task_id=str(task.id),
-                    base_branch=base_branch,
-                    status=status,
-                )
+                status = result.get("status")
+                if status == "merged":
+                    # The one path that changes branch content — leave a trail.
+                    self.log.info(
+                        "upstream base inherited into task branch",
+                        task_id=str(task.id),
+                        branch_name=branch_name,
+                        base_branch=base_branch,
+                    )
+                elif status == "conflict":
+                    self._note_base_inheritance_conflict(task, base_branch, result)
+                    await self.session.flush()
+                elif status == "merged_push_failed":
+                    # Local merge succeeded, push to origin failed. Self-heals on
+                    # the dev's next real push, but tell the dev so a failed
+                    # submit isn't a mystery.
+                    self._append_base_inheritance_dev_note(
+                        task,
+                        f"Upstream base {base_branch!r} was merged locally but the "
+                        f"push to origin failed; your next push carries it forward.",
+                    )
+                    await self.session.flush()
+                elif status not in ("already_ancestor", "missing_ref"):
+                    # missing_ref is quiet: a merged-and-deleted parent branch
+                    # simply has nothing left to inherit.
+                    self.log.warning(
+                        "upstream base inheritance incomplete",
+                        task_id=str(task.id),
+                        base_branch=base_branch,
+                        status=status,
+                    )
         except Exception:
+            # The savepoint rollback on ANY exception in the block above —
+            # not just the flush() calls' own failures — fully expires
+            # every attribute of `task` once the conflict/merged_push_failed
+            # branches mutated it (dev_notes / the conflict note). Reading
+            # task.id right below (and the caller, claim_task_for_agent's
+            # _create_work_session_if_needed, reading task.project_id /
+            # task.branch_name right after this returns) would otherwise
+            # raise MissingGreenlet — not an AttributeError, so a getattr
+            # guard doesn't shield it — killing the claim despite "never
+            # fails the claim". A refresh failure means the DB is genuinely
+            # broken; let it raise, that's an honest failure.
+            await self.session.refresh(task)
             self.log.warning(
                 "upstream base inheritance errored",
                 task_id=str(task.id),
@@ -7315,7 +7332,11 @@ class TaskService(BaseService):
                 stamp_addressed_verified,
             )
 
-            await stamp_addressed_verified(self.session, task_id, origin="ceo")
+            # Savepoint: mark_verified's flush would otherwise poison the
+            # shared session on a mid-flush failure — every completion
+            # side-effect below (and the caller's eventual commit) reuses it.
+            async with self.session.begin_nested():
+                await stamp_addressed_verified(self.session, task_id, origin="ceo")
         except Exception as exc:
             self.log.warning(
                 "ceo-origin findings verify-stamp failed (best-effort)",
@@ -8175,7 +8196,11 @@ class TaskService(BaseService):
             )
 
             delivery = get_notification_delivery_service(self.session)
-            await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
+            # Savepoint: notify_ceo_of_completion's session.add/flush would
+            # otherwise poison the shared session on a mid-flush failure —
+            # ceo_approve emits an event and the caller commits right after.
+            async with self.session.begin_nested():
+                await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
         except Exception as exc:
             self.log.warning(
                 "Completion notification failed",
@@ -8944,6 +8969,7 @@ class TaskService(BaseService):
                 held_back_assignee=str(owner) if owner is not None else None,
                 held_back_title=held_back_title,
                 blocking_title=blocking_title,
+                db_session=self.session,
             )
         except Exception as e:
             self.log.warning("Collision-sequencing notify failed", error=str(e))

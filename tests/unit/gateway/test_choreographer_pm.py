@@ -53,6 +53,18 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    # That same verified-stamp now runs inside its own savepoint (a mid-flush
+    # failure must not poison the shared session) — an unconfigured
+    # AsyncMock's begin_nested() call returns a raw unawaited coroutine,
+    # which `async with` cannot use. Same shape as the execute default above;
+    # a test's own explicit begin_nested config (e.g. submit_root's) is the
+    # identical shape, so overwriting it here is a no-op for those tests.
+    base["task"].session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     return ChoreographerDeps(**base)
 
 

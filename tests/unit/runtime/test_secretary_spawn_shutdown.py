@@ -146,6 +146,69 @@ async def test_shutdown_mid_spawn_removes_container_and_skips_registration(
 
 
 @pytest.mark.asyncio
+async def test_secretary_spawn_adds_compose_labels_before_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the orchestrator resolves its own compose project, the persistent
+    Secretary container carries it too — spliced in right before the
+    trailing image element (docker run flags must precede the image)."""
+    orch = _make_orchestrator()
+    removed: list[str] = []
+    _wire_secretary_spawn_mocks(monkeypatch, orch, removed, flip_running_on_run=False)
+
+    captured: list[list[str]] = []
+
+    async def _run_capture(cmd: list[str]) -> str:
+        captured.append(cmd)
+        return "containerid0123456789"
+
+    monkeypatch.setattr(orch, "_run_container_cmd", _run_capture)
+
+    async def _fake_label_args(service: str) -> list[str]:
+        return ["--label", f"com.docker.compose.service={service}"]
+
+    monkeypatch.setattr(
+        "roboco.runtime.orchestrator.compose_label_args", _fake_label_args
+    )
+
+    await orch.spawn_secretary_session("sess-labels", initial_message=None)
+
+    assert len(captured) == 1
+    cmd = captured[0]
+    assert cmd[-3] == "--label"
+    assert cmd[-2] == f"com.docker.compose.service={SECRETARY_AGENT_ID}"
+
+
+@pytest.mark.asyncio
+async def test_secretary_spawn_omits_compose_labels_outside_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real helper returns [] outside a compose stack — the cmd shape
+    (image last) is byte-for-byte unchanged from today."""
+    orch = _make_orchestrator()
+    removed: list[str] = []
+    _wire_secretary_spawn_mocks(monkeypatch, orch, removed, flip_running_on_run=False)
+
+    captured: list[list[str]] = []
+
+    async def _run_capture(cmd: list[str]) -> str:
+        captured.append(list(cmd))
+        return "containerid0123456789"
+
+    monkeypatch.setattr(orch, "_run_container_cmd", _run_capture)
+
+    async def _no_labels(_service: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr("roboco.runtime.orchestrator.compose_label_args", _no_labels)
+
+    await orch.spawn_secretary_session("sess-no-labels", initial_message=None)
+
+    assert len(captured) == 1
+    assert not any(a.startswith("com.docker.compose.") for a in captured[0])
+
+
+@pytest.mark.asyncio
 async def test_running_spawn_registers_normally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

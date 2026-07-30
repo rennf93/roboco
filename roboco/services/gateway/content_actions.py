@@ -1556,7 +1556,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_pitch(pitch=pitch)
+            # Savepoint: this persists a notification row, so a mid-flush DB
+            # failure swallowed here would otherwise poison the session and
+            # blow up the commit-at-send with PendingRollbackError.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_pitch(pitch=pitch)
         except Exception as exc:
             logger.warning("pitch telegram notify failed (best-effort)", error=str(exc))
 
@@ -3806,9 +3810,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
-                task=task, task_id=task.id, headline=headline
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_periscope_brief(
+                    task=task, task_id=task.id, headline=headline
+                )
         except Exception as exc:
             logger.warning(
                 "periscope telegram notify failed (best-effort)", error=str(exc)
@@ -4048,9 +4054,11 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
-                task=task, task_id=task.id, headline=headline
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_sentinel_report(
+                    task=task, task_id=task.id, headline=headline
+                )
         except Exception as exc:
             logger.warning(
                 "sentinel telegram notify failed (best-effort)", error=str(exc)
@@ -4842,11 +4850,13 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
-                task=task,
-                task_id=task.id,
-                titles=[d["title"] for d in created],
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_librarian_drafts(
+                    task=task,
+                    task_id=task.id,
+                    titles=[d["title"] for d in created],
+                )
         except Exception as exc:
             logger.warning(
                 "librarian telegram notify failed (best-effort)", error=str(exc)
@@ -4953,12 +4963,14 @@ class ContentActions:
         if self._deps.notification_delivery is None:
             return
         try:
-            await self._deps.notification_delivery.notify_ceo_of_postmortem(
-                task=task,
-                task_id=task.id,
-                incident_summary=incident_summary,
-                process_change_kind=process_change_kind,
-            )
+            # Savepoint: persists a notification row — see _notify_pitch.
+            async with self.task.session.begin_nested():
+                await self._deps.notification_delivery.notify_ceo_of_postmortem(
+                    task=task,
+                    task_id=task.id,
+                    incident_summary=incident_summary,
+                    process_change_kind=process_change_kind,
+                )
         except Exception as exc:
             logger.warning(
                 "coroner postmortem telegram notify failed (best-effort)",
@@ -5390,6 +5402,20 @@ class ContentActions:
             and not await self._is_caller_dependency(agent_id, t)
         ):
             return _ownership_violation(task_id)
+        # Release the request's transaction before the git work below: fetch +
+        # diff can run for minutes (cold workspace, serialized behind the
+        # per-workspace ensure lock), and an open transaction pins one of the
+        # pool's connections for that whole time — enough concurrent evidence
+        # calls exhaust the pool (2026-07-29 incident). Reads after this
+        # reopen a fresh transaction on demand; expire_on_commit=False keeps
+        # ``t`` usable. A poisoned session (PendingRollbackError) rolls back
+        # instead — the point is ending the transaction, either way works.
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            await self.task.session.rollback()
         if t.branch_name and t.work_session_id:
             await self.workspace.fetch_branch_for_inspection(
                 agent_id=agent_id, branch_name=t.branch_name
@@ -6261,12 +6287,19 @@ class ContentActions:
         notification_id: UUID,
     ) -> Envelope:
         """Read one notification (also marks it read)."""
+        from roboco.services.base import NotFoundError
+
+        # Only the two domain outcomes map to not_found; a DB error (e.g. the
+        # mark-read UPDATE hitting lock_timeout) must propagate so the session
+        # is rolled back — swallowing it here poisoned the session and blew up
+        # the commit-at-send with PendingRollbackError, while lying to the
+        # agent that an existing notification didn't exist.
         try:
             n = await self._deps.notification_delivery.get_for_recipient_and_mark_read(
                 notification_id=notification_id,
                 agent_id=agent_id,
             )
-        except Exception:
+        except (NotFoundError, PermissionError):
             return Envelope.not_found(
                 message=f"notification {notification_id} not found"
             )

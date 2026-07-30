@@ -7439,9 +7439,13 @@ class Choreographer:
         landing a completed task against a stale ledger.
         """
         try:
-            await findings_lib.stamp_addressed_verified(
-                self.task.session, t.id, origin="pm"
-            )
+            # Savepoint: without it, a mid-flush failure poisons the session,
+            # so the rejection built below would itself blow up instead of
+            # cleanly reaching the PM.
+            async with self.task.session.begin_nested():
+                await findings_lib.stamp_addressed_verified(
+                    self.task.session, t.id, origin="pm"
+                )
         except Exception as exc:
             return await self._emit_rejection(
                 Envelope.invalid_state(

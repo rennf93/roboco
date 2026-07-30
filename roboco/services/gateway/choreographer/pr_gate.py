@@ -753,9 +753,13 @@ class PRGateMixin(_Base):
         instead of landing a passed gate against a stale ledger.
         """
         try:
-            await findings_lib.stamp_addressed_verified(
-                self.task.session, t.id, origin="pr_gate"
-            )
+            # Savepoint: without it, a mid-flush failure poisons the session,
+            # so the rejection built below would itself blow up instead of
+            # cleanly reaching the reviewer.
+            async with self.task.session.begin_nested():
+                await findings_lib.stamp_addressed_verified(
+                    self.task.session, t.id, origin="pr_gate"
+                )
         except Exception as exc:
             return await self._emit_rejection(
                 Envelope.invalid_state(

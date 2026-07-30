@@ -1074,19 +1074,24 @@ class GitService(BaseService):
         """
         task_service = get_task_service(self.session)
         try:
-            task = await task_service.get(task_uuid)
-            await task_service.add_commit(
-                task_id=task_uuid,
-                hash=commit_hash,
-                message=message,
-                agent_id=agent_id,
-            )
-            if task and task.work_session_id:
-                work_session_service = get_work_session_service(self.session)
-                await work_session_service.add_commit(
-                    require_uuid(task.work_session_id), commit_hash
+            # Savepoint: the flush below would otherwise poison the shared
+            # session on a mid-flush failure — this runs on every commit
+            # (POST /git/commit), and the route has no explicit commit of
+            # its own; DbCommitMiddleware commits the response regardless.
+            async with self.session.begin_nested():
+                task = await task_service.get(task_uuid)
+                await task_service.add_commit(
+                    task_id=task_uuid,
+                    hash=commit_hash,
+                    message=message,
+                    agent_id=agent_id,
                 )
-            await self.session.flush()
+                if task and task.work_session_id:
+                    work_session_service = get_work_session_service(self.session)
+                    await work_session_service.add_commit(
+                        require_uuid(task.work_session_id), commit_hash
+                    )
+                await self.session.flush()
         except Exception as e:
             self.log.warning(
                 "Commit linking failed; commit present on branch but "

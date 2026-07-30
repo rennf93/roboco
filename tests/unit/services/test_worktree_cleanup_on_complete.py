@@ -40,6 +40,23 @@ def _slug_row(slug: str) -> MagicMock:
     return MagicMock(scalar_one_or_none=MagicMock(return_value=slug))
 
 
+def _empty_result() -> MagicMock:
+    """A `session.execute(...)` result shaped for every sync accessor real
+    code calls on it (`.scalar_one_or_none()`, `.one_or_none()`,
+    `.scalars().all()`) — all "nothing found" defaults. A bare unconfigured
+    `AsyncMock()` leaks an unawaited coroutine on each of those (its
+    attributes are AsyncMock too, unlike MagicMock's), and a plain
+    `MagicMock()`'s `.scalar_one_or_none()`/`.one_or_none()` would each
+    default to a truthy MagicMock instead of the `None` real callers here
+    (`_get_ceo_agent`, `MetricsService.get_task_metrics`) treat as "not
+    found"."""
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    result.one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = []
+    return result
+
+
 def _svc(execute: object) -> tuple[TaskService, MagicMock]:
     # Build the session as a local MagicMock and preset `execute` on it before
     # handing it to TaskService — assigning to `svc.session.execute` directly
@@ -155,7 +172,7 @@ async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
 @pytest.mark.asyncio
 async def test_ceo_approve_skips_worktree_cleanup_for_branchless_task() -> None:
     task = _build_task(status=TaskStatus.AWAITING_CEO_APPROVAL, branch_name=None)
-    svc, _ = _svc(AsyncMock())
+    svc, _ = _svc(AsyncMock(return_value=_empty_result()))
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_validate_and_set_status", MagicMock())
     _bind(svc, "_close_work_session_for_task", AsyncMock())

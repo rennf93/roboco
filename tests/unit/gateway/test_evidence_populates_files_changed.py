@@ -29,6 +29,15 @@ def _deps_for_evidence(
     workspace_svc: AsyncMock,
     evidence_repo: AsyncMock,
 ) -> ContentActionsDeps:
+    # Findings-ledger reads (ReviewFindingsRepository.list_for_task) go
+    # through session.execute — an unconfigured AsyncMock's awaited result
+    # is itself an AsyncMock, so a plain sync `.scalars()` call on it leaks
+    # an unawaited coroutine. Empty scalars result (no findings).
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
     return ContentActionsDeps(
         task=task_svc,
         git=git_svc,
@@ -143,6 +152,39 @@ async def test_evidence_populates_journal_highlights() -> None:
     assert body["evidence"]["journal_highlights"] == highlights
     evidence_repo.journal_highlights_for_task.assert_awaited_once_with(
         task_id, include_ancestors=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_evidence_commits_session_before_git_work() -> None:
+    """2026-07-29 pool exhaustion: evidence() must release its DB transaction
+    (commit) BEFORE the fetch/diff git work — those can run for minutes on a
+    cold workspace, and an open transaction pins a pool connection for the
+    whole duration."""
+    order: list[str] = []
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _task_with_pr(task_id, commits=["abc"])
+    task_svc.session.commit = AsyncMock(side_effect=lambda: order.append("commit"))
+    git_svc = AsyncMock()
+    git_svc.diff.return_value = ""
+    git_svc.list_changed_files.return_value = []
+    workspace_svc = AsyncMock()
+    workspace_svc.fetch_branch_for_inspection = AsyncMock(
+        side_effect=lambda **_kw: order.append("fetch")
+    )
+    evidence_repo = AsyncMock()
+    evidence_repo.journal_highlights_for_task.return_value = []
+
+    ca = ContentActions(
+        _deps_for_evidence(task_svc, git_svc, workspace_svc, evidence_repo)
+    )
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+
+    assert env.as_dict()["error"] is None
+    assert order == ["commit", "fetch"], (
+        f"session must be committed before git work, got order={order}"
     )
 
 
