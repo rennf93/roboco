@@ -1,10 +1,12 @@
-# Backend blocker-finding audit — 2026-07-29
+# Backend blocker-finding audit — 2026-07-30
 
 Source audit task: `4e9facf0`.
 
 ## Scope
 
-Backend's `needs_revision` / `awaiting_pm_review` / `blocked` backlog was triaged for open BLOCKER-severity findings.
+Backend's `needs_revision` / `awaiting_pm_review` / `blocked` backlog (3 non-terminal
+tasks — a9a030d8, 5cc75f71, d96ec059 — as of this pass) was triaged via `triage()`
+and cross-referencing `recent_team_activity` for open BLOCKER-severity findings.
 
 ## Finding
 
@@ -23,13 +25,22 @@ The task was unblocked and escalated. Main PM independently confirmed via GitHub
 - The PR head fails in 67 seconds at a dependency-install step, with exit code 2.
 - The diff had already passed content review.
 
-## Next step (owned outside this task)
+## Next step
 
-Resubmit with the reviewer's optional nit (missing source URL) folded in, to re-trigger CI and let `pr_gate` verify finding `53ce191d` closed via `pr_pass`.
+Owner: be-pm is driving task a9a030d8's resubmit. be-dev-1 will fold in the
+reviewer's optional nit (missing source URL), commit, and push to re-trigger CI on
+PR #718; be-pm will run the verifying `pr_pass` once the Python quality gate check
+goes green.
 
 ## Lifecycle-wiring gap found during triage
 
 `be-qa` reported `claim_review()` timing out 5 times in a row on task `0d515123`, blocking a QA verification pass on acceptance criteria already marked addressed. This matches an existing unassigned backlog task `62845be1` ("Fix claim_review/evidence 120s timeout"), which should be prioritized since it is actively blocking a real verification right now.
+
+Verdict: the mark_addressed/mark_verified lifecycle is stalling in backend's cycle —
+findings get resolved but the verifying pass cannot always be claimed (claim_review
+has timed out 5x on task 0d515123, tracked as backlog task 62845be1).
+
+Finding 53ce191d: open (not yet addressed).
 
 ---
 
