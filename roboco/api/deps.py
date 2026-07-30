@@ -947,8 +947,26 @@ def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:
     here so the agent receives the same id it sent (or can capture the
     server-generated one) and ops can join logs across the full
     MCP -> API -> service hop.
+
+    A rejected envelope rides a 200, so the access log alone can't
+    distinguish a verb an agent could not satisfy from one that worked —
+    four Board Programs died that way on 2026-07-25 with no recoverable
+    reason. Every error envelope therefore leaves a "verb rejected" trace
+    naming the verb (the request path's last segment), the agent, and the
+    remediation the agent was given; a success envelope logs nothing.
     """
     cid = getattr(request.state, "correlation_id", None)
     if cid is not None and env.correlation_id is None:
         env.correlation_id = cid
+    if env.error is not None:
+        logger.info(
+            "verb rejected",
+            verb=request.url.path.rsplit("/", 1)[-1],
+            error=env.error,
+            detail=env.message,
+            remediate=env.remediate,
+            agent_id=request.headers.get("X-Agent-ID"),
+            agent_role=request.headers.get("X-Agent-Role"),
+            correlation_id=env.correlation_id,
+        )
     return env.as_dict()
