@@ -537,8 +537,25 @@ class DocMixin(_Base):
 
         warning: str | None = None
         try:
-            await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
+            # Savepoint: reassign()'s flush would otherwise poison the
+            # shared session on a mid-flush failure — the response commit
+            # (DbCommitMiddleware) reuses it right after this returns.
+            async with self.task.session.begin_nested():
+                await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
         except Exception as exc:
+            # The savepoint rollback on ANY exception here — not just a DB
+            # error, e.g. a2a.send failing — fully expires every attribute
+            # of `t` (the same identity-map object reassign() mutated
+            # inside the block). Reading t.status / with_introspection(t)
+            # below without refreshing first raises MissingGreenlet (an
+            # async lazy-refresh attempted where this code isn't awaiting
+            # it), which propagates uncaught past this except and rolls
+            # back the WHOLE request — discarding the docs_complete
+            # transition this very warning claims survived. A refresh
+            # failure here means the DB is genuinely broken; let it raise —
+            # that 500 is honest, unlike silently building an envelope off
+            # a request that will itself blow up on read.
+            await self.task.session.refresh(t)
             logger.warning(
                 "i_documented side-effect failed - transition committed, "
                 "PM handoff did not fire",

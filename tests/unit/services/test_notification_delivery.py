@@ -111,10 +111,23 @@ def _session_returning(
     """A session whose SELECT (the sweep's stale-notifications query) returns
     `notifications`; every re-escalation CAS UPDATE (`_claim_reescalation_slot`)
     reports 1 row affected — the claim wins — unless `claim_succeeds` is False,
-    simulating a concurrent sweep tick that already claimed this row's slot."""
+    simulating a concurrent sweep tick that already claimed this row's slot.
+
+    `commit`/`rollback` are awaitable no-ops (the per-row commit scope in
+    `sweep_expired_notifications`/`_maybe_reescalate` awaits both); `get`
+    is an awaitable lookup against `notifications` by id (the sweep loop
+    re-fetches each row post-snapshot via `session.get` instead of
+    iterating the ORM instances directly)."""
     session = MagicMock()
     session.add = MagicMock(side_effect=_assign_id_on_add)
     session.flush = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+
+    async def _get(_model: Any, ident: Any) -> MagicMock | None:
+        return next((n for n in notifications if n.id == ident), None)
+
+    session.get = AsyncMock(side_effect=_get)
 
     select_result = MagicMock()
     select_result.scalars.return_value.all.return_value = notifications

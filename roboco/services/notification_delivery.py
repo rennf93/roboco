@@ -173,10 +173,28 @@ def defer_after_commit(
 
     @event.listens_for(sync_session, "after_commit")
     def _on_commit(_sync_session: object) -> None:
+        # after_commit also fires on SAVEPOINT release (`begin_nested()`
+        # exit), before the real commit — draining there would reintroduce
+        # the phantom-notification bug this outbox exists to prevent.
+        # `get_transaction()` (the root txn) is NOT a usable discriminator:
+        # it stays non-None at a savepoint release too (verified live —
+        # SQLAlchemy dispatches before closing the just-committed
+        # SessionTransaction, so `session._transaction` hasn't reverted
+        # yet). `get_nested_transaction()` IS: only non-None while a
+        # savepoint is the active transaction, which is exactly the frame
+        # this event fires in for a savepoint release.
+        if sync_session.get_nested_transaction() is not None:
+            return
         _schedule_pending_work(session)
 
     @event.listens_for(sync_session, "after_rollback")
     def _on_rollback(_sync_session: object) -> None:
+        # Savepoint rollback keeps pending work: every registration site
+        # flushes before deferring, so work registered inside a savepoint
+        # that then rolls back is unreachable in practice. Same
+        # discriminator as `_on_commit` above.
+        if sync_session.get_nested_transaction() is not None:
+            return
         _discard_pending_work(session)
 
 
@@ -403,8 +421,35 @@ class NotificationDeliveryService(BaseService):
             for n in stale
             if n.requires_ack and not self._notification_is_fully_acked(n)
         ]
-        for n in unacked:
-            await self._maybe_reescalate(n, now)
+        # Per-row commit scope (the sweep owns a dedicated session — the only
+        # caller is the orchestrator's _run_sweep). One tick-wide transaction
+        # held every claimed row's lock until the final commit, so a
+        # recipient's concurrent mark-read UPDATE on an already-claimed row
+        # sat blocked until it hit the 60s lock_timeout. Committing per row
+        # also isolates one row's failure from the rest of the tick.
+        #
+        # A root `rollback()` expires every object in the session, so a
+        # bad row can't stay a live ORM instance across the except block
+        # (`str(n.id)` would need an async lazy-refresh in sync context and
+        # raise MissingGreenlet) — and every LATER row in `unacked` would be
+        # expired too, breaking the whole tick on one bad row. Snapshot ids
+        # up front and re-fetch each via `session.get` (async-safe even
+        # post-expiry) instead of iterating the ORM instances directly.
+        row_ids = [n.id for n in unacked]
+        for nid in row_ids:
+            try:
+                n = await self.session.get(NotificationTable, nid)
+                if n is None:
+                    continue
+                await self._maybe_reescalate(n, now)
+                await self.session.commit()
+            except Exception as e:
+                await self.session.rollback()
+                self.log.warning(
+                    "Re-escalation failed; row skipped this tick",
+                    notification_id=str(nid),
+                    error=str(e),
+                )
         return len(unacked)
 
     async def _maybe_reescalate(self, n: NotificationTable, now: datetime) -> None:
@@ -433,6 +478,12 @@ class NotificationDeliveryService(BaseService):
             return  # "wait": not due yet; "capped": already logged + done
         if not await self._claim_reescalation_slot(n, now):
             return  # another sweep tick already claimed this attempt
+        # Commit the claim immediately: the row lock the CAS took is released
+        # before any delivery work (holding it across delivery is what starved
+        # concurrent mark-read/ack UPDATEs into lock_timeout), and the burned
+        # slot is durable — a delivery failure rolling it back would un-burn
+        # the attempt and re-open the retry-forever loop the cap exists for.
+        await self.session.commit()
         delivered = await self._re_escalate_unacked(n)
         n.reescalation_delivered_count += delivered
         if n.reescalation_count >= settings.notification_max_reescalations:
@@ -525,7 +576,11 @@ class NotificationDeliveryService(BaseService):
             acked_by=[],
         )
         try:
-            return await self._persist_and_deliver(notification)
+            # Savepoint: a mid-flush failure otherwise poisons the session for
+            # every remaining recipient of this notification (and the caller's
+            # commit), turning one bad delivery into a whole-row failure.
+            async with self.session.begin_nested():
+                return await self._persist_and_deliver(notification)
         except Exception as e:
             self.log.warning(
                 "Re-escalation deliver failed",
@@ -1731,6 +1786,23 @@ class NotificationDeliveryService(BaseService):
         if not notification.requires_ack:
             raise ValueError("This notification does not require acknowledgment")
 
+        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
+        # same notification is not suppressed by a stale 60s window. The key
+        # is per (type, sender, recipient, task, subject); only loop-prone
+        # types carry one, and clear_dedup_key is a no-op fail-open for the
+        # rest. Best-effort: a Redis miss never blocks the ack. Runs BEFORE
+        # the flush so the row lock the flush takes is never held across a
+        # Redis round-trip (a stalled Redis would starve concurrent writers
+        # on this row into lock_timeout); clearing for an ack that then fails
+        # is harmless — the key is only a re-send suppression window.
+        await clear_dedup_key(
+            ntype=notification.type,
+            from_agent=cast("UUID", notification.from_agent),
+            recipient=agent_id,
+            related_task_id=cast("UUID | None", notification.related_task_id),
+            subject=notification.subject,
+        )
+
         now = datetime.now(UTC)
         if agent_id not in notification.acked_by:
             notification.acked_by = [*notification.acked_by, agent_id]
@@ -1742,18 +1814,6 @@ class NotificationDeliveryService(BaseService):
             notification.read_by = [*notification.read_by, agent_id]
 
         await self.session.flush()
-        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
-        # same notification is not suppressed by a stale 60s window. The key
-        # is per (type, sender, recipient, task, subject); only loop-prone
-        # types carry one, and clear_dedup_key is a no-op fail-open for the
-        # rest. Best-effort: a Redis miss never blocks the ack.
-        await clear_dedup_key(
-            ntype=notification.type,
-            from_agent=cast("UUID", notification.from_agent),
-            recipient=agent_id,
-            related_task_id=cast("UUID | None", notification.related_task_id),
-            subject=notification.subject,
-        )
         return notification
 
     async def mark_read_for_recipient(
