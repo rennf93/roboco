@@ -348,6 +348,7 @@ gate: sync
 	@uv run ruff check .
 	@uv run mypy roboco/ tests/
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
+	@uv run lint-imports
 
 # Panel (Next.js) fast gate: lint + type-check + vitest.
 # Run locally before submitting panel changes; mirrors the CI panel job exactly.
