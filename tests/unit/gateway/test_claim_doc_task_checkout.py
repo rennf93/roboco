@@ -86,6 +86,16 @@ def test_claim_verb_hint_pm_for_planning() -> None:
     assert "i_will_plan" in hint
 
 
+def test_claim_verb_hint_pm_for_awaiting_pm_review_steers_to_complete() -> None:
+    """A PM's own review-queue task must never hint i_will_plan — that verb
+    used to legally re-claim and reset it, looping submit_up -> pr_pass ->
+    awaiting_pm_review forever."""
+    for role in ("cell_pm", "main_pm"):
+        hint = Choreographer._claim_verb_hint(role, _task("awaiting_pm_review"))
+        assert "complete" in hint
+        assert "call i_will_plan(" not in hint
+
+
 def test_claim_verb_hint_dev_default() -> None:
     hint = Choreographer._claim_verb_hint("developer", _task("pending"))
     assert "i_will_work_on" in hint

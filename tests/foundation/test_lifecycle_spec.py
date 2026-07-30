@@ -491,6 +491,11 @@ def test_claim_rules_match_pre_gateway_table() -> None:
     re-delegating fixes (scoped by give_me_work routing, which offers only the
     caller's own assigned tasks). BACKLOG → PENDING is a separate `activate`
     action (strict transitions; no implicit activate-on-claim).
+
+    AWAITING_PM_REVIEW is deliberately absent from both PM roles — a claim
+    edge there let a respawned PM's i_will_plan legally re-claim its own
+    review-queue task and loop the submit_up -> pr_pass -> awaiting_pm_review
+    cycle forever. See test_awaiting_pm_review_not_claimable_by_any_role.
     """
     assert spec.CLAIM_RULES[spec.Role.DEVELOPER] == frozenset(
         {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
@@ -500,19 +505,24 @@ def test_claim_rules_match_pre_gateway_table() -> None:
         {spec.Status.PENDING, spec.Status.AWAITING_DOCUMENTATION}
     )
     assert spec.CLAIM_RULES[spec.Role.CELL_PM] == frozenset(
-        {
-            spec.Status.PENDING,
-            spec.Status.NEEDS_REVISION,
-            spec.Status.AWAITING_PM_REVIEW,
-        }
+        {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
     )
     assert spec.CLAIM_RULES[spec.Role.MAIN_PM] == frozenset(
-        {
-            spec.Status.PENDING,
-            spec.Status.NEEDS_REVISION,
-            spec.Status.AWAITING_PM_REVIEW,
-        }
+        {spec.Status.PENDING, spec.Status.NEEDS_REVISION}
     )
+
+
+def test_awaiting_pm_review_not_claimable_by_any_role() -> None:
+    """The claim edge that let a respawned PM's i_will_plan reset an
+    awaiting_pm_review task (looping submit_up -> pr_pass -> awaiting_pm_review
+    forever) is permanently closed: no role may claim from this status. A PM
+    re-entering its own review task is steered by the choreographer directly
+    to complete/request_changes, never through claim.
+    """
+    for role, statuses in spec.CLAIM_RULES.items():
+        assert spec.Status.AWAITING_PM_REVIEW not in statuses, role
+    # PR_REVIEWER's own review-gate claim (a different status) is untouched.
+    assert spec.Status.AWAITING_PR_REVIEW in spec.CLAIM_RULES[spec.Role.PR_REVIEWER]
 
 
 def test_team_rules_pin_team_for_seeded_agents() -> None:

@@ -519,7 +519,7 @@ class Choreographer:
         role_str: str,
         briefing: dict[str, Any],
     ) -> Envelope | None:
-        """Handle two distinct re-entry contracts for i_will_plan.
+        """Handle three distinct re-entry contracts for i_will_plan.
 
         Idempotent heartbeat: the PM already owns the task in in_progress —
         touch the heartbeat and return OK without re-running the spec gate.
@@ -531,10 +531,20 @@ class Choreographer:
         re-claim (claimed is not a valid source for the claim transition) and
         run set_plan+start to complete the interrupted sequence.
 
-        Returns None when neither condition applies, signalling the caller to
-        continue to the normal claim-plan-start path. PLR0911 budget is the
-        secondary reason this lives in a helper; the domain contract above is
-        the primary one.
+        Review-queue steering: the task already passed the in-path PR gate and
+        is sitting in awaiting_pm_review awaiting this PM's merge decision. A
+        respawned PM re-offered this task by give_me_work used to call
+        i_will_plan on it, and CLAIM_RULES used to let that legally re-claim
+        it — running the full composed (claim, set_plan, start) sequence and
+        resetting the task to in_progress, which re-ran submit_up -> pr_pass
+        -> awaiting_pm_review forever (one production task looped 11 cycles /
+        37 spawns in 4h before this was caught). Steer to complete /
+        request_changes instead, with NO claim and NO status change.
+
+        Returns None when none of the three conditions applies, signalling the
+        caller to continue to the normal claim-plan-start path. PLR0911 budget
+        is the secondary reason this lives in a helper; the domain contract
+        above is the primary one.
         """
         status = str(t.status)
         if status == "in_progress" and t.assigned_to == pm_agent_id:
@@ -550,6 +560,20 @@ class Choreographer:
             return await self._post_claim_journal_gate(
                 "i_will_plan", pm_agent_id, task_id, envelope
             )
+        if status == "awaiting_pm_review" and t.assigned_to == pm_agent_id:
+            return Envelope.ok(
+                status=status,
+                task_id=str(task_id),
+                next=(
+                    "this task already passed the PR-review gate and is"
+                    " awaiting your merge decision — do NOT re-plan or"
+                    " re-submit it. Call complete(task_id) to merge the"
+                    " assembled PR, or request_changes(task_id,"
+                    " findings=[...]) to bounce it back with concrete"
+                    " findings."
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
         return None
 
     async def _pm_sub_tasks_gate(
@@ -830,6 +854,12 @@ class Choreographer:
         handed an awaiting_documentation task (or QA an awaiting_qa
         task) was told to call a dev verb it doesn't have — it looped.
         Map to the verb that actually claims the task for this role.
+
+        awaiting_pm_review is a review-queue state, not a re-plan state: a
+        PM offered its own already-gated task here must be steered to
+        complete/request_changes, never i_will_plan (i_will_plan legally
+        re-claiming from this status used to reset the task and loop the
+        submit_up -> pr_pass -> awaiting_pm_review cycle forever).
         """
         tid = str(getattr(task, "id", ""))
         status = str(getattr(task, "status", ""))
@@ -837,6 +867,13 @@ class Choreographer:
             return f"call claim_doc_task(task_id='{tid}') to start"
         if status == "awaiting_qa":
             return f"call claim_review(task_id='{tid}') to start"
+        if status == "awaiting_pm_review" and role in ("cell_pm", "main_pm"):
+            return (
+                f"this task already passed the PR-review gate — call"
+                f" complete(task_id='{tid}') to merge, or"
+                f" request_changes(task_id='{tid}', findings=[...]) to bounce"
+                " it back; do NOT call i_will_plan"
+            )
         if role in ("cell_pm", "main_pm", "product_owner", "head_marketing"):
             return f"call i_will_plan(task_id='{tid}', plan='<plan>') to start"
         return f"call i_will_work_on(task_id='{tid}', plan='<plan>') to start"
