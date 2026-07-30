@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useAgents } from "@/hooks/use-agents";
 import { JournalEntryType } from "@/types";
@@ -61,8 +61,16 @@ function JournalsViewContent() {
     () => loadJournalsState()?.q ?? "",
   );
 
-  // Restore from localStorage if URL has no params (fresh navigation)
+  // Restore from localStorage if URL has no params (fresh navigation).
+  // Guarded by a ref (not an empty deps array) so the deps list can honestly
+  // include everything the body reads while still firing exactly once per
+  // mount — otherwise the URL params clearing later (an intentional
+  // "remove filters" action) would re-trigger this and clobber that clear
+  // with the stale saved state.
+  const hasRestoredRef = useRef(false);
   useEffect(() => {
+    if (hasRestoredRef.current) return;
+    hasRestoredRef.current = true;
     const hasUrlParams = urlAgentId || urlType || urlTask;
     if (!hasUrlParams) {
       const saved = loadJournalsState();
@@ -74,8 +82,7 @@ function JournalsViewContent() {
         router.replace(`/agents?${params.toString()}`);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Intentionally only run on mount
+  }, [urlAgentId, urlType, urlTask, searchParams, router]);
 
   // Derive state from URL
   const selectedAgentId = urlAgentId;
