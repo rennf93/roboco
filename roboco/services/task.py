@@ -630,10 +630,9 @@ X_FEATURE_EXPLORATION_SOURCE = "x_feature_exploration"
 # Source tag for a materialized feature-spotlight draft — the HoM-authored,
 # fully-formed post. Added to X_SOURCES so it inherits every existing consumer
 # (XPostService, list_open_x_posts, the PM-dispatcher's held-source skip) for
-# free.
+# free. X_SOURCES itself is defined further below, after its later members
+# (X_EDITORIAL_SOURCE/X_CAMPAIGN_SOURCE/X_BARFLY_SOURCE) are declared.
 X_FEATURE_SOURCE = "x_feature"
-
-X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
 # UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
@@ -668,6 +667,62 @@ ROADMAP_ITEM_SOURCE = "roadmap"
 # Start" shape): the board reviews, the CEO's approve_and_start hands it to
 # the Main PM. The board routing is the start gate; no held-source skip.
 VAULT_NOTE_SOURCE = "vault_note"
+
+# Source tags for the Board Program registry's solo-explorer cycles (see
+# BoardProgramEngine / PROGRAMS in roboco/foundation/policy/board_programs.py):
+# each is a PENDING exploration task, one-shot dispatched to its named Board
+# role, that authors the program's proposal via its own content verb. Mirrors
+# ROADMAP_SOURCE / X_FEATURE_EXPLORATION_SOURCE above.
+PEST_CONTROL_SOURCE = "board_pest_control"
+SPACKLE_SOURCE = "board_spackle"
+SCALES_SOURCE = "board_scales"
+DOGFOOD_SOURCE = "board_dogfood"
+PERISCOPE_SOURCE = "board_periscope"
+MEGAPHONE_SOURCE = "board_megaphone"
+MIRROR_SOURCE = "board_mirror"
+WAR_ROOM_SOURCE = "board_war_room"
+CORONER_SOURCE = "board_coroner"
+LIBRARIAN_SOURCE = "board_librarian"
+SENTINEL_SOURCE = "board_sentinel"
+BARFLY_SOURCE = "board_barfly"
+
+# Source tags stamped on tasks MATERIALIZED from an approved Board Program
+# item (distinct from the *_SOURCE exploration-cycle tags above), mirroring
+# ROADMAP_ITEM_SOURCE.
+PEST_CONTROL_ITEM_SOURCE = "pest_control"
+SPACKLE_ITEM_SOURCE = "spackle"
+DOGFOOD_ITEM_SOURCE = "dogfood"
+PERISCOPE_ITEM_SOURCE = "periscope"
+MIRROR_ITEM_SOURCE = "mirror"
+CORONER_ITEM_SOURCE = "coroner"
+SENTINEL_ITEM_SOURCE = "sentinel"
+
+# Source tags for the X engine's later held-draft kinds — Megaphone's
+# standing editorial post, War Room's per-item campaign post, and Barfly's
+# conversation-reply post. Rides the same held-for-CEO XPostService queue as
+# X_POST_SOURCE/X_REPLY_SOURCE/X_FEATURE_SOURCE, so they must join X_SOURCES.
+X_EDITORIAL_SOURCE = "x_editorial"
+X_CAMPAIGN_SOURCE = "x_campaign"
+X_BARFLY_SOURCE = "x_barfly"
+
+X_SOURCES = (
+    X_POST_SOURCE,
+    X_REPLY_SOURCE,
+    X_FEATURE_SOURCE,
+    X_EDITORIAL_SOURCE,
+    X_CAMPAIGN_SOURCE,
+    X_BARFLY_SOURCE,
+)
+
+# Source tag for an env-ladder sync PR task: opened by EnvSyncEngine when
+# cascading the environment ladder hits a merge conflict. Rides the normal
+# delivery lifecycle (confirmed_by_human=True) like CI_WATCH_SOURCE/
+# DEP_UPDATE_SOURCE above.
+ENV_SYNC_SOURCE = "env_sync"
+
+# Source tag for a golden-task eval-harness bench task (roboco/eval/). Never
+# appears outside a disposable eval environment.
+EVAL_BENCH_SOURCE = "eval_bench"
 
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
