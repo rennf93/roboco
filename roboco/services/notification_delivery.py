@@ -14,7 +14,7 @@ import contextlib
 import html
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import UUID
 
@@ -411,14 +411,19 @@ class NotificationDeliveryService(BaseService):
     async def _maybe_reescalate(self, n: NotificationTable, now: datetime) -> None:
         """Re-escalate `n` only when its backoff schedule says it's due.
 
-        `_persist_and_deliver`'s 60s dedup guard does NOT backstop a
-        concurrent double-sweep here: `BLOCKER_ESCALATION` — the type every
-        re-escalation notification is created as — is not in
-        `_LOOP_PRONE_TYPES` (notification_dedup.py), so that guard returns
-        False unconditionally for it. The real guard is
-        `_claim_reescalation_slot`'s compare-and-set: it must succeed BEFORE
-        any delivery is attempted, so two sweep ticks racing the same row
-        can never both deliver.
+        Neither of `_persist_and_deliver`'s two dedup guards backstops a
+        concurrent double-sweep here. The Redis 60s guard is a structural
+        no-op: `BLOCKER_ESCALATION` — the type every re-escalation
+        notification is created as — is not in `_LOOP_PRONE_TYPES`
+        (notification_dedup.py), so that guard returns False unconditionally
+        for it. The DB purpose-dedup guard WOULD otherwise apply to
+        `BLOCKER_ESCALATION` (it's ACK_REQUIRED_BY_TYPE), but
+        `_re_escalate_recipient` deliberately passes
+        `bypass_purpose_dedup=True` so a legitimate repeat re-escalation
+        against a still-unacked prior row is never silently dropped. The
+        real guard against double-delivery is `_claim_reescalation_slot`'s
+        compare-and-set: it must succeed BEFORE any delivery is attempted,
+        so two sweep ticks racing the same row can never both deliver.
         """
         decision = reescalation_decision(
             now=now,
@@ -524,9 +529,26 @@ class NotificationDeliveryService(BaseService):
             requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
             read_by=[],
             acked_by=[],
+            # Stamp the same TTL a first-send blocker gets so this row is
+            # itself swept + can be re-escalated further up the chain — an
+            # un-stamped row would live forever and dead-end the ladder here.
+            expires_at=(
+                datetime.now(UTC) + timedelta(hours=settings.notification_ack_ttl_hours)
+                if settings.notification_ack_ttl_hours > 0
+                else None
+            ),
         )
         try:
-            return await self._persist_and_deliver(notification)
+            # Every attempt at this recipient rebuilds an identical
+            # BLOCKER_ESCALATION while the prior one is still unacked BY
+            # DEFINITION (that's why we're re-escalating) — bypass DB
+            # purpose-dedup so attempt 2+ isn't silently suppressed right
+            # after `_claim_reescalation_slot` already burned the attempt
+            # slot. The CAS claim upstream, not this dedup, is what prevents
+            # a genuine double-delivery.
+            return await self._persist_and_deliver(
+                notification, bypass_purpose_dedup=True
+            )
         except Exception as e:
             self.log.warning(
                 "Re-escalation deliver failed",
@@ -1514,6 +1536,12 @@ class NotificationDeliveryService(BaseService):
         type ``ALERT`` whose ``to_agents`` include the auditor and spawns the
         auditor with a quality-alert prompt. This producer reactivates that
         reactive dispatch path at the QA-fail / rework chokepoints.
+
+        Bypasses DB purpose-dedup: a second ``needs_revision`` on the same
+        task from the same actor is a genuine repeat rework event that must
+        still reach the auditor even while the first ALERT sits unacked —
+        suppressing it would silently stop `_dispatch_audit_work` from
+        re-spawning the auditor on later rework cycles.
         """
         auditor = await self._get_auditor_agent()
         if not auditor:
@@ -1545,7 +1573,7 @@ class NotificationDeliveryService(BaseService):
             read_by=[],
             acked_by=[],
         )
-        await self._persist_and_deliver(notification)
+        await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
 
     # ------------------------------------------------------------------
     # Private helpers for recipient resolution + persist
@@ -1601,7 +1629,9 @@ class NotificationDeliveryService(BaseService):
         """Find the auditor agent (org-wide; earliest-created if many)."""
         return await get_agent_by_role(self.session, AgentRole.AUDITOR)
 
-    async def _persist_and_deliver(self, notification: NotificationTable) -> bool:
+    async def _persist_and_deliver(
+        self, notification: NotificationTable, *, bypass_purpose_dedup: bool = False
+    ) -> bool:
         """Add to session, flush (to get an id), deliver. Caller commits.
 
         Returns True iff actually persisted+delivered, False if suppressed by
@@ -1614,6 +1644,16 @@ class NotificationDeliveryService(BaseService):
         this call. The DB purpose-dedup guard applies to ACK_REQUIRED_BY_TYPE
         action-required types (BLOCKER_ESCALATION included) — a retried
         `i_am_blocked`/escalate past the 60s Redis window still hits this.
+
+        `bypass_purpose_dedup=True` skips ONLY the DB purpose-dedup check
+        below (never the Redis re-fire guard) for a caller whose whole point
+        is to intentionally re-send an identical (sender, type, task)
+        signal — `_re_escalate_recipient` (the re-escalation ladder) and
+        `notify_auditor_of_rework` (rework ALERTs) both pass this, since the
+        prior copy being unacked is exactly why they fire again. This is
+        scoped to the CALL PATH, not the notification type, so a first-send
+        retried blocker (the gap this dedup was added to close) is still
+        deduped normally.
         """
         # Re-fire guard (loop-prone types): this path skips the DB dedup, so
         # apply the same 60s Redis SET-NX window. Fail-open on Redis down.
@@ -1641,13 +1681,18 @@ class NotificationDeliveryService(BaseService):
         # got the same-purpose/unacked check that path applies. Without it,
         # a retried blocker/escalate past the Redis window above re-creates
         # a second unacked row for the same (sender, type, task, recipients).
-        is_duplicate = notification.from_agent is not None and (
-            await duplicate_unacked_notification_exists(
-                self.session,
-                from_agent=cast("UUID", notification.from_agent),
-                notification_type=notification.type,
-                related_task_id=cast("UUID | None", notification.related_task_id),
-                to_agents=cast("list[UUID]", notification.to_agents),
+        # Skipped entirely when the caller opted out (see docstring above).
+        is_duplicate = (
+            not bypass_purpose_dedup
+            and notification.from_agent is not None
+            and (
+                await duplicate_unacked_notification_exists(
+                    self.session,
+                    from_agent=cast("UUID", notification.from_agent),
+                    notification_type=notification.type,
+                    related_task_id=cast("UUID | None", notification.related_task_id),
+                    to_agents=cast("list[UUID]", notification.to_agents),
+                )
             )
         )
         if is_duplicate:
