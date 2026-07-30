@@ -44,8 +44,17 @@ from roboco.services.base import SingletonService
 
 # PM_ROLES is canonical in foundation.identity; re-exported here for
 # backwards compatibility with existing `from roboco.services.permissions
-# import PM_ROLES` consumers.
-__all__ = ["PM_ROLES"]
+# import PM_ROLES` consumers. __all__ lists the module's real public
+# surface: PermissionService and is_pm_role are defined here, AgentContext
+# and TaskAction are re-exported from roboco.models.permissions, and
+# api/deps.py + routes/tasks.py import all of these by name.
+__all__ = [
+    "PM_ROLES",
+    "AgentContext",
+    "PermissionService",
+    "TaskAction",
+    "is_pm_role",
+]
 
 # =============================================================================
 # NOTIFICATION PERMISSIONS (derived from foundation.NOTIFY_SENDER_ROLES)
