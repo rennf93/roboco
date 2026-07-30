@@ -72,6 +72,7 @@ from roboco.models.runtime import (
     WaitingRecord,
 )
 from roboco.models.sandbox import SandboxInfo
+from roboco.runtime.compose_labels import compose_label_args
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
@@ -3704,6 +3705,7 @@ class AgentOrchestrator:
             self._append_sandbox_marker_env(cmd, config.sandbox_available_services)
         else:
             self._append_gate_env(cmd)
+        cmd.extend(await compose_label_args(config.agent_id))
         self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
@@ -5373,6 +5375,9 @@ class AgentOrchestrator:
                     model=route.model_name,
                 )
             )
+            # Insert before the trailing image element (docker run flags must
+            # precede the image, not follow it).
+            cmd[-1:-1] = await compose_label_args(INTAKE_AGENT_ID)
             container_id = await self._run_container_cmd(cmd)
 
             # Shutdown may have begun while this (non-blocking) spawn was in flight
@@ -5582,6 +5587,9 @@ class AgentOrchestrator:
                     model=route.model_name,
                 )
             )
+            # Insert before the trailing image element (docker run flags must
+            # precede the image, not follow it).
+            cmd[-1:-1] = await compose_label_args(SECRETARY_AGENT_ID)
             container_id = await self._run_container_cmd(cmd)
 
             # Shutdown may have begun while this (non-blocking) spawn was in flight

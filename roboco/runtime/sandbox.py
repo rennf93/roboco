@@ -29,6 +29,7 @@ from roboco.models.sandbox import (
     SandboxEngine,
     SandboxInfo,
 )
+from roboco.runtime.compose_labels import compose_label_args
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -197,6 +198,7 @@ class SandboxProvisioner:
             SANDBOX_LABEL,
             "--label",
             f"{_OWNER_LABEL_KEY}={_owner_label(agent_id)}",
+            *await compose_label_args(name),
         ]
         for mount in engine.tmpfs:
             args += ["--tmpfs", mount]

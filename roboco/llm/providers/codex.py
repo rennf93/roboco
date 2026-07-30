@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Protocol
 from roboco.config import settings
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
+from roboco.runtime.compose_labels import compose_label_args
 
 if TYPE_CHECKING:
     from roboco.models.runtime import OrchestratorAgentConfig as AgentConfig
@@ -149,6 +150,7 @@ class CodexCliProvider(AgentProvider):
         self._append_codex_auth_mount(cmd)
         self._append_usage_mount(cmd, hosts)
         self._append_codex_env(cmd, config, initial_prompt)
+        cmd.extend(await compose_label_args(config.agent_id))
         cmd.append(self._image)
 
         proc = await asyncio.create_subprocess_exec(
