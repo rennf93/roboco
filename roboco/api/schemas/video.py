@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from roboco.api.schemas.project_fields import task_project_fields
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.markers import MAX_VIDEO_RENDER_ATTEMPTS
 from roboco.services.video_post_service import MAX_TIKTOK_CAPTION_CHARS
@@ -47,6 +48,8 @@ class VideoPostResponse(BaseModel):
     reject_reason: str | None = None
     mp4_paths: dict[str, str] = Field(default_factory=dict)
     source_task_id: str | None = None  # the authoring task this draft rendered from
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class VideoPostApproveRequest(BaseModel):
@@ -89,6 +92,8 @@ class VideoPostHistoryResponse(BaseModel):
     posted: dict[str, str] = Field(default_factory=dict)  # platform -> posted id
     acted_at: datetime
     source_task_id: str | None = None  # the authoring task this draft rendered from
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class VideoPipelineItemResponse(BaseModel):
@@ -108,6 +113,8 @@ class VideoPipelineItemResponse(BaseModel):
     render_attempts: int = 0
     max_attempts: int = MAX_VIDEO_RENDER_ATTEMPTS
     render_error: str | None = None
+    project_slug: str | None = None
+    project_name: str | None = None
 
 
 class TikTokCredentialsStatus(BaseModel):
@@ -132,6 +139,7 @@ def status_value(task: "TaskTable") -> str:
 
 def task_to_video_post_response(task: "TaskTable") -> VideoPostResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPostResponse(
         task_id=str(task.id),
         source=task.source,
@@ -145,11 +153,14 @@ def task_to_video_post_response(task: "TaskTable") -> VideoPostResponse:
         reject_reason=markers.get_video_reject_reason(task),
         mp4_paths=dict(draft.get("mp4_paths") or {}),
         source_task_id=draft.get("source_task_id"),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
 def task_to_pipeline_item(task: "TaskTable") -> VideoPipelineItemResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPipelineItemResponse(
         task_id=str(task.id),
         title=task.title,
@@ -160,6 +171,8 @@ def task_to_pipeline_item(task: "TaskTable") -> VideoPipelineItemResponse:
         render_status=draft.get("render_status"),
         render_attempts=int(draft.get("render_attempts", 0)),
         render_error=draft.get("render_error"),
+        project_slug=project_slug,
+        project_name=project_name,
     )
 
 
@@ -174,6 +187,7 @@ def posted_ids(draft: dict[str, Any]) -> dict[str, str]:
 
 def task_to_video_post_history_response(task: "TaskTable") -> VideoPostHistoryResponse:
     draft = markers.get_video_draft(task) or {}
+    project_slug, project_name = task_project_fields(task)
     return VideoPostHistoryResponse(
         task_id=str(task.id),
         source=task.source,
@@ -188,4 +202,6 @@ def task_to_video_post_history_response(task: "TaskTable") -> VideoPostHistoryRe
         posted=posted_ids(draft),
         acted_at=task.updated_at or task.created_at,
         source_task_id=draft.get("source_task_id"),
+        project_slug=project_slug,
+        project_name=project_name,
     )

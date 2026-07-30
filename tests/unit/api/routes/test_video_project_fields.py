@@ -11,10 +11,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from roboco.api.routes.video import (
-    _to_history_response,
-    _to_pipeline_item,
-    _to_response,
+from roboco.api.schemas.video import (
+    task_to_pipeline_item as _to_pipeline_item,
+)
+from roboco.api.schemas.video import (
+    task_to_video_post_history_response as _to_history_response,
+)
+from roboco.api.schemas.video import (
+    task_to_video_post_response as _to_response,
 )
 
 
