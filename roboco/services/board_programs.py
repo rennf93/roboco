@@ -469,18 +469,25 @@ class BoardProgramEngine(BaseService):
             cycle = await self._latest_cycle(program_key)
         if cycle is None:
             return
-        cycle.items_proposed += 1
-        if verdict == "approved":
-            cycle.items_approved += 1
-        else:
-            cycle.items_rejected += 1
-        cycle.decisions = [
-            *cycle.decisions,
-            {"item_ref": item_ref, "verdict": verdict, "reason": reason},
-        ]
-        if cycle.closed_at is None:
-            await self._maybe_close(cycle)
-        await self.session.flush()
+        # Savepoint: every one of this method's ~10 callers (the per-program
+        # `_record_learn` family) wraps this call in its own best-effort
+        # try/except with no rollback — a mid-flush failure here would
+        # otherwise poison the caller's shared session (e.g. RoadmapService.
+        # approve_item does an UNGUARDED session.flush() right after this
+        # returns). Fixed once at the source instead of in every caller.
+        async with self.session.begin_nested():
+            cycle.items_proposed += 1
+            if verdict == "approved":
+                cycle.items_approved += 1
+            else:
+                cycle.items_rejected += 1
+            cycle.decisions = [
+                *cycle.decisions,
+                {"item_ref": item_ref, "verdict": verdict, "reason": reason},
+            ]
+            if cycle.closed_at is None:
+                await self._maybe_close(cycle)
+            await self.session.flush()
 
     async def record_nothing_to_propose(
         self, program_key: str, exploration_task_id: UUID, reason: str
@@ -500,8 +507,11 @@ class BoardProgramEngine(BaseService):
         cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
         if cycle is None:
             return
-        cycle.nothing_to_propose_reason = reason
-        await self.session.flush()
+        # Savepoint: same reasoning as record_decision above — every caller
+        # here also wraps this in its own best-effort try/except.
+        async with self.session.begin_nested():
+            cycle.nothing_to_propose_reason = reason
+            await self.session.flush()
 
     async def prior_cycle_context(self, program_key: str, limit: int = 2) -> str:
         """Render the last ``limit`` CLOSED cycles for prompt injection, oldest

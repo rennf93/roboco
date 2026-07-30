@@ -805,10 +805,14 @@ class QAMixin(_Base):
             # addressed qa-origin finding, in the same session/transaction as
             # the pass itself (not best-effort — the ledger's integrity is
             # the point). A failure here raises before run_intent, so the
-            # pass never lands against a stale ledger.
-            await findings_lib.stamp_addressed_verified(
-                self.task.session, t.id, origin="qa"
-            )
+            # pass never lands against a stale ledger. Savepoint: without it,
+            # a mid-flush failure poisons the session, so the rejection built
+            # below (and whatever writes it or the route's commit still do)
+            # would itself blow up instead of cleanly reaching the agent.
+            async with self.task.session.begin_nested():
+                await findings_lib.stamp_addressed_verified(
+                    self.task.session, t.id, origin="qa"
+                )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
