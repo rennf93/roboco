@@ -19,20 +19,18 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-import roboco.api.routes.orchestrator as orch_route
-from fastapi import FastAPI, HTTPException
+import roboco.services.task as task_service_module
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from roboco.agents_config import AGENT_UUIDS
 from roboco.api.deps import _ServiceHolder, set_orchestrator
-from roboco.api.routes.orchestrator import (
-    _build_manual_spawn_prompt,
-    _resolve_manual_spawn_prompt,
-    _validated_agent_id,
-)
 from roboco.api.routes.orchestrator import (
     router as orch_router,
 )
 from roboco.runtime.orchestrator import AgentReadinessError, AgentState
+from roboco.services.task import (
+    build_manual_spawn_prompt,
+    resolve_manual_spawn_prompt,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -75,12 +73,12 @@ class _FakeTaskService:
 
 
 # ---------------------------------------------------------------------------
-# _build_manual_spawn_prompt — pure formatting
+# build_manual_spawn_prompt — pure formatting
 # ---------------------------------------------------------------------------
 
 
 def test_build_manual_spawn_prompt_includes_task_fields() -> None:
-    prompt = _build_manual_spawn_prompt(_fake_task("awaiting_qa"), None)
+    prompt = build_manual_spawn_prompt(_fake_task("awaiting_qa"), None)
     assert "TASK ID: task-123" in prompt
     assert "TITLE: Fix the thing" in prompt
     assert "STATUS: awaiting_qa" in prompt
@@ -89,7 +87,7 @@ def test_build_manual_spawn_prompt_includes_task_fields() -> None:
 
 
 def test_build_manual_spawn_prompt_appends_ceo_note() -> None:
-    prompt = _build_manual_spawn_prompt(_fake_task(), "Please prioritize this.")
+    prompt = build_manual_spawn_prompt(_fake_task(), "Please prioritize this.")
     assert "== CEO NOTE ==" in prompt
     assert "Please prioritize this." in prompt
     # CEO note comes after the task framing, not instead of it.
@@ -97,13 +95,13 @@ def test_build_manual_spawn_prompt_appends_ceo_note() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_manual_spawn_prompt — best-effort enrichment
+# resolve_manual_spawn_prompt — best-effort enrichment
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_resolve_prompt_no_task_id_returns_message_unchanged() -> None:
-    result = await _resolve_manual_spawn_prompt(None, "hello")
+    result = await resolve_manual_spawn_prompt(None, "hello")
     assert result == "hello"
 
 
@@ -111,13 +109,13 @@ async def test_resolve_prompt_no_task_id_returns_message_unchanged() -> None:
 async def test_resolve_prompt_enriches_when_task_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(task_service_module, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route,
+        task_service_module,
         "get_task_service",
         lambda _db: _FakeTaskService(task=_fake_task("verifying")),
     )
-    result = await _resolve_manual_spawn_prompt(str(uuid4()), "Ship it")
+    result = await resolve_manual_spawn_prompt(str(uuid4()), "Ship it")
     assert result is not None
     assert "STATUS: verifying" in result
     assert "Ship it" in result
@@ -127,18 +125,18 @@ async def test_resolve_prompt_enriches_when_task_found(
 async def test_resolve_prompt_falls_back_when_task_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(task_service_module, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route, "get_task_service", lambda _db: _FakeTaskService(task=None)
+        task_service_module, "get_task_service", lambda _db: _FakeTaskService(task=None)
     )
-    result = await _resolve_manual_spawn_prompt(str(uuid4()), "hello")
+    result = await resolve_manual_spawn_prompt(str(uuid4()), "hello")
     assert result == "hello"
 
 
 @pytest.mark.asyncio
 async def test_resolve_prompt_falls_back_on_bad_task_id() -> None:
     # Not a valid UUID — must not raise, must fall back unchanged.
-    result = await _resolve_manual_spawn_prompt("not-a-uuid", "hello")
+    result = await resolve_manual_spawn_prompt("not-a-uuid", "hello")
     assert result == "hello"
 
 
@@ -146,19 +144,19 @@ async def test_resolve_prompt_falls_back_on_bad_task_id() -> None:
 async def test_resolve_prompt_falls_back_on_db_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(orch_route, "get_db_context", _FakeDbCtx)
+    monkeypatch.setattr(task_service_module, "get_db_context", _FakeDbCtx)
     monkeypatch.setattr(
-        orch_route,
+        task_service_module,
         "get_task_service",
         lambda _db: _FakeTaskService(error=RuntimeError("db down")),
     )
-    result = await _resolve_manual_spawn_prompt(str(uuid4()), "hello")
+    result = await resolve_manual_spawn_prompt(str(uuid4()), "hello")
     assert result == "hello"
 
 
 @pytest.mark.asyncio
 async def test_resolve_prompt_no_message_no_task_returns_none() -> None:
-    result = await _resolve_manual_spawn_prompt(None, None)
+    result = await resolve_manual_spawn_prompt(None, None)
     assert result is None
 
 
@@ -277,76 +275,3 @@ async def test_spawn_offline_agent_not_flagged_already_running(
     )
     assert response.status_code == HTTPStatus.CREATED
     assert response.json()["already_running"] is False
-
-
-# ---------------------------------------------------------------------------
-# _validated_agent_id — UUID -> slug normalization (root fix: a caller that
-# addresses a runtime container/instance by an agent's DB UUID instead of its
-# slug, e.g. the panel spawn button, must resolve to the same canonical slug
-# the orchestrator's instance registry and container names use).
-# ---------------------------------------------------------------------------
-
-
-def test_validated_agent_id_resolves_known_uuid_to_slug() -> None:
-    uuid_str = AGENT_UUIDS["head-marketing"]
-    assert _validated_agent_id(uuid_str) == "head-marketing"
-
-
-def test_validated_agent_id_passes_through_slug_unchanged() -> None:
-    assert _validated_agent_id("head-marketing") == "head-marketing"
-
-
-def test_validated_agent_id_passes_through_unknown_uuid_unchanged() -> None:
-    # A uuid4 is never a seeded agent UUID (the seeds are deterministic,
-    # low-cardinality values) — genuinely absent from the UUID -> slug map.
-    unknown_uuid = str(uuid4())
-    assert unknown_uuid not in AGENT_UUIDS.values()
-    assert _validated_agent_id(unknown_uuid) == unknown_uuid
-
-
-def test_validated_agent_id_still_rejects_traversal() -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        _validated_agent_id("../etc/passwd")
-    assert exc_info.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-
-
-@pytest.mark.asyncio
-async def test_spawn_by_uuid_reaches_orchestrator_by_slug(
-    orch_client: tuple[AsyncClient, MagicMock],
-) -> None:
-    """The panel (or any caller) posting the agent's DB UUID as the path
-    param must not produce a container/instance keyed by that UUID — the
-    orchestrator only ever sees the canonical slug."""
-    client, orch = orch_client
-    orch.get_instance = MagicMock(return_value=None)
-    instance = SimpleNamespace(
-        id=uuid4(),
-        agent_id="head-marketing",
-        state=AgentState.STARTING,
-        current_task_id=None,
-        error_count=0,
-        started_at=datetime.now(UTC),
-    )
-    orch.spawn_agent = AsyncMock(return_value=instance)
-    uuid_str = AGENT_UUIDS["head-marketing"]
-    response = await client.post(
-        f"/api/orchestrator/agents/{uuid_str}/spawn", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.CREATED
-    orch.spawn_agent.assert_awaited_once()
-    assert orch.spawn_agent.await_args.kwargs["agent_id"] == "head-marketing"
-
-
-@pytest.mark.asyncio
-async def test_stop_by_uuid_reaches_orchestrator_by_slug(
-    orch_client: tuple[AsyncClient, MagicMock],
-) -> None:
-    client, orch = orch_client
-    orch.stop_agent = AsyncMock(return_value=None)
-    uuid_str = AGENT_UUIDS["be-dev-1"]
-    response = await client.post(
-        f"/api/orchestrator/agents/{uuid_str}/stop", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.NO_CONTENT
-    orch.stop_agent.assert_awaited_once()
-    assert orch.stop_agent.await_args.args[0] == "be-dev-1"

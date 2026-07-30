@@ -45,7 +45,10 @@ from roboco.services.base import NotFoundError, ServiceError, ValidationError
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from fastapi import HTTPException
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.api.schemas.prompter_live import StartLiveResponse
 
 logger = structlog.get_logger()
 
@@ -75,19 +78,7 @@ _MIN_MEGATASK_PROJECTS = 2
 # one impersonate a privileged origin (a held CEO-gated engine source, or
 # "release_manager", which would even wedge the real release engine's
 # one-open-proposal dedup).
-_ALLOWED_DRAFT_SOURCES = frozenset(
-    {
-        "prompter",
-        "roadmap",
-        "pest_control",
-        "spackle",
-        "mirror",
-        "dogfood",
-        "periscope",
-        "sentinel",
-        "coroner",
-    }
-)
+_ALLOWED_DRAFT_SOURCES = frozenset({"prompter", "roadmap"})
 
 # A draft whose per-cell map covers at least this many cells targets the ad-hoc
 # multi-cell shape (a root-subtask with a cell->project map, no single project).
@@ -120,11 +111,6 @@ class BatchPlacement:
     owning team for the whole batch; ``parent_task_id`` is the umbrella (or None
     for the umbrella itself); ``batch_id`` is the shared batch identity; and
     ``sequence`` is the item's wave index.
-
-    ``team_override`` alone (the other three left at their batch-less
-    defaults) is also the seam Board Program materialization uses — e.g.
-    ``RoadmapService._materialize`` — to force ``team=Team.MAIN_PM`` on a
-    materialized coordination root without it being part of any real batch.
     """
 
     parent_task_id: UUID | None = None
@@ -972,7 +958,6 @@ class PrompterService:
 
     async def _rewrite_batch_children(
         self,
-        *,
         umbrella: TaskTable,
         drafts: list[dict[str, Any]],
         children: list[TaskTable],
@@ -1079,12 +1064,7 @@ class PrompterService:
         plan = self._sequence_drafts(drafts)
         wave_of = {idx: w for w, wave in enumerate(plan.waves) for idx in wave}
         task_of = await self._rewrite_batch_children(
-            umbrella=umbrella,
-            drafts=drafts,
-            children=children,
-            wave_of=wave_of,
-            agent_id=agent_id,
-            agent_role=agent_role,
+            umbrella, drafts, children, wave_of, agent_id, agent_role
         )
         for a, b in plan.edges:
             await task_service.add_dependency(task_of[b], task_of[a])
@@ -1763,6 +1743,91 @@ def compact_task_rows(tasks: list[TaskTable]) -> list[dict[str, Any]]:
         }
         for t in tasks
     ]
+
+
+# ---------------------------------------------------------------------------
+# Live-intake route helpers (relocated from api/routes/prompter_live.py)
+# ---------------------------------------------------------------------------
+
+
+def translate_prompter_error(e: ServiceError) -> HTTPException:
+    """Service error → HTTP status (mirrors the legacy prompter route)."""
+    from fastapi import HTTPException, status
+
+    if isinstance(e, NotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "not_found", "message": e.message},
+        )
+    if isinstance(e, ValidationError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "validation_error",
+                "message": e.message,
+                "field": e.field,
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail={"error": "internal_error", "message": e.message},
+    )
+
+
+async def intake_scope_for_task(
+    db: AsyncSession, task: Any
+) -> tuple[str | None, str | None]:
+    """Return (project_slug, product_id) intake scope for a task — exactly one."""
+    if task.product_id is not None:
+        return None, str(task.product_id)
+    if task.project_id is not None:
+        from roboco.services.project import get_project_service
+
+        proj = await get_project_service(db).get(UUID(str(task.project_id)))
+        return (proj.slug if proj else None), None
+    return None, None
+
+
+async def start_batch_re_interview(
+    db: AsyncSession, umbrella: Any, entries: list[dict[str, Any]]
+) -> StartLiveResponse:
+    """Cold re-interview for a MegaTask umbrella.
+
+    Recovers the batch's multi-repo scope from its root-subtasks' own project /
+    cell-map targets (no single project/product lives on the branchless
+    umbrella) and seeds a batch-aware redraft message. 400 only when nothing is
+    recoverable (e.g. every root-subtask was itself cancelled).
+    """
+    from fastapi import HTTPException, status
+
+    from roboco.api.deps import get_orchestrator
+    from roboco.api.schemas.prompter_live import StartLiveResponse
+    from roboco.services.task import get_task_service
+
+    task_service = get_task_service(db)
+    umbrella_id = UUID(str(umbrella.id))
+    children = await task_service.get_live_subtasks(umbrella_id)
+    project_ids = await task_service.distinct_projects_for_batch(umbrella_id)
+    if not project_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This MegaTask has no recoverable projects to re-interview against.",
+        )
+    initial_message = compose_batch_redraft_message(umbrella, children, entries)
+
+    session_id = uuid4().hex
+    try:
+        await get_orchestrator().start_intake_session(
+            session_id,
+            project_ids=[str(pid) for pid in project_ids],
+            initial_message=initial_message,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start re-interview session: {exc}",
+        ) from exc
+    return StartLiveResponse(session_id=session_id, project_ids=project_ids)
 
 
 # ---------------------------------------------------------------------------

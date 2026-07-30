@@ -15,14 +15,12 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.tasks import (
-    _translate_error,
     get_awaiting_ceo_approval_tasks,
     get_awaiting_pm_review_tasks,
 )
 from roboco.api.routes.tasks import (
     router as tasks_router,
 )
-from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy.lifecycle import STATUS_GRAPH
@@ -44,7 +42,7 @@ from roboco.services.base import ServiceError as SvcError
 from roboco.services.git import GitService
 from roboco.services.notification_delivery import EscalationError
 from roboco.services.permissions import PermissionService
-from roboco.services.task import TaskService
+from roboco.services.task import TaskService, translate_task_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -280,35 +278,6 @@ async def test_get_task_by_id(task_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_task_by_id_includes_spend_when_budgets_enabled(
-    task_client: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """spend_usd is populated (0.0 with no spawn sessions yet) once
-    ROBOCO_TASK_BUDGETS_ENABLED is on — the extra DB read only runs then."""
-    monkeypatch.setattr(settings, "task_budgets_enabled", True)
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    response = await client.get(f"/api/tasks/{task.id}", headers=_HDR)
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["spend_usd"] == 0.0
-
-
-@pytest.mark.asyncio
-async def test_get_task_by_id_omits_spend_when_budgets_disabled(
-    task_client: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Flag off => spend_usd stays null, the same as before this field existed."""
-    monkeypatch.setattr(settings, "task_budgets_enabled", False)
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    response = await client.get(f"/api/tasks/{task.id}", headers=_HDR)
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["spend_usd"] is None
-
-
-@pytest.mark.asyncio
 async def test_update_task(task_client: dict) -> None:
     client = task_client["client"]
     task = _seed_task(task_client)
@@ -319,52 +288,6 @@ async def test_update_task(task_client: dict) -> None:
         headers=_HDR,
     )
     assert response.status_code in (HTTPStatus.OK, HTTPStatus.UNPROCESSABLE_ENTITY)
-
-
-@pytest.mark.asyncio
-async def test_update_task_rejects_zero_budget_usd(task_client: dict) -> None:
-    """#654: a 0 cap would block every claim immediately — rejected at the
-    request boundary, never stored."""
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    response = await client.patch(
-        f"/api/tasks/{task.id}",
-        json={"budget_usd": 0},
-        headers=_HDR,
-    )
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-
-
-@pytest.mark.asyncio
-async def test_update_task_rejects_negative_budget_usd(task_client: dict) -> None:
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    response = await client.patch(
-        f"/api/tasks/{task.id}",
-        json={"budget_usd": -5},
-        headers=_HDR,
-    )
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
-
-
-@pytest.mark.asyncio
-async def test_update_task_accepts_positive_budget_usd(task_client: dict) -> None:
-    # budget_usd is a _PRIVILEGED_UPDATE_FIELDS / non-"PM lighter" field —
-    # a plain main_pm PATCH would 403 here, so exercise the CEO's full scope.
-    _as_ceo(task_client)
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    budget = 12.5
-    response = await client.patch(
-        f"/api/tasks/{task.id}",
-        json={"budget_usd": budget},
-        headers=_HDR,
-    )
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["budget_usd"] == budget
 
 
 @pytest.mark.asyncio
@@ -1813,14 +1736,14 @@ async def test_cancel_task_pm_succeeds(task_client: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _translate_error: direct unit coverage for service-error → HTTP mapping
+# translate_task_error: direct unit coverage for service-error → HTTP mapping
 # ---------------------------------------------------------------------------
 
 
 def test_translate_error_not_found() -> None:
     """NotFoundError → 404."""
     err = NotFoundError(resource_type="task", resource_id="123")
-    http_exc = _translate_error(err)
+    http_exc = translate_task_error(err)
     assert isinstance(http_exc, HTTPException)
     assert http_exc.status_code == HTTPStatus.NOT_FOUND
     assert "task not found" in http_exc.detail.lower()
@@ -1829,7 +1752,7 @@ def test_translate_error_not_found() -> None:
 def test_translate_error_unauthorized() -> None:
     """UnauthorizedError → 403."""
     err = UnauthorizedError(action="delete", reason="not your task")
-    http_exc = _translate_error(err)
+    http_exc = translate_task_error(err)
     assert http_exc.status_code == HTTPStatus.FORBIDDEN
     assert "delete" in http_exc.detail
 
@@ -1837,7 +1760,7 @@ def test_translate_error_unauthorized() -> None:
 def test_translate_error_validation() -> None:
     """ValidationError → 400."""
     err = ValidationError("bad field value")
-    http_exc = _translate_error(err)
+    http_exc = translate_task_error(err)
     assert http_exc.status_code == HTTPStatus.BAD_REQUEST
     assert http_exc.detail == "bad field value"
 
@@ -1845,7 +1768,7 @@ def test_translate_error_validation() -> None:
 def test_translate_error_generic_service_error() -> None:
     """Plain ServiceError → 500."""
     err = ServiceError("service exploded")
-    http_exc = _translate_error(err)
+    http_exc = translate_task_error(err)
     assert http_exc.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
     assert http_exc.detail == "service exploded"
 
@@ -1938,13 +1861,13 @@ async def test_update_task_service_returns_none_yields_500(
 
 
 # ---------------------------------------------------------------------------
-# claim_task: ServiceError -> _translate_error
+# claim_task: ServiceError -> translate_task_error
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_claim_task_service_error_translated(task_client: dict) -> None:
-    """A ServiceError raised by claim_task_for_agent surfaces via _translate_error."""
+    """A ServiceError from claim_task_for_agent surfaces via translate_task_error."""
     task = _seed_task(task_client)
     await task_client["db"].flush()
 
@@ -2161,37 +2084,6 @@ async def test_resume_task_success(task_client: dict) -> None:
         f"/api/tasks/{task.id}/resume", headers=_HDR
     )
     assert response.status_code == HTTPStatus.OK
-
-
-@pytest.mark.asyncio
-async def test_pause_task_ceo_success(task_client: dict) -> None:
-    """The CEO can pause a task assigned to someone else through the plain
-    pause route (a non-assignee, non-CEO caller still gets 403 —
-    ``test_pause_task_forbidden`` covers that unchanged)."""
-    other = await _seed_agent(task_client)
-    task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS, assigned_to=other.id)
-    await task_client["db"].flush()
-    _as_ceo(task_client)
-    response = await task_client["client"].post(
-        f"/api/tasks/{task.id}/pause", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["status"] == "paused"
-
-
-@pytest.mark.asyncio
-async def test_resume_task_ceo_success(task_client: dict) -> None:
-    """The CEO can resume a task assigned to someone else through the plain
-    resume route — same carve-out as pause above."""
-    other = await _seed_agent(task_client)
-    task = _seed_task(task_client, status=TaskStatus.PAUSED, assigned_to=other.id)
-    await task_client["db"].flush()
-    _as_ceo(task_client)
-    response = await task_client["client"].post(
-        f"/api/tasks/{task.id}/resume", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["status"] != "paused"
 
 
 @pytest.mark.asyncio

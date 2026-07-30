@@ -30,6 +30,7 @@ from roboco.services.task import VIDEO_POST_SOURCE, get_task_service
 from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,10 +151,10 @@ class VideoPostExecuteResult:
     """The outcome of an approve call.
 
     `status` is one of: posted, posted_partial, post_failed, no_platforms,
-    already_posted, already_rejected, already_in_progress, redis_unavailable,
-    lock_lost. `posted` maps platform -> the id the poster returned, for
-    platforms that succeeded (persisted, so a retry after a partial failure
-    never re-posts an already-succeeded platform).
+    already_posted, already_in_progress, redis_unavailable, lock_lost.
+    `posted` maps platform -> the id the poster returned, for platforms that
+    succeeded (persisted, so a retry after a partial failure never re-posts
+    an already-succeeded platform).
     """
 
     status: str
@@ -218,12 +219,6 @@ class VideoPostService(BaseService):
         if task.status == TaskStatus.COMPLETED:
             draft = dict(markers.get_video_draft(task) or {})
             return self._already_posted_result(draft)
-        if task.status == TaskStatus.CANCELLED:
-            return VideoPostExecuteResult(
-                status="already_rejected",
-                posted={},
-                detail="this draft was already rejected",
-            )
 
         mutex = HeartbeatMutex(
             f"{_LOCK_PREFIX}{task_id}",
@@ -283,12 +278,6 @@ class VideoPostService(BaseService):
         draft = dict(markers.get_video_draft(locked) or {})
         if locked.status == TaskStatus.COMPLETED:
             return self._already_posted_result(draft)
-        if locked.status == TaskStatus.CANCELLED:
-            return VideoPostExecuteResult(
-                status="already_rejected",
-                posted={},
-                detail="this draft was already rejected",
-            )
         guarded = await mutex.run_guarded(
             self._post_all_platforms(locked, draft, validated_captions), token
         )
@@ -323,8 +312,7 @@ class VideoPostService(BaseService):
         cancellation, or a crash can never lose the record of what already
         posted; a retry re-reads the committed draft and skips it via the
         `already_posted` check below. Only commits COMPLETED once every
-        CONFIGURED platform has posted (`_finalize_post`) — a platform with
-        no credentials is skipped, never a pending-forever failure.
+        platform has posted (`_finalize_post`).
 
         Each commit runs through `_commit_shielded` — a lock-loss
         cancellation firing while it's in flight must not interrupt it (see
@@ -338,18 +326,10 @@ class VideoPostService(BaseService):
             )
         posted: dict[str, str] = {}
         failures: dict[str, str] = {}
-        skipped: dict[str, str] = {}
         for platform in platforms:
             already_posted = draft.get(f"{platform}_posted_id")
             if already_posted:
                 posted[platform] = str(already_posted)
-                continue
-            # An UNCONFIGURED platform is a standing deployment fact, not a
-            # transient failure: treating it as a failure left every draft
-            # targeting it pending forever (retry semantics that can never
-            # succeed), parking an already-X-posted card in the CEO queue.
-            if not self._platform_configured(platform):
-                skipped[platform] = "no credentials configured"
                 continue
             posted_id, detail = await self._attempt_platform_post(platform, draft)
             if posted_id is None:
@@ -369,17 +349,7 @@ class VideoPostService(BaseService):
             # platform-native idempotency key is a future follow-up.
             markers.set_video_draft(task, dict(draft))
             await self._commit_shielded()
-        return await self._finalize_post(task, posted, failures, skipped)
-
-    def _platform_configured(self, platform: str) -> bool:
-        """Whether `platform`'s poster holds credentials. Unknown platforms
-        report True so they still fall through to the explicit
-        unknown-platform failure in `_post_platform`."""
-        if platform == "x":
-            return bool(self._x_poster.configured)
-        if platform == "tiktok":
-            return bool(self._tiktok_poster.configured)
-        return True
+        return await self._finalize_post(task, posted, failures)
 
     async def _commit_shielded(self) -> None:
         """Commit via asyncio.shield so a lock-loss cancellation firing
@@ -452,34 +422,17 @@ class VideoPostService(BaseService):
         return result.publish_id, result.detail
 
     async def _finalize_post(
-        self,
-        task: TaskTable,
-        posted: dict[str, str],
-        failures: dict[str, str],
-        skipped: dict[str, str],
+        self, task: TaskTable, posted: dict[str, str], failures: dict[str, str]
     ) -> VideoPostExecuteResult:
-        if not failures and posted:
+        if not failures:
             task.status = TaskStatus.COMPLETED
             # Commit while still holding the lock so COMPLETED is durable
             # before release — otherwise a racing approve could acquire the
             # lock the instant we drop it and double-post before a
             # route-level commit. Shielded — see _commit_shielded.
             await self._commit_shielded()
-            detail = "posted to all configured platforms"
-            if skipped:
-                detail += "; skipped (unconfigured): " + ", ".join(sorted(skipped))
             return VideoPostExecuteResult(
-                status="posted", posted=dict(posted), detail=detail
-            )
-        if not failures and skipped:
-            # Nothing posted and nothing failed — every target platform is
-            # unconfigured. Refuse loudly instead of completing a draft that
-            # never reached any audience.
-            detail = "no target platform has credentials configured: " + ", ".join(
-                sorted(skipped)
-            )
-            return VideoPostExecuteResult(
-                status="post_failed", posted={}, detail=detail
+                status="posted", posted=dict(posted), detail="posted to all platforms"
             )
         # Every successful platform's posted-id was already committed in the
         # loop above (see _post_all_platforms) — nothing left to persist.
@@ -536,9 +489,7 @@ class VideoPostService(BaseService):
         )
 
     async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
-        """Record the CEO's reason, cancel the draft (never posted), and
-        route the feedback into a fresh authoring task that revises the same
-        composition.
+        """Record the CEO's reason and cancel the draft (never posted).
 
         Acquires the same post-mutex ``approve()`` holds (same key, same
         non-blocking acquire style) so a reject can't interleave with a
@@ -584,31 +535,9 @@ class VideoPostService(BaseService):
             markers.set_video_reject_reason(locked, reason)
             locked.status = TaskStatus.CANCELLED
             await self.session.flush()
-            cancelled = locked
+            return locked
         finally:
             await mutex.release(token)
-        # Outside the lock/try-finally, after the cancel is committed/flushed:
-        # a reauthor failure must never fail or roll back the reject above.
-        if reason.strip():
-            await self._reauthor_after_reject(cancelled, reason)
-        return cancelled
-
-    async def _reauthor_after_reject(self, task: TaskTable, reason: str) -> None:
-        """Best-effort: hand the CEO's reject reason to VideoEngine so it
-        opens a revision authoring task. Never raises."""
-        # Local import: no cycle (video_engine doesn't import this module),
-        # but mirrors the lazy get_video_engine import every other caller
-        # (release_proposal.py, x_post_service.py) uses.
-        from roboco.services.video_engine import get_video_engine
-
-        try:
-            await get_video_engine(self.session).reauthor_from_rejection(task, reason)
-        except Exception as exc:
-            logger.warning(
-                "video-post reauthor-from-rejection failed for task %s: %s",
-                task.id,
-                exc,
-            )
 
 
 def get_video_post_service(
@@ -627,3 +556,48 @@ def get_video_post_service(
         x_poster=x_poster or NullXVideoPoster(),
         tiktok_poster=tiktok_poster or NullTikTokPoster(),
     )
+
+
+def resolve_video_cut(task: TaskTable, cut: str) -> Path:
+    """Resolve the on-disk MP4 path for ``cut`` off the task's held draft, or
+    404. The ``is_relative_to`` confinement check stays even though the MinIO
+    key is a basename (traversal-proof) — it also guards the ``FileResponse``
+    fallback path that reads ``mp4_path`` straight from disk."""
+    from pathlib import Path
+
+    from fastapi import HTTPException, status
+
+    from roboco.config import settings
+
+    draft = markers.get_video_draft(task) or {}
+    mp4_path = (draft.get("mp4_paths") or {}).get(cut)
+    if not mp4_path or not Path(mp4_path).is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
+    output_dir = Path(settings.video_output_dir).resolve()
+    if not Path(mp4_path).resolve().is_relative_to(output_dir):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
+    return Path(mp4_path)
+
+
+async def build_real_video_post_service(db: AsyncSession) -> VideoPostService:
+    """A VideoPostService wired with the real posters, built from stored
+    credentials. Only ``approve`` needs live posters — list/reject never
+    call one, so they use the inert Null defaults (``get_video_post_service
+    (db)``) instead."""
+    from roboco.config import settings
+    from roboco.services.tiktok_client import build_tiktok_poster
+    from roboco.services.tiktok_credentials import get_tiktok_credentials_service
+    from roboco.services.x_credentials import get_x_credentials_service
+    from roboco.services.x_video_client import build_x_video_poster
+
+    x_creds = await get_x_credentials_service(db).get_decrypted()
+    x_poster = build_x_video_poster(x_creds, timeout=settings.x_request_timeout_seconds)
+    tiktok_creds = await get_tiktok_credentials_service(db).get_decrypted()
+    tiktok_poster = build_tiktok_poster(
+        tiktok_creds, session=db, timeout=settings.video_request_timeout_seconds
+    )
+    return get_video_post_service(db, x_poster=x_poster, tiktok_poster=tiktok_poster)

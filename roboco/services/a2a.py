@@ -30,8 +30,6 @@ from roboco.db.tables import (
 )
 from roboco.enforcement import A2AAccessDeniedError, validate_a2a_access
 from roboco.events import Event, EventType, get_event_bus
-from roboco.foundation.identity import is_spawnable_agent_slug
-from roboco.models import NotificationPriority, NotificationType
 from roboco.models.a2a import (
     A2AAdminPairSummary,
     A2AArtifact,
@@ -1346,7 +1344,6 @@ class A2AService:
             model, task_id, from_agent, to_agent, skill
         )
         await self._materialize_vault_note(model, conv, from_agent, to_agent)
-        await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
         return model
 
     @staticmethod
@@ -1551,7 +1548,6 @@ class A2AService:
         for cid in conv_ids:
             await self._reset_unread_counter(cast("UUID", cid), slug)
         await self.session.flush()
-        await self._ack_pending_wake_notifications(agent_id)
         return len(convs)
 
     async def _reset_unread_counter(self, conversation_id: UUID, slug: str) -> None:
@@ -1620,7 +1616,6 @@ class A2AService:
         for cid in {cast("UUID", m.conversation_id) for m in msgs}:
             await self._reset_unread_counter(cid, slug)
         await self.session.flush()
-        await self._ack_pending_wake_notifications(agent_id)
 
         return [
             {
@@ -1938,7 +1933,6 @@ class A2AService:
         model = self._msg_to_model(msg)
         task_id = str(conv.task_id) if conv.task_id else None
         await self._publish_a2a_message_sent(model, task_id, "ceo", to_agent, skill)
-        await self._maybe_wake_ceo_recipient("ceo", to_agent, task_id)
         return model
 
     @staticmethod
@@ -1980,113 +1974,29 @@ class A2AService:
         except Exception as e:
             logger.warning("Failed to publish A2A message event", error=str(e))
 
-    async def _maybe_wake_ceo_recipient(
-        self, from_slug: str, to_slug: str, task_id: str | None
-    ) -> None:
-        """Wake an offline recipient of a CEO-authored A2A message.
 
-        Agent-to-agent DMs stay pull-only (no wake — deliberate, so ordinary
-        A2A chatter can't burn spawns); only a CEO-authored send/interject
-        reaches here. Reuses the legacy a2a_request NotificationTable row
-        that `_dispatch_a2a_work` already polls to spawn an offline target —
-        `requires_ack=True` makes the row visible to that poll (A2A_REQUEST
-        defaults to requires_ack=False, invisible there) and lets the
-        pending-notification lookup below double as the dedup: a second CEO
-        message to the same still-unread recipient creates nothing more.
-        Best-effort — any failure is logged and never breaks the send.
-        """
-        if from_slug != "ceo" or not is_spawnable_agent_slug(to_slug):
-            return
-        # A wake only helps a role that can actually drain the DM and close
-        # the notification (read_a2a → _ack_pending_wake_notifications). Both
-        # auditor and pr_reviewer carry read_a2a now, but role tools are
-        # re-derived here rather than assumed, so a future role without it
-        # still gets the same protection: an unackable row would otherwise be
-        # immortal, permanently blocking future wakes via the dedup pre-check
-        # and driving futile respawns. Local imports: the gateway package
-        # cycles back into this module at module scope.
-        from roboco.agents_config import get_agent_role
-        from roboco.services.gateway.role_config import get_role_config
+def resolve_reply_target(conv: A2AConversation, to_agent: str) -> None:
+    """Validate the CEO's reply target against the pairwise conversation.
 
-        try:
-            role_tools = get_role_config(get_agent_role(to_slug)).do_tools
-        except KeyError:
-            return
-        if "read_a2a" not in role_tools:
-            return
-        try:
-            from roboco.services.notification import NotificationService
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
+    Raises the appropriate 400 HTTPException — kept out of the route handler
+    to keep its cyclomatic complexity low. A2A conversations are strictly
+    pairwise (no N-party thread), so the CEO must address one of the two
+    real participants; A2A is also scoped to a task by construction
+    (A2AService.send requires task_id), so an untethered conversation can't
+    be replied into via this path.
+    """
+    from fastapi import HTTPException, status
 
-            # Resolve via the DB (not the static AGENT_UUIDS seed map) —
-            # NotificationTable.to_agents is a real FK, so the row must
-            # match whatever id this agent actually has today.
-            to_uuid = await self.session.scalar(
-                select(AgentTable.id).where(AgentTable.slug == to_slug)
-            )
-            if to_uuid is None:
-                return
-            delivery = get_notification_delivery_service(self.session)
-            pending = await delivery.list_for_agent(
-                agent_id=to_uuid,
-                unread_only=False,
-                pending_ack_only=True,
-                type_filter=NotificationType.A2A_REQUEST,
-                limit=1,
-            )
-            if pending:
-                return
-            await NotificationService().send_a2a_notification(
-                task_id=task_id,
-                a2a_context={
-                    "from_agent": from_slug,
-                    "to_agent": to_slug,
-                    "skill": "ceo_dm",
-                    "message": (
-                        "The CEO sent you a direct A2A message. Call "
-                        "read_a2a() to read it, then reply with "
-                        'dm("ceo", ...).'
-                    ),
-                    "priority": NotificationPriority.NORMAL,
-                },
-                requires_ack=True,
-            )
-        except Exception as e:
-            logger.warning(
-                "CEO-DM wake notification failed", to_agent=to_slug, error=str(e)
-            )
-
-    async def _ack_pending_wake_notifications(self, agent_id: UUID) -> None:
-        """Close out this agent's pending CEO-DM wake notification(s).
-
-        Called once the agent has actually drained its A2A inbox (read_a2a /
-        read_messages) so the notification `_maybe_wake_ceo_recipient`
-        created doesn't sit "pending" forever — which would otherwise
-        permanently suppress that helper's dedup for the next genuine wake.
-        Best-effort: a failure here never blocks the read.
-        """
-        try:
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery = get_notification_delivery_service(self.session)
-            pending = await delivery.list_for_agent(
-                agent_id=agent_id,
-                unread_only=False,
-                pending_ack_only=True,
-                type_filter=NotificationType.A2A_REQUEST,
-                limit=10,
-            )
-            if pending:
-                await delivery.bulk_acknowledge(
-                    [cast("UUID", n.id) for n in pending], agent_id, "received"
-                )
-        except Exception as e:
-            logger.warning(
-                "Failed to ack pending A2A wake notifications",
-                agent_id=str(agent_id),
-                error=str(e),
-            )
+    if to_agent not in (conv.agent_a, conv.agent_b):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{to_agent} is not a participant in this conversation "
+                f"(participants: {conv.agent_a}, {conv.agent_b})"
+            ),
+        )
+    if conv.task_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conversation has no linked task_id — A2A requires one",
+        )

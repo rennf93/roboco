@@ -55,7 +55,6 @@ from roboco.api.schemas.a2a_chat import (
 from roboco.db.base import get_session_factory
 from roboco.enforcement import A2AAccessDeniedError
 from roboco.models.a2a import (
-    A2AConversation,
     A2AConversationStatus,
     A2ATask,
     AgentCard,
@@ -64,7 +63,7 @@ from roboco.models.a2a import (
     SendMessageRequest,
 )
 from roboco.security import guard_deco, prompt_injection_validator
-from roboco.services.a2a import A2AService
+from roboco.services.a2a import A2AService, resolve_reply_target
 from roboco.utils.converters import require_uuid
 
 # Router for A2A API endpoints (mounted at /api/a2a)
@@ -918,35 +917,6 @@ async def get_task_conversations(
 # it, and let the CEO chime into an existing thread as itself.
 
 
-def _require_ceo(agent: CurrentAgentContext) -> None:
-    require_ceo_role(agent.role, action="view or reply to the A2A live view")
-
-
-def _resolve_reply_target(conv: A2AConversation, to_agent: str) -> None:
-    """Validate the CEO's reply target against the pairwise conversation.
-
-    Raises the appropriate 400 HTTPException — kept out of the route handler
-    to keep its cyclomatic complexity low. A2A conversations are strictly
-    pairwise (no N-party thread), so the CEO must address one of the two
-    real participants; A2A is also scoped to a task by construction
-    (A2AService.send requires task_id), so an untethered conversation can't
-    be replied into via this path.
-    """
-    if to_agent not in (conv.agent_a, conv.agent_b):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"{to_agent} is not a participant in this conversation "
-                f"(participants: {conv.agent_a}, {conv.agent_b})"
-            ),
-        )
-    if conv.task_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Conversation has no linked task_id — A2A requires one",
-        )
-
-
 @router.get("/chat/admin/conversations")
 async def list_admin_conversations(
     db: DbSession,
@@ -954,7 +924,7 @@ async def list_admin_conversations(
     limit: int = Query(50, ge=1, le=100),
 ) -> AdminConversationListResponse:
     """CEO-only: list conversations across every agent pair, most-recent-first."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or reply to the A2A live view")
     service = A2AService(db)
     conversations = await service.list_conversations_admin(limit)
 
@@ -991,7 +961,7 @@ async def list_admin_pairs(
     pair's representative conversation stats when one exists — the pair
     cards the panel groups into sections (each cell, the PM chain, board).
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or reply to the A2A live view")
     service = A2AService(db)
     pairs = await service.list_admin_pairs()
 
@@ -1026,7 +996,7 @@ async def list_admin_chat_messages(
     before: datetime | None = None,
 ) -> MessageListResponse:
     """CEO-only: read any conversation's transcript, participant or not."""
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or reply to the A2A live view")
     service = A2AService(db)
 
     messages = await service.get_messages_admin(
@@ -1084,7 +1054,7 @@ async def reply_as_ceo(
     inserted into THIS conversation (readable by both participants) and
     addressed to one of its two real participants via ``interject_as_ceo``.
     """
-    _require_ceo(agent)
+    require_ceo_role(agent.role, action="view or reply to the A2A live view")
     service = A2AService(db)
 
     conv = await service.get_conversation_admin(require_uuid(conversation_id))
@@ -1093,7 +1063,7 @@ async def reply_as_ceo(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Conversation not found: {conversation_id}",
         )
-    _resolve_reply_target(conv, data.to_agent)
+    resolve_reply_target(conv, data.to_agent)
 
     msg = await service.interject_as_ceo(
         conversation_id=require_uuid(conversation_id),

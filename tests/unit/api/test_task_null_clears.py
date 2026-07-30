@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
-from roboco.api.routes.tasks import _apply_null_clears
+from roboco.services.task import apply_null_clears
 
 
 def _task(**overrides: object) -> SimpleNamespace:
@@ -31,7 +31,7 @@ def _task(**overrides: object) -> SimpleNamespace:
 def test_unassign_clears_claim_fields() -> None:
     """assigned_to=null releases the claim triplet with it."""
     task = _task()
-    _apply_null_clears(task, {"assigned_to": None})
+    apply_null_clears(task, {"assigned_to": None})
     assert task.assigned_to is None
     assert task.claimed_by is None
     assert task.claimed_at is None
@@ -42,7 +42,7 @@ def test_other_null_clears_leave_claim_untouched() -> None:
     """Clearing parent_task_id/project_id is structural — not a claim release."""
     owner = uuid4()
     task = _task(assigned_to=owner, claimed_by=owner, active_claimant_id=owner)
-    _apply_null_clears(task, {"parent_task_id": None})
+    apply_null_clears(task, {"parent_task_id": None})
     assert task.parent_task_id is None
     assert task.assigned_to == owner
     assert task.claimed_by == owner
