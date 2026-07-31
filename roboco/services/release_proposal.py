@@ -18,6 +18,11 @@ from uuid import uuid4
 
 import redis.asyncio as redis
 
+from roboco.api.schemas.release import (
+    ReleaseGapModel,
+    ReleaseProposalResponse,
+    ReleaseReportModel,
+)
 from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
@@ -633,6 +638,37 @@ def is_approve_in_flight(task_id: UUID) -> bool:
     Single-process (one orchestrator) by construction; the durable cross-restart
     signal is the execute-outcome marker, this is the live progress nicety."""
     return task_id in _INFLIGHT_APPROVES
+
+
+def _task_status_value(task: TaskTable) -> str:
+    """Render a task's status as a plain string, enum or raw value alike."""
+    raw = task.status
+    return raw.value if hasattr(raw, "value") else str(raw)
+
+
+def task_to_proposal_response(task: TaskTable) -> ReleaseProposalResponse:
+    """Render a held release-proposal task as the CEO-facing response shape."""
+    report = markers.get_release_report(task) or {}
+    outcome = markers.get_release_execute_outcome(task)
+    return ReleaseProposalResponse(
+        task_id=str(task.id),
+        title=task.title,
+        status=_task_status_value(task),
+        required_changes=markers.get_release_required_changes(task),
+        execute_status=outcome[0] if outcome else None,
+        execute_detail=outcome[1] if outcome else None,
+        execute_in_flight=is_approve_in_flight(cast("UUID", task.id)),
+        report=ReleaseReportModel(
+            proposed_version=report.get("proposed_version", ""),
+            bump_kind=report.get("bump_kind", ""),
+            change_summary=report.get("change_summary", []),
+            drafted_changelog=report.get("drafted_changelog", ""),
+            version_bump_plan=report.get("version_bump_plan", []),
+            gaps=[ReleaseGapModel(**gap) for gap in report.get("gaps", [])],
+            migration_notes=report.get("migration_notes", []),
+            gate_state=report.get("gate_state", "unknown"),
+        ),
+    )
 
 
 def dispatch_approve(

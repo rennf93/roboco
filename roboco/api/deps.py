@@ -649,6 +649,31 @@ def require_developer_or_above(role: Any, action: str) -> None:
         )
 
 
+def require_role_in(role: Any, allowed: frozenset[Role], detail: str) -> None:
+    """Raise 403 unless ``role`` is a member of ``allowed``.
+
+    A generic sibling to the named ``require_*`` checks above, for callers
+    (e.g. the Secretary surface) that gate a single endpoint to an arbitrary,
+    endpoint-specific role set rather than one of the standing tiers.
+    """
+    if role not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+_AUDITOR_OR_CEO_ROLES: frozenset[Role] = frozenset({Role.AUDITOR, Role.CEO})
+
+
+def require_auditor_or_ceo(role: Any, detail: str) -> None:
+    """Raise 403 unless caller is the Auditor or the CEO.
+
+    The Auditor is the silent-observer role; the CEO overrides. Shared by the
+    dashboard's auditor-flag/report mutations and the playbook curation
+    endpoints — both gate to this same role pair with their own 403 wording.
+    """
+    if _role_value(role) not in _AUDITOR_OR_CEO_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
 _GLOBAL_CELL_ACCESS_ROLES: frozenset[Role] = (BOARD_ROLES - {Role.HEAD_MARKETING}) | {
     Role.MAIN_PM,
     Role.CEO,

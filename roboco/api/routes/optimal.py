@@ -76,7 +76,7 @@ from roboco.security import (
     prompt_injection_validator,
     secret_exfil_validator,
 )
-from roboco.services.gateway.kb_authz import authorize_kb_action
+from roboco.services.gateway.kb_authz import kb_denial_response
 from roboco.services.optimal import (
     IndexType,
     QueryContext,
@@ -91,28 +91,6 @@ from roboco.services.optimal_brain import (
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-
-def _kb_denial_response(
-    permissions: PermissionServiceDep,
-    agent: CurrentAgentContext,
-    action: str,
-) -> JSONResponse | None:
-    """Gateway Envelope (HTTP 403) when the KB action is denied, else None.
-
-    The authorization decision itself lives in the gateway
-    (``authorize_kb_action``); this only renders a denial verdict at the HTTP
-    boundary. The body is the Envelope wire-dict at top level — not nested
-    under ``detail`` — so the agent receives a non-null ``remediate`` it can
-    act on, matching the gateway Envelope contract.
-    """
-    denial = authorize_kb_action(permissions, agent, action)
-    if denial is None:
-        return None
-    return JSONResponse(
-        status_code=status.HTTP_403_FORBIDDEN,
-        content=denial.as_dict(),
-    )
 
 
 # =============================================================================
@@ -142,7 +120,7 @@ async def index_code(
     - Directories
     - Glob patterns (e.g., "src/**/*.py")
     """
-    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
+    denied = kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
     if denied is not None:
         return denied
 
@@ -181,7 +159,7 @@ async def index_documentation(
     - URLs (single page or crawl with /**)
     - Glob patterns
     """
-    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_DOCS)
+    denied = kb_denial_response(permissions, agent, KBAction.INDEX_DOCS)
     if denied is not None:
         return denied
 
@@ -467,7 +445,7 @@ async def get_stats(
     permissions: PermissionServiceDep,
 ) -> IndexStatsResponse | JSONResponse:
     """Get statistics about all indexes."""
-    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    denied = kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
     if denied is not None:
         return denied
 
@@ -493,7 +471,7 @@ async def check_staleness(
     Declared BEFORE `/stats/{index_type}` so FastAPI matches the literal
     `staleness` segment instead of treating it as an `index_type` param.
     """
-    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    denied = kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
     if denied is not None:
         return denied
 
@@ -508,7 +486,7 @@ async def get_single_index_stats(
     permissions: PermissionServiceDep,
 ) -> SingleIndexStatsResponse | JSONResponse:
     """Get statistics for a specific index type."""
-    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    denied = kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
     if denied is not None:
         return denied
 
@@ -564,7 +542,7 @@ async def clear_index(
 
     Warning: This permanently deletes all documents in the index.
     """
-    denied = _kb_denial_response(permissions, agent, KBAction.CLEAR_INDEX)
+    denied = kb_denial_response(permissions, agent, KBAction.CLEAR_INDEX)
     if denied is not None:
         return denied
 
@@ -595,7 +573,7 @@ async def list_documents(
     pagination: PaginationDep,
 ) -> DocumentListResponse | JSONResponse:
     """List documents in a specific index (paginated)."""
-    denied = _kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
+    denied = kb_denial_response(permissions, agent, KBAction.VIEW_STATS)
     if denied is not None:
         return denied
     try:
@@ -645,7 +623,7 @@ async def refresh_index(
 
     Re-indexes the specified sources to pick up changes.
     """
-    denied = _kb_denial_response(permissions, agent, KBAction.REFRESH_INDEX)
+    denied = kb_denial_response(permissions, agent, KBAction.REFRESH_INDEX)
     if denied is not None:
         return denied
 
@@ -706,7 +684,7 @@ async def reindex_all(
     """
     import asyncio
 
-    denied = _kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
+    denied = kb_denial_response(permissions, agent, KBAction.INDEX_CODE)
     if denied is not None:
         return denied
 

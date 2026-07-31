@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import httpx
+from fastapi import HTTPException, status
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -374,6 +375,27 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
     head_sha = runs[0].get("head_sha")
     same_head = [r for r in runs if r.get("head_sha") == head_sha] or [runs[0]]
     return max(same_head, key=lambda r: int(r.get("run_attempt") or 0))
+
+
+def translate_git_error(e: ServiceError | GitError) -> HTTPException:
+    """Translate a git-route service/git error into an HTTPException."""
+    if isinstance(e, NotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    if isinstance(e, UnauthorizedError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+    if isinstance(e, ValidationError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    if isinstance(e, GitTimeoutError):
+        return HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=e.message
+        )
+    if isinstance(e, GitCommandError):
+        return HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
+        )
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
+    )
 
 
 @dataclass(frozen=True)

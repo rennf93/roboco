@@ -21,24 +21,9 @@ from roboco.api.schemas.docs import (
 )
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.docs import WriteDocInput, get_docs_service
-from roboco.services.gateway.kb_authz import docs_denial_envelope
+from roboco.services.gateway.kb_authz import docs_unauthorized_response
 
 router = APIRouter()
-
-
-def _unauthorized_response(err: UnauthorizedError) -> JSONResponse:
-    """Render a docs-service denial as the gateway Envelope (HTTP 403).
-
-    The RBAC decision is made in ``DocsService`` (it raises
-    ``UnauthorizedError``); this only renders that denial at the HTTP
-    boundary. The body is the Envelope wire-dict at top level so the agent
-    receives a non-null ``remediate`` instead of a bare ``detail`` string.
-    """
-    envelope = docs_denial_envelope(err.action, err.reason)
-    return JSONResponse(
-        status_code=status.HTTP_403_FORBIDDEN,
-        content=envelope.as_dict(),
-    )
 
 
 # Module-level Query defaults
@@ -106,7 +91,7 @@ async def write_doc(
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        return _unauthorized_response(e)
+        return docs_unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -149,7 +134,7 @@ async def read_doc(
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        return _unauthorized_response(e)
+        return docs_unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -203,7 +188,7 @@ async def list_docs(
             count=len(docs),
         )
     except UnauthorizedError as e:
-        return _unauthorized_response(e)
+        return docs_unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -243,7 +228,7 @@ async def delete_doc(
             detail=e.message,
         ) from e
     except UnauthorizedError as e:
-        return _unauthorized_response(e)
+        return docs_unauthorized_response(e)
     except NotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -4,13 +4,10 @@ Project API Routes
 CRUD operations for managing git projects/repositories.
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-
-if TYPE_CHECKING:
-    from roboco.db.tables import ProjectTable
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -30,17 +27,15 @@ from roboco.api.schemas.project import (
     ProjectUpdateRequest,
     SetWorkspaceRequest,
     SyncStateRequest,
+    conventions_action_to_response,
     project_to_response,
     project_to_summary,
 )
 from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
-from roboco.services.conventions import (
-    ScaffoldResult,
-    get_conventions_service,
-)
-from roboco.services.project import ProjectService, get_project_service
+from roboco.services.conventions import get_conventions_service
+from roboco.services.project import get_project_service
 
 router = APIRouter()
 
@@ -469,28 +464,6 @@ async def remove_agent_access(
 # =============================================================================
 
 
-async def _get_project_or_404(
-    service: ProjectService, project_id: str
-) -> "ProjectTable":
-    """Resolve a project by UUID or slug, raising 404 when absent."""
-    try:
-        project = await service.get(UUID(project_id))
-    except ValueError:
-        project = await service.get_by_slug(project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project not found: {project_id}",
-        )
-    return project
-
-
-def _action_response(result: ScaffoldResult) -> ConventionsActionResponse:
-    return ConventionsActionResponse(
-        pr_number=result.pr_number, branch=result.branch, created=result.created
-    )
-
-
 @router.get("/{project_id}/conventions", response_model=ConventionsResponse)
 async def get_conventions(
     project_id: str,
@@ -498,7 +471,7 @@ async def get_conventions(
     _agent: CurrentAgentContext,
 ) -> ConventionsResponse:
     """Return the project's effective conventions map + its current health."""
-    project = await _get_project_or_404(get_project_service(db), project_id)
+    project = await get_project_service(db).get_by_id_or_slug_or_404(project_id)
     conv = get_conventions_service(db)
     # Ensure a default-branch read clone once, then read the map + health from
     # it. This is the backfill: a project created before the standard existed
@@ -526,10 +499,10 @@ async def update_conventions(
 ) -> ConventionsActionResponse:
     """Commit an edited conventions standard back to the repo via a PR (PM+)."""
     require_pm_or_above(agent.role, "edit conventions")
-    project = await _get_project_or_404(get_project_service(db), project_id)
+    project = await get_project_service(db).get_by_id_or_slug_or_404(project_id)
     result = await get_conventions_service(db).commit_standard(project, standard)
     await db.commit()
-    return _action_response(result)
+    return conventions_action_to_response(result)
 
 
 @router.post(
@@ -542,10 +515,10 @@ async def restore_conventions(
 ) -> ConventionsActionResponse:
     """Re-commit the conventions file from the last-good map via a PR (PM+)."""
     require_pm_or_above(agent.role, "restore conventions")
-    project = await _get_project_or_404(get_project_service(db), project_id)
+    project = await get_project_service(db).get_by_id_or_slug_or_404(project_id)
     result = await get_conventions_service(db).restore(project)
     await db.commit()
-    return _action_response(result)
+    return conventions_action_to_response(result)
 
 
 @router.get(
@@ -559,7 +532,7 @@ async def get_conventions_findings(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[ConventionFinding]:
     """Recent architectural-conventions findings for the project (violations feed)."""
-    project = await _get_project_or_404(get_project_service(db), project_id)
+    project = await get_project_service(db).get_by_id_or_slug_or_404(project_id)
     rows = await get_conventions_service(db).recent_findings(
         UUID(str(project.id)), limit
     )

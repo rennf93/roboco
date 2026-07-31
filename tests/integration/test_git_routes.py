@@ -14,7 +14,6 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
-from roboco.api.routes.git import _translate_error
 from roboco.api.routes.git import router as git_router
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.exceptions import GitCommandError, GitTimeoutError
@@ -26,6 +25,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.git import translate_git_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -215,23 +215,23 @@ async def test_status_not_found(git_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_status_git_timeout_directly() -> None:
-    """Exercise _translate_error's GitTimeoutError branch directly.
+    """Exercise translate_git_error's GitTimeoutError branch directly.
 
     The route uses `except ServiceError as e` from services.base, but
     GitTimeoutError extends roboco.exceptions.ServiceError (different
-    class), so it never enters _translate_error in practice. We invoke
+    class), so it never enters translate_git_error in practice. We invoke
     the helper directly to cover the branch.
     """
     err = GitTimeoutError("git status", 10)
-    http_exc = _translate_error(err)
+    http_exc = translate_git_error(err)
     assert http_exc.status_code == HTTPStatus.GATEWAY_TIMEOUT
 
 
 @pytest.mark.asyncio
 async def test_status_git_command_error_directly() -> None:
-    """Direct invocation of _translate_error's GitCommandError branch."""
+    """Direct invocation of translate_git_error's GitCommandError branch."""
     err = GitCommandError("git status", "stderr")
-    http_exc = _translate_error(err)
+    http_exc = translate_git_error(err)
     assert http_exc.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
 
 

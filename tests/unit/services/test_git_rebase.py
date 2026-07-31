@@ -816,6 +816,7 @@ async def test_rebase_endpoint_pm_gets_200() -> None:
     mock_project.slug = "roboco"
     mock_project_svc = MagicMock()
     mock_project_svc.get_by_slug = AsyncMock(return_value=mock_project)
+    mock_project_svc.resolve_slug_or_404 = AsyncMock(return_value="roboco")
 
     # Mock git service → workspace + rebase succeed without conflict
     mock_git_svc = MagicMock()

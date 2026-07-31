@@ -9,24 +9,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import CurrentAgentContext, DbSession, require_auditor_or_ceo
 from roboco.api.schemas.playbook import PlaybookRejectBody
-from roboco.models import AgentRole
 from roboco.models.playbook import Playbook
 from roboco.services.base import ConflictError, NotFoundError
 from roboco.services.playbook import get_playbook_service
 
 router = APIRouter()
 
-_CURATOR_ROLES = frozenset({AgentRole.AUDITOR, AgentRole.CEO})
-
-
-def _require_curator(agent: CurrentAgentContext) -> None:
-    if agent.role not in _CURATOR_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the Auditor or CEO may curate playbooks",
-        )
+_CURATOR_DETAIL = "Only the Auditor or CEO may curate playbooks"
 
 
 @router.get("", response_model=list[Playbook])
@@ -36,7 +27,7 @@ async def list_playbooks(
     status_filter: str = Query(default="draft", alias="status"),
 ) -> list[Playbook]:
     """List playbooks by status (default: drafts awaiting review)."""
-    _require_curator(agent)
+    require_auditor_or_ceo(agent.role, _CURATOR_DETAIL)
     svc = get_playbook_service(db)
     rows = (
         await svc.list_approved()
@@ -51,7 +42,7 @@ async def approve_playbook(
     playbook_id: UUID, db: DbSession, agent: CurrentAgentContext
 ) -> Playbook:
     """Approve a draft playbook → approved (and indexed into the KB)."""
-    _require_curator(agent)
+    require_auditor_or_ceo(agent.role, _CURATOR_DETAIL)
     try:
         svc = get_playbook_service(db)
         playbook = await svc.approve(playbook_id, approver_id=agent.agent_id)
@@ -81,7 +72,7 @@ async def reject_playbook(
     agent: CurrentAgentContext,
 ) -> Playbook:
     """Reject a draft playbook → archived, with the Auditor's reason."""
-    _require_curator(agent)
+    require_auditor_or_ceo(agent.role, _CURATOR_DETAIL)
     try:
         svc = get_playbook_service(db)
         playbook = await svc.reject(
@@ -106,7 +97,7 @@ async def archive_playbook(
     playbook_id: UUID, db: DbSession, agent: CurrentAgentContext
 ) -> Playbook:
     """Retire an approved playbook → archived (and de-indexed from the KB)."""
-    _require_curator(agent)
+    require_auditor_or_ceo(agent.role, _CURATOR_DETAIL)
     try:
         svc = get_playbook_service(db)
         playbook = await svc.archive(playbook_id, approver_id=agent.agent_id)
