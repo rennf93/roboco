@@ -338,7 +338,7 @@ quality-fast: sync
 	@uv run mypy roboco/ tests/
 	@uv run pytest -q -x --no-cov
 
-# Fast pre-submit gate: format-check + lint + types + complexity, NO tests.
+# Fast pre-submit gate: format-check + lint + types + complexity + import boundaries, NO tests.
 # This is the command a project points `quality_command` at, so the agent
 # pre-submit gate (run at i_am_done) executes it in the dev's workspace and
 # catches lint/type/complexity at the desk. The test suite stays on CI.
@@ -348,6 +348,7 @@ gate: sync
 	@uv run ruff check .
 	@uv run mypy roboco/ tests/
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
+	@uv run lint-imports
 
 # Panel (Next.js) fast gate: lint + type-check + vitest.
 # Run locally before submitting panel changes; mirrors the CI panel job exactly.
