@@ -239,6 +239,31 @@ class Envelope:
         )
 
     @classmethod
+    def gateway_timeout(
+        cls,
+        *,
+        component: str,
+        timeout_seconds: float,
+        remediate: str,
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """A bounded inner-work timeout tripped (e.g. evidence assembly),
+        well under the outer server-side ``flow_verb_timeout_seconds``
+        rollback (``api.middleware``'s own ``gateway_timeout``). Names the
+        slow ``component`` so the agent isn't left guessing which segment
+        (git fetch, diff computation, conventions validation, a DB read)
+        stalled, instead of a bare 504 that reads as the whole verb failing.
+        """
+        return cls(
+            error="gateway_timeout",
+            message=(
+                f"{component} exceeded the {timeout_seconds:.0f}s bounded timeout"
+            ),
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
+
+    @classmethod
     def from_decision(
         cls, decision: Any, *, briefing: dict[str, Any] | None = None
     ) -> Envelope:

@@ -1706,6 +1706,30 @@ class Settings(BaseSettings):
             "repository; set this to sandbox smoke-test projects."
         ),
     )
+    evidence_assembly_timeout_seconds: float = Field(
+        default=90.0,
+        ge=1.0,
+        description=(
+            "Bounded inner-work timeout for the evidence-assembly segment of "
+            "claim_review / evidence() / roboco_git_diff (git fetch, diff "
+            "computation, conventions validation, DB reads). Well under "
+            "flow_verb_timeout_seconds (120s default) so a genuinely slow "
+            "sub-component returns a structured, named gateway_timeout "
+            "envelope instead of the whole verb hitting the outer server-side "
+            "rollback with no indication of which segment stalled."
+        ),
+    )
+    conventions_validator_timeout_seconds: int = Field(
+        default=45,
+        ge=5,
+        description=(
+            "Timeout in seconds for the conventions-validator subprocess "
+            "(``python -m roboco.conventions check``) run inside "
+            "claim_review / i_am_done / pr_pass. Kept comfortably below "
+            "evidence_assembly_timeout_seconds so a hung validator can't by "
+            "itself exhaust the outer verb's whole server-side budget."
+        ),
+    )
 
     # ==========================================================================
     # Agent Guardrails (per-session budgets, loop detection, SLAs)
