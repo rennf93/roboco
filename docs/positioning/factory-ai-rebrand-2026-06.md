@@ -1,6 +1,6 @@
 # RoboCo vs. Factory.ai's "Software Factory" Rebrand
 
-On June 15, 2026, Factory.ai rebranded from "coding agents" to "software factories," describing an end-to-end signals → triage → build/test/review/ secure/ship → monitor loop built on three pillars: model independence, sovereign intelligence, and continual self-improvement.
+On June 15, 2026, Factory.ai rebranded from "coding agents" to "software factories," describing an end-to-end signals → triage → build/test/review/secure/ship → monitor loop built on three pillars: model independence, sovereign intelligence, and continual self-improvement.
 
 Source: https://factory.ai/news/software-factory
 
