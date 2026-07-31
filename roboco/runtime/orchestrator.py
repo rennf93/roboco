@@ -11670,9 +11670,15 @@ Start by:
         "ux_ui": "ux-pm",
     }
 
-    def _get_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
+    def _resolve_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
         """
-        Resolve a routing decision to a specific agent slug.
+        Resolve a routing decision to a specific agent slug (never-strand
+        fallbacks default to main-pm — code-task safety lives in the async
+        wrapper ``_get_routing_target``: main_pm+code must not coexist by
+        org invariant, so the dispatcher's pre-claim route refuses it
+        (``_raise_if_main_pm_code_claim``, needs_revision recovery exempt);
+        the lifecycle spec's broader ``i_will_plan`` claim allowance covers
+        cell PMs planning code parents, not this dispatch path).
 
         Args:
             routing: One of "board", "main_pm", "cell_pm", "dev", "marketing"
@@ -11721,6 +11727,84 @@ Start by:
             task_id=task.get("id"),
         )
         return "main-pm"
+
+    @staticmethod
+    def _is_code_task(task: dict[str, Any]) -> bool:
+        return str(task.get("task_type") or "").lower() == "code"
+
+    async def _nearest_cell_team(self, task: dict[str, Any]) -> str | None:
+        """Walk the parent chain for the nearest ancestor's cell team.
+
+        Mirrors ``TaskService._resolve_pm_for_review`` (task.py:6493) but
+        keys on ``team`` rather than ``assigned_to`` — this runs before any
+        assignment exists. Best-effort: any lookup failure returns None so
+        the caller falls back to the deterministic default cell.
+        """
+        parent_id = task.get("parent_task_id")
+        if not parent_id:
+            return None
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import get_task_service
+
+        cell_teams = frozenset(t.value for t in CELL_TEAMS)
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                task_svc = get_task_service(db)
+                while parent_id:
+                    parent = await task_svc.get(UUID(str(parent_id)))
+                    if not parent:
+                        return None
+                    parent_team = getattr(parent.team, "value", parent.team)
+                    if parent_team in cell_teams:
+                        return str(parent_team)
+                    parent_id = parent.parent_task_id
+        except Exception as exc:
+            logger.warning(
+                "cell-team parent walk failed; using default cell",
+                task_id=task.get("id"),
+                error=str(exc),
+            )
+        return None
+
+    async def _cell_pm_for_stranded_code_task(self, task: dict[str, Any]) -> str:
+        """Redirect a code task that would strand on main-pm to a cell PM.
+
+        The dispatcher's pre-claim (``_raise_if_main_pm_code_claim``, the
+        MAIN_PM_NO_CODE org invariant: main_pm+code must not coexist —
+        intake coerces such roots to planning) refuses a Main-PM claim of a
+        pending code task, so a stranded one loops claim-reject forever at
+        ~30s cadence instead of failing loud. A code task belongs to a
+        cell: resolve the nearest ancestor cell team first; a parentless/
+        unresolvable chain defaults to backend (ponytail: no signal to pick
+        a better default among the three cells).
+        """
+        team = await self._nearest_cell_team(task)
+        target = self._TEAM_PM_MAP.get(team or "", "be-pm")
+        logger.warning(
+            "code task would strand on main-pm (MAIN_PM_NO_CODE); "
+            "redirecting to cell pm",
+            task_id=task.get("id"),
+            resolved_team=team,
+            agent_id=target,
+        )
+        return target
+
+    async def _get_routing_target(
+        self, routing: str, task: dict[str, Any]
+    ) -> str | None:
+        """Resolve a routing decision to a specific agent slug.
+
+        Wraps ``_resolve_routing_target``: when that would strand a code
+        task on main-pm (a claim MAIN_PM_NO_CODE refuses forever), redirects
+        to a cell PM instead — see ``_cell_pm_for_stranded_code_task``.
+        """
+        target = self._resolve_routing_target(routing, task)
+        if target == "main-pm" and self._is_code_task(task):
+            return await self._cell_pm_for_stranded_code_task(task)
+        return target
 
     def _build_main_pm_triage_prompt(
         self, task: dict[str, Any], *, bounced_block: str = ""
@@ -14069,7 +14153,7 @@ Start now: evidence(task_id="{task_id}")
         if await self._pending_claim_blocked(task.get("id")):
             return
         routing = self._classify_task_routing(task)
-        agent_id = self._get_routing_target(routing, task)
+        agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:
             logger.warning(
