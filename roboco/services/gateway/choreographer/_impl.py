@@ -11,6 +11,7 @@ injection so later phases just fill in the bodies.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1181,7 +1182,8 @@ class Choreographer:
 
         Returns ``{"status": ..., "lessons": [...]}`` where status is one of
         ``disabled`` (subsystem off / no task — ponytail: both mean no search ran),
-        ``error`` (search raised), ``empty`` (search yielded nothing),
+        ``error`` (search raised), ``timeout`` (searched, but the memory search
+        didn't answer in time), ``empty`` (search yielded nothing),
         ``below_floor`` (searched, nothing met the floor), ``ok`` (lessons
         injected). Lessons is empty unless status is ``ok`` — the status is
         additive, the injection behavior is unchanged."""
@@ -1200,11 +1202,22 @@ class Choreographer:
         else:
             task_type = str(raw_type)
         query = shape_memory_query(role, title, task_type)
-        result = await self._deps.evidence_repo.similar_memory(
-            query=query,
-            top_k=_settings.org_memory_top_k,
-            min_score=_settings.org_memory_min_score,
-        )
+        try:
+            result = await asyncio.wait_for(
+                self._deps.evidence_repo.similar_memory(
+                    query=query,
+                    top_k=_settings.org_memory_top_k,
+                    min_score=_settings.org_memory_min_score,
+                ),
+                timeout=_settings.institutional_memory_timeout_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "institutional_memory_timeout",
+                agent_id=str(agent_id),
+                task_id=str(getattr(task, "id", "")),
+            )
+            return {"status": "timeout", "lessons": []}
         return {
             "status": str(result.get("status", "error")),
             "lessons": list(result.get("items", [])),

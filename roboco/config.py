@@ -1173,6 +1173,16 @@ class Settings(BaseSettings):
         le=1.0,
         description="Cosine-similarity floor for injected memory; below it, none.",
     )
+    institutional_memory_timeout_seconds: float = Field(
+        default=8.0,
+        gt=0,
+        description=(
+            "Deadline for the institutional-memory RAG search (embed + query) "
+            "during a claim briefing. RAG memory is a nice-to-have enrichment "
+            "— tight on purpose, so a saturated embedder can never burn the "
+            "verb's whole timeout budget and 504 the claim."
+        ),
+    )
 
     # Sandboxed per-agent-spawn DB/Redis — orchestrator-provisioned throwaway
     # Postgres/Redis sibling containers so a dev agent's gate runs against an

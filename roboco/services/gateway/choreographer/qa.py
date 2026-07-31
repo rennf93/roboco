@@ -229,6 +229,12 @@ class QAMixin(_Base):
         was already resolved (warmed) by the diff/list_changed_files legs
         above in the same evidence build — so the one theoretically-unbounded
         piece (a cold clone) never actually triggers here in practice.
+
+        That warm-workspace assumption only holds when those legs actually
+        completed. ``_build_qa_claim_evidence`` now checks for the opposite
+        signal (``evidence_gaps`` already non-empty) and skips calling this
+        method entirely in that case, instead of trusting a false assumption
+        and re-hitting the same cold/contended git ops unbounded.
         """
         if not settings.conventions_enabled:
             return []
@@ -321,15 +327,36 @@ class QAMixin(_Base):
         # Leaf-only journals stay (include_ancestors defaults False above);
         # ancestor *descriptions* are the ask, not work-so-far.
         parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
-        convention_findings = await self._qa_convention_findings(
-            qa_agent_id,
-            t,
-            timeout=min(
-                settings.conventions_validator_advisory_timeout_seconds,
-                budget.remaining(),
-            ),
-            gaps=evidence_gaps,
-        )
+        convention_findings: list[dict[str, Any]]
+        if evidence_gaps and settings.conventions_enabled:
+            # The diff/files_changed legs above already timed out, so the
+            # "workspace was warmed" assumption _qa_convention_findings relies
+            # on (see its docstring) is false — skip it rather than re-hit the
+            # same cold/contended git ops and grind toward the 120s verb wall.
+            convention_findings = [
+                {
+                    "could_not_run": True,
+                    "reason": (
+                        "skipped: git evidence legs timed out "
+                        "(cold/contended workspace)"
+                    ),
+                }
+            ]
+            evidence_gaps.append(
+                "conventions findings unavailable: skipped because prior "
+                "evidence legs timed out (cold/contended workspace) — review "
+                "the diff manually for architecture-convention issues"
+            )
+        else:
+            convention_findings = await self._qa_convention_findings(
+                qa_agent_id,
+                t,
+                timeout=min(
+                    settings.conventions_validator_advisory_timeout_seconds,
+                    budget.remaining(),
+                ),
+                gaps=evidence_gaps,
+            )
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
         )
