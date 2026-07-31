@@ -84,19 +84,35 @@ _PRUNE_DIRS = frozenset(
 )
 
 
-def _chown_entry(entry: str) -> bool:
-    """Chown a single entry; return True on success (or already correct)."""
+def _chown_entry(entry: str, st: os.stat_result) -> bool:
+    """Chown a single entry to the agent uid/gid per the given (already-known)
+    stat; return True on success (or already correct)."""
+    if st.st_uid == _AGENT_UID and st.st_gid == _AGENT_GID:
+        return True
     try:
-        st = Path(entry).stat()
-        if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
-            os.chown(entry, _AGENT_UID, _AGENT_GID)
+        os.chown(entry, _AGENT_UID, _AGENT_GID)
     except OSError:
         return False
     return True
 
 
-def _make_owner_and_group_rw(entry: str) -> None:
-    """Best-effort chmod ensuring owner+group have rw (+x for dirs).
+def _rw_mode_for(st_mode: int) -> int:
+    """The owner+group rw (+x for dirs) bits ``_make_owner_and_group_rw``
+    ensures, given an entry's current mode. Shared with the root-sentinel
+    check in ``_root_already_owned`` so both agree on what "already has the
+    required bits" means.
+    """
+    import stat as _stat
+
+    mode = st_mode | _stat.S_IRUSR | _stat.S_IWUSR | _stat.S_IRGRP | _stat.S_IWGRP
+    if _stat.S_ISDIR(st_mode):
+        mode |= _stat.S_IXUSR | _stat.S_IXGRP
+    return mode
+
+
+def _make_owner_and_group_rw(entry: str, st: os.stat_result) -> None:
+    """Best-effort chmod ensuring owner+group have rw (+x for dirs), given the
+    entry's already-known stat.
 
     NAS volumes with POSIX ACL inheritance can land cloned files with
     owner=0 (e.g. `.git/config` arriving as `----rw----`). POSIX permission
@@ -107,25 +123,36 @@ def _make_owner_and_group_rw(entry: str) -> None:
     capabilities; if chown failed earlier (we're not root), we still
     can't chmod files we don't own, so this is best-effort by design.
     """
-    import stat as _stat
-
-    try:
-        st = Path(entry).stat()
-        new_mode = (
-            st.st_mode | _stat.S_IRUSR | _stat.S_IWUSR | _stat.S_IRGRP | _stat.S_IWGRP
-        )
-        if _stat.S_ISDIR(st.st_mode):
-            new_mode |= _stat.S_IXUSR | _stat.S_IXGRP
-        if new_mode != st.st_mode:
-            Path(entry).chmod(new_mode)
-    except OSError:
-        pass
+    new_mode = _rw_mode_for(st.st_mode)
+    if new_mode == st.st_mode:
+        return
+    with contextlib.suppress(OSError):
+        Path(entry).chmod(new_mode)
 
 
 def _own_and_grant_rw(entry: str) -> int:
-    """Chown + grant owner/group rw on one entry; return 1 if the chown failed."""
-    failed = 0 if _chown_entry(entry) else 1
-    _make_owner_and_group_rw(entry)
+    """Chown + grant owner/group rw on one entry; return 1 if the chown failed.
+
+    One ``stat`` (follows symlinks, matching os.chown/Path.chmod's own
+    default follow behavior) now backs BOTH the chown-needed and
+    chmod-needed checks below, replacing what used to be two separate
+    ``Path.stat()`` calls (one inside each helper). The common case — an
+    agent re-claiming its own already-correctly-owned clone — costs one
+    read syscall and zero metadata-write syscalls per entry instead of two
+    stats plus, on some hosts, always re-testing each write independently.
+    On a NAS volume with tens of thousands of files, where every
+    chown/chmod is a copy-on-write metadata write, that is the difference
+    between a sub-second ownership pass and one that stacks tens of
+    seconds per claim verb. A stat failure (e.g. a broken symlink) is
+    treated as a chown failure, matching the prior behavior where the same
+    OSError surfaced from inside ``_chown_entry``'s own stat call.
+    """
+    try:
+        st = Path(entry).stat()
+    except OSError:
+        return 1
+    failed = 0 if _chown_entry(entry, st) else 1
+    _make_owner_and_group_rw(entry, st)
     return failed
 
 
@@ -166,8 +193,25 @@ def _ensure_agent_owned(workspace: Path) -> None:
        userns hosts) we log the failure instead of swallowing it, so a
        still-failing agent write is diagnosable rather than silent.
     2. chmod owner+group rw. Belt + suspenders for ACL-inheriting NAS volumes.
+
+    Root-sentinel short-circuit: if the workspace root itself is already
+    agent-owned with the right bits AND ``_root_already_owned`` finds the
+    marker from the last zero-failure pass, the ENTIRE walk is skipped — one
+    stat instead of walking tens of thousands of files, the remaining cost
+    of a re-claim on an already-correctly-owned NAS clone (this repo's
+    per-entry stat-collapse already halved the walk itself; this removes it
+    outright in the common case). The marker is deleted at the single
+    root-side git-write chokepoint (``GitService._run_git`` →
+    ``invalidate_owned_marker``) before any op that could create new
+    root-owned files, so a live marker is trustworthy: it can only ever be
+    stale-and-wrongly-trusted if some OTHER path creates root-owned files
+    without going through that chokepoint, which is the class this repo's
+    ownership repair exists to fix in the first place.
     """
     if not workspace.exists():
+        return
+
+    if _root_already_owned(workspace):
         return
 
     failed_chowns = sum(
@@ -182,6 +226,8 @@ def _ensure_agent_owned(workspace: Path) -> None:
             workspace=str(workspace),
             failures=failed_chowns,
         )
+    else:
+        _write_owned_marker(workspace)
 
 
 def _resolve_clone_root(workspace: Path) -> Path:
@@ -196,6 +242,111 @@ def _resolve_clone_root(workspace: Path) -> Path:
     if workspace.parent.name == ".worktrees":
         return workspace.parent.parent
     return workspace
+
+
+# Sentinel filename recording "the last full _ensure_agent_owned pass over
+# this clone found zero wrong-owned entries". Lives under `.git/` — git
+# never tracks its own metadata dir, so this needs no .gitignore entry and
+# sits outside every `_PRUNE_DIRS` exemption — instead of the working tree,
+# so writing/deleting it never touches a tracked file.
+_OWNED_MARKER_NAME = "roboco-owned"
+
+
+def _owned_marker_path(workspace: Path) -> Path:
+    """The sentinel's path for a workspace or one of its worktrees.
+
+    Worktree-aware via ``_resolve_clone_root``: a worktree checkout and its
+    clone root share the ONE ``.git`` they both ultimately read/write, so
+    they share one marker too.
+    """
+    return _resolve_clone_root(workspace) / ".git" / _OWNED_MARKER_NAME
+
+
+def _root_already_owned(workspace: Path) -> bool:
+    """True iff the workspace root is already agent-owned with the required
+    rw(+x) bits AND the marker attests the last full walk found zero
+    wrong-owned entries anywhere under the tree.
+
+    Only the root gets stat'd here — the marker stands in for "every other
+    entry was already correct as of the last zero-failure pass", so the
+    common re-claim case costs one stat instead of walking the whole clone.
+    A missing/unreadable root or marker just falls through to the real walk
+    (safe default — this is a pure perf short-circuit, never a correctness
+    one).
+    """
+    try:
+        st = workspace.stat()
+    except OSError:
+        return False
+    if st.st_uid != _AGENT_UID or st.st_gid != _AGENT_GID:
+        return False
+    if _rw_mode_for(st.st_mode) != st.st_mode:
+        return False
+    return _owned_marker_path(workspace).is_file()
+
+
+def _write_owned_marker(workspace: Path) -> None:
+    """Record a zero-failure ``_ensure_agent_owned`` pass so the next call
+    can trust ``_root_already_owned`` and skip the walk entirely.
+
+    Best-effort: a write failure just means the next call re-walks — it
+    only costs the perf win, never correctness.
+    """
+    with contextlib.suppress(OSError):
+        marker = _owned_marker_path(workspace)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+
+
+def invalidate_owned_marker(workspace: Path) -> None:
+    """Delete the ownership sentinel so the next ``_ensure_agent_owned``
+    call re-walks instead of trusting stale state.
+
+    Called from every root-side git-write chokepoint before the git
+    invocation that could create new root-owned files runs:
+    ``GitService._run_git`` (orchestrator-driven git ops) and, in this
+    module, ``WorkspaceService._worktree_git`` (mutating verbs only),
+    ``_fetch_branch_ref``, and ``_fetch_origin_best_effort`` — the
+    raw-subprocess worktree/fetch paths the spawn-time self-heal flow
+    (``ensure_worktree_self_heal`` -> ``_refresh_present_worktree``) hits on
+    (nearly) every spawn. A marker written BEFORE those files land would let
+    the very next ``_ensure_agent_owned`` call (concurrent or later) wrongly
+    skip them, stranding root-owned files the agent can't write. Best-effort:
+    a missing marker/workspace is a silent no-op, never an error.
+    """
+    with contextlib.suppress(OSError):
+        _owned_marker_path(workspace).unlink()
+
+
+# Verbs `_worktree_git` receives that never write anything, hand-enumerated
+# against every real call site in this module (rev-parse --verify, rev-list
+# --count, status --porcelain, symbolic-ref --short — the SET form of
+# symbolic-ref is never used here). `branch` is the one ambiguous verb this
+# helper is called with: `--show-current` only reads, while a create
+# (`branch <name> <ref>`) or delete (`branch -d/-D <name>`) writes — handled
+# separately in `_worktree_git_is_mutating` below rather than folded into
+# this set. `git.py`'s `_git_ownership_scope` can't be imported here (git.py
+# imports FROM workspace.py; the reverse would cycle).
+_WORKTREE_GIT_ALWAYS_READ_ONLY = frozenset(
+    {"rev-parse", "rev-list", "status", "symbolic-ref"}
+)
+
+
+def _worktree_git_is_mutating(args: list[str]) -> bool:
+    """True iff a ``_worktree_git`` invocation could write anything.
+
+    Everything this helper is ever called with besides the always-read-only
+    set and `branch` is mutating (checkout, reset, worktree add/remove/
+    prune) — the safe default for an unrecognized/empty verb too.
+    """
+    if not args:
+        return True
+    verb = args[0]
+    if verb in _WORKTREE_GIT_ALWAYS_READ_ONLY:
+        return False
+    if verb == "branch":
+        return any(not a.startswith("-") for a in args[1:])
+    return True
 
 
 def _iter_git_dir_entries(clone_root: Path) -> Iterator[str]:
@@ -517,6 +668,19 @@ class WorkspaceService:
     def _worktree_git(
         clone_root: Path, args: list[str], check: bool = True
     ) -> subprocess.CompletedProcess[str]:
+        """Run a raw ``git -C <clone_root> <args>`` invocation (sync, no
+        token injection — internal worktree plumbing only).
+
+        A mutating verb (anything but rev-parse/rev-list/status/
+        symbolic-ref, or a `branch` create/delete) invalidates the
+        ownership-sentinel marker BEFORE the subprocess runs — this is one
+        of the root-side git-write chokepoints ``invalidate_owned_marker``
+        documents; without it a stale marker lets ``_ensure_agent_owned``
+        skip the walk that would repair the root-owned files this call is
+        about to create.
+        """
+        if _worktree_git_is_mutating(args):
+            invalidate_owned_marker(clone_root)
         return subprocess.run(
             ["git", "-C", str(clone_root), *args],
             capture_output=True,
@@ -684,6 +848,10 @@ class WorkspaceService:
             prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
 
         def _do_fetch() -> subprocess.CompletedProcess[str]:
+            # fetch always writes .git/objects + refs — a root-side git-write
+            # chokepoint (see invalidate_owned_marker's docstring). Invalidate
+            # BEFORE the subprocess runs so a marker can never straddle it.
+            invalidate_owned_marker(clone_root)
             return subprocess.run(
                 [
                     "git",
@@ -1133,6 +1301,10 @@ class WorkspaceService:
             return refs or ["master"]
 
         def _do_fetch() -> subprocess.CompletedProcess[str]:
+            # fetch always writes .git/objects + refs — a root-side git-write
+            # chokepoint (see invalidate_owned_marker's docstring). Invalidate
+            # BEFORE the subprocess runs so a marker can never straddle it.
+            invalidate_owned_marker(workspace)
             return subprocess.run(
                 ["git", "fetch", "--no-tags", "--prune", "origin", *_scoped_refs()],
                 cwd=str(workspace),

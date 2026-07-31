@@ -50,6 +50,15 @@ def _make_deps(task: AsyncMock) -> ChoreographerDeps:
     # A fresh decision within the recency window so the delegate tracing gate
     # (journal:decision required) passes without a separate write.
     base["journal"].latest_decision_at.return_value = datetime.now(UTC)
+    # _ensure_pm_decision's journal write is savepoint-guarded — an
+    # unconfigured AsyncMock's begin_nested() call returns a raw unawaited
+    # coroutine, which `async with` cannot use.
+    base["task"].session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
     return ChoreographerDeps(**base)
 
 
