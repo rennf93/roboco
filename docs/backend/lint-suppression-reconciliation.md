@@ -12,13 +12,18 @@ doc is the canonical count both cells' docs reference.
 ## Method
 
 Sentinel's `no_lint_suppressions=32` figure was a live tally taken by the
-conventions scanner at report time — a count, not a persisted per-item ledger —
-so the individual pre-cleanup file:line list for suppressions already removed
-by earlier rounds of this same audit is not recoverable from this session (git
-history access is not available to a developer role here). What *is* checkable
-today is an exhaustive re-scan against the standard's own scope (`roboco/` +
-`panel/`, excluding `tests/`/`docs/`/`node_modules` — the same exclusion the
-conventions standard applies everywhere else), run as:
+conventions scanner at report time — a count, not a persisted per-item ledger.
+`roboco_git_log`/`roboco_git_diff` (real read-only git tools available to a
+developer role) timed out on every attempt during this reconciliation session
+— a known, tracked platform-wide degradation, backend task `62845be1` — so
+most of the individual pre-cleanup file:line provenance for suppressions
+already removed by earlier rounds of this same audit could not be
+reconstructed from a diff read; five sites were instead recovered from the
+earlier rounds' own task-completion journals (see the reconciliation table
+below). What *is* checkable today is an exhaustive re-scan against the
+standard's own scope (`roboco/` + `panel/`, excluding
+`tests/`/`docs/`/`node_modules` — the same exclusion the conventions standard
+applies everywhere else), run as:
 
 ```bash
 grep -rn '# noqa\|# type: ignore' --include='*.py' roboco/
@@ -69,11 +74,28 @@ the census below is exhaustive and auditable.
 
 ### Already resolved in an earlier round (19)
 
-| # | Disposition |
-|---|-------------|
-| 14-32 | **Already resolved in an earlier round of this same audit effort**, before this reconciliation doc was authored — the suppression markers no longer exist anywhere in `roboco/` or `panel/` (confirmed by the exhaustive re-scan above: only the 11 markers in the two tables above remain in the entire non-test tree). Sentinel's `32` figure was a point-in-time scan tally rather than a stored per-item list, so the specific pre-cleanup file:line provenance for this batch is not reconstructable from this session's tooling (no git-history access). This is the "outside this scan's current surface" disposition — checkable by re-running the two grep commands above and confirming no 20th/21st/... marker turns up.
+Recovered from the two earlier, already-merged audit rounds' own completion
+journals — task `da5a1985` / PR #734 ("Backend: audit lint suppressions in
+`roboco/`, fix or waive each") and task `81490c32` / PR #740 (the
+`journals-view.tsx` fix already itemized as row 12 above), both merged into
+this root's history. `roboco_git_log`/`roboco_git_diff` — real read-only git
+tools available to a developer role, contra an earlier draft of this doc —
+timed out on every attempt this session (a known, tracked platform-wide
+degradation, backend task `62845be1`), so the five sites below are recovered
+from `da5a1985`'s own task-completion journal, not from a diff read; a live
+re-grep of `roboco/` + `panel/` confirms none of the five carries any
+`noqa`/`type: ignore` marker today.
 
-**Running total: 2 + 9 + 2 + 19 = 32.**
+| # | Site | Code | Disposition |
+|---|------|------|-------------|
+| 14 | `journal.py` (`roboco/services/` or `roboco/models/`) | `E501` | **Fixed at source** — PR #734 (task `da5a1985`); line-length violation resolved. |
+| 15 | `tg_cockpit.py` (renamed to `cockpit.py` during this audit) | `PLR2004` | **Fixed at source** — PR #734 (task `da5a1985`); magic-number literal extracted to a named constant. |
+| 16 | `roboco/services/permissions.py` | `F401`/`E402` | **Fixed at source** — PR #734 (task `da5a1985`); unused re-export resolved via a top-level import + `__all__` (the `__all__` list was later widened by this round's sibling task `e339d9bb`, an unrelated follow-up — no marker was re-added). |
+| 17 | `roboco/logging.py` | `E402` | **Fixed at source** — PR #734 (task `da5a1985`); import reordered to the top of the module. |
+| 18 | `roboco/services/kanban.py` | `E501` | **Fixed at source** — PR #734 (task `da5a1985`); duplicated over-length title lines deduplicated via a shared `_board_title()` helper. |
+| 19-32 | — | **Residual — provenance not individually recoverable this session.** The exhaustive re-scan above confirms zero markers beyond the 18 named in this document remain anywhere in `roboco/` or `panel/` today, so these 14 were genuinely removed at some point across the audit's two merged rounds or ordinary refactors on this lineage, but their specific pre-cleanup file:line history could not be reconstructed — neither round's own completion journal enumerates more sites than the 6 fixed-at-source (5 unique here, plus `orchestrator.py` already itemized as row 13) + 1 (`journals-view.tsx`, row 12) captured across this document, and the git tooling needed to inspect the actual historical diffs timed out on every attempt. This is the one honest residual disposition for this batch — not "outside this scan's current surface" and not "not available to a developer role," both of which were inaccurate framings in an earlier draft. |
+
+**Running total: 2 + 9 + 2 + 5 + 14 = 32.**
 
 ## God_class correlation verdict
 

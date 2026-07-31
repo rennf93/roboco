@@ -84,16 +84,21 @@ rules:
     level: warn
   # A handful of unavoidable framework suppressions are auto-allowed
   # (TC001-003, pydantic prop-decorator). The 2026-07 suppression audit
-  # resolved every other inline noqa/type:ignore in roboco/ + panel/: one
-  # was fixed at source (orchestrator.py's magic-number noqa, hoisted to a
-  # module constant), and the two structurally-unavoidable ones now carry
-  # accurate waivers below (prompter_live.py's route-symmetry param,
-  # lifecycle.py's circular-import E402). With nothing left unwaived, this
-  # promotes to block (matching conventions/models.py's default) so a new
-  # suppression can't slip in silently — see
+  # resolved every other inline noqa/type:ignore in roboco/ + panel/: two
+  # were fixed at source (orchestrator.py's magic-number noqa, hoisted to a
+  # module constant, and panel/src/components/journals/journals-view.tsx's
+  # eslint-disable, replaced by a useRef mount-guard), and the two
+  # structurally-unavoidable ones now carry accurate waivers below
+  # (prompter_live.py's route-symmetry param, lifecycle.py's circular-import
+  # E402). roboco/ and panel/ are clean, but tests/ still carries 89
+  # unwaived noqa/type:ignore markers across 35 files that this audit never
+  # scoped in and the validator does not exclude — so this rule stays warn
+  # until that backlog is cleared or the validator gains a tests/ exclusion;
+  # promoting to block today would hard-fail the gate on unrelated diffs
+  # touching any of those 35 files. See
   # docs/backend/lint-suppression-reconciliation.md for the full audit.
   no_lint_suppressions:
-    level: block
+    level: warn
   # RoboCo routes deliberately call db.commit() (get_db auto-commit is unreliable
   # under BaseHTTPMiddleware); explicit commits no longer count as data access,
   # so this stays advisory for the few routes that still read/write directly.
