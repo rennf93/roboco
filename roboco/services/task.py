@@ -107,15 +107,26 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
     # claim() returns None -> INVALID_STATE -> the PM respawn-loops on its own
     # rejected root, unable to plan or idle it. Parity is locked by
     # tests/unit/services/test_pm_claim_needs_revision.py.
+    #
+    # AWAITING_PM_REVIEW is deliberately absent: granting it here once let a
+    # respawned PM's i_will_plan legally re-claim its own review-queue task,
+    # resetting it to in_progress and re-running submit_up -> pr_pass ->
+    # awaiting_pm_review forever. lifecycle.CLAIM_RULES agrees, and unlike the
+    # NEEDS_REVISION parity above (spec ⊆ runtime only, via
+    # test_runtime_pm_claim_mapping_covers_spec_claim_rules), this exact
+    # per-PM-role SET is pinned bidirectionally against spec.CLAIM_RULES by
+    # test_claim_rules_and_role_statuses_are_identical — re-adding
+    # AWAITING_PM_REVIEW here alone (without touching the spec) fails that
+    # test instead of silently reopening the loop. The choreographer's
+    # _handle_pm_reentry now steers a re-entering PM straight to
+    # complete/request_changes instead, with no claim involved.
     "cell_pm": {
         TaskStatus.PENDING,
         TaskStatus.NEEDS_REVISION,
-        TaskStatus.AWAITING_PM_REVIEW,
     },
     "main_pm": {
         TaskStatus.PENDING,
         TaskStatus.NEEDS_REVISION,
-        TaskStatus.AWAITING_PM_REVIEW,
     },
 }
 
@@ -3741,11 +3752,18 @@ class TaskService(BaseService):
         if task.assigned_to and str(task.assigned_to) != str(agent.id):
             markers.set_original_developer(task, task.assigned_to)
 
+    # Consulted only inside _finalize_claim (both its target-status write and
+    # its branch-failure rollback's reversal-audit check), reached only via
+    # claim() -> _validate_claim_preconditions -> _get_valid_claim_statuses,
+    # which already screens the pre-claim status against _ROLE_CLAIM_STATUSES
+    # per role. AWAITING_PM_REVIEW is deliberately absent: no role's
+    # _ROLE_CLAIM_STATUSES grants it anymore (the i_will_plan re-claim loop
+    # fix), so _finalize_claim can never run with that pre-claim status —
+    # listing it here would be dead weight, not an independent gate.
     _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
         TaskStatus.PENDING,
         TaskStatus.AWAITING_QA,
         TaskStatus.AWAITING_DOCUMENTATION,
-        TaskStatus.AWAITING_PM_REVIEW,
     }
 
     async def _claim_blocked_by_dependencies(self, task: TaskTable) -> bool:

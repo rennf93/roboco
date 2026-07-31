@@ -92,8 +92,14 @@ _LEGACY_OPERATIONAL_EDGES: dict[Status, frozenset[Status]] = {
     Status.VERIFYING: frozenset({Status.NEEDS_REVISION, Status.PENDING}),
     # QA can park a task as blocked while waiting on dev clarification.
     Status.AWAITING_QA: frozenset({Status.BLOCKED}),
-    # PM claim + PM reject path on review queue.
-    Status.AWAITING_PM_REVIEW: frozenset({Status.CLAIMED, Status.NEEDS_REVISION}),
+    # PM reject path on review queue. No CLAIMED edge here (removed): a PM
+    # claiming its own awaiting_pm_review task used to legally reset it to
+    # in_progress via i_will_plan's composed claim, looping submit_up ->
+    # pr_pass -> awaiting_pm_review forever. lifecycle.CLAIM_RULES /
+    # _ROLE_CLAIM_STATUSES close the edge upstream of this legacy view; the
+    # choreographer's _handle_pm_reentry now steers a re-entering PM to
+    # complete/request_changes instead.
+    Status.AWAITING_PM_REVIEW: frozenset({Status.NEEDS_REVISION}),
     # Re-entry from revision back into active dev work (without re-claim), or
     # voluntary unclaim back to the pool (TaskService.unclaim_for_agent) — a
     # dev sent back for revision otherwise had no legal exit but in_progress.
@@ -108,13 +114,6 @@ _LEGACY_ROLE_GATES: dict[tuple[Status, Status], tuple[str, ...]] = {
     (Status.IN_PROGRESS, Status.NEEDS_REVISION): ("qa",),
     # PM completing their own work.
     (Status.IN_PROGRESS, Status.COMPLETED): (
-        "cell_pm",
-        "head_marketing",
-        "main_pm",
-        "product_owner",
-    ),
-    # PM claim of review queue.
-    (Status.AWAITING_PM_REVIEW, Status.CLAIMED): (
         "cell_pm",
         "head_marketing",
         "main_pm",
