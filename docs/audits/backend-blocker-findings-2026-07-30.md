@@ -37,13 +37,16 @@ check"), owned by be-dev-2, currently `awaiting_qa`.
 Once 261e7585 lands and CI on PR #718 goes green, the next step splits in two:
 be-pm drives task a9a030d8's resubmit and dispatch; the backend PR reviewer
 (be-pr-reviewer) runs the verifying `pr_pass` on PR #718 to close finding
-53ce191d, since `pr_pass` is a PR-reviewer verb, not a Cell PM one — be-pm DMed
-be-pr-reviewer on 2026-07-31 with the PR #718 / finding 53ce191d hand-off,
-contingent on task 261e7585 clearing the CI flake.
+53ce191d, since `pr_pass` is a PR-reviewer verb, not a Cell PM one. This
+hand-off is real and auditable, not just asserted: be-pm DMed be-pr-reviewer
+on 2026-07-31 naming PR #718, finding 53ce191d, and dependency task 261e7585
+(see task `4e9facf0`'s journal, entry dated 2026-07-31). Task 261e7585 is
+currently `needs_revision` (owned by be-dev-1) — be-pr-reviewer cannot claim
+the verifying `pr_pass` until 261e7585 lands and PR #718's CI goes green.
 
 ## Lifecycle-wiring gap found during triage
 
-`be-qa` reported `claim_review()` timing out 5 times in a row on task `0d515123`, blocking a QA verification pass on acceptance criteria already marked addressed. This matches backlog task `62845be1` ("Fix claim_review/evidence 120s timeout"), which as of 2026-07-31 12:48 UTC is assigned to be-doc and in `awaiting_documentation` — no longer unassigned.
+`be-qa` reported `claim_review()` timing out 5 times in a row on task `0d515123`, blocking a QA verification pass on acceptance criteria already marked addressed. This matches backlog task `62845be1` ("Fix claim_review/evidence 120s timeout"), which as of 2026-07-31 is `completed` — merged via PR #756 ("Evidence-Assembly Timeout Fix"). No further prioritization is needed on it.
 
 Verdict: the mark_addressed/mark_verified lifecycle is stalling in backend's cycle —
 findings get resolved but the verifying pass cannot always be claimed (claim_review
