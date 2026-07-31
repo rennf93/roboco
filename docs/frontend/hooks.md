@@ -139,9 +139,9 @@ export function TaskDetail({ taskId }: { taskId: string | undefined }) {
 
 No manual guard is needed before calling the hook — the `enabled: !!taskId` guard is built in and prevents wasted API calls and race conditions.
 
-## Frontend lint-suppression audit
+## Mount-only effect audit
 
-**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Sentinel's `no_lint_suppressions` hygiene scan originally flagged 32 suppressions company-wide; the other ~24, mostly backend Python-level (`# noqa` / `# type: ignore`), are tracked separately in backend's full reconciliation: [`docs/backend/lint-suppression-reconciliation.md`](../backend/lint-suppression-reconciliation.md).
+**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Backend's [`docs/backend/lint-suppression-reconciliation.md`](../backend/lint-suppression-reconciliation.md) is the canonical 32-item reconciliation (2 waived + 9 framework-exempt + 2 fixed-at-source + 19 already-resolved) covering every suppression Sentinel's `no_lint_suppressions` hygiene scan originally flagged company-wide; this single frontend `eslint-disable` is already accounted for there as item 12, and this section is the detailed narrative writeup for that one item.
 
 A direct grep of `panel/` for `eslint-disable`, `@ts-ignore`, and `@ts-expect-error` (excluding `node_modules`) historically found exactly **one** frontend suppression, documented below. It was fixed at the source in a later round (see disposition below); re-running the same grep against `panel/` today returns zero hits.
 
