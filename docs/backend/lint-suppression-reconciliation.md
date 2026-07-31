@@ -43,7 +43,7 @@ surface" dispositions this reconciliation is explicitly allowed to use.
 | # | Site | Code | Disposition |
 |---|------|------|-------------|
 | 1 | `roboco/api/routes/prompter_live.py:242` | `ARG001` (unused `session_id`) | **Waived** — `preview_live_batch`'s `session_id` is unused (the endpoint is a pure precompute); FastAPI only binds path params a handler declares, so dropping it would not break routing. Kept for route symmetry with every sibling `/live/{session_id}/*` handler in the file. `.roboco/conventions.yml`'s waiver reason was corrected by this task (it previously and incorrectly claimed dropping the param "breaks routing"). |
-| 2 | `roboco/foundation/policy/lifecycle.py:2091` | `E402` (import not at top) | **Waived** — `_run_all_lifecycle_validators`'s import sits below other module code deliberately: `roboco.foundation.__init__` eagerly imports `_validate`, and importing `_validate_lifecycle` at the top of this file would create a real circular import. Genuine constraint, unchanged by this task. |
+| 2 | `roboco/foundation/policy/lifecycle.py` (the `from roboco.foundation._validate_lifecycle import (` line) | `E402` (import not at top) | **Waived** — `_run_all_lifecycle_validators`'s import sits below other module code deliberately: `roboco.foundation.__init__` eagerly imports `_validate`, and importing `_validate_lifecycle` at the top of this file would create a real circular import. Genuine constraint, unchanged by this task. |
 
 ### Still present, framework-exempt by standing policy (9)
 

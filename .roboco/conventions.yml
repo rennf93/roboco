@@ -90,12 +90,12 @@ rules:
   # eslint-disable, replaced by a useRef mount-guard), and the two
   # structurally-unavoidable ones now carry accurate waivers below
   # (prompter_live.py's route-symmetry param, lifecycle.py's circular-import
-  # E402). roboco/ and panel/ are clean, but tests/ still carries 89
-  # unwaived noqa/type:ignore markers across 35 files that this audit never
+  # E402). roboco/ and panel/ are clean, but tests/ still carries ~90
+  # unwaived noqa/type:ignore markers across ~36 files that this audit never
   # scoped in and the validator does not exclude — so this rule stays warn
   # until that backlog is cleared or the validator gains a tests/ exclusion;
   # promoting to block today would hard-fail the gate on unrelated diffs
-  # touching any of those 35 files. See
+  # touching any of those files. See
   # docs/backend/lint-suppression-reconciliation.md for the full audit.
   no_lint_suppressions:
     level: warn
