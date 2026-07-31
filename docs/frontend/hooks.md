@@ -139,11 +139,15 @@ export function TaskDetail({ taskId }: { taskId: string | undefined }) {
 
 No manual guard is needed before calling the hook — the `enabled: !!taskId` guard is built in and prevents wasted API calls and race conditions.
 
-## Mount-only effect audit: eslint-disable in `journals-view.tsx`
+## Mount-only effect audit
+
+**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Backend's [`docs/backend/lint-suppression-reconciliation.md`](../backend/lint-suppression-reconciliation.md) is the canonical 32-item reconciliation (2 waived + 9 framework-exempt + 2 fixed-at-source + 19 already-resolved) covering every suppression Sentinel's `no_lint_suppressions` hygiene scan originally flagged company-wide; this single frontend `eslint-disable` is already accounted for there as item 12, and this section is the detailed narrative writeup for that one item.
+
+A direct grep of `panel/` for `eslint-disable`, `@ts-ignore`, and `@ts-expect-error` (excluding `node_modules`) historically found exactly **one** frontend suppression, documented below. It was fixed at the source in a later round (see disposition below); re-running the same grep against `panel/` today returns zero hits.
+
+### `eslint-disable` formerly in `journals-view.tsx`, now removed — fixed at the source, no waiver needed
 
 Sentinel's `no_lint_suppressions` hygiene scan flagged `// eslint-disable-next-line react-hooks/exhaustive-deps` guarding the mount-only localStorage-restore effect in `JournalsViewContent` (`panel/src/components/journals/journals-view.tsx`). That effect restores the `agent`/`type`/`task` filters saved from a prior visit into the URL, but only on a fresh `/agents?tab=journals` visit that carries no query params yet — it must run exactly once per mount, never again, or it would clobber a later intentional "clear filters" action with stale saved state.
-
-### Audit result: fixed at the source, no waiver needed
 
 The suppression was removed by replacing the empty `[]` dependency array with a `useRef` mount-guard:
 
