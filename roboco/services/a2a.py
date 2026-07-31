@@ -1344,7 +1344,109 @@ class A2AService:
             model, task_id, from_agent, to_agent, skill
         )
         await self._materialize_vault_note(model, conv, from_agent, to_agent)
+        if from_agent == "ceo":
+            await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
         return model
+
+    async def _agent_id_for_slug(self, slug: str) -> UUID | None:
+        """DB-resolved slug -> id (unlike ``AGENT_UUIDS``, this sees rows
+        seeded outside the static identity map — e.g. test fixtures)."""
+        result = await self.session.execute(
+            select(AgentTable.id).where(AgentTable.slug == slug)
+        )
+        return result.scalar_one_or_none()
+
+    async def _has_pending_wake_notification(self, agent_id: UUID) -> bool:
+        from roboco.db.tables import NotificationTable
+        from roboco.models.base import NotificationType
+
+        result = await self.session.execute(
+            select(NotificationTable.id)
+            .where(
+                NotificationTable.type == NotificationType.A2A_REQUEST,
+                NotificationTable.to_agents.contains([agent_id]),
+                ~NotificationTable.acked_by.contains([agent_id]),
+            )
+            .limit(1)
+        )
+        return result.first() is not None
+
+    async def _maybe_wake_ceo_recipient(
+        self, from_agent: str, to_agent: str, task_id: str | None
+    ) -> None:
+        """Best-effort: wake an offline/parked recipient of a CEO-authored
+        DM via the ``a2a_request`` notification dispatch path
+        (``_dispatch_a2a_work`` polls ack-required rows to revive a parked
+        agent) — a same-cell agent ``dm()`` never triggers this, since the
+        CEO is the sole asymmetric A2A initiator (see CLAUDE.md's
+        Communication Model). No-ops for a no-comms-surface recipient
+        (defense in depth — conversation creation already refuses those) and
+        dedups while an unacked wake notification for the recipient is still
+        pending, so a second CEO message doesn't stack a duplicate. Never
+        raises into the send path.
+        """
+        try:
+            from roboco.agents_config import get_agent_role
+            from roboco.foundation.policy.communications import NO_COMMS_ROLES
+            from roboco.models.base import NotificationPriority
+            from roboco.services.notification import NotificationService
+
+            if get_agent_role(to_agent) in NO_COMMS_ROLES:
+                return
+            agent_id = await self._agent_id_for_slug(to_agent)
+            if agent_id is not None and await self._has_pending_wake_notification(
+                agent_id
+            ):
+                return
+            await NotificationService().send_a2a_notification(
+                task_id,
+                a2a_context={
+                    "from_agent": from_agent,
+                    "to_agent": to_agent,
+                    "skill": "general",
+                    "message": (
+                        "The CEO sent you a direct message — check your A2A inbox."
+                    ),
+                    "priority": NotificationPriority.HIGH,
+                },
+                requires_ack=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "a2a: CEO-wake notification failed", to_agent=to_agent, error=str(exc)
+            )
+
+    async def _ack_pending_wake_notifications(self, agent_slug: str) -> None:
+        """Ack any still-open wake notification(s) for ``agent_slug`` once
+        it actually drains its A2A inbox (``get_unread_messages``) —
+        otherwise a woken-then-responsive agent's wake row lingers unacked,
+        permanently suppressing the dedup check in
+        ``_maybe_wake_ceo_recipient`` and driving futile re-escalation.
+        Best-effort: never raises into the read path.
+        """
+        try:
+            agent_id = await self._agent_id_for_slug(agent_slug)
+            if agent_id is None:
+                return
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import NotificationType
+
+            result = await self.session.execute(
+                select(NotificationTable).where(
+                    NotificationTable.type == NotificationType.A2A_REQUEST,
+                    NotificationTable.to_agents.contains([agent_id]),
+                    ~NotificationTable.acked_by.contains([agent_id]),
+                )
+            )
+            for notification in result.scalars().all():
+                notification.acked_by = [*notification.acked_by, agent_id]
+            await self.session.flush()
+        except Exception as exc:
+            logger.warning(
+                "a2a: ack pending wake notifications failed",
+                agent_slug=agent_slug,
+                error=str(exc),
+            )
 
     @staticmethod
     async def _materialize_vault_note(
@@ -1616,6 +1718,8 @@ class A2AService:
         for cid in {cast("UUID", m.conversation_id) for m in msgs}:
             await self._reset_unread_counter(cid, slug)
         await self.session.flush()
+
+        await self._ack_pending_wake_notifications(slug)
 
         return [
             {
@@ -1933,6 +2037,7 @@ class A2AService:
         model = self._msg_to_model(msg)
         task_id = str(conv.task_id) if conv.task_id else None
         await self._publish_a2a_message_sent(model, task_id, "ceo", to_agent, skill)
+        await self._maybe_wake_ceo_recipient("ceo", to_agent, task_id)
         return model
 
     @staticmethod

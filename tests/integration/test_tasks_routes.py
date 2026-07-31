@@ -291,6 +291,52 @@ async def test_update_task(task_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_task_budget_usd_zero_is_rejected(task_client: dict) -> None:
+    """``budget_usd=0`` would silently block every claim on the task
+    immediately (#654) — the schema's ``gt=0`` constraint rejects it (and
+    every negative value) with 422 instead of accepting a self-defeating
+    cap."""
+    client = task_client["client"]
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"budget_usd": 0},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_update_task_budget_usd_negative_is_rejected(task_client: dict) -> None:
+    client = task_client["client"]
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"budget_usd": -5},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_update_task_budget_usd_positive_is_accepted(task_client: dict) -> None:
+    _as_ceo(task_client)
+    client = task_client["client"]
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    expected_budget = 25.5
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"budget_usd": expected_budget},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["budget_usd"] == expected_budget
+
+
+@pytest.mark.asyncio
 async def test_update_task_status_override_recovers_blocked(task_client: dict) -> None:
     """A privileged PATCH with ``status`` + ``force`` is applied as an audited
     override, so an operator can recover a task wedged in ``blocked`` (which

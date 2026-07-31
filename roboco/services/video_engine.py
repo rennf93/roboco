@@ -29,6 +29,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
+from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable, HeartbeatMutex
 from roboco.services.project import get_project_service
 from roboco.services.task import (
     VIDEO_POST_SOURCE,
@@ -50,10 +51,36 @@ _AUTHORING_ACCEPTANCE_CRITERIA = [
     "Captions within platform limits",
     "Composition follows motion/README.md's design bar and uses the "
     "panel-demo kit register where the occasion shows the product",
+    "request_render's rendered preview frames are read and verified before "
+    "marking done — the source looking right is not the same as the "
+    "rendered artifact looking right",
 ]
 _POST_ACCEPTANCE_CRITERIA = ["CEO approves or rejects the draft"]
 
+# Delegation detail-fidelity (2026-07-16): an enumerable feature list named
+# in the brief becomes its own gate-checkable AC, so a dev shipping fewer
+# scenes than the brief named is caught by QA's per-AC stamp instead of the
+# CEO's eyeball. A re-author with no highlights instead gets a criterion
+# tying the rendered cut back to the CEO's own rejection feedback.
+_SCENE_AC_PREFIX = "Every brief-named feature appears as its own fully readable scene: "
+_FEEDBACK_AC = (
+    "Every point in the CEO rejection feedback is visibly addressed in the rendered cut"
+)
+_AC_ITEM_CHAR_CAP = (
+    200  # mirrors foundation.policy.task_completeness._AC_MAX_ITEM_CHARS
+)
+
 _CHAT_TIMEOUT_SECONDS = 60.0
+
+# Per-occasion dedup lock — mutual exclusion for the dedup-check-then-create
+# sequence in open_video_task, since two genuinely concurrent callers (a
+# double-click on /video/request, or an on-demand call racing the release
+# hook) are not otherwise serialized by the orchestrator's own scheduling.
+# Short TTL: the guarded sequence is a handful of DB reads + one insert, not
+# a long upload — no heartbeat renew loop needed, just acquire/release.
+_OCCASION_LOCK_PREFIX = "roboco:video_occasion:"
+_OCCASION_LOCK_TTL_SECONDS = 30
+_OCCASION_LOCK_HEARTBEAT_SECONDS = 10.0
 
 # The whole CHANGELOG section for a release, not one bullet — capped so a
 # pathological entry can't blow up the task description.
@@ -65,7 +92,9 @@ _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
     "README.md. Build in the panel-demo register on motion/kit/ — extend "
     "compositions/panel-demo/ rather than starting from scratch or shipping "
-    "a text card."
+    "a text card. After building, call request_render and read every "
+    "returned frame before marking done — the composition's source looking "
+    "right is not the same as the rendered artifact looking right."
 )
 
 
@@ -114,30 +143,63 @@ def _first_changelog_bullet(changelog: str) -> str:
     return highlights[0] if highlights else ""
 
 
-def _fallback_release_script(version: str, changelog: str) -> str:
+def _scene_criterion(highlights: list[str]) -> str:
+    """The brief-named-features AC line, joined and capped to the AC item
+    char limit — a truncated tail becomes "(+N more)" rather than being
+    silently dropped."""
+    included: list[str] = []
+    for h in highlights:
+        candidate = _SCENE_AC_PREFIX + ", ".join([*included, h])
+        remaining_after = len(highlights) - len(included) - 1
+        suffix = f" (+{remaining_after} more)" if remaining_after > 0 else ""
+        if len(candidate) + len(suffix) > _AC_ITEM_CHAR_CAP:
+            break
+        included.append(h)
+    remaining = len(highlights) - len(included)
+    suffix = f" (+{remaining} more)" if remaining > 0 else ""
+    return (_SCENE_AC_PREFIX + ", ".join(included) + suffix)[:_AC_ITEM_CHAR_CAP]
+
+
+def _authoring_acceptance_criteria(
+    highlights: list[str] | None, *, feedback_fallback: bool = False
+) -> list[str]:
+    """The authoring task's AC list, plus one extra criterion when
+    ``highlights`` is non-empty (the scene criterion) or, for a re-author
+    with no highlights, the CEO-feedback criterion."""
+    acs = list(_AUTHORING_ACCEPTANCE_CRITERIA)
+    if highlights:
+        acs.append(_scene_criterion(highlights))
+    elif feedback_fallback:
+        acs.append(_FEEDBACK_AC)
+    return acs
+
+
+def _fallback_release_script(product_name: str, version: str, changelog: str) -> str:
     highlight = _first_changelog_bullet(changelog)
     lead = f": {highlight}" if highlight else ""
-    return f"RoboCo v{version} just shipped{lead}."
+    return f"{product_name} v{version} just shipped{lead}."
 
 
-def _release_video_prompt(version: str, changelog: str) -> str:
+def _release_video_prompt(product_name: str, version: str, changelog: str) -> str:
     return (
-        "You are RoboCo's marketing team, writing a short voiceover script "
-        "for a bespoke motion-graphics video announcing a release. Plain "
-        "text, 2-3 short sentences, energetic but factual — no invented "
-        "facts.\n\n"
-        f"Write the script for RoboCo v{version}, based on this CHANGELOG "
-        f"entry:\n{changelog[:1000]}\n"
+        f"You are {product_name}'s marketing team, writing a short voiceover "
+        "script for a bespoke motion-graphics video announcing a release. "
+        "Plain text, 2-3 short sentences, energetic but factual — no "
+        "invented facts.\n\n"
+        f"Write the script for {product_name} v{version}, based on this "
+        f"CHANGELOG entry:\n{changelog[:1000]}\n"
     )
 
 
-def _release_video_brief(version: str, changelog: str, highlights: list[str]) -> str:
+def _release_video_brief(
+    product_name: str, version: str, changelog: str, highlights: list[str]
+) -> str:
     """The structured release brief: the (capped) CHANGELOG section for this
     version plus its highlights list — replaces the old one-liner-as-
     description. The LLM script stays a separate ``script`` prop suggestion,
     never the whole brief."""
     section = changelog[:_CHANGELOG_BRIEF_CHARS].strip() or "(no changelog entry)"
-    parts = [f"RoboCo v{version} release notes:", section]
+    parts = [f"{product_name} v{version} release notes:", section]
     if highlights:
         bullets = "\n".join(f"- {h}" for h in highlights)
         parts.append(f"Highlights:\n{bullets}")
@@ -273,6 +335,49 @@ class VideoEngine(BaseService):
         """
         if not settings.video_engine_enabled:
             return None
+        mutex = HeartbeatMutex(
+            f"{_OCCASION_LOCK_PREFIX}{occasion}",
+            ttl_seconds=_OCCASION_LOCK_TTL_SECONDS,
+            heartbeat_seconds=_OCCASION_LOCK_HEARTBEAT_SECONDS,
+        )
+        try:
+            token = await mutex.acquire()
+        except HeartbeatLockUnavailable as exc:
+            self.log.warning(
+                "video-engine: occasion lock unavailable (redis down)",
+                occasion=occasion,
+                error=str(exc),
+            )
+            return None
+        if token is None:
+            return None  # another call already holds this occasion's lock
+        try:
+            return await self._open_video_task_after_dedup(
+                occasion=occasion,
+                script=script,
+                platforms=platforms,
+                brief=brief,
+                suggested_input_props=suggested_input_props,
+                project_id=project_id,
+            )
+        finally:
+            await mutex.release(token)
+
+    async def _open_video_task_after_dedup(
+        self,
+        *,
+        occasion: str,
+        script: str,
+        platforms: list[str],
+        brief: str,
+        suggested_input_props: dict[str, Any] | None,
+        project_id: UUID | None,
+    ) -> TaskTable | None:
+        """The dedup-check-then-create sequence, run while ``open_video_task``
+        holds the per-occasion lock — mutual exclusion has to wrap the WHOLE
+        sequence (not just the final insert), otherwise two genuinely
+        concurrent callers for the same occasion can both pass the dedup
+        check before either commits."""
         task_svc = get_task_service(self.session)
         open_tasks = await task_svc.list_open_video_posts()
         for existing in open_tasks:
@@ -290,21 +395,54 @@ class VideoEngine(BaseService):
         )
         if project is None:
             return None
+        assignee = self._select_ux_dev(open_tasks)
+        highlights = (suggested_input_props or {}).get("highlights")
+        return await self._open_video_task_locked(
+            occasion=occasion,
+            script=script,
+            platforms=platforms,
+            brief=brief,
+            suggested_input_props=suggested_input_props,
+            project=project,
+            assignee=assignee,
+            highlights=highlights,
+        )
+
+    async def _open_video_task_locked(
+        self,
+        *,
+        occasion: str,
+        script: str,
+        platforms: list[str],
+        brief: str,
+        suggested_input_props: dict[str, Any] | None,
+        project: ProjectTable,
+        assignee: UUID,
+        highlights: list[str] | None = None,
+        feedback_fallback: bool = False,
+    ) -> TaskTable | None:
+        """Savepoint-isolated authoring-task insert — the shared core of
+        ``open_video_task`` (fresh occasion) and ``reauthor_from_rejection``
+        (revise-in-place after a CEO reject), so a DBAPI error here (FK,
+        deadlock, dropped connection) rolls back ONLY this insert, never
+        poisons the caller's shared session — whose next commit is the
+        caller's own finalize/request boundary, which must not inherit an
+        error state.
+        """
         from sqlalchemy.exc import SQLAlchemyError
 
-        assignee = self._select_ux_dev(open_tasks)
+        task_svc = get_task_service(self.session)
         enriched_brief = await self._enrich_brief(brief)
-        # Savepoint-isolate the insert: a DBAPI error here (FK, deadlock,
-        # dropped connection) must roll back ONLY this insert, never poison the
-        # shared session — whose next commit is the caller's release-publish
-        # finalize / request boundary, which must not inherit an error state.
+        acceptance_criteria = _authoring_acceptance_criteria(
+            highlights, feedback_fallback=feedback_fallback
+        )
         try:
             async with self.session.begin_nested():
                 task = await task_svc.create(
                     TaskCreateRequest(
                         title=f"Video: {occasion}",
                         description=enriched_brief,
-                        acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
+                        acceptance_criteria=acceptance_criteria,
                         team=Team.UX_UI,
                         assigned_to=assignee,
                         created_by=_foundation.AGENTS["system"].uuid,
@@ -349,7 +487,7 @@ class VideoEngine(BaseService):
     # ---- release trigger (event-driven hook) -------------------------------
 
     async def draft_release_video(
-        self, *, version: str, changelog: str
+        self, *, version: str, changelog: str, project_id: UUID | None = None
     ) -> TaskTable | None:
         """Originate ONE UX/UI video-authoring task for a release announcement,
         or None (no-op).
@@ -358,7 +496,12 @@ class VideoEngine(BaseService):
         dedup/open-cap/project checks in ``open_video_task`` cover the rest.
         Called from ``ReleaseProposalService.approve()``'s publish success
         branch, right beside the X-post draft hook — never invoked by a loop
-        itself.
+        itself. ``project_id`` scopes the draft to the released project (and
+        brands the script/brief off that project's own name via
+        ``CompanyGoalsService.resolve_product_name`` — falling back to the
+        charter's ``company_name``, then the "RoboCo" literal); omitted, it
+        falls back to the fixed RoboCo project like every other
+        ``open_video_task`` caller.
 
         The brief is the structured changelog block (built independent of
         the local model, so it stands even when the model is down); the
@@ -367,27 +510,40 @@ class VideoEngine(BaseService):
         """
         if not (settings.video_engine_enabled and settings.video_on_release):
             return None
-        script = await self._draft_release_script(version, changelog)
+        project = (
+            await get_project_service(self.session).get(project_id)
+            if project_id is not None
+            else None
+        )
+        product_name = await get_company_goals_service(
+            self.session
+        ).resolve_product_name(project)
+        script = await self._draft_release_script(product_name, version, changelog)
         highlights = _changelog_highlights(changelog)
-        brief = _release_video_brief(version, changelog, highlights)
+        brief = _release_video_brief(product_name, version, changelog, highlights)
         return await self.open_video_task(
             occasion=f"release {version}",
             script=script,
             platforms=["x", "tiktok"],
             brief=brief,
             suggested_input_props={"version": version, "highlights": highlights},
+            project_id=project_id,
         )
 
-    async def _draft_release_script(self, version: str, changelog: str) -> str:
+    async def _draft_release_script(
+        self, product_name: str, version: str, changelog: str
+    ) -> str:
         try:
-            draft = await _chat(_release_video_prompt(version, changelog))
+            draft = await _chat(_release_video_prompt(product_name, version, changelog))
         except Exception as exc:
             self.log.warning(
                 "video-engine: local-model script draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
-        return (draft or "").strip() or _fallback_release_script(version, changelog)
+        return (draft or "").strip() or _fallback_release_script(
+            product_name, version, changelog
+        )
 
     # ---- held draft (materialized once a render pass produces MP4s) -------
 
@@ -447,7 +603,86 @@ class VideoEngine(BaseService):
             "video-engine: video post drafted (held for CEO)",
             source_task_id=str(source_task.id),
         )
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            await get_notification_delivery_service(
+                self.session
+            ).notify_ceo_of_queue_item(
+                kind="video", id8=str(task.id)[:8], title=occasion[:100]
+            )
+        except Exception as exc:
+            self.log.warning(
+                "video-engine: telegram notify failed (best-effort)", error=str(exc)
+            )
         return task
+
+    # ---- re-author (CEO-rejection retry) -----------------------------------
+
+    async def _resolve_reauthor_project(
+        self, video_post_task: TaskTable
+    ) -> ProjectTable | None:
+        """The project to re-author against for a rejected video-post draft:
+        the SAME project the original authoring task ran on (the draft's own
+        ``project_id``), still gated by that project's ``video_engine_enabled``
+        opt-in — a CEO reject must never author against a project that has
+        since opted out."""
+        project_id = cast("UUID | None", video_post_task.project_id)
+        if project_id is None:
+            return None
+        project = await get_project_service(self.session).get(project_id)
+        if project is None or not getattr(project, "video_engine_enabled", False):
+            return None
+        return project
+
+    async def reauthor_from_rejection(
+        self, video_post_task: TaskTable, reason: str
+    ) -> TaskTable | None:
+        """Open a fresh authoring task carrying the CEO's verbatim rejection
+        feedback plus a revise-in-place pointer at the existing composition,
+        or None (no-op).
+
+        Called (best-effort) from ``VideoPostService.reject`` — must never
+        raise into that path. No-ops when the flag is off, the project isn't
+        resolvable/still opted in, or the rejected draft never reached a
+        real composition (no ``composition_id`` on its marker — nothing to
+        revise in place).
+        """
+        if not settings.video_engine_enabled:
+            return None
+        draft = markers.get_video_draft(video_post_task) or {}
+        composition_id = draft.get("composition_id")
+        if not composition_id:
+            return None
+        project = await self._resolve_reauthor_project(video_post_task)
+        if project is None:
+            return None
+        occasion = draft.get("occasion") or video_post_task.title
+        brief = (
+            f"{draft.get('brief') or draft.get('script') or occasion}\n\n"
+            "The CEO rejected the prior rendered draft with this feedback:\n"
+            f"{reason}\n\n"
+            f"Revise IN PLACE at motion/compositions/{composition_id}/ — do "
+            "not start a new composition id unless the feedback requires a "
+            "wholly different concept."
+        )
+        task_svc = get_task_service(self.session)
+        open_tasks = await task_svc.list_open_video_posts()
+        assignee = self._select_ux_dev(open_tasks)
+        highlights = (draft.get("input_props") or {}).get("highlights")
+        return await self._open_video_task_locked(
+            occasion=occasion,
+            script=str(draft.get("script") or ""),
+            platforms=list(draft.get("platforms") or []),
+            brief=brief,
+            suggested_input_props=draft.get("suggested_input_props"),
+            project=project,
+            assignee=assignee,
+            highlights=highlights,
+            feedback_fallback=True,
+        )
 
     # ---- re-render (CEO-triggered retry) -----------------------------------
 

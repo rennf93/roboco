@@ -412,6 +412,30 @@ def _ceo_reject_finding_texts(reason: str) -> tuple[str, str | None]:
     return actual, evidence
 
 
+def _reconcile_ac_ids(
+    *, old_criteria: list[str], old_ids: list[str], new_criteria: list[str]
+) -> list[str]:
+    """Map an edited ``new_criteria`` list to stable ids: unchanged text
+    keeps its old id (matched in call order, so duplicate text reuses ids
+    front-to-back rather than collapsing onto one), reworded/new text mints
+    a fresh id, and a dropped criterion's id simply disappears with it.
+
+    Used when a task's ``acceptance_criteria`` is edited post-creation, so
+    a child's ``covers_parent_criteria`` reference (by id) survives a minor
+    rewording instead of the ref silently going stale.
+    """
+    from collections import deque
+
+    pools: dict[str, deque[str]] = {}
+    for criterion_text, old_id in zip(old_criteria, old_ids, strict=False):
+        pools.setdefault(criterion_text, deque()).append(old_id)
+    reconciled: list[str] = []
+    for criterion_text in new_criteria:
+        pool = pools.get(criterion_text)
+        reconciled.append(pool.popleft() if pool else uuid4().hex)
+    return reconciled
+
+
 def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
     """Combine a PR-review summary with issue bullets into one body string."""
     body = (summary or "").strip()
@@ -1815,6 +1839,110 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def _list_open_by_source(self, source: str) -> list[TaskTable]:
+        """Non-terminal tasks for ``source`` — the shared one-open-cycle
+        dedup basis every Board Program's ``run_cycle`` consults. Ordered
+        oldest-first, mirroring ``list_open_roadmap_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == source,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
+        """Non-terminal Pest Control exploration tasks (one-open-cycle dedup
+        + ``propose_bug_hunt``'s task lookup)."""
+        return await self._list_open_by_source(PEST_CONTROL_SOURCE)
+
+    async def list_open_spackle_cycles(self) -> list[TaskTable]:
+        """Non-terminal Spackle exploration tasks (one-open-cycle dedup +
+        ``propose_gap_fill``'s task lookup)."""
+        return await self._list_open_by_source(SPACKLE_SOURCE)
+
+    async def list_open_scales_cycles(self) -> list[TaskTable]:
+        """Non-terminal Scales exploration tasks (one-open-cycle dedup +
+        ``propose_rebalance``'s task lookup)."""
+        return await self._list_open_by_source(SCALES_SOURCE)
+
+    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
+        """Non-terminal Dogfood exploration tasks (one-open-cycle dedup +
+        ``propose_friction_fixes``'s task lookup)."""
+        return await self._list_open_by_source(DOGFOOD_SOURCE)
+
+    async def list_open_periscope_cycles(self) -> list[TaskTable]:
+        """Non-terminal Periscope exploration tasks (one-open-cycle dedup +
+        ``propose_market_brief``'s task lookup)."""
+        return await self._list_open_by_source(PERISCOPE_SOURCE)
+
+    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
+        """Non-terminal Megaphone exploration tasks (one-open-cycle dedup +
+        ``propose_editorial_post``'s task lookup)."""
+        return await self._list_open_by_source(MEGAPHONE_SOURCE)
+
+    async def list_open_mirror_cycles(self) -> list[TaskTable]:
+        """Non-terminal Mirror exploration tasks (one-open-cycle dedup +
+        ``propose_messaging_fixes``'s task lookup)."""
+        return await self._list_open_by_source(MIRROR_SOURCE)
+
+    async def list_open_barfly_cycles(self) -> list[TaskTable]:
+        """Non-terminal Barfly exploration tasks (one-open-cycle dedup +
+        ``propose_conversation_replies``'s task lookup)."""
+        return await self._list_open_by_source(BARFLY_SOURCE)
+
+    async def list_open_war_room_cycles(self) -> list[TaskTable]:
+        """Non-terminal War Room exploration tasks (one-open-cycle dedup +
+        ``propose_campaign``'s task lookup)."""
+        return await self._list_open_by_source(WAR_ROOM_SOURCE)
+
+    async def list_open_coroner_cycles(self) -> list[TaskTable]:
+        """Non-terminal Coroner exploration tasks (one-open-cycle dedup +
+        ``propose_postmortem``'s task lookup)."""
+        return await self._list_open_by_source(CORONER_SOURCE)
+
+    async def list_open_librarian_cycles(self) -> list[TaskTable]:
+        """Non-terminal Librarian exploration tasks (one-open-cycle dedup +
+        ``propose_playbook_drafts``'s task lookup)."""
+        return await self._list_open_by_source(LIBRARIAN_SOURCE)
+
+    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
+        """Non-terminal Sentinel exploration tasks (one-open-cycle dedup +
+        ``propose_quality_report``'s task lookup)."""
+        return await self._list_open_by_source(SENTINEL_SOURCE)
+
+    async def list_sentinel_reports(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on (completed) Sentinel exploration tasks, newest-first —
+        the panel's quality-reports list basis. Mirrors
+        ``list_video_post_history``'s acted-on filter."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_periscope_briefs(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on (completed) Periscope exploration tasks, newest-first —
+        the panel's market-briefs list basis, and the roadmap prompt's
+        ``latest_brief_context`` cross-role injection (``limit=1``)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def list_open_feature_explorations(self) -> list[TaskTable]:
         """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
         dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
@@ -3076,6 +3204,114 @@ class TaskService(BaseService):
             blocked_by=blocker,
         )
         return blocker
+
+    async def sequence_hold_reason(self, task: TaskTable) -> str | None:
+        """Public wrapper over ``_claim_blocked_by_sequence``: the same-
+        parent sibling blocking ``task``'s claim right now, or ``None``.
+
+        Used by the gateway's proactive ``_sequencing_claim_guard`` so a
+        sequence hold surfaces as a clean, named ``sequence_held`` envelope
+        BEFORE the composed claim verb runs, instead of ``claim()``'s bare
+        ``None`` return reaching the verb runner and being misdiagnosed as
+        a concurrent-transition race.
+        """
+        return await self._claim_blocked_by_sequence(task)
+
+    async def terminal_children_count(self, task_id: UUID) -> int:
+        """Count of ``task_id``'s direct children currently COMPLETED or
+        CANCELLED — the cheap per-round progress-fingerprint component the
+        escalate/unblock oscillation-trip guard uses (a PM coordination
+        root never commits itself; child completions are its real
+        progress signal)."""
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(TaskTable)
+            .where(
+                TaskTable.parent_task_id == task_id,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def task_spend_usd(self, task_id: UUID) -> float:
+        """This task's accumulated agent-spawn spend: summed closed-session
+        ``estimated_cost_usd`` plus live-priced open sessions (a DB-only
+        read off the token columns ``_sweep_token_snapshots`` keeps current
+        on the open ``agent_spawn_sessions`` row — no fresh SDK round-trip
+        needed). Used by the per-task budget sweep and the ``unblock``
+        budget re-check."""
+        from roboco.billing.pricing import calculate_cost
+        from roboco.db.tables import AgentSpawnSessionTable
+
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                    AgentSpawnSessionTable.model,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                ).where(AgentSpawnSessionTable.task_id == str(task_id))
+            )
+        ).all()
+        total = 0.0
+        for r in rows:
+            if r.estimated_cost_usd is not None:
+                total += r.estimated_cost_usd
+            else:
+                total += calculate_cost(
+                    model=r.model,
+                    tokens_input=r.tokens_input,
+                    tokens_output=r.tokens_output,
+                    tokens_cache_read=r.tokens_cache_read,
+                    tokens_cache_write=r.tokens_cache_write,
+                )
+        return total
+
+    async def project_month_spend_usd(self, project_id: UUID) -> float:
+        """This calendar month's summed agent-spawn spend across
+        ``project_id``'s tasks — the project-budget claim guard's spend-vs-
+        cap comparison, and the project response's ``monthly_spend_usd``.
+        Mirrors ``task_spend_usd``'s closed+live-open pricing per session."""
+        from roboco.billing.pricing import calculate_cost
+        from roboco.db.tables import AgentSpawnSessionTable
+
+        month_start = datetime.now(UTC).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        task_id_str = cast("Any", TaskTable.id).cast(String)
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                    AgentSpawnSessionTable.model,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                )
+                .select_from(AgentSpawnSessionTable)
+                .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
+                .where(
+                    TaskTable.project_id == project_id,
+                    AgentSpawnSessionTable.started_at >= month_start,
+                )
+            )
+        ).all()
+        total = 0.0
+        for r in rows:
+            if r.estimated_cost_usd is not None:
+                total += r.estimated_cost_usd
+            else:
+                total += calculate_cost(
+                    model=r.model,
+                    tokens_input=r.tokens_input,
+                    tokens_output=r.tokens_output,
+                    tokens_cache_read=r.tokens_cache_read,
+                    tokens_cache_write=r.tokens_cache_write,
+                )
+        return total
 
     async def _claim_blocked_by_sequencing(self, task: TaskTable) -> bool:
         """True when either sequencing guard blocks this PENDING claim.
@@ -9060,7 +9296,15 @@ class TaskService(BaseService):
         submit/supersede by construction.
         """
         parent = await self.get(task_id)
-        if not parent or not parent.acceptance_criteria_ids:
+        if not parent:
+            return None
+        if parent.acceptance_criteria:
+            # Legacy/drifted parent (real criteria text, but ids empty or
+            # mismatched — e.g. an update rewrote criteria without
+            # reconciling ids): self-heal in place so the coverage digest
+            # reports for real instead of staying permanently inert.
+            await self.self_heal_ac_ids(parent)
+        if not parent.acceptance_criteria_ids:
             return None
         result = await self.session.execute(
             select(TaskTable.status, TaskTable.parent_ac_refs).where(
@@ -9141,6 +9385,28 @@ class TaskService(BaseService):
         valid_ids = set(parent.acceptance_criteria_ids or [])
         valid_texts = set(parent.acceptance_criteria or [])
         return [r for r in refs if r not in valid_ids and r not in valid_texts]
+
+    async def self_heal_ac_ids(self, parent: TaskTable) -> None:
+        """Backfill/repair ``parent.acceptance_criteria_ids`` in place so it
+        is 1:1 with ``parent.acceptance_criteria``.
+
+        A legacy/drifted parent (created before stable per-criterion ids
+        existed, or edited since so the two lists' lengths diverged)
+        otherwise renders an unusable ``'<id>'`` placeholder in coverage-gap
+        hints (``hint_for_missing_ac_coverage``). Missing/blank slots get a
+        fresh ``uuid4().hex`` id, mirroring ``create``'s own id generation;
+        already-valid ids are left untouched. A no-op when already healed.
+        """
+        texts = parent.acceptance_criteria or []
+        ids = parent.acceptance_criteria_ids or []
+        if len(ids) == len(texts) and all(ids):
+            return
+        healed = [
+            ids[i] if i < len(ids) and ids[i] else uuid4().hex
+            for i in range(len(texts))
+        ]
+        parent.acceptance_criteria_ids = healed
+        await self.session.flush()
 
     async def add_parent_ac_refs(
         self, task_id: UUID, refs: list[str], declared_by: UUID | None = None

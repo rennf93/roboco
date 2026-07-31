@@ -265,15 +265,16 @@ async def test_request_video_opens_authoring_task(
     project = (
         await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
     ).scalar_one()
-    resp = await ceo_client.post(
-        "/api/video/request",
-        json={
-            "occasion": "CEO on-demand: launch teaser",
-            "brief": "A short teaser for the new dashboard",
-            "platforms": ["x", "tiktok"],
-            "project_id": str(project.id),
-        },
-    )
+    with _LOCKED[0], _LOCKED[1]:
+        resp = await ceo_client.post(
+            "/api/video/request",
+            json={
+                "occasion": "CEO on-demand: launch teaser",
+                "brief": "A short teaser for the new dashboard",
+                "platforms": ["x", "tiktok"],
+                "project_id": str(project.id),
+            },
+        )
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
     assert body["status"] == "opened"
@@ -396,12 +397,14 @@ async def test_request_video_not_opened_on_duplicate_occasion(
         "platforms": ["x"],
         "project_id": str(project.id),
     }
-    first = await ceo_client.post("/api/video/request", json=payload)
+    with _LOCKED[0], _LOCKED[1]:
+        first = await ceo_client.post("/api/video/request", json=payload)
     assert first.status_code == HTTPStatus.OK
     assert first.json()["status"] == "opened"
     task_id = first.json()["task_id"]
     try:
-        second = await ceo_client.post("/api/video/request", json=payload)
+        with _LOCKED[0], _LOCKED[1]:
+            second = await ceo_client.post("/api/video/request", json=payload)
         assert second.status_code == HTTPStatus.OK
         assert second.json()["status"] == "not_opened"
         assert second.json()["task_id"] is None
@@ -1181,6 +1184,20 @@ def test_resolve_preview_path_missing_file_is_none(tmp_path: Path) -> None:
     root = (tmp_path / "clone").resolve()
     root.mkdir()
     assert resolve_preview_path(root, "motion/nope.html") is None
+
+
+def test_resolve_preview_path_blocks_symlink_escape(tmp_path: Path) -> None:
+    """A symlink placed inside ``root`` that points outside it must not
+    serve the outside file — ``.resolve()`` follows the link before the
+    ``is_relative_to`` confinement check runs, so the escape target is
+    caught the same as a plain ``..`` traversal."""
+    root = (tmp_path / "clone").resolve()
+    root.mkdir()
+    outside = tmp_path / "secret.html"
+    outside.write_text("<html>secret</html>")
+    link = root / "escape.html"
+    link.symlink_to(outside)
+    assert resolve_preview_path(root, "escape.html") is None
 
 
 @pytest.mark.asyncio
