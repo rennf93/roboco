@@ -143,6 +143,13 @@ _SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 5.0
 # to whatever exit the monitor is now looking at, rather than mis-attributed.
 _EXPECTED_STOP_FRESH_SECONDS = 120.0
 _EXPECTED_STOP_MAX_ENTRIES = 200
+# _route_unassigned_pm_task's creator-skip guard: a PM that just created a task
+# is about to assign it one tool-call later, so racing in and claiming it for
+# the PM would hijack the delegation. That's only true for a few seconds —
+# past this grace the creator's session is long gone and the skip would hold
+# the task pending-unassigned forever. Generous enough to cover the PM's next
+# tool call; short enough that a genuinely abandoned task recovers fast.
+_CREATOR_ROUTE_GRACE_SECONDS = 600
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -14019,6 +14026,42 @@ Start now: evidence(task_id="{task_id}")
             )
             return False
 
+    def _creator_route_should_skip(
+        self, task: dict[str, Any], agent_id: str, routing: str
+    ) -> bool:
+        """The creator-skip guard for ``_route_unassigned_pm_task``.
+
+        A PM that just created this task is about to assign it (e.g. be-pm
+        creating a code subtask to hand to be-dev-1 one tool-call later);
+        racing in and claiming for the PM would hijack that delegation. True
+        only while the task is still within ``_CREATOR_ROUTE_GRACE_SECONDS``
+        of creation — past that the creator's session is long gone (it
+        exited without assigning), so this falls through (False) to normal
+        routing instead of skipping forever. Fails open on an
+        unparseable/missing ``created_at`` (treated as OLD) — routing is the
+        safe default, the skip is only an optimization.
+        """
+        created_by = task.get("created_by")
+        if not created_by or self._resolve_agent_slug(str(created_by)) != agent_id:
+            return False
+        age = self._get_task_age(task)
+        if age is not None and age.total_seconds() < _CREATOR_ROUTE_GRACE_SECONDS:
+            logger.info(
+                "Skipping auto-claim: routing target is the creator",
+                task_id=task.get("id"),
+                creator=agent_id,
+                routing=routing,
+            )
+            return True
+        logger.info(
+            "Creator-skip grace elapsed; routing task to its creator",
+            task_id=task.get("id"),
+            creator=agent_id,
+            routing=routing,
+            age_seconds=None if age is None else int(age.total_seconds()),
+        )
+        return False
+
     async def _route_unassigned_pm_task(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
@@ -14046,24 +14089,10 @@ Start now: evidence(task_id="{task_id}")
             await self._handle_board_assigned_task(task, agent_id)
             return
 
-        # Don't auto-claim back to the creator. A PM that just created this
-        # task is about to assign it (e.g. be-pm creating a code subtask to
-        # hand to be-dev-1 one tool-call later). Racing in and claiming for
-        # the PM hijacks the delegation — the PM ends up owning a code task
-        # it never intended to work on itself. Skip this tick and let the
-        # next dispatch pick it up once assigned_to is set, OR re-evaluate
-        # when we have a clearer signal the creator won't route it.
-        created_by = task.get("created_by")
-        if created_by:
-            creator_slug = self._resolve_agent_slug(str(created_by))
-            if creator_slug == agent_id:
-                logger.info(
-                    "Skipping auto-claim: routing target is the creator",
-                    task_id=task.get("id"),
-                    creator=creator_slug,
-                    routing=routing,
-                )
-                return
+        # Don't auto-claim back to the creator while the task is fresh — see
+        # _creator_route_should_skip.
+        if self._creator_route_should_skip(task, agent_id, routing):
+            return
 
         logger.info(
             "Routing task",
