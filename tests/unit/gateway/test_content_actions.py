@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -32,6 +34,7 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         git = AsyncMock()
         git.commit.return_value = {"sha": "abc12345"}
         git.diff.return_value = ""
+        git.diff_and_files.return_value = ("", [])
 
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
@@ -645,7 +648,10 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
     git_svc = AsyncMock()
-    git_svc.diff.return_value = "diff --git a/foo.py b/foo.py\n+added line"
+    git_svc.diff_and_files.return_value = (
+        "diff --git a/foo.py b/foo.py\n+added line",
+        ["foo.py"],
+    )
     workspace_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
@@ -659,7 +665,7 @@ async def test_evidence_valid_task_returns_ok_with_pr_diff() -> None:
     assert body["evidence"]["pr_number"] == pr_number
     assert "diff --git" in body["evidence"]["pr_diff_summary"]
     workspace_svc.fetch_branch_for_inspection.assert_awaited_once()
-    git_svc.diff.assert_awaited_once()
+    git_svc.diff_and_files.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -678,6 +684,97 @@ async def test_evidence_task_not_found_returns_not_found() -> None:
 
     assert body["error"] == "not_found"
     assert str(task_id) in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_evidence_returns_gateway_timeout_on_slow_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task #62845be1: a genuinely slow git diff/fetch trips the bounded
+    ``evidence_assembly_timeout_seconds`` guard and returns a structured
+    ``gateway_timeout`` envelope naming the slow component — not a bare
+    120s rollback of the outer verb."""
+    monkeypatch.setattr(settings, "evidence_assembly_timeout_seconds", 0.05)
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=None,
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        commits=["sha1"],
+        pr_number=1,
+        pr_url="https://github.com/org/repo/pull/1",
+        dev_notes="done",
+        acceptance_criteria_status=[],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task_obj
+
+    async def _slow_diff_and_files(**_kwargs: object) -> tuple[str, list[str]]:
+        await asyncio.sleep(1)
+        return "diff", ["f.py"]
+
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.side_effect = _slow_diff_and_files
+    workspace_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, git=git_svc, workspace=workspace_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    body = env.as_dict()
+
+    assert body["error"] == "gateway_timeout"
+    assert "git" in body["message"].lower()
+    assert "0" in body["message"]  # names the ~0.05s bounded timeout
+
+
+@pytest.mark.asyncio
+async def test_evidence_returns_gateway_timeout_on_slow_db_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bounded timeout also fires when the slow segment is a DB read
+    rather than git — proving the guard covers the whole gathered batch,
+    not just the git branch."""
+    monkeypatch.setattr(settings, "evidence_assembly_timeout_seconds", 0.05)
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="awaiting_qa",
+        assigned_to=None,
+        branch_name="feature/backend/abc",
+        work_session_id=uuid4(),
+        commits=["sha1"],
+        pr_number=1,
+        pr_url="https://github.com/org/repo/pull/1",
+        dev_notes="done",
+        acceptance_criteria_status=[],
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task_obj
+    git_svc = AsyncMock()
+    git_svc.diff_and_files.return_value = ("diff", ["f.py"])
+    workspace_svc = AsyncMock()
+    evidence_repo = AsyncMock()
+
+    async def _slow_journal_highlights(*_args: object, **_kwargs: object) -> list[Any]:
+        await asyncio.sleep(1)
+        return []
+
+    evidence_repo.journal_highlights_for_task.side_effect = _slow_journal_highlights
+
+    deps = _make_deps(
+        task=task_svc, git=git_svc, workspace=workspace_svc, evidence_repo=evidence_repo
+    )
+    ca = ContentActions(deps)
+
+    env = await ca.evidence(agent_id=agent_id, task_id=task_id)
+    body = env.as_dict()
+
+    assert body["error"] == "gateway_timeout"
 
 
 # ---------------------------------------------------------------------------

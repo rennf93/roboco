@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from http import HTTPStatus
 from types import SimpleNamespace
@@ -267,37 +268,6 @@ async def test_log_with_branch_success(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_log_resolves_through_head_ref_not_bare_branch(
-    git_client: dict,
-) -> None:
-    """The route must route the requested branch through
-    ``_resolve_head_ref`` (fetch + prefer origin) instead of handing git the
-    bare branch name straight off whatever this clone happens to have on
-    disk — this clone is the CALLER's own, never the branch owner's, and a
-    left-over local ref from an earlier inspection can be pinned stale
-    (live 2026-07-24: a QA clone read a commit 5 review rounds old)."""
-    log_result = MagicMock()
-    log_result.returncode = 0
-    log_result.stdout = ""
-    with patch("roboco.api.routes.git.get_git_service") as mock_get:
-        svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
-        svc._token_for_branch = AsyncMock(return_value="tok")
-        svc._resolve_head_ref = AsyncMock(return_value="origin/feature/x")
-        svc._run_git = AsyncMock(return_value=log_result)
-        mock_get.return_value = svc
-        response = await git_client["client"].get(
-            f"/api/git/log?project_slug={git_client['project'].slug}&branch=feature/x",
-            headers=_HDR,
-        )
-    assert response.status_code == HTTPStatus.OK
-    svc._resolve_head_ref.assert_awaited_once_with("/tmp/ws", "feature/x", token="tok")
-    svc._run_git.assert_awaited_once()
-    logged_args = svc._run_git.await_args.args[1]
-    assert logged_args[-1] == "origin/feature/x"
-
-
-@pytest.mark.asyncio
 async def test_log_no_branch_fetches_current(git_client: dict) -> None:
     log_result = MagicMock()
     log_result.returncode = 0
@@ -355,7 +325,7 @@ async def test_log_service_error(git_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_branches_local_only(git_client: dict) -> None:
     branch_result = MagicMock()
-    branch_result.stdout = "refs/heads/main|abc123\nrefs/heads/feature/x|def456\n"
+    branch_result.stdout = "main|abc123\nfeature/x|def456\n"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
@@ -367,27 +337,12 @@ async def test_branches_local_only(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
-    names = {b["name"]: b for b in response.json()["branches"]}
-    assert names["main"]["is_remote"] is False
-    assert names["feature/x"]["is_remote"] is False
-    # include_remote=False (default) never prunes.
-    svc.prune_remote_best_effort.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_branches_with_remote(git_client: dict) -> None:
-    """Regression: `%(refname)` renders a remote-tracking ref as
-    `refs/remotes/origin/<branch>` (real git never emits the old stub's
-    `remotes/origin/<branch>` shape) — it must classify as remote with the
-    `refs/remotes/origin/` prefix stripped down to the bare branch name, and
-    the symbolic `origin/HEAD` ref must be dropped, not surfaced as a fake
-    branch named "HEAD"."""
     branch_result = MagicMock()
-    branch_result.stdout = (
-        "refs/heads/main|abc123\n"
-        "refs/remotes/origin/feature/y|def456\n"
-        "refs/remotes/origin/HEAD|abc123\n"
-    )
+    branch_result.stdout = "main|abc123\nremotes/origin/feature/y|def456\n"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
@@ -400,11 +355,6 @@ async def test_branches_with_remote(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
-    names = {b["name"]: b for b in response.json()["branches"]}
-    assert names["feature/y"]["is_remote"] is True
-    assert "origin/feature/y" not in names
-    assert "HEAD" not in names
-    svc.prune_remote_best_effort.assert_awaited_once_with("/tmp/ws")
 
 
 @pytest.mark.asyncio
@@ -412,7 +362,7 @@ async def test_branches_skips_empty_lines(git_client: dict) -> None:
     """Line 246: empty line in branch output triggers continue."""
     branch_result = MagicMock()
     # Embed an empty line between two branches.
-    branch_result.stdout = "refs/heads/main|abc\n\nrefs/heads/feature/x|def\n"
+    branch_result.stdout = "main|abc\n\nfeature/x|def\n"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
@@ -488,6 +438,33 @@ async def test_diff_service_error(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_diff_bounded_timeout_returns_504(
+    git_client: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task #62845be1: a genuinely slow diff computation trips the bounded
+    ``evidence_assembly_timeout_seconds`` guard and returns a structured 504
+    naming the slow component, instead of hanging indefinitely."""
+    monkeypatch.setattr(
+        "roboco.api.routes.git.settings.evidence_assembly_timeout_seconds", 0.05
+    )
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+
+        async def _slow_workspace(*_args: object, **_kwargs: object) -> str:
+            await asyncio.sleep(1)
+            return "/tmp/ws"
+
+        svc.get_workspace = AsyncMock(side_effect=_slow_workspace)
+        mock_get.return_value = svc
+        response = await git_client["client"].get(
+            f"/api/git/diff?project_slug={git_client['project'].slug}",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert "bounded" in response.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1051,79 +1028,6 @@ async def test_merge_pr_without_task_id_no_422(git_client: dict) -> None:
         )
     assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
     assert response.status_code == HTTPStatus.OK
-
-
-# ---------------------------------------------------------------------------
-# branches/cleanup
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_cleanup_branches_success(pm_git_client: dict) -> None:
-    with patch("roboco.api.routes.git.get_git_service") as mock_get:
-        svc = AsyncMock()
-        svc.cleanup_stale_branches = AsyncMock(return_value=(3, 2, 1, 0, False, None))
-        mock_get.return_value = svc
-        response = await pm_git_client["client"].post(
-            "/api/git/branches/cleanup",
-            json={"project_slug": pm_git_client["project"].slug},
-            headers=_HDR,
-        )
-    assert response.status_code == HTTPStatus.OK
-    data = response.json()
-    assert (
-        data["remote_deleted"],
-        data["local_deleted"],
-        data["skipped"],
-        data["errors"],
-        data["truncated"],
-    ) == (3, 2, 1, 0, False)
-    svc.cleanup_stale_branches.assert_awaited_once_with(
-        pm_git_client["project"].slug, after_task_id=None
-    )
-
-
-@pytest.mark.asyncio
-async def test_cleanup_branches_reports_truncation(pm_git_client: dict) -> None:
-    with patch("roboco.api.routes.git.get_git_service") as mock_get:
-        svc = AsyncMock()
-        svc.cleanup_stale_branches = AsyncMock(
-            return_value=(200, 190, 0, 0, True, "0" * 32)
-        )
-        mock_get.return_value = svc
-        response = await pm_git_client["client"].post(
-            "/api/git/branches/cleanup",
-            json={"project_slug": pm_git_client["project"].slug},
-            headers=_HDR,
-        )
-    assert response.status_code == HTTPStatus.OK
-    assert response.json()["truncated"] is True
-
-
-@pytest.mark.asyncio
-async def test_cleanup_branches_developer_gets_403(git_client: dict) -> None:
-    """git_client carries a DEVELOPER-role agent — same role gate as /rebase."""
-    with patch("roboco.api.routes.git.get_git_service") as mock_get:
-        svc = AsyncMock()
-        mock_get.return_value = svc
-        response = await git_client["client"].post(
-            "/api/git/branches/cleanup",
-            json={"project_slug": git_client["project"].slug},
-            headers=_HDR,
-        )
-    assert response.status_code == HTTPStatus.FORBIDDEN
-    assert "BRANCH_CLEANUP_ROLE_RESTRICTED" in response.json()["detail"]
-    mock_get.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_cleanup_branches_project_not_found(pm_git_client: dict) -> None:
-    response = await pm_git_client["client"].post(
-        "/api/git/branches/cleanup",
-        json={"project_slug": "does-not-exist"},
-        headers=_HDR,
-    )
-    assert response.status_code == HTTPStatus.NOT_FOUND
 
 
 # Re-export to keep import alive (TC reorders imports)

@@ -35,6 +35,8 @@ still validates role + claim source-status + task_type before dispatch.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -47,20 +49,15 @@ from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import (
     ContentValidationError,
     markers,
+    validate_findings,
 )
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
-from roboco.services.gateway.choreographer.collision import build_collision_context
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
 logger = structlog.get_logger()
-
-# Cap on one criteria_verified entry's `evidence` — mirrors Finding.fix's cap
-# (roboco.foundation.policy.content.models._FINDING_FIX_CAP): a pointer
-# (file:line, screenshot ref, test name), not a transcript.
-_CRITERION_EVIDENCE_CAP = 500
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -180,7 +177,37 @@ class QAMixin(_Base):
         t = await self.task.qa_claim(qa_agent_id, task_id)
         await self.task.mark_evidence_inspected(task_id)
 
-        ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+        try:
+            ev = await asyncio.wait_for(
+                self._build_qa_claim_evidence(qa_agent_id, t, task_id),
+                timeout=settings.evidence_assembly_timeout_seconds,
+            )
+        except TimeoutError:
+            # The claim itself already committed (qa_claim + mark_evidence_
+            # inspected above) — well under flow_verb_timeout_seconds's own
+            # ceiling. Only evidence assembly (git diff/fetch, conventions
+            # validation, or a DB read) is slow, so name it and point at the
+            # cheap fallback instead of a bare 504 that looks like the whole
+            # claim failed.
+            return await self._emit_rejection(
+                Envelope.gateway_timeout(
+                    component=(
+                        "evidence assembly (git diff/fetch, conventions "
+                        "validation, or a journal/findings DB read)"
+                    ),
+                    timeout_seconds=settings.evidence_assembly_timeout_seconds,
+                    remediate=(
+                        "the claim already succeeded (status is awaiting_qa, "
+                        "you are the claimant) — call evidence(task_id) to "
+                        "fetch the PR diff/files/findings directly instead "
+                        "of retrying claim_review"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
+            )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -190,43 +217,109 @@ class QAMixin(_Base):
         ).with_introspection(task=t, role=role_str)
 
     async def _qa_convention_findings(
-        self, qa_agent_id: UUID, t: Any
+        self,
+        qa_agent_id: UUID,
+        t: Any,
+        *,
+        changed_files: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Convention-validator findings on the task's changed files (flag-gated).
 
         Empty when the subsystem is off; a validator that could not run surfaces
         a single explicit ``could_not_run`` entry rather than being dropped, so
         QA never mistakes a silent failure for a clean diff.
+
+        ``changed_files``, when given, is passed through to
+        ``conventions_check_for_task`` so it skips its own redundant
+        ``list_changed_files`` call (a third re-derivation of the same list
+        on one claim_review request).
         """
         if not settings.conventions_enabled:
             return []
-        result = await self.git.conventions_check_for_task(qa_agent_id, t)
+        result = await self.git.conventions_check_for_task(
+            qa_agent_id, t, changed_files=changed_files
+        )
         if result.get("could_not_run"):
             reason = result.get("reason") or "validator could not run"
             return [{"could_not_run": True, "reason": reason}]
         return list(result.get("findings", []))
 
-    @staticmethod
-    def _qa_video_context(t: Any) -> dict[str, Any] | None:
-        """QA-facing artifact context for a video-authoring task.
+    async def _qa_db_reads(
+        self, task_id: UUID, t: Any
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[Any], list[Any]]:
+        """The four DB reads behind claim_review's evidence, run sequentially
+        as ONE coroutine.
 
-        None for every non-video task. Carries the composition id (from the
-        ``video_draft`` marker) + the latest ``request_render`` preview so QA
-        is pointed at the rendered artifact instead of the source alone.
+        They stay sequential AMONG THEMSELVES on purpose: they all read
+        through the request-scoped ``self.task.session`` / evidence_repo, a
+        single ``AsyncSession`` bound to one DBAPI connection — asyncpg
+        cannot serve two in-flight queries on the same connection at once
+        (``asyncpg.exceptions`` / SQLAlchemy's own
+        ``IllegalStateChangeError: ... concurrent operations are not
+        permitted``, confirmed against a live Postgres while building this
+        fix; opening a second ad-hoc session per read would silently diverge
+        from the request's transaction and break every existing test that
+        injects a mocked ``evidence_repo``). Bundling them as one coroutine
+        lets ``_build_qa_claim_evidence`` still `asyncio.gather` this WHOLE
+        batch against the independent git + conventions-validator work
+        below — the actual "parallelize the independent reads" win, without
+        the same-connection hazard.
         """
-        if getattr(t, "source", None) != markers.VIDEO_TASK_SOURCE:
-            return None
-        draft = markers.get_video_draft(t) or {}
-        return {
-            "composition_id": draft.get("composition_id"),
-            "render_preview": markers.get_render_preview(t),
-            "note": (
-                "This task ships a rendered video. Call request_render to "
-                "render the PR branch state, then Read every returned frame "
-                "image — verify each acceptance criterion's scene appears "
-                "fully and legibly. Do not pass on source reading alone."
-            ),
-        }
+        t0 = time.monotonic()
+        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
+            task_id
+        )
+        # The ask-chain (parent → root descriptions) so QA judges INTENT
+        # against the intake's original analysis, not only the leaf's ACs.
+        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
+        open_findings = await findings_lib.open_findings_for_task(
+            self.task.session, t.id
+        )
+        # The full ledger (every status) so QA verifies prior rounds
+        # item-by-item, not just what is still open.
+        prior_findings = await findings_lib.full_ledger_for_task(
+            self.task.session, t.id
+        )
+        logger.info(
+            "claim_review db reads timing",
+            task_id=str(task_id),
+            db_reads_ms=round((time.monotonic() - t0) * 1000.0),
+        )
+        return journal_highlights, parent_context, open_findings, prior_findings
+
+    async def _qa_git_and_conventions(
+        self, qa_agent_id: UUID, t: Any
+    ) -> tuple[str, list[str], list[dict[str, Any]]]:
+        """The git diff/fetch + conventions-validator segment, as ONE
+        coroutine so it can run concurrently with the DB-reads batch.
+
+        The conventions check needs ``files_changed`` from the git segment,
+        so within this coroutine it still runs AFTER git — but that chain as
+        a whole now overlaps the independent DB reads (item d of the
+        claim_review timeout fix), instead of the old strictly-serial
+        diff -> list_changed_files -> conventions(list_changed_files again)
+        -> DB reads chain.
+        """
+        files_changed: list[str] = []
+        diff_summary = ""
+        git_t0 = time.monotonic()
+        if t.branch_name:
+            diff_summary, files_changed = await self.git.diff_and_files(
+                branch_name=t.branch_name
+            )
+        git_ms = (time.monotonic() - git_t0) * 1000.0
+        conv_t0 = time.monotonic()
+        convention_findings = await self._qa_convention_findings(
+            qa_agent_id, t, changed_files=files_changed
+        )
+        conv_ms = (time.monotonic() - conv_t0) * 1000.0
+        logger.info(
+            "claim_review git+conventions timing",
+            task_id=str(getattr(t, "id", None)),
+            git_diff_and_fetch_ms=round(git_ms),
+            conventions_ms=round(conv_ms),
+        )
+        return diff_summary, files_changed, convention_findings
 
     async def _build_qa_claim_evidence(
         self, qa_agent_id: UUID, t: Any, task_id: UUID
@@ -237,49 +330,29 @@ class QAMixin(_Base):
         authoritative source) + journal_highlights so the QA agent has
         the full PR context up-front and can't miss a piece.
 
-        files_changed comes from ``git.list_changed_files``
-        instead of ``work_session.files_modified``. The legacy
+        files_changed comes from the combined ``diff_and_files``
+        accessor instead of ``work_session.files_modified``. The legacy
         ``add_files_modified`` HTTP path that populated files_modified
         is not called by the gateway ``commit()``, so the work_session
         list was always empty — QA saw no files even on real PRs.
+
+        The git+conventions segment and the DB-reads segment run
+        concurrently via ``asyncio.gather`` (each internally sequential per
+        ``_qa_db_reads``'s docstring); per-segment timing is logged inside
+        each helper (item a of the claim_review timeout fix).
         """
-        files_changed: list[str] = []
-        diff_summary = ""
-        if t.branch_name:
-            diff_summary = await self.git.diff(branch_name=t.branch_name)
-            files_changed = await self.git.list_changed_files(branch_name=t.branch_name)
-        journal_highlights = await self.evidence_repo.journal_highlights_for_task(
-            task_id
+        (
+            (diff_summary, files_changed, convention_findings),
+            (
+                journal_highlights,
+                parent_context,
+                open_findings,
+                prior_findings,
+            ),
+        ) = await asyncio.gather(
+            self._qa_git_and_conventions(qa_agent_id, t),
+            self._qa_db_reads(task_id, t),
         )
-        # The ask-chain (parent → root descriptions) so QA judges INTENT
-        # against the intake's original analysis, not only the leaf's ACs.
-        # Leaf-only journals stay (include_ancestors defaults False above);
-        # ancestor *descriptions* are the ask, not work-so-far.
-        parent_context = await self.evidence_repo.ancestor_context_for_task(task_id)
-        convention_findings = await self._qa_convention_findings(qa_agent_id, t)
-        open_findings = await findings_lib.open_findings_for_task(
-            self.task.session, t.id
-        )
-        # The full ledger (every status) so QA verifies prior rounds
-        # item-by-item, not just what is still open.
-        prior_findings = await findings_lib.full_ledger_for_task(
-            self.task.session, t.id
-        )
-        # The collision map: surfaced siblings (same parent) that would
-        # collide with this task, with the declared-vs-actual drift (QA has
-        # the real touched files in hand). Best-effort — a fetch failure omits
-        # the block rather than breaking claim_review.
-        collision_context: list[dict[str, Any]] | None = None
-        try:
-            if t.parent_task_id:
-                siblings = await self.task.get_subtasks(t.parent_task_id)
-                collision_context = build_collision_context(
-                    task=t, siblings=siblings, actual_files=files_changed
-                )
-        except Exception as exc:  # best-effort enrichment, never breaks the verb
-            logger.warning(
-                "qa_collision_context_skip", task_id=str(t.id), error=str(exc)
-            )
         return build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
@@ -289,8 +362,6 @@ class QAMixin(_Base):
             revision_findings=open_findings,
             prior_findings=prior_findings,
             parent_context=parent_context,
-            collision_context=collision_context,
-            video_context=self._qa_video_context(t),
         )
 
     async def _verify_qa_owner(
@@ -431,13 +502,13 @@ class QAMixin(_Base):
     def _qa_ac_coverage_check(
         cls, task: Any, ac_verdicts: list[str] | None
     ) -> Envelope | None:
-        """Legacy count-only per-AC gate — superseded by ``criteria_verified``.
+        """Per-acceptance-criterion verification gate for pass_review.
 
-        No longer wired into ``pass_review`` (a count of arbitrary strings
-        never verified they actually named the right criterion — the live gap
-        ``_validate_criteria_verified`` closes). Kept for ``ac_verdicts``'
-        existing callers/tests; ``ac_verdicts`` itself still folds into the
-        persisted notes when supplied.
+        QA may not pass a task until it has recorded a verification for EVERY
+        acceptance criterion. A single gestalt "looks good" approval is how a
+        silently-unbuilt criterion slips through; requiring one verdict per
+        criterion forces QA to check each individually. If a criterion does not
+        hold, the QA fails the review instead of passing a partial.
         """
         criteria = list(getattr(task, "acceptance_criteria", None) or [])
         if not criteria:
@@ -549,181 +620,36 @@ class QAMixin(_Base):
             verb=verb,
         )
 
-    @staticmethod
-    def _parse_criterion_entry(entry: Any, idx: int) -> tuple[str, str] | Envelope:
-        """Validate one ``criteria_verified`` entry into a (criterion, evidence)
-        pair, or an ``Envelope`` rejection on any structural problem."""
-        criterion = entry.get("criterion") if isinstance(entry, dict) else None
-        evidence = entry.get("evidence") if isinstance(entry, dict) else None
-        if not isinstance(criterion, str) or not criterion.strip():
-            return Envelope.invalid_state(
-                message=f"criteria_verified[{idx}] is missing a `criterion` string",
-                remediate=(
-                    "each entry needs {criterion, evidence} naming one "
-                    "acceptance criterion"
-                ),
-            )
-        if not isinstance(evidence, str) or not evidence.strip():
-            return Envelope.invalid_state(
-                message=(
-                    f"criteria_verified[{idx}] ({criterion!r}) is missing `evidence`"
-                ),
-                remediate=(
-                    "state concrete evidence: file:line, screenshot ref, "
-                    "rendered-frame path, test name"
-                ),
-            )
-        if len(evidence) > _CRITERION_EVIDENCE_CAP:
-            return Envelope.invalid_state(
-                message=(
-                    f"criteria_verified[{idx}] evidence exceeds "
-                    f"{_CRITERION_EVIDENCE_CAP} chars"
-                ),
-                remediate="keep evidence concise — a pointer, not a transcript",
-            )
-        return criterion.strip(), evidence.strip()
-
-    @classmethod
-    def _parse_criteria_verified_entries(
-        cls, criteria_verified: list[dict[str, Any]]
-    ) -> tuple[list[tuple[str, str]], Envelope | None]:
-        """Shape + soup validation for every ``criteria_verified`` entry.
-
-        Pure parsing — AC matching/coverage is the caller's job. Split out
-        of ``_validate_criteria_verified`` to keep its return count under
-        the complexity bound.
-        """
-        pairs: list[tuple[str, str]] = []
-        for idx, entry in enumerate(criteria_verified):
-            parsed = cls._parse_criterion_entry(entry, idx)
-            if isinstance(parsed, Envelope):
-                return [], parsed
-            pairs.append(parsed)
-        soup = cls._free_text_soup(
-            checks=(("criteria_verified.evidence", [e for _, e in pairs], 8),)
-        )
-        if soup is not None:
-            return [], soup
-        return pairs, None
-
-    @classmethod
-    def _validate_criteria_verified(
-        cls, t: Any, criteria_verified: list[dict[str, Any]] | None
-    ) -> tuple[list[tuple[str, str]], Envelope | None]:
-        """Mandatory per-AC verification gate for pass_review.
-
-        Returns ``(pairs, rejection)`` — ``pairs`` is ``[]`` and ``rejection``
-        non-None on any failure: none supplied (lists every AC verbatim),
-        a malformed or soupy entry, an entry naming a criterion absent from
-        the task (names the valid criteria), or a task AC left uncovered
-        (names the gap). No task ACs imposes no requirement (mirrors the
-        legacy ``_qa_ac_coverage_check``). A gestalt "looks good" is no
-        longer enough — every criterion needs its own matched, evidenced
-        entry, or QA must call ``fail_review`` instead of passing a partial.
-        """
-        criteria = list(getattr(t, "acceptance_criteria", None) or [])
-        if not criteria:
-            return [], None
-        if not criteria_verified:
-            return [], Envelope.invalid_state(
-                message=(
-                    "pass_review needs criteria_verified naming every "
-                    f"acceptance criterion; none supplied. Unverified: {criteria!r}"
-                ),
-                remediate=(
-                    "re-run the review and call pass_review with "
-                    "criteria_verified=[{criterion, evidence}, ...] — stamp "
-                    "EACH criterion with concrete evidence (file:line, "
-                    "screenshot ref, rendered-frame path, test name)"
-                ),
-            )
-        pairs, bad = cls._parse_criteria_verified_entries(criteria_verified)
-        if bad is not None:
-            return [], bad
-        provided = [c for c, _ in pairs]
-        if unknown := findings_lib.unmatched_criteria(t, provided):
-            return [], Envelope.invalid_state(
-                message=(
-                    f"criteria_verified names criteria not on this task: {unknown!r}"
-                ),
-                remediate=(
-                    "each entry's criterion must match one of the task's "
-                    f"acceptance criteria (by id or exact text): {criteria!r}"
-                ),
-            )
-        if uncovered := findings_lib.uncovered_acceptance_criteria(t, provided):
-            return [], Envelope.invalid_state(
-                message=(
-                    "criteria_verified is missing these acceptance criteria: "
-                    f"{uncovered!r}"
-                ),
-                remediate=(
-                    "stamp every criterion with concrete evidence, or call "
-                    "fail_review with the specific gap if one does not hold"
-                ),
-            )
-        return pairs, None
-
-    @staticmethod
-    def _render_criteria_verified(pairs: list[tuple[str, str]]) -> list[str]:
-        """One '[AC] <criterion> — verified: <evidence>' line per entry.
-
-        Style-matched to the findings ledger's '[F-<id8>] ...' bracket-tag
-        rendering (``findings_lib.render_finding_line``).
-        """
-        return [
-            f"[AC] {criterion} — verified: {evidence}" for criterion, evidence in pairs
-        ]
-
-    @classmethod
-    def _merge_criteria_verified_into_notes(
-        cls, notes: str, pairs: list[tuple[str, str]]
-    ) -> str:
-        """Fold the per-AC verification lines into the persisted QA notes.
-
-        Mirrors ``_merge_ac_verdicts_into_notes`` — keeps the per-criterion
-        verification in the audit trail (qa_notes) so PM/CEO see exactly how
-        QA verified each acceptance criterion.
-        """
-        lines = cls._render_criteria_verified(pairs)
-        if not lines:
-            return notes
-        return f"{notes}\n\n" + "\n".join(lines)
-
     async def _qa_pass_final_gates(
         self,
         qa_agent_id: UUID,
         task_id: UUID,
         t: Any,
         role_str: str,
-        criteria_verified: list[dict[str, Any]] | None,
-    ) -> tuple[Envelope | None, list[tuple[str, str]]]:
-        """Per-AC verification + toolchain-runnability gates for pass_review.
+        ac_verdicts: list[str] | None,
+    ) -> Envelope | None:
+        """AC-coverage + toolchain-runnability gates for pass_review.
 
-        Returns ``(rejection, pairs)`` — the first emitted rejection (else
-        None) and the validated ``criteria_verified`` (criterion, evidence)
-        pairs for the caller to render into notes. QA must not PASS on a
-        workspace that cannot run the suite — that is a source-read
+        Returns the first rejection (already emitted), else None. QA must not
+        PASS on a workspace that cannot run the suite — that is a source-read
         "verification"; fail_review is unaffected.
         """
-        pairs, bad = self._validate_criteria_verified(t, criteria_verified)
-        if bad is not None:
-            rejection = await self._emit_rejection(
-                bad.with_introspection(task=t, role=role_str),
+        ac_rejection = self._qa_ac_coverage_check(t, ac_verdicts)
+        if ac_rejection is not None:
+            return await self._emit_rejection(
+                ac_rejection.with_introspection(task=t, role=role_str),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="pass_review",
             )
-            return rejection, []
         if toolchain := await self._toolchain_broken_guard(qa_agent_id, t):
-            rejection = await self._emit_rejection(
+            return await self._emit_rejection(
                 toolchain.with_introspection(task=t, role=role_str),
                 agent_id=qa_agent_id,
                 task_id=task_id,
                 verb="pass_review",
             )
-            return rejection, []
-        return None, pairs
+        return None
 
     async def pass_review(
         self,
@@ -731,7 +657,6 @@ class QAMixin(_Base):
         task_id: UUID,
         notes: str,
         ac_verdicts: list[str] | None = None,
-        criteria_verified: list[dict[str, Any]] | None = None,
     ) -> Envelope:
         """QA passes the task; transitions awaiting_qa → awaiting_documentation.
 
@@ -746,16 +671,6 @@ class QAMixin(_Base):
         The composed atomic ``qa_pass`` is then dispatched through
         ``VerbRunner.run_intent``, after which the verb body reassigns
         the documenter for handoff.
-
-        ``criteria_verified`` ({criterion, evidence} entries) is the
-        mandatory per-AC verification gate (``_validate_criteria_verified``):
-        every one of the task's acceptance criteria must be named by exactly
-        one entry — matched by AC id or exact text, the same match
-        ``fail_review``'s findings ledger uses for its own ``criterion``
-        field — carrying substantive evidence, or the pass is refused. A
-        gestalt "looks good" is no longer enough; QA must walk each
-        criterion. ``ac_verdicts`` (legacy, count-only) still folds into the
-        persisted notes when supplied but no longer gates the pass.
         """
         rejection, t = await self._verify_qa_owner(qa_agent_id, task_id, "pass_review")
         if rejection is not None:
@@ -781,22 +696,18 @@ class QAMixin(_Base):
             soup_checks=(("notes", notes, 8),),
         ):
             return gate_rejection
-        final_rejection, criteria_pairs = await self._qa_pass_final_gates(
-            qa_agent_id, task_id, t, role_str, criteria_verified
-        )
-        if final_rejection is not None:
-            return final_rejection
+        if rej := await self._qa_pass_final_gates(
+            qa_agent_id, task_id, t, role_str, ac_verdicts
+        ):
+            return rej
 
         briefing = await self._briefing_for(qa_agent_id, task_id)
-        merged_notes = self._merge_criteria_verified_into_notes(
-            self._merge_ac_verdicts_into_notes(notes, ac_verdicts), criteria_pairs
-        )
         spec_ctx = spec_module.Context(
             actor_id=qa_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
-            notes=merged_notes,
+            notes=self._merge_ac_verdicts_into_notes(notes, ac_verdicts),
         )
         self._store_qa_note(t, notes, ac_verdicts, passed=True)
         runner = self._verb_runner()
@@ -892,9 +803,16 @@ class QAMixin(_Base):
             )
         if cap := findings_lib.findings_count_guard(raw):
             return [], cap
-        validated, bad = findings_lib.validate_or_reject(raw)
-        if bad is not None:
-            return [], bad
+        try:
+            validated = validate_findings(raw)
+        except ContentValidationError as exc:
+            return [], Envelope.invalid_state(
+                message=f"malformed finding: {exc.field} — {exc.reason}",
+                remediate=(
+                    "each finding needs expected + actual (file/line/severity/"
+                    "criterion/fix/evidence optional)"
+                ),
+            )
         if unknown := findings_lib.unknown_finding_criteria(t, validated):
             return [], findings_lib.criterion_mismatch_rejection(t, unknown)
         return validated, None
