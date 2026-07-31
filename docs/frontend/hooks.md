@@ -141,11 +141,11 @@ No manual guard is needed before calling the hook — the `enabled: !!taskId` gu
 
 ## Frontend lint-suppression audit
 
-**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Sentinel's `no_lint_suppressions` hygiene scan originally flagged 32 suppressions company-wide; the other ~24, mostly backend Python-level (`# noqa` / `# type: ignore`), are tracked separately by the backend cell. **That doc is not yet available to link:** backend's full reconciliation doc is pending (backend task `f990110d`, currently in QA); a link will be added here once it merges into the shared root branch.
+**Scope: this section is a frontend-only accounting.** It covers lint suppressions (`eslint-disable`, `@ts-ignore`, `@ts-expect-error`) found in `panel/` alone — it is not the company-wide suppression ledger. Sentinel's `no_lint_suppressions` hygiene scan originally flagged 32 suppressions company-wide; the other ~24, mostly backend Python-level (`# noqa` / `# type: ignore`), are tracked separately in backend's full reconciliation: [`docs/backend/lint-suppression-reconciliation.md`](../backend/lint-suppression-reconciliation.md).
 
-A direct grep of `panel/` for `eslint-disable`, `@ts-ignore`, and `@ts-expect-error` (excluding `node_modules`) found exactly **one** frontend suppression, documented below with its disposition. No other frontend suppressions exist.
+A direct grep of `panel/` for `eslint-disable`, `@ts-ignore`, and `@ts-expect-error` (excluding `node_modules`) historically found exactly **one** frontend suppression, documented below. It was fixed at the source in a later round (see disposition below); re-running the same grep against `panel/` today returns zero hits.
 
-### `eslint-disable` in `journals-view.tsx:77` — fixed at the source, no waiver needed
+### `eslint-disable` formerly in `journals-view.tsx`, now removed — fixed at the source, no waiver needed
 
 Sentinel's `no_lint_suppressions` hygiene scan flagged `// eslint-disable-next-line react-hooks/exhaustive-deps` guarding the mount-only localStorage-restore effect in `JournalsViewContent` (`panel/src/components/journals/journals-view.tsx`). That effect restores the `agent`/`type`/`task` filters saved from a prior visit into the URL, but only on a fresh `/agents?tab=journals` visit that carries no query params yet — it must run exactly once per mount, never again, or it would clobber a later intentional "clear filters" action with stale saved state.
 
