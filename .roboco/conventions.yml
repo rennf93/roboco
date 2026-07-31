@@ -83,8 +83,20 @@ rules:
   no_inline_comments:
     level: warn
   # A handful of unavoidable framework suppressions are auto-allowed
-  # (TC001-003, pydantic prop-decorator); the few remaining inline E402 / E501 /
-  # arg-type suppressions stay warn until they migrate to pyproject config.
+  # (TC001-003, pydantic prop-decorator). The 2026-07 suppression audit
+  # resolved every other inline noqa/type:ignore in roboco/ + panel/: two
+  # were fixed at source (orchestrator.py's magic-number noqa, hoisted to a
+  # module constant, and panel/src/components/journals/journals-view.tsx's
+  # eslint-disable, replaced by a useRef mount-guard), and the two
+  # structurally-unavoidable ones now carry accurate waivers below
+  # (prompter_live.py's route-symmetry param, lifecycle.py's circular-import
+  # E402). roboco/ and panel/ are clean, but tests/ still carries ~90
+  # unwaived noqa/type:ignore markers across ~36 files that this audit never
+  # scoped in and the validator does not exclude — so this rule stays warn
+  # until that backlog is cleared or the validator gains a tests/ exclusion;
+  # promoting to block today would hard-fail the gate on unrelated diffs
+  # touching any of those files. See
+  # docs/backend/lint-suppression-reconciliation.md for the full audit.
   no_lint_suppressions:
     level: warn
   # RoboCo routes deliberately call db.commit() (get_db auto-commit is unreliable
@@ -111,11 +123,15 @@ waivers:
     rule: no_lint_suppressions
     reason: >-
       preview_live_batch's `session_id` path parameter is unused in the
-      function body (the endpoint is a pure precompute) but must stay in the
-      signature under that exact name for FastAPI to bind the
-      `/live/{session_id}/preview-batch` path — renaming or dropping it
-      breaks routing, so the ARG001 suppression is a permanent framework
-      constraint, not silenced debt.
+      function body (the endpoint is a pure precompute). FastAPI only binds
+      path params a handler actually declares, so a zero-arg handler on
+      `/live/{session_id}/preview-batch` would route and run fine — dropping
+      the param would NOT break routing. It stays for route symmetry with
+      every sibling `/live/{session_id}/*` handler in this file (`confirm_live`,
+      `confirm_live_batch`, `send_message`, ...), all of which take
+      `session_id` even where the body could look it up another way, so the
+      ARG001 suppression documents a deliberate consistency choice, not
+      silenced debt.
   - path: roboco/foundation/policy/lifecycle.py
     rule: no_lint_suppressions
     reason: >-
